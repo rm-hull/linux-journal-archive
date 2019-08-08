@@ -1,0 +1,429 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Understanding Caching</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Architectures that support Linux differ in how they handle&#10;caching at the hardware level. Here's how the kernel gets the&#10;best possible use out of every cache design.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xdfc580.0xef3ab0"></a>Understanding Caching</h1></div><div><div class="author"><h3 class="author">James Bottomley</h3></div><div class="issuemoyr">Issue #117, January 2004</div></div><div><p>
+Architectures that support Linux differ in how they handle
+caching at the hardware level. Here's how the kernel gets the
+best possible use out of every cache design.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef4240"></a></h2></div></div><p>
+Since the earliest days of microprocessors, system designers
+have been plagued by a problem in which the speed of the CPU's operation
+exceeded the bandwidth of the memory subsystem to which it was
+connected. To avoid wasting CPU cycles while waiting for the
+memory to fetch the requested data, the universally adopted solution
+was to use an area of faster (and thus more expensive) memory to cache
+main memory data. This solution allowed the CPU to operate at its natural speed as
+long as the data it required was available in the cache.
+</p><p>
+The purpose of this article is to
+explain caching from the point of view of a
+kernel programmer. I also explain some
+of the common terms used to describe caches.
+This article is divided into
+sections whose kernel programming relevance is
+indicated; that is, some sections explain that
+cache properties are irrelevant to understanding
+the essentials of how the kernel handles caching.
+If you're coming from an Intel IA32 background,
+caching is practically transparent to you.
+In order to write kernel code that
+operates correctly on all the architectures Linux
+supports, however, you need to know the essentials of how
+caching works in general.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef43a0"></a>A Cache and Its Properties</h2></div></div><p>
+Simply put, a cache is a place that buffers memory accesses and may
+have a copy of the data you are requesting. Usually one thinks of
+caches (there may be more than one) as being stacked; the CPU is at the
+top, followed by layers of one or more caches and then the main memory. In this
+hierarchy, caches are quantified by their level. The cache closest to
+the CPU is called level one, L1 for short, and caches increase in level until
+the main memory is reached.
+</p><p>
+A cache line is the smallest unit of memory that can be
+transferred to or from a cache. The essential elements
+that quantify a cache are called the read and write line
+widths. These signify the minimum amount of data the cache
+must read or write from the memory or cache below it. Frequently,
+these quantities are the same, so caches often are quantified
+simply by the line width. Even if they differ, the longest
+width usually is called the line width.
+</p><p>
+The next property that quantifies a cache is its size. This
+number is an indication of how much data could be stored in the cache.
+Often, the performance rule of thumb is the bigger the cache, the
+better the benchmarks.
+</p><p>
+A multilevel cache can be either inclusive
+or exclusive. Exclusive means a particular
+cache line may be present in exactly one of the cache levels and no more
+than one.
+Inclusive means the line may be present simultaneously in more than one
+level of cache. Nothing prevents the line widths from being
+different in differing cache levels.
+</p><p>
+Finally, a particular cache can be either write through or write back.
+Write through means the cache may store a copy of the data, but the write
+must be completed at the next level down before it can be signaled as
+complete to the layer above. Write back means a write
+may be considered complete as soon as the data is stored in the cache.
+For a write back cache, as long as the written data is not
+transmitted, the cache line is considered dirty,
+because it ultimately must be written out to the level below.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef4608"></a>Cache Management and Coherency</h2></div></div><p>
+One of the most basic problems with caches is
+coherency.
+A cache line is termed coherent when the data in the line is identical
+to the data stored in the main memory being cached. If this is
+not true, the cache line is termed incoherent. Lack of coherency can
+cause two particular problems.
+The first problem, which may occur for all caches, is stale data.
+In this situation, data has changed in main memory but the cache hasn't been
+updated to reflect the change. This usually manifests itself as an
+incorrect read, as illustrated in Figure 1.
+This is a transient error, because the correct data is sitting in main
+memory; the cache simply needs to be told to bring it in.
+</p><div       class="mediaobject"><a href="7105f1.large.jpg"><img src="7105f1.jpg"></a><div class="caption"><p>Figure 1. Stale Data Problem
+</p></div></div><p>
+The second problem, which occurs only with write back caches,
+can cause actual destruction of data and is much more insidious.
+As illustrated in Figure 2, the data has
+been changed in memory, and it also has been changed separately by a CPU write to the
+cache. Because the cache must write out one line at a time, there now is
+no way to reconcile the changes&mdash;either the cache line must be
+purged without being written, losing the CPU's change, or the line
+must be written out, thus losing the changes made to main
+memory. All programmers must avoid reaching the
+point where data destruction becomes inevitable; they can do this through
+the judicious use of
+the various cache management APIs.
+</p><div       class="mediaobject"><a href="7105f2.large.jpg"><img src="7105f2.jpg"></a><div class="caption"><p>
+Figure 2. Data Destruction by Dirty Cache Lines
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef4b30"></a>Cache-Line Interference</h2></div></div><p>
+The situation where two sets of independent data lie in the same
+cache line, potentially leading to the data destruction
+detailed above, is termed <span   class="emphasis"><em>cache-line interference</em></span>.
+If you are laying out data structures in memory, the general
+rule to avoid this situation is never, ever have data
+that can be modified outside of the caches mixed with data the CPU
+may ordinarily use. If you absolutely have to violate this rule,
+make sure all externally modifiable elements of the structure are
+aligned <i>L1_CACHE_BYTES</i>, a value set at
+compile time to the largest possible cache width value for all the
+processors on which your code may run.
+The best thing to do is use kmalloc to
+allocate two separate regions. kmalloc
+never allocates two regions that overlap in a cache
+line.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef4d40"></a>Cache Management Instructions</h2></div></div><p>
+The most basic instruction, called an invalidate, simply ejects
+the nominated line from all caches. Any reference to data in that
+line causes it to be re-fetched from main memory. Thus, the stale
+data problem may be resolved by invalidating the cache line before
+reading the data. In Linux, such an invalidation is done with:
+
+<pre     class="programlisting">
+void
+dma_cache_inv(unsigned long <i>address</i>
+              unsigned long <i>size</i>);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef4f50"></a></h2></div></div><p>
+where <i>address</i> is the virtual address on which to begin,
+and <i>size</i> is the length of data to
+invalidate. Note that <i>size</i>
+is rounded up automatically to a multiple of the cache line width.
+</p><p>
+For write back caches, any dirty cache line may be written out,
+or flushed, to main memory using:
+
+<pre     class="programlisting">
+void
+dma_cache_wback(unsigned long <i>address</i>,
+                unsigned long <i>size</i>);
+</pre>
+</p><p>
+This flushing must be done before anything changes the main memory
+under the dirty cache line. You therefore must issue the flush before an
+external entity (such as a PCI card) modifies main memory and issue an
+invalidate after this flush but before the CPU accesses any
+data that has changed.
+</p><p>
+In theory, for write back caches an invalidate kills the
+cache line without actually writing the data out, thus destroying the
+data in the cache. A safer thing to do in this case is issue a flush and
+invalidate instruction:
+
+<pre     class="programlisting">
+void
+dma_cache_wback_inv(unsigned long <i>address</i>,
+                    unsigned long <i>size</i>);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef5478"></a></h2></div></div><p>
+This flushes the cache lines to main memory and then invalidates them
+from the cache.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0xef5580"></a>Types of Caches</h2></div></div><p>
+This section explains how a cache actually works.
+The only vital piece of information you need from this section is a
+property called aliasing, which means that the
+same physical address in memory may be cached in multiple distinct
+cache lines. How the kernel actually manages the aliases is
+discussed in the following section.
+</p><p>
+In a directly mapped cache, as shown in Figure 3, the cache is divided up
+into cache lines of known width (four in the example). Each line in the
+cache is characterized by a unique index, so every byte in the cache is
+addressed by the index of the line and offset into the line. Each index
+of the cache also possesses a hidden number called the tag.
+</p><div       class="mediaobject"><a href="7105f3.large.jpg"><img src="7105f3.jpg"></a><div class="caption"><p>
+Figure 3. A Directly Mapped Cache
+</p></div></div><p>
+Every address in the system is divided into three pieces&mdash;tag,
+index and offset&mdash;along a power of two boundary (Figure 4).
+When a line is brought into the cache, the tag and index are
+extracted from the address. The line is stored in the cache at the
+required index, and the hidden tag is stored along with the line data.
+When the CPU makes reference to a particular address, the cache is
+consulted at the given index. If the tags match, the offset
+into the line is fetched to satisfy the address reference. If the
+tags do not match, the current line may be flushed back to main
+memory and the correct line brought into the cache.
+
+</p><p>
+Every cache-able address has one and only one
+corresponding index line, which can cause problems. For instance, if
+the processor reads a sequence of addresses that accidentally happen
+to correspond to the same cache index, the cache line must be
+evicted and re-fetched on each read. Such a situation easily can happen in,
+say,
+a for loop reading elements of a
+structure that happens to be about the same size as the cache. For
+directly mapped caches, the index sometimes is called the cache
+color, and this problem is called the cache-line
+coloring problem.
+</p><p>
+To get around the coloring problem of directly mapped caches,
+cache circuitry sometimes is arranged so that a cache lookup can
+compare tags simultaneously in more than one cache line. In an N-way
+associative cache, each index corresponds to N cache lines (and tags);
+thus, we can have up to N addresses with the same index simultaneously in the cache. The added parallel cache lookup circuitry tends to
+increase the cost of associativity somewhat, so it usually is
+found only in higher-end CPUs.
+</p><p>
+At the very top of the range, you might find a
+fully associative cache. This type of cache has
+no index at all, and all lines are consulted at once when looking for a
+particular tag.
+</p><p>
+All modern CPUs handle address translation, which means the virtual address used by the kernel or application
+to refer to memory isn't the same as the physical address where the
+data actually resides.
+The caches can be placed before or after address translation, and sometimes in a hierarchical cache there is a mixture of
+placements. Each of these placements has different properties and
+features as described below.
+</p><p>
+In physically indexed, physically tagged (PIPT) caches, the tag and index
+of the cache are both in physical memory, that is, after virtual address
+translation has been done. This process is nice and simple, but the disadvantage of
+PIPT caches is that a valid
+address translation must be in the TLB (translation lookaside buffer)
+of the CPU. If such a TLB entry needs to be fetched from memory
+before the address translation can be done, the advantage of caching
+the data is lost. Even if a TLB entry is present, the TLB lookup and
+the cache lookup must be done sequentially, making these caches
+slow.
+</p><p>
+In virtually indexed, virtually tagged (VIVT) caches, on the other hand,
+both the index and tag are in the virtual address space in which
+the CPU currently is operating. Although this makes cache lookups
+much faster (no address translation needs to be done before the
+lookup or after, if the cache lookup is successful), they
+suffer from several other problems:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Virtual address translations usually are changed as
+part of normal kernel operation, so the cache must pay careful
+attention to changes in TLB entries (and changes in address space) and
+flush cache lines whose translations have changed.</p></li><li><p>Even in a single address space, multiple
+virtual addresses may exist for the same physical address. Each of these
+virtual addresses would be cached separately, even though they
+represent the same data. This is called the cache-line
+aliasing problem.</p></li></ol></div><p>
+Generally, though, the added lookup speed of a VIVT cache
+outweighs its disadvantages, making it the predominant cache
+type for non-x86 CPUs.
+</p><p>
+A type of hybrid cache designed to overcome some of the shortcomings
+of the VIVT cache without sacrificing too much of its speed advantage
+is virtually indexed, physically tagged (VIPT) caching. The index is
+on the virtual address, but the tag is on the physical address, so the
+combination (tag, offset) must specify the full physical address. This
+requirement causes the tags to be larger than the tags for other cache
+types.
+</p><p>
+The VIPT cache gains its speed advantage over PIPT because the
+address translation and the cache lookup now can be done in parallel.
+The CPU doesn't know if the cache line is valid (the tags
+match), however, until the address translation has completed.
+</p><p>
+The disadvantages of VIVT are overcome because the tag is
+physical, thus the VIPT cache automatically detects aliasing when it
+sees that two tags are identical in the cache. Thus, a VIPT cache may
+be constructed in such a fashion that cache-line aliasing never
+occurs.
+</p><p>
+This fourth theoretical type of cache, physically indexed, virtually tagged
+(PIVT), is basically useless and
+is not discussed further.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12ee118"></a>The Aliasing Problem</h2></div></div><p>
+Any time the kernel sets up more than one virtual mapping for
+the same physical page, cache line aliasing may occur. The kernel is
+careful to avoid aliasing, so it usually occurs only in one
+particular instance: when the user mmaps a
+file. Here, the kernel has one virtual address for pages of the file
+in the page cache, and the user may have one or more different virtual
+addresses. This is possible because nothing prevents the user
+from mmaping the file at multiple locations.
+</p><p>
+When a file is mmaped, the kernel adds the
+mapping to one of the inode's lists: i_mmap,
+for maps that cannot change the underlying data, or
+i_mmap_shared, for maps that can change the
+file's data. The API for bringing the cache aliases of a page into
+sync is:
+
+<pre     class="programlisting">
+void flush_dcache_page(struct page *<i>page</i>);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12ee328"></a></h2></div></div><p>
+This API must be called every time data on the page is altered by the
+kernel, and it should be called before reading data from the page if
+page-&gt;mapping-&gt;i_mmap_shared is not empty. In
+architecture-specific code, flush_dcache_page
+loops over the i_mmap_shared list and flushes the
+cache data. It then loops over the i_mmap list and
+invalidates it, thus bringing all the aliases into sync.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12ee430"></a>Separate Instruction and Data Caches</h2></div></div><p>
+In their quest for efficiency, processors often have separate
+caches for the instructions they execute and the data on which they operate.
+Often, these caches are separate mechanisms, and a data write
+may not be seen by the instruction cache. This causes problems if you
+are trying to execute instructions you just wrote into memory, for
+example, during module loading or when using a trampoline. You must use
+the following API:
+
+<pre     class="programlisting">
+void
+flush_icache_range(unsigned long <i>start</i>,
+                   unsigned long <i>end</i>);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12ee640"></a></h2></div></div><p>
+to ensure that the instructions are seen by the instruction cache
+prior to execution. <i>start</i> and
+<i>end</i> are the starting and ending addresses,
+respectively, of the block of memory you modified to contain
+your instructions.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12ee7f8"></a>General Cache Flushing</h2></div></div><p>
+Two APIs globally flush the CPU caches:
+
+<pre     class="programlisting">
+void flush_cache_all(void);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12ee958"></a></h2></div></div><p>
+and
+
+<pre     class="programlisting">
+void flush_cache_mm(struct mm_struct *<i>mm</i>);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12eeb10"></a></h2></div></div><p>
+These flush all the caches in the system and only the lines in the
+cache belonging to the particular process address space <i>mm</i>.
+Both of these are extremely expensive operations and should be
+used only when absolutely necessary.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12eec70"></a>Caching in SMP Environments</h2></div></div><p>
+When more than one CPU is in the system, a
+level of caching usually exists that is unique to each CPU. Depending on the
+architecture, it may be the responsibility of the kernel to ensure
+that changes in the cache of one CPU become visible to the other CPUs.
+Fortunately, most CPUs handle this type of coherency problem in
+hardware. Even if they don't, as long as you follow the APIs
+listed in this article, you can maintain coherency across all the
+CPUs.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdfc580.0x12eed78"></a>Conclusion</h2></div></div><p>
+I hope I've given you a brief overview of how caches
+work and how the kernel manages them. The contents of this article
+should be sufficient for you to understand caching in most kernel
+programming situations you're likely to encounter. Be aware, however,
+that if you get deeply into the guts of kernel cache management
+(particularly in the architecture-specific code), you likely will
+come across concepts and APIs not discussed here.
+</p></div></div>
+<div class="authorblurb"><p>
+James Bottomley is the software architect for SteelEye.
+He maintains the SCSI
+subsystem, the Linux Voyager port and the 53c700 driver. He also has
+made contributions to PA-RISC Linux development in the area of
+DMA/device model abstraction.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../117/toc117.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

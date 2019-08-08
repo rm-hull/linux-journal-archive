@@ -1,0 +1,113 @@
+#! /bin/sh
+#path to tc and the ip utilities;
+#change to reflect yours.
+TC=./iproute2/tc/tc
+IP=./iproute2/ip/ip
+##################################################
+#Addresses to be aliased
+#change or add more to reflect yours
+#
+ALIAS1=10.0.0.10
+ALIAS2=10.0.0.11
+##################################################
+# add ip aliasing support 
+#uncomment if you want to use the ip utility to 
+#add ip-aliasing for you
+#
+#$IP addr add $ALIAS1 dev eth0
+#$IP addr add $ALIAS2 dev eth0
+##################################################
+# Attaching a device queue discipline to an 
+# interface a device queue discipline is 
+# equivalent almost to a device manager
+#
+#Attach CBQ to eth0
+#Things you might need to change:
+# bandwidth -- the bandwidth of the eth0 device
+#   note it must match the device's real bandwidth
+# allot -- it is safe to leave it at the MTU of 
+#   the device
+# avpkt -- the average packet size that you 
+#   suspect will be seen safe to leave at 1000 
+#   for Ethernet with MTU of 1514 bytes
+# mpu -- minimum packet size
+#
+$TC qdisc add dev eth0 root handle 1: cbq \
+  bandwidth 10Mbit allot 1514 cell 8 avpkt 1000\
+  mpu 64
+##################################################
+# Attaching class queue disciplines
+# bounded -- it is bound to the rate allocated;
+# can't borrow even if there is a lot of idle 
+# bandwidth just sitting there isolated -- cannot
+# share its bandwidth to other classes prio is the 
+# prioirity assigned 0 being the highest and 7 the 
+# lowest weight -- safer to leave at 1
+# queue discipline setup. Classid 1:1 will have a 
+# rate of 1Mbps which is bounded.
+#
+$TC class add dev eth0 parent 1:0 classid 1:1 cbq\
+  bandwidth 10Mbit rate 1Mbit avpkt 1000 prio 5  \
+  bounded isolated allot 1514 weight 1 maxburst 21
+#rate 1Mbit avpkt 1000 prio 5 bounded allot 1514 
+#weight 1 maxburst 21
+# Classid 1:2 will have a rate of 3Mbps which is 
+#  bounded.
+$TC class add dev eth0 parent 1:0 classid 1:2 cbq\
+  bandwidth 10Mbit rate 3Mbit avpkt 1000 prio 5 \
+  bounded allot 1514 weight 1 maxburst 21
+##################################################
+# Define the filter to be attached to eth0
+# Create with hash table of 256 slots with ID 1:
+#
+$TC filter add dev eth0 parent 1:0 protocol ip\
+  prio 5 handle 1: u32 divisor 256
+##################################################
+# define the criteria for mapping incoming packets
+# to classes. Add to the 5th slot of hash table a 
+# rule to select virtual address ALIAS1 direct it 
+# to class 1:1 
+#
+$TC filter add dev eth0 parent 1:0 prio 5 u32  \
+  ht 1:6: match ip src $ALIAS1 flowid 1:1 
+# Add to 6th slot of hash table rule to select 
+# ALIAS2 direct it to class 1:2 
+$TC filter add dev eth0 parent 1:0 prio 5 u32 \
+  ht 1:6: match ip src $ALIAS2 flowid 1:2 
+## Lookup hash table, if it is not fragmented 
+## frame. Use protocol as hash key
+#
+$TC filter add dev eth0 parent 1:0 prio 5 handle\
+  ::1 u32 ht 800:: match ip nofrag \
+  offset mask 0x0F00 shift 6 \
+  hashkey mask 0x00ff0000 at 8 link 1:
+#
+#some more examples of how to use u32
+# Add to 4th slot of hash table rule to select 
+# tcp/telnet to 193.233.7.75 direct it to class 
+# 1:4 and prescribe to fall to best effort,
+# if traffic violates TBF (32kbit,5K)
+#$TC filter add dev eth1 parent 1:0 prio 5 u32 \
+#        ht 1:4: match ip dst 193.233.7.75 \
+#        match tcp dst 0x17 0xffff \
+#        flowid 1:4 \
+#        police rate 32kbit buffer 5kb/8 mpu 64 \
+#        mtu 1514 index 1
+## Add to 1st slot of hash table rule to select 
+## icmp to 193.233.7.75 direct it to class 1:3 
+## and prescribe to fall to best effort,
+## if traffic violate TBF (10kbit,5K)
+#$TC filter add dev eth1 parent 1:0 prio 5 u32 \
+#        ht 1:: sample ip protocol 1 0xff \
+#        match ip dst 193.233.7.75 flowid 1:3 \
+#        police rate 10kbit buffer 5kb/8 mpu 64\
+#        mtu 1514 index 2
+##################################################
+#Look at all that we created:
+#
+echo "---- qdisc parameters ----------"
+$TC qdisc ls dev eth0
+echo "---- Class parameters ----------"
+$TC class ls dev eth0
+echo "---- filter parameters ----------"
+$TC filter ls dev eth0

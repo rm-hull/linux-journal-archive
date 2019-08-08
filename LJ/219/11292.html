@@ -1,0 +1,787 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+OpenLDAP Everywhere Reloaded, Part II
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Now that core network services were configured in Part I, let's look at&#10;different methods for replicating the Directory between the server pair.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x18cf580.0x19c6ac0"></a>
+OpenLDAP Everywhere Reloaded, Part II
+</h1></div><div><div class="author"><h3 class="author">
+Stewart
+ 
+Walters
+</h3></div><div class="issuemoyr">Issue #219, July 2012</div></div><div><p>
+Now that core network services were configured in Part I, let's look at
+different methods for replicating the Directory between the server pair.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cf580.0x19c72a8"></a></h2></div></div><p>
+This multipart series covers how to engineer an OpenLDAP Directory
+Service to create a unified login for heterogeneous environments. With
+current software and a modern approach to server design, the aim is to reduce
+the number of single points of failure for the directory.
+In this installment, I discuss the differences between single and
+multi-master replication. I also describe how to configure OpenLDAP for
+single master replication between two servers. [See the April 2012 issue
+for Part I of this series or visit <a href="http://www.linuxjournal.com/content/openldap-everywhere-reloaded-part-i" target="_self">www.linuxjournal.com/content/openldap-everywhere-reloaded-part-i</a>.]
+</p><div       class="mediaobject"><a href="11292f1.large.jpg"><img src="11292f1.jpg"></a><div class="caption"><p>
+Figure 1. Example redundant server pair&mdash;in Part I of the series, NTP, DNS and DHCP
+were configured.
+</p></div></div><p>
+On both servers, use your preferred package manager to install the slapd and
+ldap-utils packages if they haven't been installed already.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cf580.0x19c76c8"></a>
+OpenLDAP 2.4 Overview</h2></div></div><p>
+OpenLDAP 2.3 offered the start of a dynamic configuration back end to replace the
+traditional slapd.conf and schema files. This dynamic configuration engine (also
+known as cn=config) is now the default method in OpenLDAP 2.4 to store the
+slapd(8) configuration.
+</p><p>
+The benefits for using cn=config over traditional slapd.conf(5) are namely:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Changes have immediate effect&mdash;you no longer need to restart slapd(8)
+on a production server just to make a minor ACL change or add a new
+schema file.
+</p></li><li><p>
+Changes are made using LDIF files. If you already have experience
+with modifying LDAP using LDIF files, there is no major learning curve
+(other than knowing the new cn=config attributes).
+</p></li></ul></div><p>
+OpenLDAP 2.4 still can be configured through slapd.conf(5) for now; however, this
+functionality may be removed from a future release of OpenLDAP. If
+you have an existing OpenLDAP server configured via slapd.conf, now is
+the time to get acquainted with cn=config.
+</p><p>
+OpenLDAP 2.4 changes the terminology in regard to replication. Replication
+nodes no longer are referred to as either &ldquo;master&rdquo; or
+&ldquo;slave&rdquo;. They are
+instead referred to as either a &ldquo;provider&rdquo; (a node that provides directory
+updates) or a &ldquo;consumer&rdquo; (a node that consumes directory updates from
+the provider or sometimes another consumer). The change is subtle but
+important to note.
+</p><p>
+In addition to LDAP Sync Replication (aka Syncrepl), which uses a Single
+Master Replication (SMR) model, OpenLDAP 2.4 introduces new replication
+types, such as N-Way Multi-Master Replication.
+</p><p>
+N-Way Multi-Master Replication, as the name suggests, uses a Multi-Master
+Replication (MMR) model. It is akin in operation to 389 Directory Server's
+replication of similar name. Multiple providers can write
+changes to the Directory Information Tree (DIT) concurrently.
+</p><p>
+For more information on the changes in OpenLDAP 2.4, consult the 
+OpenLDAP 2.4 Software Administrator's Guide (see Resources).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cf580.0x19c7d50"></a>
+SMR vs. MMR: Which Replication Model Is Better?</h2></div></div><p>
+Neither replication model is better than the other per se. They both
+have their own benefits and drawbacks. It's really just
+a matter of which benefits and drawbacks are better aligned to your
+individual needs.
+</p><p>
+The benefit of SMR (via Syncrepl) is that it guarantees data
+consistency. Data will not corrupt or conflict because only one provider
+is allowed to make changes to the DIT. All other consumers, in effect,
+just make a read-only shadow copy of the DIT. Should the single provider
+go off-line, clients still can read from the shadow copy on the consumer.
+</p><p>
+This benefit also can be its drawback. SMR removes the single point
+of failure for Directory reads, but it still has the disadvantage of a
+single point of failure for Directory writes. If a client tries to write
+to the Directory when the provider is off-line, it will be unable to do
+so and will receive an error.
+</p><p>
+Generally speaking, this might not be a problem if the data within LDAP
+is very static or the outage is corrected in a relatively short amount
+of time. After all, a Directory by its very nature is intended to be
+<span   class="emphasis"><em>read from</em></span> far more than it ever will be <span   class="emphasis"><em>written
+to</em></span>.
+</p><p>
+But, if the provider's outage lasts for a significant amount of time, this
+can cause some sticky problems with account management.
+While the provider is unavailable, users are unable to change their
+expired or forgotten passwords, which might cause problems with logins. If
+an employee is terminated, you cannot disable that person's
+account in LDAP until the provider is returned to service. Additionally,
+employees will be unable to
+change address-book data (although most users would not consider this an
+urgent problem).
+</p><p>
+The benefit of MMR is that it removes the single point of failure for
+Directory writes. If one provider goes off-line, the other provider(s)
+still can make changes to the DIT. Those changes will be replicated back
+to the failed provider when it comes back on-line.
+However, as is the case with all high-availability clusters, this can
+introduce what is referred to as the &ldquo;split-brain&rdquo; problem.
+</p><div       class="mediaobject"><a href="11292f2.large.jpg"><img src="11292f2.jpg"></a><div class="caption"><p>
+Figure 2. An over-simplified view of the split-brain problem: replication fails
+between the two servers despite the local network still being available.
+</p></div></div><p>
+The split-brain problem is where neither provider has failed, but
+network communication between the two has been disrupted.
+The &ldquo;right side&rdquo; of the split can modify the DIT blindly without
+consideration of what the &ldquo;left side&rdquo; already had changed (and vice
+versa). This can cause damage or corruption to the shared data store
+that is supposed to be consistent between both providers.
+</p><p>
+As time goes on, the two independent copies of the DIT start to diverge
+further and further from each other, and they become inconsistent. When
+the split is repaired, there is no automagic way for either provider to
+know which server has the truly correct copy of the DIT. At this point,
+a system administrator must intervene manually to repair any divergence
+between the two servers.
+</p><p>
+As Directories are <span   class="emphasis"><em>read from</em></span> more than they are
+<span   class="emphasis"><em>written to</em></span>, you may perceive the risk of divergence
+during split-brain to be very low. In this case, N-Way Multi-Master
+Replication is a good way to remove the single point of failure for
+Directory writes.
+</p><p>
+On the other hand, the single point of failure for Directory writes
+may be only a minor nuisance if you can avoid the hassles of data
+inconsistency. In this case, Syncrepl is the better option.
+</p><p>
+It's all a matter of which risk you perceive to have a bigger impact on your
+organization. You'll need to make an assessment as to which of the two
+replication methods is more appropriate, then implement one or the
+other&mdash;<span   class="emphasis"><em>but not both</em></span>!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cf580.0x19c8698"></a>
+Initial Configuration of slapd after Installation</h2></div></div><p>
+After Debian installs the slapd package, it asks you for the
+&ldquo;Administrator&rdquo; password. It preconfigures the Directory Information Tree
+(DIT) with a top-level namespace of dc=nodomain if getdomainname(2) was
+not configured locally. The RootDN becomes
+<tt  >cn=admin,dc=nodomain</tt>, which is
+a Debian-ism and a departure from OpenLDAP's default of
+<tt  >cn=Manager,$BASEDN</tt>.
+</p><p>
+dc=nodomain is not actually useful though. The Debian OpenLDAP maintainers
+essentially leave it up to the user to re-create a more appropriate
+namespace.
+</p><p>
+You can delete the dc=nodomain DIT and start again
+with the <tt  >dpkg-reconfigure slapd</tt> command. Run this on both
+linux01.example.com and linux02.example.com. The
+reconfigure scripts for the slapd package will ask you some
+questions. I've provided the answers I used as an example. Of course,
+select more appropriate values where you see fit:
+
+
+<pre     class="programlisting">
+"Omit OpenLDAP server configuration" = No
+"DNS domain name" = example.com
+"Organisation name" = Example Corporation
+"Administrator password" = linuxjournal
+"Confirm Administrator password" = linuxjournal
+"Database backend to use" = HDB
+"Do you want the database to be removed when slapd is purged?" = No
+"Move old database?" = Yes
+"Allow LDAPv2 protocol?" = No
+</pre>
+</p><p>
+The question about &ldquo;DNS domain name&rdquo; has nothing to do with DNS; it is
+a Debian-ism. The answer supplied as a domain name will be converted to
+create the top-level namespace ($BASEDN) of the DIT. For example, if you
+intend to use <tt  >dc=pixie,dc=dust</tt> as your top-level namespace, enter
+<tt  >pixie.dust</tt> for the answer.
+</p><p>
+The questions about &ldquo;Administrator password&rdquo; refer to the OpenLDAP
+RootDN password, aka RootPW, aka olcRootPW. Here you will set
+the password for the cn=admin,$BASEDN account, which in this example
+is <tt  >cn=admin,dc=example,dc=com</tt>.
+</p><p>
+If you run the slapcat(8) command, it now shows a very modest DIT,
+with only dc=example,dc=com and cn=admin,dc=example,dc=com populated.
+</p><p>
+OpenLDAP by default (for performance reasons) does not log a large amount
+information to syslog(3). You might want to increase OpenLDAP's log levels 
+to assist the diagnosis of any replication problems that occur:
+
+<pre     class="programlisting">
+# set_olcLogLevel.ldif
+#
+# Run on linux01 and linux02
+#
+dn: cn=config
+changetype: modify
+replace: olcLogLevel
+olcLogLevel: acl stats sync
+</pre>
+</p><p>
+Modify cn=config on both servers with the <tt  >ldapmodify -Q -Y EXTERNAL
+-H
+ldapi:/// -f set_olcloglevel.ldif</tt> command to make this change
+effective.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cf580.0x1dc10d0"></a>
+Option 1: Single Master Replication (Using Syncrepl)</h2></div></div><p>
+If you have chosen to use LDAP Sync Replication (Syncrepl),
+the instructions below demonstrate a way to replicate dc=example,dc=com
+between both servers using one provider (linux01.example.com) and one
+consumer (linux02.example.com).
+</p><p>
+As Syncrepl is a <span   class="emphasis"><em>consumer-side</em></span> replication engine, it
+requires the consumer to bind to the provider with a security object
+(an account) to complete its replication operations.
+</p><p>
+To create a new security object on linux01.example.com,
+create a new text file called smr_create_security_object.ldif, and populate
+it as follows:
+
+
+<pre     class="programlisting">
+# smr_create_security_object.ldif
+#
+# Run on linux01
+#
+# 1. Create an OU for all replication accounts
+dn: ou=Replicators,dc=example,dc=com
+description: Security objects (accounts) used by
+ Consumers that will replicate the DIT.
+objectclass: organizationalUnit
+objectclass: top
+ou: Replicators
+
+# 2. Create security object for linux02.example.com
+dn: cn=linux02.example.com,ou=Replicators,dc=example,dc=com
+cn: linux02.example.com
+description: Security object used by linux02.example.com
+ for replicating dc=example,dc=com.
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+userPassword: {SSHA}qzhCiuIJb3NVJcKoy8uwHD8eZ+IeU5iy
+# userPassword is 'linuxjournal' in encrypted form.
+</pre>
+</p><p>
+The encrypted password was obtained with the <tt  >slappasswd -s
+&lt;password&gt;</tt>
+command. Use ldapadd(1) to add the security object to dc=example,dc=com:
+
+
+<pre     class="programlisting">
+root@linux01:~# ldapadd -x -W -H ldapi:/// \
+&gt; -D cn=admin,dc=example,dc=com \
+&gt; -f smr_create_security_object.ldif
+Enter LDAP Password:
+adding new entry "ou=Replicators,dc=example,dc=com"
+
+adding new entry "cn=linux02.example.com,ou=
+&#8618;Replicators,dc=example,dc=com"
+
+root@linux01:~#
+</pre>
+</p><p>
+If you encounter an error, there may be a typographical error in the LDIF
+file. Be careful to note lines that are broken with a single preceding
+space on the second line. If in doubt, see the Resources section for a
+copy of smr_create_security_object.ldif.
+</p><p>
+Run slapcat(8) to show the security object and the OU it's contained by.
+</p><p>
+On linux01.example.com, create a new text file called
+smr_set_dcexample_provider.ldif, and populate it as follows:
+
+<pre     class="programlisting">
+# smr_set_dcexample_provider.ldif
+#
+# Run on linux01
+#
+# 1. Load the Sync Provider (syncprov) Module
+dn: cn=module{0},cn=config
+changetype: modify
+add: olcModuleLoad
+olcModuleLoad: syncprov
+
+# 2. Enable the syncprov overlay on
+#    dc=example,dc=com
+dn: olcOverlay=syncprov,olcDatabase={1}hdb,cn=config
+changetype: add
+objectClass: olcOverlayConfig
+objectClass: olcSyncProvConfig
+olcOverlay: syncprov
+olcSpCheckpoint: 100 10
+olcSpSessionlog: 100
+# olcSpCheckpoint (syncprov-checkpoint) every 100
+#   operations or every 10 minutes, whichever is
+#   first
+# olcSpSessionlog (syncprov-sessionlog) maximum
+#   100 session log entries
+
+# 3.1.1. Delete the existing ACL for
+#        userPassword/shadowLastChange
+dn: olcDatabase={1}hdb,cn=config
+changetype: modify
+delete: olcAccess
+olcAccess: {0}to attrs=userPassword,shadowLastChange
+  by self write
+  by anonymous auth
+  by dn="cn=admin,dc=example,dc=com" write
+  by * none
+-
+# 3.1.2. Add a new ACL to allow the replication
+#        security object read access to
+#        userPassword/shadowLastChange
+add: olcAccess
+olcAccess: {0}to attrs=userPassword,shadowLastChange
+  by self write
+  by anonymous auth
+  by dn="cn=admin,dc=example,dc=com" write
+  by dn="cn=linux02.example.com,ou=Replicators,dc=ex
+ &#8618;ample,dc=com" read
+  by * none
+-
+# 3.2. Indices can speed searches up. Though, every
+#      index used, adds to slapd's memory
+#      requirements
+add: olcDbIndex
+#
+# Required indices
+olcDbIndex: entryCSN eq
+olcDbIndex: entryUUID eq
+#
+# Not quite required, not quite optional. The logs
+# fill up without this index present
+olcDbIndex: uid pres,sub,eq
+#
+# Optional indices
+olcDbIndex: cn pres,sub,eq
+olcDbIndex: displayName pres,sub,eq
+olcDbIndex: givenName pres,sub,eq
+olcDbIndex: mail pres,eq
+olcDbIndex: sn pres,sub,eq
+#
+# Debian already includes an index for
+# objectClass eq, which is also a requirement
+-
+# 3.3. Allow Replicator account limitless searches
+add: olcLimits
+olcLimits: dn.exact="cn=linux02.example.com,ou=Repli
+ cators,dc=example,dc=com"
+  time.soft=unlimited
+  time.hard=unlimited
+  size.soft=unlimited
+  size.hard=unlimited
+</pre>
+</p><p>
+When this LDIF file is applied, it will tell slapd(8) to load the syncprov
+(Sync Provider) module and will enable the syncprov overlay on the
+database that contains dc=example,dc=com. It will modify Debian's
+default password ACL to allow the newly created security object read
+access (so it can replicate passwords to linux02.example.com). It also
+adds some required and optional indices, and removes any time and size
+limits for the security object (so as not to restrict it when it queries
+linux01.example.com).
+</p><p>
+Apply this LDIF file on linux01.example.com with
+ldapmodify(1) as follows:
+
+
+<pre     class="programlisting">
+root@linux01:~# ldapmodify -Q -Y EXTERNAL \
+&gt; -H ldapi:/// \
+&gt; -f smr_set_dcexample_provider.ldif
+modifying entry "cn=module{0},cn=config"
+
+adding new entry "olcOverlay=syncprov,olcDatabase={1}hdb,cn=config"
+
+modifying entry "olcDatabase={1}hdb,cn=config"
+
+root@linux01:~#
+</pre>
+</p><p>
+Again, if there are errors, they could be typographical errors. Be sure to
+note which lines in the file are broken with a preceding single space
+or a preceding double space. Also, be sure to note which sections are
+separated with a blank line and which are separated with a single dash
+(-) character. If in doubt, see the Resources section for a copy of
+smr_set_dcexample_provider.ldif.
+</p><p>
+Now, on linux02.example.com, create a text file called
+smr_set_dcexample_consumer.ldif, and populate it with the following:
+
+
+<pre     class="programlisting">
+# smr_set_dcexample_consumer.ldif
+#
+# Run on linux02
+#
+# 1.1.
+dn: olcDatabase={1}hdb,cn=config
+changetype: modify
+add: olcSyncRepl
+olcSyncRepl: rid=001
+  provider=ldap://linux01.example.com/
+  type=refreshAndPersist
+  retry="5 6 60 5 300 +"
+  searchbase="dc=example,dc=com"
+  schemachecking=off
+  bindmethod=simple
+  binddn="cn=linux02.example.com,ou=Replicators,dc=example,dc=com"
+  credentials=linuxjournal
+# retry every 5 seconds for 6 times (30 seconds),
+#  then every 60 seconds for 5 times (5 minutes)
+#  then every 300 seconds (5 minutes) thereafter
+# schemachecking=off as checking gets done on
+#  linux01. we do not want records received from
+#  linux01 ignored because they fail the ill-
+#  defined (or missing) schemas on linux02.
+-
+# 1.2.1. Delete the existing ACL for
+#        userPassword/shadowLastChange
+delete: olcAccess
+olcAccess: {0}to attrs=userPassword,shadowLastChange
+  by self write
+  by anonymous auth
+  by dn="cn=admin,dc=example,dc=com" write
+  by * none
+-
+# 1.2.2. Add a new ACL which removes all write
+#        access
+add: olcAccess
+olcAccess: {0}to attrs=userPassword,shadowLastChange
+  by anonymous auth
+  by * none
+-
+# 1.3.1. Delete the existing ACL for *
+delete: olcAccess
+olcAccess: {2}to *
+  by self write
+  by dn="cn=admin,dc=example,dc=com" write
+  by * read
+-
+# 1.3.2. Add a new ACL for * removing all write
+#        access
+add: olcAccess
+olcAccess: {2}to *
+  by * read
+-
+# 1.4. Indices can speed searches up. Though, every
+#      index used, adds to slapd's memory
+#      requirements
+add: olcDbIndex
+#
+# Required indices
+olcDbIndex: entryCSN eq
+olcDbIndex: entryUUID eq
+#
+# Not quite required, not quite optional. The logs
+# fill up without this index present
+olcDbIndex: uid pres,sub,eq
+#
+# Optional indices
+olcDbIndex: cn pres,sub,eq
+olcDbIndex: displayName pres,sub,eq
+olcDbIndex: givenName pres,sub,eq
+olcDbIndex: mail pres,eq
+olcDbIndex: sn pres,sub,eq
+#
+# Debian already includes an index for
+# objectClass eq, which is also a requirement
+-
+# 1.5. If a LDAP client attempts to write changes
+#      on linux02, linux02 will return with a
+#      referral error telling the client to direct
+#      the change at linux01 instead.
+add: olcUpdateRef
+olcUpdateRef: ldap://linux01.example.com/
+-
+# 1.6.1. Rename cn=admin to cn=manager.
+#        Modifications are only made by linux01
+replace: olcRootDN
+olcRootDN: cn=manager
+-
+# 1.6.2. Remove the local olcRootPW. Modifications
+#        are only made on linux01
+delete: olcRootPW
+</pre>
+</p><p>
+When this LDIF file is applied, it configures slapd(8) to use LDAP Sync
+Replication (olcSyncRepl) to replicate from linux01.example.com. It
+authenticates with the newly created security object. As this is a
+read-only copy of dc=example,dc=com, it replaces two existing ACLs with
+ones that remove all write access. It adds some required and optional
+indices, adds a referral URL for linux01.example.com and (in effect)
+cripples the RootDN on linux02.example.com (because no modifications to
+the DIT will occur here).
+</p><p>
+Apply smr_set_dcexample_consumer.ldif on linux02.example.com
+with ldapmodify(1) as follows:
+
+<pre     class="programlisting">
+root@linux02:~# ldapmodify -Q -Y EXTERNAL \
+&gt; -H ldapi:/// \
+&gt; -f smr_set_dcexample_consumer.ldif
+modifying entry "olcDatabase={1}hdb,cn=config"
+
+root@linux02:~#
+</pre>
+</p><p>
+Finally, on linux02.example.com, stop slapd(8), delete the
+database files created by the <tt  >dpkg-reconfigure slapd</tt>
+command run
+earlier, and restart slapd(8). This will allow slapd(8) to regenerate
+the database files in light of the new configuration:
+
+<pre     class="programlisting">
+root@linux02:~# /etc/init.d/slapd stop
+Stopping OpenLDAP: slapd.
+root@linux02:~# rm /var/lib/ldap/*
+root@linux02:~# /etc/init.d/slapd start
+Starting OpenLDAP: slapd.
+root@linux02:~#
+</pre>
+</p><p>
+To show that the replication works, you can add something to the DIT on
+linux01.example.com and use slapcat(8) on linux02.example.com to see if
+it arrives there.
+</p><p>
+Create a text file on linux01.example.com called
+set_dcexample_test.ldif, and populate it with some dummy records:
+
+<pre     class="programlisting">
+# set_dcexample_test.ldif
+#
+# Run on linux01
+#
+dn: ou=People,dc=example,dc=com
+description: Testing dc=example,dc=com replication
+objectclass: organizationalUnit
+objectclass: top
+ou: People
+
+dn: ou=Soylent.Green.is,ou=People,dc=example,dc=com
+description: Chuck Heston would be proud
+objectclass: organizationalUnit
+ou: Soylent.Green.is
+</pre>
+</p><p>
+Use ldapadd(1) to add the entries to the DIT:
+
+<pre     class="programlisting">
+root@linux01:~# ldapadd -x -W -H ldapi:/// \
+&gt; -D cn=admin,dc=example,dc=com \
+&gt; -f set_dcexample_test.ldif
+Enter LDAP Password:
+adding new entry "ou=People,dc=example,dc=com"
+
+adding new entry "ou=Soylent.Green.is,ou=People,dc=e
+xample,dc=com"
+
+root@linux01:~#
+</pre>
+</p><p>
+On linux02.example.com, use slapcat(8) to see that the
+records are present:
+
+<pre     class="programlisting">
+root@linux02:~# slapcat | grep -i soylent
+dn: ou=Soylent.Green.is,ou=People,dc=example,dc=com
+ou: Soylent.Green.is
+root@linux02:~#
+</pre>
+</p><p>
+On linux01.example.com, create a new text file called
+unset_dcexample_test.txt, and populate it as follows:
+
+<pre     class="programlisting">
+ou=Soylent.Green.is,ou=People,dc=example,dc=com
+ou=People,dc=example,dc=com
+</pre>
+</p><p>
+Use the command <tt  >ldapdelete -x -W -H ldapi:/// -D
+cn=admin,dc=example,dc=com -f unset_dcexample_test.txt</tt> to delete the
+test entries.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cf580.0x1dc1ee8"></a>
+A Few Last Things</h2></div></div><p>
+Once replication is working properly between the two servers, you should
+remove the change to the logging level (olcLogLevel) performed earlier,
+so that queries to LDAP do not affect server performance.
+</p><p>
+On both linux01.example.com and
+linux02.example.com create a text file called
+unset_olcLogLevel.ldif, and populate it as follows:
+
+<pre     class="programlisting">
+# unset_olcLogLevel.ldif
+#
+# Run on linux01 and linux02
+#
+dn: cn=config
+changetype: modify
+delete: olcLogLevel
+</pre>
+</p><p>
+Then, use it to remove olcLogLevel with the <tt  >ldapmodify -Q -Y EXTERNAL
+-H ldapi:/// -f unset_olcLogLevel.ldif</tt> command.
+</p><p>
+Also, configure the LDAP clients to point at the LDAP servers. 
+Modify /etc/ldap/ldap.conf on both servers, and add
+the following two lines:
+
+
+<pre     class="programlisting">
+BASE   dc=example,dc=com
+URI    ldap://linux01.example.com/ ldap://linux02.example.com/
+</pre>
+</p><p>
+If you opted for MMR, use the above two lines for /etc/ldap/ldap.conf on
+linux01.example.com only. On linux02.example.com,
+use the following two lines instead:
+
+
+<pre     class="programlisting">
+BASE   dc=example,dc=com
+URI    ldap://linux02.example.com/ ldap://linux01.example.com/
+</pre>
+</p><p>
+I'll continue this in Part III of this series, where I describe how to
+configure the two OpenLDAP servers to replicate using N-Way Multi-Master
+Replication instead. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cf580.0x1dc23b8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Resources</b></p><p>
+Example Configuration Files for This Article: <a href="../listings/218/11292.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue218/11292.tgz</a>
+</p><p>
+&ldquo;OpenLDAP Everywhere Reloaded, Part I&rdquo; by Stewart Walters,
+<span   class="emphasis"><em>LJ</em></span>, April 2012: <a href="http://www.linuxjournal.com/content/openldap-everywhere-reloaded-part-i" target="_self">www.linuxjournal.com/content/openldap-everywhere-reloaded-part-i</a>
+</p><p>
+OpenLDAP Release Road Map: <a href="http://www.openldap.org/software/roadmap.html" target="_self">www.openldap.org/software/roadmap.html</a>
+</p><p>
+OpenLDAP Software 2.4 Administrator's Guide:
+<a href="http://www.openldap.org/doc/admin24" target="_self">www.openldap.org/doc/admin24</a>
+</p><p>
+Chapter 18: &ldquo;Replication&mdash;from OpenLDAP Software 2.4 Administrator's
+Guide&rdquo;:
+<a href="http://www.openldap.org/doc/admin24/replication.html" target="_self">www.openldap.org/doc/admin24/replication.html</a>
+</p><p>
+Appendix A: &ldquo;Changes Since Previous Release&rdquo;&mdash;from OpenLDAP Software 2.4
+Administrator's Guide: <a href="http://www.openldap.org/doc/admin24/appendix-changes.html" target="_self">www.openldap.org/doc/admin24/appendix-changes.html</a>
+</p><p>
+OpenLDAP Technical Mailing List:
+<a href="http://www.openldap.org/lists/mm/listinfo/openldap-technical" target="_self">www.openldap.org/lists/mm/listinfo/openldap-technical</a>
+</p><p>
+OpenLDAP Technical Mailing List Archives Interface:
+<a href="http://www.openldap.org/lists/openldap-technical" target="_self">www.openldap.org/lists/openldap-technical</a>
+</p><p>
+LDAP Data Interchange Format Wikipedia Page:
+<a href="http://en.wikipedia.org/wiki/LDAP_Data_Interchange_Format" target="_self">en.wikipedia.org/wiki/LDAP_Data_Interchange_Format</a>
+</p><p>
+RFC2849&mdash;The LDAP Data Interchange Format (LDIF)&mdash;Technical
+Specification:
+<a href="http://www.ietf.org/rfc/rfc2849" target="_self">www.ietf.org/rfc/rfc2849</a>
+</p><p>
+Internet Draft&mdash;Using LDAP Over IPC Mechanisms:
+<a href="http://tools.ietf.org/html/draft-chu-ldap-ldapi-00" target="_self">tools.ietf.org/html/draft-chu-ldap-ldapi-00</a>
+</p><p>
+OpenLDAP Consumer on Debian Squeeze:
+<a href="http://www.rjsystems.nl/en/2100-d6-openldap-consumer.php" target="_self">www.rjsystems.nl/en/2100-d6-openldap-consumer.php</a>
+</p><p>
+OpenLDAP Provider on Debian Squeeze:
+<a href="http://www.rjsystems.nl/en/2100-d6-openldap-provider.php" target="_self">www.rjsystems.nl/en/2100-d6-openldap-provider.php</a>
+</p><p>
+OpenLDAP Server from the Ubuntu Official Documentation:
+<a href="https://help.ubuntu.com/11.04/serverguide/C/openldap-server.html" target="_self">https://help.ubuntu.com/11.04/serverguide/C/openldap-server.html</a>
+</p><p>
+Samba 2.0 Wiki: Configuring LDAP:
+<a href="http://wiki.samba.org/index.php/2.0:_Configuring_LDAP#2.2.2._slapd.conf_Master_delta-syncrepl_Openldap2.3" target="_self">wiki.samba.org/index.php/2.0:_Configuring_LDAP#2.2.2._slapd.conf_Master_delta-syncrepl_Openldap2.3</a>
+</p><p>
+Zarafa LDAP cn config How To:
+<a href="http://www.zarafa.com/wiki/index.php/Zarafa_LDAP_cn_config_How_To" target="_self">www.zarafa.com/wiki/index.php/Zarafa_LDAP_cn_config_How_To</a>
+</p><p>
+Man Page for getdomainname(2): <a href="http://linux.die.net/man/2/getdomainname" target="_self">linux.die.net/man/2/getdomainname</a>
+</p><p>
+Man Page for ldapadd(1): <a href="http://linux.die.net/man/1/ldapadd" target="_self">linux.die.net/man/1/ldapadd</a>
+</p><p>
+Man Page for ldapdelete(1): <a href="http://linux.die.net/man/1/ldapdelete" target="_self">linux.die.net/man/1/ldapdelete</a>
+</p><p>
+Man Page for ldapmodify(1): <a href="http://linux.die.net/man/1/ldapmodify" target="_self">linux.die.net/man/1/ldapmodify</a>
+</p><p>
+Man Page for ldif(5): <a href="http://linux.die.net/man/5/ldif" target="_self">linux.die.net/man/5/ldif</a>
+</p><p>
+Man Page for slapcat(8): <a href="http://linux.die.net/man/8/slapcat" target="_self">linux.die.net/man/8/slapcat</a>
+</p><p>
+Man Page for slapd(8): <a href="http://linux.die.net/man/8/slapd" target="_self">linux.die.net/man/8/slapd</a>
+</p><p>
+Man Page for slapd.access(5): <a href="http://linux.die.net/man/5/slapd.access" target="_self">linux.die.net/man/5/slapd.access</a>
+</p><p>
+Man Page for slapd.conf(5): <a href="http://linux.die.net/man/5/slapd.conf" target="_self">linux.die.net/man/5/slapd.conf</a>
+</p><p>
+Man Page for slapd.overlays: <a href="http://linux.die.net/man/5/slapd.overlays" target="_self">linux.die.net/man/5/slapd.overlays</a>
+</p><p>
+Man Page for slapd-config(5): <a href="http://linux.die.net/man/5/slapd-config" target="_self">linux.die.net/man/5/slapd-config</a>
+</p><p>
+Man Page for slapo-syncprov(5): <a href="http://linux.die.net/man/5/slapo-syncprov" target="_self">linux.die.net/man/5/slapo-syncprov</a>
+</p><p>
+Man Page for slapindex(8): <a href="http://linux.die.net/man/8/slapindex" target="_self">linux.die.net/man/8/slapindex</a>
+</p><p>
+Man Page for slappasswd(8): <a href="http://linux.die.net/man/8/slappasswd" target="_self">linux.die.net/man/8/slappasswd</a>
+</p><p>
+Man Page for syslog(3): <a href="http://linux.die.net/man/3/syslog" target="_self">linux.die.net/man/3/syslog</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Stewart Walters is a Solutions Architect with more than 15 years' experience
+in the Information Technology industry. Among other industry
+certifications, he is a Senior-Level Linux Professional (LPIC-3). Where
+possible, he tries to raise awareness of the &ldquo;Parkinson-Plus&rdquo; syndromes,
+such as crippling neurodegenerative diseases like Progressive Supranuclear
+Palsy (PSP) and Multiple System Atrophy (MSA). He can be reached for
+comments at <a href="mailto:stewart.walters@googlemail.com">stewart.walters@googlemail.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../219/toc219.html">Issue Table of Contents</a>
+    <a class="link3" href="../219/11292.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,272 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Work the Shell
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;How do you keep track of which tweets you've already answered?&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xe75580.0xf6cac0"></a>
+Work the Shell
+</h1></div><div><h3 class="subtitle"><i>
+Still Parsing the Twitter Stream
+</i></h3></div><div><div class="author"><h3 class="author">
+Dave
+ 
+Taylor
+</h3></div><div class="issuemoyr">Issue #191, March 2010</div></div><div><p>
+How do you keep track of which tweets you've already answered?
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe75580.0xf6d3b0"></a></h2></div></div><p>
+Last month, you'll hopefully remember that we took the big step in our
+Twitter stream parsing program of actually having it parse the incoming
+messages and strip out quotes and other HTML noise. I also republished
+the send-tweet script too, which we'll use this month.
+</p><p>
+The biggest challenge we face with the tweet-parser is knowing what
+messages we've already answered and which are new since the last time
+the program was run. The solution? To go back and tweak the original
+script a bit. It turns out that each and every tweet has a unique ID value,
+as you can see here:
+
+<pre     class="programlisting">
+
+&lt;id&gt;2541771&lt;/id&gt;
+
+</pre>
+</p><p>
+You'll recall that early in the script we have this grep command:
+
+<pre     class="programlisting">
+
+grep -E '(&lt;screen_name&gt;|&lt;text&gt;)' | \
+
+</pre>
+</p><p>
+Simple enough. We'll tweak it to include <tt  >|&lt;id&gt;</tt> and grab that value too.
+Except, of course, it's not that simple. It turns out that two
+&lt;id&gt; strings show up in the XML data from Twitter: one that's the
+ID of the account sending the message, and another that's the ID of the
+message itself&mdash;both conveniently labeled the same. Ugh!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe75580.0xf6d7d0"></a>
+Timestamps and Tricky XML</h2></div></div><p>
+I can kvetch and wish Twitter would fix its XML to have USERID or similar,
+but what's the point? They have the same thing with the overloaded
+&lt;created_at&gt; tag too, so we're going to have to bite the bullet
+and accept that we are now grabbing four data fields from the XML feed,
+only three of which we care about.
+</p><p>
+Once we know that we're going to have four lines of output, cyclically,
+we simply can decide which of those are actually important and tweak
+them in the awk statement:
+
+
+<pre     class="programlisting">
+
+$curl -u "davetaylor:$pw" $inurl | \
+  grep -E '(&lt;screen_name&gt;|&lt;text&gt;|&lt;id&gt;)' | \
+  sed 's/@DaveTaylor //;s/  &lt;text&gt;//;s/&lt;\/text&gt;//' | \
+  sed 's/ *&lt;screen_name&gt;//;s/&lt;\/screen_name&gt;//' | \
+  sed 's/ *&lt;id&gt;//;s/&lt;\/id&gt;//' | \
+  awk '{ if (NR % 4 == 0) {
+           printf ("name=%s; ", $0) }
+         else if (NR % 4 == 1) {
+           printf("id=%s; ",$0) }
+         else if (NR % 4 == 2) {
+           print "msg=\"" $0 "\"" }
+       }' &gt; $temp
+
+</pre>
+</p><p>
+That's a pretty complicated sequence, so let's look at the awk conditional
+statement a little closer.
+We have four input records (lines) that we're stepping through.
+The value of NR is the number of records processed so far.
+So if NR mod 4 equals 0, it's the first of the four records (lines).
+The first record is the name value.
+</p><p>
+Did you see that two lines have printf, and the third uses a simpler
+print statement? Since we want each set of variables on a separate line,
+we use the print statement, because it automatically appends a newline to the output.
+Of course, the same effect could be achieved by putting the newline as a
+format string passed to printf. Example output follows:
+
+<pre     class="programlisting">
+name=thattalldude; id=6507045947; msg="Rates?"
+name=KateC; id=6507034680; msg="hours"
+name=pbarbanes; id=6507033698; msg="thanks"
+name=jodie_nodes; id=6507022063; msg=" $$?"
+name=KateC; id=6507019757; msg="price"
+name=tarahn; id=6507008559; msg="impact"
+name=GaryH2UK; id=6507004771; msg="directions"
+</pre>
+</p><p>
+We're going to hand these again, line by line, to the eval statement to
+set the three variables: name, id and msg. Then, it's a simple parsing
+problem, comparing msg to the known queries we have. Basically, it's what
+we did last month, except this time, every single tweet also has a unique
+ID value associated with it.
+</p><p>
+A typical test might now look like this:
+
+
+<pre     class="programlisting">
+if [ "$msg" == "hours" ] ; then
+  echo "@$name asked what our hours are in tweet $id"
+fi
+</pre>
+</p><p>
+Nice! It's simple, straightforward and well worth the preprocessing hoops
+we've jumped through.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe75580.0xf6dcf8"></a>
+Working with IDs Included</h2></div></div><p>
+Indeed, I run that against my Twitter stream (after asking people to
+send me sample queries), and here's what I see:
+
+
+<pre     class="programlisting">
+@TheNose100 asked what our hours are in tweet 6507436100
+@crepeauf asked what our hours are in tweet 6507187325
+@jdscott asked what our hours are in tweet 6507087136
+@KateC asked what our hours are in tweet 6507034680
+@inspiremetoday asked what our hours are in tweet 6506966654
+</pre>
+</p><p>
+I bet you can see how to proceed from here. We write static responses,
+calculate values as needed and use send-tweet to respond to
+the user:
+
+<pre     class="programlisting">
+$tweet "@$name our hours are Mon-Fri 9-5, Sat 10-4."
+</pre>
+</p><p>
+For fun, I'll let people send the query &ldquo;time&rdquo; and get
+the current output of the date command too, just to demonstrate how that
+might work. Here's the code block:
+
+
+<pre     class="programlisting">
+if [ "$msg" == "time" ] ; then
+  echo "@$id asked for the time"
+  $tweet "@$name the local time on our server is $(date)"
+fi
+</pre>
+</p><p>
+Great. Got it all, except for where we started out. How do you track
+which tweets you've already answered?
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe75580.0xf6e170"></a>
+But What Have We Already Seen?</h2></div></div><p>
+The answer isn't that hard. The stream is newest to oldest, and the message
+ID values are assigned sequentially by the server, so all we need to do
+is cache the most recent message ID we've seen after we have answered
+all queries. Then, on subsequent invocations, compare each query ID to
+the most recent we've answered. If they're greater, we need to answer
+them. If not, we've already done so.
+Like this:
+
+
+<pre     class="programlisting">
+if [ "$id" == "$previouslatestid" -o $answered -eq 1 ] ; then
+  echo "already answered query \"$msg\" from $name: skipped"
+  answered=1
+else
+  ...
+</pre>
+</p><p>
+The previouslatestid is what's cached. We'll also capture the most
+recent ID of the current wave of queries like this:
+
+<pre     class="programlisting">
+if [ -z "$latestid" ] ; then
+  latestid=$id        # store most recent ID
+fi
+</pre>
+</p><p>
+Of course, there are a few more steps. We need to grab the cached value
+at the beginning of the script:
+
+<pre     class="programlisting">
+if [ -f "$lastidcache" ] ; then
+  previouslatestid="$(cat "$lastidcache")"
+else
+  previouslatestid="0"
+fi
+</pre>
+</p><p>
+And, we need to save it at the end:
+
+<pre     class="programlisting">
+echo $latestid &gt; "$lastidcache"
+</pre>
+</p><p>
+That's it. I've run out of space, but the full script is available at
+<a href="../listings/191/10695.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue191/10695.tgz</a>.
+Next month, we'll polish it a bit and see what fun we can have with a tweetbot!
+</p></div></div>
+<div class="authorblurb"><p>
+Dave Taylor has been hacking shell scripts for a really long time. He's
+the author of the popular <span   class="emphasis"><em>Wicked Cool Shell Scripts</em></span> and can be found on
+Twitter as @DaveTaylor and more generally at <a href="http://www.DaveTaylorOnline.com" target="_self">www.DaveTaylorOnline.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../191/toc191.html">Issue Table of Contents</a>
+    <a class="link3" href="../191/10695.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

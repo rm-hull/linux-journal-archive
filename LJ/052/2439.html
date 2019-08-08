@@ -1,0 +1,236 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Implementing a deltree Command in Linux</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Removing a software package is made easy by using Dr.&#10;    Ekdahl's deltree command.&#10;    "><meta name="keywords" content="Deltree, command"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x15f7580.0x16eeab0"></a>Implementing a deltree Command in Linux</h1></div><div><div class="author"><h3 class="author">Ph.D.. Graydon L. Ekdahl,</h3></div><div class="issuemoyr">Issue #52, August 1998</div></div><div><p>
+    Removing a software package is made easy by using Dr.
+    Ekdahl's deltree command.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15f7580.0x16ef450"></a></h2></div></div><p>Ever needed to excise a large software
+package from your file space only to discover it dispersed over a
+directory tree containing over a hundred files and one tenth as
+many subdirectories? The command <b  >rm -rf</b> will
+clear everything away nicely. However, in order to learn more about
+walking a Linux directory tree, let's look at implementing
+<b  >rm -r</b> as a home-brew (DOS-like)
+<span   class="bold"><b>deltree</b></span> command in Linux is not
+difficult and will make it easier to remove unused or unwanted
+software packages if you own the utility and use it in your own
+file space.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15f7580.0x16ef660"></a>Linux C Library Resources: Files and
+Directories</h2></div></div><p>To select C library resources to complete this task, we first
+determine which resources are generally available in UNIX and then
+which of these resources Linux implements. Two UNIX functions
+contained in the header file ftw.h walk a directory tree:</p><pre     class="programlisting">
+int ftw ( const char * path,
+        int (*funcptr )
+        ( const char *, const struct stat*, int ),
+        int depth )
+</pre><p>and
+<pre     class="programlisting">
+int nftw (const char * path,
+        int (*funcptr)
+        (const char *, const struct stat*, int, struct FTW*),
+        int depth,
+        int flag )
+</pre>
+
+
+Linux does not implement the second function, so we turn to the
+first; <span   class="bold"><b>ftw</b></span> walks a directory tree
+from top to bottom. For each directory entry, ftw calls the
+function pointed to by <b  >funcptr</b> with the name of
+the entry, a pointer to a <b  >stat</b> structure
+containing inode information and a flag set to convey information
+about the directory entry in question:
+<div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>FTW_F</b></span>: a
+file</p></li><li><p><span   class="bold"><b>FTW_D</b></span>: a
+directory</p></li><li><p><span   class="bold"><b>FTW_DNR</b></span>: a
+non-readable directory</p></li><li><p><span   class="bold"><b>FTW_NS</b></span>: stat
+failed and inode information is not available.</p></li></ul></div>
+
+What does ftw return to the caller? If it completes a successful
+walk through the tree, it returns <b  >0</b>. Otherwise,
+it returns <b  >-1</b> and sets the global error flag
+<b  >errno</b> appropriately. Using ftw, it is a simple
+matter to create a function designed to delete directory items and
+to pass a pointer to that function to ftw (see
+<a href="2439l1.html" target="_self">Listing 1</a>):
+</p><p>In <span   class="bold"><b>DelEntry()</b></span>, the C library
+function</p><pre     class="programlisting">
+int remove ( const char * path )
+</pre><p>in stdio.h does the actual work. This function returns
+<b  >0</b> if successful, <b  >-1</b> if
+unsuccessful and sets the global variable <b  >errno</b>
+as necessary to handle a number of different error conditions,
+which the Linux man pages explain in detail.
+</p><p>There is, however, a catch. In UNIX,
+<span   class="bold"><b>remove</b></span> may generally be used to
+delete either files or empty directories. In Linux,
+<span   class="bold"><b>remove</b></span> only processes files and
+would therefore empty the directory tree but leave the tree itself
+standing. Two UNIX C library functions may provide
+solutions:</p><pre     class="programlisting">
+int rmdirp ( char * d, char *d1 )
+int rmdir ( const char * path )
+</pre><p>Linux does not implement the first UNIX function
+<span   class="bold"><b>rmdirp</b></span>, so we focus on the second.
+The function <span   class="bold"><b>rmdir</b></span> removes only
+empty directories and returns 0 on success, <b  >-1</b>
+otherwise with <b  >errno</b> set. To accomplish our
+task, we must walk the tree twice: once from the top down to the
+directory at the bottom, deleting files as we go, and the second
+time from the bottom back to the top, removing empty directories in
+reverse order. The perfect tool to achieve this result is a
+container class: a stack of pointers to directory path names.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15f7580.0x16f04d0"></a>StrStack: A Stack of Pointers to char
+Arrays</h2></div></div><p>When ftw calls DelEntry, it supplies a flag indicating
+whether it found a file, a directory or cannot cope, and we can use
+this flag to fill <b  >StrStack</b> with path names
+inside DelEntry as ftw walks the tree. The question is where to put
+the stack. The header file ftw.h specifies the signatures of the
+ftw function and the function pointed to by
+<b  >funcptr</b>, and neither signature includes a stack,
+so we cannot pass the stack in by reference as a parameter to
+DelEntry. The simplest solution is to create
+<b  >StrStack</b> as an external variable in the
+implementation file funcs.cpp which holds the function definitions
+for <span   class="bold"><b>main</b></span>. As an external variable,
+<b  >StrStack</b> will be equally accessible to DelEntry
+and to DelDirectories, provided it is defined in the implementation
+file above these functions.</p><p>Several aspects of StrStack require explanation. StrStack
+differs from the average stack in that each node contains pointers
+to two different, dynamically allocated structures: a pointer to
+the next node and a pointer to character strings of varying
+lengths. Two allocations are necessary to create a node, and two
+separate deallocations are necessary to destroy a node. By making
+StrStack responsible for both allocations, the code is more
+reliable, more robust and has no memory leaks. In addition, if the
+caller was responsible for allocating and deallocating memory
+containing character arrays, then exocode could literally pull data
+out from under StrStack, leaving dangling pointers.</p><p>In some places, implicit recursion accomplishes allocation
+and deallocation, and it may not be obvious at first glance how the
+process works. Let's examine the copy constructor for StrStack
+shown in <a href="2439l2.html" target="_self">Listing 2</a>.</p><p>The class copy constructor is designed to create a copy of a
+StrStack object in case a function ever passes a stack in or out by
+value. The code in the function is obvious except for one
+line:</p><pre     class="programlisting">
+next_ = new strNode ( *srcnode.next_ );
+                // indirect recursion
+</pre><p>This line is an example of indirect recursion, and it
+duplicates all the nodes in the StrStack node sequence. How does it
+work? The argument to <b  >new</b> is: <b  >strNode (
+*srcnode.next_ )</b> which is another call to the node copy
+constructor with the next node in sequence as argument. As long as
+each node contains a pointer to another node, the copy constructor
+repeatedly calls itself recursively until it encounters a
+<b  >NULL</b> in the <b  >next_</b> field of
+the last node in the sequence. With that, the recursion ceases and
+begins to unwind, constructing a copy backwards from the tail of
+the node sequence to the head. Note that the copy constructor
+deals, as promised, with two different dynamic allocations:
+allocating memory for the node, and then for the character array
+which holds the path name. In the node destructor, the line
+<b  >delete&nbsp;next_ again</b> triggers a sequence of
+implicit recursions which result in the destructor calling itself
+until the final <b  >NULL</b> at the end of the list is
+encountered. At that point, the recursion unwinds, and nodes are
+deleted from the tail of the list back to the head.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15f7580.0x16f0bb0"></a>More Utilities</h2></div></div><p>If C library calls do most of the grunt work, writing a
+simple utility like deltree is neither difficult nor time consuming
+and may offer unanticipated opportunities to use the framework of
+the program to address additional problems. This code can be
+adapted to perform the same functions as
+<span   class="bold"><b>find</b></span>; use it as a skeleton for a
+<span   class="bold"><b>findfile</b></span> command which scans a
+directory tree for file names matching a command-line argument.
+Just replace the file and directory deletion subroutines with
+functions that compare each file name with the target name and
+print out the path name to each match.</p><p>Do you port code from the Borland or Watcom PC DOS or OS/2
+environments and move entire directory trees into Linux space at
+once? If so, then you have probably discovered that unwanted files
+migrate along with the necessary ones: files with suffixes such as
+.map, .sym, .dsk, .swp, .prj, .exe, and the like. With
+modification, deltree can also provide a framework for a
+<span   class="bold"><b>cleandir</b></span> utility that removes the
+chaff from the toolbox directory tree. To make the necessary
+changes, replace StrStack with a StrList class which contains a
+list of target file name suffixes. Instead of removing all files,
+the utility checks the suffix of each file in the directory tree
+against the list of target suffixes and deletes selectively. Once
+you have the hang of walking a Linux directory tree, creating
+plug-in functions to perform other tasks is a simple matter, and it
+is easy to generate a group of utilities which address a broader
+spectrum of directory tree maintenance issues.</p><p>All code needed to implement this command is available by
+anonymous download in the file
+ftp://ftp.linuxjournal.com/pub/lj/listings/issue52/2439.tgz.</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Graydon Ekdahl</b></span>
+      (<a href="mailto:gekdahl@ibm.net">gekdahl@ibm.net</a>)
+      s president of Econometrics, Inc.
+      located in Chapel Hill, N.C. Graydon enjoys creating database
+      applications and is interested in data structures, algorithms, C++
+      and Java.
+    </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../052/toc052.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

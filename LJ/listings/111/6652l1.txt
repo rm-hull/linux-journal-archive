@@ -1,0 +1,95 @@
+Listing 1. sman-index-prog.pl converts man pages to XML
+for indexing.
+
+#!/usr/bin/perl -w
+
+use strict;
+use File::Find;
+
+my ($cnt, @files) = (0, get_man_files());
+warn scalar @files, " man pages to index...\n";
+for my $f (@files) {
+    warn "processing $cnt\n" unless ++$cnt % 20;
+    my ($hashref) = parse_man($f);
+    my $xml = make_xml($hashref);
+    my $size = length $xml; # NOTE: Fails if UTF
+    print "Path-Name: $f\n",
+       "Document-Type: XML*\n",
+       "Content-Length: $size\n\n", $xml;
+} 
+
+sub get_man_files {  # get english manfiles
+     my @files;
+     chomp(my $man_path = $ENV{MANPATH} ||
+       `manpath` || '/usr/share/man');
+     find( sub {
+       my $n = $File::Find::name;
+       push @files, $n
+       if -f $n && $n =~ m!man/man.*\.!
+    }, split /:/, $man_path );
+    return @files;
+}
+sub make_xml { # output xml version of hash
+    my ($metas) = @_; # escapes vals as side-effect
+    my $xml = join ("\n",
+    map { "<$_>" . escape($metas->{$_}) . "</$_>" }
+    keys %$metas);
+    my $pre = qq{<?xml version="1.0"?>\n};
+    return qq{$pre<all>$xml</all>\n};
+}
+sub escape { # modifies scalar you pass!
+    return "" unless defined($_[0]);
+    s/&/&amp;/g, s/</&lt;/g, s/>/&gt;/g for $_[0];
+    return $_[0];
+}
+
+sub parse_man {   # this is the bulk
+    my ($file) = @_;
+    my ($manpage, $cur_content) = ('', '');
+    my ($cur_section,%h) = qw(NOSECTION);
+    open FH, "man $file  | col -b |"
+    or die "Failed to run man: $!";
+    my ($line1, $lineM) = (scalar(<FH>) || "", "");
+    while ( <FH> ) {  # parse manpage into sections
+       $line1 = $_ if $line1 =~ /^\s*$/;
+       $manpage .= $lineM = $_ unless /^\s*$/;
+       if (s/^(\w(\s|\w)+)// || s/^\s*(NAME)/$1/i){
+          chomp( my $sec = $1 );  # section title
+          $h{$cur_section} .= $cur_content;
+          $cur_content = "";
+          $cur_section = $sec; # new section name
+       }
+       $cur_content .= $_ unless /^\s*$/;
+    }
+    $h{$cur_section} .= $cur_content;
+
+    # examine NAME, HEADer, FOOTer, (and
+    # maybe the filename too).
+    close(FH) or die "Failed close on pipe to man";
+    @h{qw(A_AHEAD A_BFOOT)} = ($line1, $lineM);
+    my ($mn, $ms, $md) = ("","","","");
+    # NAME mn, DESCRIPTION md, & SECTION ms
+    for(sort keys(%h)) { # A_AHEAD & A_BFOOT first
+       my ($k, $v) = ($_, $h{$_}); # copy key&val
+       if (/^A_(AHEAD|BFOOT)$/) { #get sec or cmd
+           # look for the 'section' in ()'s
+          if ($v =~ /\(([^)]+)\)\s*$/) {$ms||= $1;}
+       } elsif($k =~ s/^\s*(NOSECTION|NAME)\s*//) {
+          my $namestr = $v || $k; # 'cmd - a desc'
+          if ($namestr =~ /(\S.*)\s+--?\s*(.*)/) {
+             $mn ||= $1 || "";
+             $md ||= $2 || "";
+          } else { # that regex could fail. 
+             $md ||= $namestr || $v;
+          }
+       }
+    }
+    if (!$ms && $file =~ m!/man/man([^/]*)/!) {
+       $ms = $1; # get sec from path if not found
+    }
+    ($mn = $file) =~ s!(^.*/)|(\.gz$)!! unless $mn;
+    my %metas;
+    @metas{qw(swishtitle sec desc page)} =
+       ($mn, $ms, $md, $manpage);
+    return ( \%metas ); # return ref to 5-key hash.
+}

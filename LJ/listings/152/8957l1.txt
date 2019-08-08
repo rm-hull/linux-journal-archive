@@ -1,0 +1,102 @@
+#!/bin/sh
+
+# tfssh (two-factor ssh)
+#
+# Copyright (c) 2006 by Paul Sery (pgsery@swcp.com)
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2, or (at your option)
+# any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+#
+# This script helps separate keys used to authenticate on one machine 
+# from all
+# other keys. Using this script creates separate ssh-agent intances for each
+# connection. Dedicating an agent for each machine connection prevents an
+# intruder on one machine from gaining access to the keys used to authenticate
+# on other machines.
+#
+# (Alternatively, you can use the the ssh-add -c (confirm) option when adding
+# keys to a single agent. You will be queried whether to allow the 
+# use of a key
+# every time you log into a machine. Local user confirmation should 
+# provide the
+# same security function as this script. However, I feel uncomfortable 
+# "putting all my eggs in one basket" and prefer to use one agent 
+# per machine.)
+
+# default TTL = 10 minutes
+TTL=600
+ALG=rsa
+USEAGENT=1
+
+[ -z $1 ] && echo "usage: tfssh [user@]hostname [keydir]" && exit
+[ $1 == '--help' ] && echo "usage: tfssh [user@]hostname [keydir]" && exit
+
+USER=${1%%@*} HOST=${1##*@}
+
+# parse user and destination host
+if [ $USER == $HOST ] ; then
+        DST=$LOGNAME@$HOST
+else
+        DST=$USER@$HOST
+fi
+RDST=root@$HOST
+
+# find ssh and ssh-agent
+[ -f /bin/ssh ] && SSH=/bin/ssh
+[ -f /usr/bin/ssh ] && SSH=/usr/bin/ssh
+[ -f /usr/local/bin/ssh ] && SSH=/usr/local/bin/ssh
+[ -f /opt/bin/ssh ] && SSH=/opt/bin/ssh
+[ -f /bin/ssh-agent ] && SSHAGENT=/bin/ssh-agent
+[ -f /usr/bin/ssh-agent ] && SSHAGENT=/usr/bin/ssh-agent
+[ -f /usr/local/bin/ssh-agent ] && SSHAGENT=/usr/local/bin/ssh-agent
+[ -f /opt/bin/ssh-agent ] && SSHAGENT=/opt/bin/ssh-agent
+
+
+# set key location directory
+[ -z $2 ] && KEYDIR=$HOME/.ssh || KEYDIR=$2
+#[ -z $2 ] && KEYDIR=/media/usbdisk/keys || KEYDIR=$2
+#[ -z $2 ] && KEYDIR=$HOME/keys || KEYDIR=$2
+
+# ask user to create root key if necessary
+[ ! -r $KEYDIR/key-$ALG-$DST ] && echo "Please create and configure 
+key-$ALG-$DST"
+[ ! -r $KEYDIR/key-$ALG-$RDST ] && echo "Please create and configure 
+key-$ALG-$RDST"
+
+# start ssh-agent if necessary (SSH_AUTH_SOCK gets set either way)
+[ ! -d $HOME/tmp ] && mkdir $HOME/tmp
+        pgrep -f "$SSHAGENT -a $HOME/tmp/ssh-agent-$HOST" > /dev/null
+if [ $? -eq 0 ] ; then
+        echo "connect to existing agent"
+        export SSH_AUTH_SOCK=$HOME/tmp/ssh-agent-$HOST
+else
+      echo "start ssh-agent"
+      rm -f $HOME/tmp/ssh-agent-$HOST
+      eval `$SSHAGENT -a $HOME/tmp/ssh-agent-$HOST`
+fi
+
+# add root's key to ssh-agent if necessary
+ssh-add -l | grep key-$ALG-$RDST
+[ $? -eq 1 ] && ssh-add -t $TTL $KEYDIR/key-$ALG-$RDST
+
+# add regular acct key to ssh-agent if USEAGENT set
+#  otherwise, ask for key passphrase
+if [ $USEAGENT ] ; then
+      ssh-add -l | grep key-$ALG-$DST
+      [ $? -ne 0 ] && ssh-add -t $TTL $KEYDIR/key-$ALG-$DST
+      $SSH -A $DST
+else
+        $SSH -A -i $KEYDIR/key-$ALG-$DST $DST
+fi
+# end of tfssh

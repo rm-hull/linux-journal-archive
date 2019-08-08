@@ -1,0 +1,441 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>How the PCI Hot Plug Driver Filesystem Works</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Greg describes how the PCI Hot Plug core implements a&#10;    RAM-based filesystem and how you can do the same for your&#10;    drivers.&#10;    "><meta name="keywords" content="PCI, Hotplug, driver, kernel, filesystem"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x133a580.0x1431ab0"></a>How the PCI Hot Plug Driver Filesystem Works</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #97, May 2002</div></div><div><p>
+    Greg describes how the PCI Hot Plug core implements a
+    RAM-based filesystem and how you can do the same for your
+    drivers.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x133a580.0x14325b0"></a></h2></div></div><p>On May 14, 2001, H. Peter Anvin announced
+to the linux-kernel mailing list: &ldquo;Linus Torvalds has requested a
+moratorium on new device number assignments. His hope is that a new
+and better method for device space handling will emerge as a
+result.&rdquo;</p><p>Peter is the &ldquo;Linux Assigned Names and Numbers Authority&rdquo;,
+meaning that all kernel driver authors had to go through him to get
+a major and minor number pair for their drivers. The freeze on
+assigning new numbers naturally caused a lot of discussion about
+what this &ldquo;better method&rdquo; for device space handling would be. One
+idea that emerged was making a driver that could implement a
+filesystem to control the user-space interaction with the
+driver.</p><p>During this time, I was cleaning up the PCI Hot Plug driver
+written by Compaq for their servers. A PCI Hot Plug driver allows
+you to shut down a PCI card while the machine is running, pull out
+the card, replace it with another one and then power that card back
+on, if you have the proper hardware on your motherboard. This is
+very useful for servers that cannot be shut down but need to have
+new network cards added, faulty devices removed and other
+service-type operations.</p><p>The PCI Hot Plug driver was originally written to interact
+with user space as a character device; ioctl calls were made to the
+device node to shut down PCI slots, power up PCI slots, turn PCI
+slot indicator lights on and off and run different manufacturing
+tests on the device. To get information about the number of
+different PCI slots in the system and the state of the slots (power
+and indicator status), a /proc directory tree was used. This
+directory tree was read-only.</p><p>As I worked to split the PCI Hot Plug core functionality out
+of the Compaq driver, so that other PCI Hot Plug drivers would have
+a common interface for the user, I realized that a single
+filesystem would be a better fit both to show PCI-slot information
+and to allow user control. All information and control over the
+driver would be handled from one place, instead of having two
+different types of interfaces.</p><p>The PCI Hot Plug driver core has been merged into the main
+kernel tree as of 2.4.15, and it exports a filesystem called
+pcihpfs that is used to control the driver. When you mount the
+filesystem, you get a tree with directories called 3, 4, 5 and so
+on, which are the physical numbers of the PCI slots. Every file in
+a slot directory can be read to find the value for that bit of
+information about the slot. The files power and attention can be
+written to in order to set the power (0 or 1) or attention (0 or 1)
+values. The test file is used to send hardware test commands to the
+hardware. The adapter file detects if an adapter is present in that
+slot or not, and the latch file describes the position of the
+physical latch (if any) for that slot.</p><p>So, you can enable the power in slot 5 to be turned
+with:</p><pre     class="programlisting">
+echo 1 &gt; 5/power
+</pre><p>from the pcihpfs root. If a PCI card is present in that slot,
+the whole PCI-initialization sequence will execute for that card,
+including a call out to /sbin/hotplug with the PCI information, so
+that the module for that device can be loaded automatically by the
+system [see Greg's Kernel Korner in the June 2002 issue of
+<i  >LJ</i>].</p><p>Because of this filesystem, a user-space program does not
+have to make special ioctl() calls to a character device, allowing
+users to access a wider range of options for how they want to
+control their devices.</p><p>The rest of this article describes how the PCI Hot Plug core
+implements a RAM-based filesystem and how you can do the same thing
+for your drivers.</p><p>First, you need to declare the filesystem in your driver. To
+do this, use the DECLARE_FSTYPE macro, which is defined in the
+include/linux/file.h file. The pci_hotplug driver uses the
+DECLARE_FSTYPE macro in the following way:</p><pre     class="programlisting">
+static DECLARE_FSTYPE(pcihpfs_fs_type, "pcihpfs",
+          pcihpfs_read_super, FS_SINGLE | FS_LITTER);
+</pre><p>This creates a static variable of the type struct
+file_system_type called pcihpfs_fs_type and initializes some of the
+structure's fields. The name field is set to pcihpfs, which will be
+used by users in mounting our filesystem, so choose a name that
+makes sense and is not currently in use by any other filesystem in
+the kernel. We set the flags field to both FS_SINGLE and
+FS_LITTER.</p><p>FS_SINGLE means that, for this filesystem, we will have only
+one instance of the superblock. Therefore, wherever the filesystem
+is mounted in the system, all mountpoints will point to the same
+location in the filesystem (remember that you can mount the same
+filesystem at different points in a directory tree). The FS_LITTER
+option means that we want this filesystem to keep the tree in the
+dcache. This is set because our filesystem will live entirely in
+RAM and will not have a backing store of the data on any physical
+device, like a disk.</p><p>The read_super field of the pcihpfs_fs_type points to the
+function that will be called when the kernel wants to read the
+superblock of our filesystem. A superblock is the structure in a
+filesystem that is used to describe the entire filesystem. The
+kernel will call this function when the filesystem is asked to be
+mounted. When this function is called, we need to tell the kernel
+exactly what our filesystem looks like.</p><p>But before our filesystem can be mounted, we need to tell the
+kernel that our filesystem is present. This is done with a simple
+call to register_filesystem() with our file_system_type as the only
+parameter. This is done in the pci_hotplug module's initialization
+function with the following bit of code:</p><pre     class="programlisting">
+dbg("registering filesystem.\n");
+result = register_filesystem(&amp;pcihpfs_fs_type);
+if (result) {
+  err("register_filesystem failed with %d\n", result);
+  goto exit;
+}
+</pre><p>Likewise, when the pci_hotplug module is being shut down, we
+unregister our filesystem type with the following single line of
+code:</p><pre     class="programlisting">
+unregister_filesystem(&amp;pcihpfs_fs_type);
+</pre><p>Right after we register our filesystem, we want to create
+some virtual files that will allow a user to read and write values
+that our driver wants to export and change. If a user mounts the
+filesystem before he or she wants to create a file, the kernel
+already will have created the filesystem at some virtual location.
+Odds are that the filesystem has not been mounted, however, right
+after it is created, we need to get the kernel to mount the
+filesystem before we can add a file (otherwise our file creation
+fails, which prevents anyone from using that file).</p><p>There are two different ways of solving this problem. The
+first way is to wait until our filesystem is really mounted (we
+know this when our read_super function is called) and then create
+all of our files. This method requires us to do a bunch of work at
+mount time and to be constantly aware of whether our filesystem is
+currently mounted; remember, we need to add or remove files at
+different points in time. The usbdevfs filesystem (no relation to
+devfs, just an unfortunate name similarity) is an example of a
+filesystem that implements this solution to the problem.</p><p>However, we don't want to keep track constantly of when our
+filesystem is mounted, and we would like to be able to create or
+remove a file whenever we want. To do this second method, we need
+to tell the kernel to mount our filesystem internally. This solves
+the problem of keeping track of the current mount state. Listing 1
+shows how we accomplish this.</p><p><a href="5633l1.html" target="_self">Listing 1. Telling the Kernel to
+Mount the Filesystem Internally</a></p><p>Let's walk through Listing 1 to try to understand what it is
+doing and how it is doing it. This is also a good example of how to
+do proper locking techniques for when the kernel is running on a
+multiple-processor machine.</p><p>First we grab a spin lock, called mount_lock, with the
+line</p><pre     class="programlisting">
+spin_lock(&amp;mount_lock);
+</pre><p>This lock is used to protect our internal count if our
+filesystem is an example of what is needed to do this properly.
+internally mounted. Okay, previously I stated that we didn't want
+to keep track of whether we were mounted. Trust me, this simple
+function, combined with a simple function to unmount the filesystem
+(described later), is much easier to understand and work with than
+is the option of trying to determine if we have been mounted by a
+user. For an example of what is needed to do this properly, see the
+code in drivers/usb/inode.c in the 2.4.18 and earlier
+kernels.</p><p>After we grab our spin lock, check to see if our internal
+mount variable has been set:</p><pre     class="programlisting">
+if (pcihpfs_mount) {
+        mntget(pcihpfs_mount);
+        ++pcihpfs_mount_count;
+        spin_unlock (&amp;mount_lock);
+        goto go_ahead;
+}
+</pre><p>If it has been set, we call mntget() to increment our
+internal mount count; mntget() is a simple inline function in the
+include/linux/mount.h file. We then increment our internal count
+variable, unlock our spin lock and jump to the end of the function,
+as we are finished (yes, it's okay to use
+<span   class="bold"><b>goto</b></span> in the kernel,
+sparingly).</p><p>Otherwise, we have not mounted this filesystem yet. So we
+unlock our spin lock:</p><pre     class="programlisting">
+spin_unlock (&amp;mount_lock);
+</pre><p>and call kern_mount to mount our filesystem
+internally:</p><pre     class="programlisting">
+mnt = kern_mount (&amp;pcihpfs_fs_type);
+if (IS_ERR(mnt)) {
+    err ("could not mount the fs...erroring out!\n");
+    return -ENODEV;
+}
+</pre><p>We unlock our spin lock, as the kern_mount() function can
+take a long time and may even cause the kernel to sleep and
+schedule another process. Remember that you cannot hold a spin lock
+if schedule() can be called while the lock is held&mdash;very bad things
+can happen if you do this.</p><p>Now that we have mounted our filesystem, we grab our spin
+lock again:</p><pre     class="programlisting">
+spin_lock (&amp;mount_lock);
+</pre><p>and check to see if our internal mount variable is still
+zero:</p><pre     class="programlisting">
+if (!pcihpfs_mount) {
+        pcihpfs_mount = mnt;
+        ++pcihpfs_mount_count;
+        spin_unlock (&amp;mount_lock);
+        goto go_ahead;
+}
+</pre><p>&ldquo;Wait!&rdquo;, you are saying. &ldquo;Why are we looking at
+pcihpfs_mount? We already know that it is set to zero; we checked
+it just a few lines of code ago. Why check again?&rdquo; Well, remember
+the call to kern_mount() that we mentioned could sleep? If our call
+to kern_mount() sleeps, and another process comes through this same
+piece of code (remember we are running on more than one processor,
+and multiple user threads could be happening at the same time),
+then it could have already successfully mounted our filesystem and
+incremented the pcihpfs_mount variable. Because of this, we need to
+check it again.</p><p>So if another process has not come through and mounted our
+filesystem, we save off the pointer to our now mounted filesystem
+for other functions to use later, increment our internal count,
+unlock our lock and exit.</p><p>But if another process already has mounted our filesystem, we
+then do:</p><pre     class="programlisting">
+mntget(pcihpfs_mount);
+++pcihpfs_mount_count;
+spin_unlock (&amp;mount_lock);
+mntput(mnt);
+</pre><p>This matches what we originally did in this same situation,
+back at the beginning of the function.</p><p>The code to unmount our filesystem is much simpler:</p><pre     class="programlisting">
+static void remove_mount (void)
+{
+       struct vfsmount *mnt;
+       spin_lock (&amp;mount_lock);
+       mnt = pcihpfs_mount;
+       --pcihpfs_mount_count;
+       if (!pcihpfs_mount_count)
+              pcihpfs_mount = NULL;
+       spin_unlock (&amp;mount_lock);
+       mntput(mnt);
+       dbg("pcihpfs_mount_count = %d\n",
+           pcihpfs_mount_count);
+}
+</pre><p>In this function, we simply grab our lock (the same lock we
+used when mounting the filesystem), decrease our count of the
+number of times the filesystem was mounted (we need to unmount for
+every time we mounted it) and unlock our lock. Then we tell the
+kernel that we want to unmount the filesystem with a call to
+mntput().</p><p>When the kernel wants to mount our filesystem&mdash;virtually
+because we called kern_mount() or because a user mounted it
+first&mdash;our pcihpfs_read_super() function is called. In it, we need
+to set up a few kernel structures that describe what our filesystem
+looks like and list where to find the functions that the kernel
+will call during the lifetime of the filesystem. This is done with
+the following lines of code:</p><pre     class="programlisting">
+sb-&gt;s_blocksize = PAGE_CACHE_SIZE;
+sb-&gt;s_blocksize_bits = PAGE_CACHE_SHIFT;
+sb-&gt;s_magic = PCIHPFS_MAGIC;
+sb-&gt;s_op = &amp;pcihpfs_ops;
+</pre><p>With this, we state that our filesystem's block size is equal
+to the page cache size; we set up our filesystem's magic number
+(must be unique across all filesystems in the system) and point to
+our list of super_operations structure functions.</p><p>Then we initialize the superblock's root inode by
+doing:</p><pre     class="programlisting">
+inode = pcihpfs_get_inode(sb, S_IFDIR | 0755, 0);
+if (!inode) {
+      dbg("%s: could not get inode!\n",__FUNCTION__);
+      return NULL;
+}
+</pre><p>We will describe what pcihpfs_get_inode() does in a bit, but
+if that succeeds, we then allocate the root dentry for the inode we
+just created and save that dentry in the superblock
+structure:</p><pre     class="programlisting">
+root = d_alloc_root(inode);
+if (!root) {
+     dbg("%s: could not get root dentry!\n",
+         __FUNCTION__);
+     iput(inode);
+     return NULL;
+}
+sb-&gt;s_root = root;
+return sb;
+</pre><p>That is all we need to do to initialize our superblock, and
+now the kernel has mounted our filesystem.</p><p><span   class="bold"><b>pcihpfs_get_inode()</b></span> is
+another function that we need to create for our filesystem. It is
+called whenever we need to create a new inode for our filesystem.
+Listing 2 shows what the pci_hotplug driver uses to do this.</p><p><a href="5633l2.html" target="_self">Listing 2. Creating a New
+Inode</a></p><p>First we call the kernel new_inode() function in order to
+create and initialize a new inode structure. If this succeeds, we
+then proceed to fill up a number of the fields with the necessary
+information. The i_uid and i_gid members are set to the current
+process' uid and gid values, insuring that whoever has the
+permission to create the inode can access it later. The i_atime,
+i_mtime and i_ctime members refer to the inode's access time, last
+modified time and time of last change. We set all of these
+variables to the current time. If this inode is a &ldquo;regular&rdquo; file
+type, then we point to our set of default_file_operations as the
+set of functions that should be called whenever the inode is acted
+upon (open, write, read, etc.). If this inode is a directory inode,
+we point to our default set of directory inode functions. And if
+the inode is neither a regular inode nor a directory inode, we then
+let the kernel initialize it with a call to
+init_special_inode().</p><p>So, now that the filesystem is internally mounted, how do we
+create a file that a user can read and write to? To do this, we
+call our fs_create_file() function, passing in the name of the file
+we want to create, the mode of the file, a pointer to the parent
+directory of the file (if this is NULL, we default to the root
+directory of the filesystem), a pointer to a blob of data that we
+want assigned to this file and a pointer to a set of file
+operations that will be called when the file is accessed (see
+Listing 3).</p><p><a href="5633l3.html" target="_self">Listing 3. Creating a File that a
+User Can Read and Write to</a></p><p>Here we call pcihpfs_create_by_name to get a new dentry with
+all of the specified information. After our new dentry is created,
+we save off our data pointer and point the dentry file_operations
+to the one we really want to have called when this dentry's inode
+is accessed.</p><p>The struct file_operations that we assign to an inode differs
+depending on the kind of file we created. For the &ldquo;power&rdquo; file,
+which reports if the specific PCI slot is on or off and also
+controls turning the slot on or off, we use the following
+structure:</p><pre     class="programlisting">
+static struct file_operations power_file_operations = {
+        read:         power_read_file,
+        write:        power_write_file,
+        open:         default_open,
+};
+</pre><p>The interesting functions here are power_read_file and
+power_write_file. This is what is called whenever the file is read
+from or written to. The other functions are called when the
+different operations are made on the file. When open() is called,
+the kernel calls default_open; when llseek is called, the kernel
+calls default_file_lseek() and so on.</p><p><span   class="bold"><b>power_read_file()</b></span> is a
+fairly simple function. All we want to do is return the current
+power status of the specific PCI slot. The code to do this
+is:</p><pre     class="programlisting">
+page = (unsigned char *)__get_free_page(GFP_KERNEL);
+if (!page)
+        return -ENOMEM;
+retval = get_power_status (slot, &amp;value);
+if (retval)
+        goto exit;
+len = sprintf (page, "%d\n", value);
+</pre><p>This code allocates a chunk of memory (one page), gets the
+power status of a specific PCI slot (through the call to
+get_power_status()) and then writes a string representation of this
+status to the chunk of memory. The chunk of memory is then copied
+into user space. Remember, the original memory is located in kernel
+space; if you want the user to be able to see the memory, you need
+to call</p><pre     class="programlisting">
+if (copy_to_user (buf, page, len)) {
+       retval = -EFAULT; goto exit;
+}
+</pre><p>where buf is a pointer to the user-space buffer that was
+originally passed to the read() call. So when a user issues the
+command:</p><pre     class="programlisting">
+cat /tmp/pcihpfs/slot2/power
+</pre><p>the result is:</p><pre     class="programlisting">
+1
+</pre><p>The power_write_file() function is equally as simple. We want
+the user to be able to control the power of a PCI slot with a
+simple echo command, something like</p><pre     class="programlisting">
+echo 1 &gt; /tmp/pcihpfs/slot3/power
+</pre><p>to turn on the power to the third PCI slot in the system. To
+do this, we need to convert the string representation of the value
+that is passed to us into a binary number and determine what
+slot-specific function to call (see Listing 4).</p><p><a href="5633l4.html" target="_self">Listing 4. Controlling the Power of
+a PCI Slot</a></p><p>First we create a buffer that is one byte bigger than the
+user string and fill it with zeros. Then we copy the buffer from
+user space into our kernel buffer, convert it into a binary number
+with the simple_strtoul() function, and then act on the value of
+the binary number by either calling disable_slot() or enable_slot()
+on the specified PCI slot.</p><p>With those two simple functions mentioned above, we have now
+created a driver interface that can be accessed by any user,
+without needing to make special ioctl-type calls.</p><p>When the driver shuts down, it needs to remove all of the
+files that it had originally created in the filesystem, in order to
+be allowed to unmount the filesystem and free up all of the
+allocated memory. To do this, it calls the fs_remove_file()
+function (see Listing 5).</p><p><a href="5633l5.html" target="_self">Listing 5. Calling the
+fs_remove_file() Function</a></p><p>This function needs a pointer to the dentry that the call to
+fs_create_file returned. It determines if the dentry has a valid
+parent, as you need the parent of the dentry in order to be able to
+remove it. Then it calls into the kernel VFS layer to remove the
+dentry (different calls are made depending on whether the dentry
+refers to a directory or to a file).</p><p>We have described the basic filesystem functions that are
+needed to implement a filesystem in a driver. For a better
+description of how all of the different pieces work together, look
+at the code in the drivers/hotplug/pci_hotplug_core.c file in the
+Linux kernel tree.</p><p>This article has been based on what is necessary for the 2.4
+kernel. The 2.5 kernel should make things even easier, due to the
+exporting of most of the ramfs functions. This will enable more
+code sharing among the RAM-based filesystems, decreasing the amount
+of work a driver author has to do and preventing the author from
+doing things incorrectly.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x133a580.0x142aee8"></a>Acknowledgements</h2></div></div><p>I would like to thank Pat Mochel for writing the
+ddfs/driverfs code upon which a lot of the pcihpfs code was
+originally based. <span   class="bold"><b>driverfs</b></span> is a
+new filesystem in the 2.5 kernel that will also help driver authors
+in exporting driver-specific information into user space, as well
+as provide a tree of all devices, making power management tools
+much easier.</p><p>I would also like to thank Al Viro for answering a lot of
+VFS-related questions and for enabling a filesystem to be written
+with such a small amount of code.</p><p><a href="5633s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="5633aa.jpg"></div>
+
+        <span   class="bold"><b>Greg
+      Kroah-Hartman</b></span> is currently the Linux USB and PCI Hot
+      Plug kernel maintainer. He works for IBM, doing various Linux
+      kernel-related things and can be reached at
+      <a href="mailto:greg@kroah.com">greg@kroah.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../097/toc097.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

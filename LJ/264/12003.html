@@ -1,0 +1,743 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Stunnel Security for Oracle
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Replace database TLS for simplified best-practice compliance.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1c21580.0x1d18ac0"></a>
+Stunnel Security for Oracle
+</h1></div><div><div class="author"><h3 class="author">
+Charles
+ 
+Fisher
+</h3></div><div class="issuemoyr">Issue #264, April 2016</div></div><div><p>
+Replace database TLS for simplified best-practice compliance.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x1d19250"></a></h2></div></div><p>
+Oracle has integrated modern Transport Layer Security (TLS) network
+encryption into its eponymous database product, and TLS usage no longer
+requires the Advanced Security option beginning with the 10.2 database
+release. Legacy configurations lacking TLS exchange encrypted passwords,
+but the session payload is transmitted in clear text and is intercepted
+easily by anyone with control over the intermediate network. Databases holding
+sensitive content should avoid clear-text traffic configurations.
+</p><p>
+It is possible to use the stunnel utility to wrap the Oracle
+Transparent Network Substrate (TNS) Listener &ldquo;invisibly&rdquo; with TLS encryption as an
+isolated process, and this configuration appears to be compatible both with
+Oracle's sqlplus command-line utility and with database links that are
+used for distributed transactions between multiple database instances.
+There are several benefits to stunnel over the TNS Listener's native TLS
+implementation:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The stunnel utility can be far less expensive. Older Oracle database
+releases required the Advanced Security option to use TLS, which is
+licensed at $15,000 per CPU
+according to the latest pricing (<a href="http://www.oracle.com/us/corporate/pricing/technology-price-list-070617.pdf" target="_self">www.oracle.com/us/corporate/pricing/technology-price-list-070617.pdf</a>), but TLS is now
+included with Standard Edition SE2 (<a href="https://oracle-base.com/articles/misc/configure-tcpip-with-ssl-and-tls-for-database-connections" target="_self">https://oracle-base.com/articles/misc/configure-tcpip-with-ssl-and-tls-for-database-connections</a>).
+</p></li><li><p>
+The stunnel utility and the associated dependent libraries (that is, OpenSSL)
+are patched far more often, and updates can be applied immediately with no
+database &ldquo;bounce&rdquo; if stunnel is used in an
+&ldquo;inetd&rdquo; configuration. Oracle
+issued eight total patched versions of OpenSSL in 2015 for Oracle Linux 7
+(<a href="https://oss.oracle.com/ol7/SRPMS-updates" target="_self">https://oss.oracle.com/ol7/SRPMS-updates</a>).
+Database patches are issued only four times per year at regular quarterly
+intervals and require instance bounces/outages. An urgent SSL/TLS update
+will have lengthy delays when implemented as a database patch (due in part
+to an overabundance of caution by most DBAs), but will be far easier to
+apply as a simple OS utility patch with no downtime. For this reason,
+security-sensitive code that may require immediate updates should be kept
+out of the database server whenever possible. The stunnel utility meets
+this requirement very well.
+</p></li><li><p>
+The stunnel utility can run as a separate user and group inside a
+&ldquo;chroot jail&rdquo; that has limited visibility to the rest of the system.
+Oracle's server TLS implementation runs with the full privilege of the TNS
+Listener. A compromise of the TLS engine can be drastically less dangerous
+if it is confined within a chroot() jail. Privilege separation and chroot()
+are well-recognized security techniques, and many security-sensitive
+installations likely will disable listener TLS for this reason alone.
+</p></li></ul></div><p>
+Let's proceed with adding stunnel TLS services to Oracle.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x1d199e0"></a>
+Server Configuration</h2></div></div><p>
+I am assuming that the reader is familiar with Oracle databases and the
+procedures to start up an instance and the TLS Listener. For reference,
+let's
+assume that a database SID &ldquo;mydb&rdquo; is running, and an example listener
+d&aelig;mon is launched on the IP address 1.2.3.4 with the following commands:
+
+<pre     class="programlisting">
+export ORACLE_SID=mydb ORACLE_HOME=~oracle/Ora12c/db
+
+$ORACLE_HOME/bin/lsnrctl start
+</pre>
+</p><p>
+The listener will generate a startup message similar to the output below:
+
+<pre     class="programlisting">
+LSNRCTL for Linux: Version 12.1.0.2.0 - Production on 
+ &#8618;19-FEB-2016 13:18:55
+
+Copyright (c) 1991, 2014, Oracle.  All rights reserved.
+
+Starting /home/oracle/Ora12c/db/bin/tnslsnr: please wait...
+
+TNSLSNR for Linux: Version 12.1.0.2.0 - Production
+System parameter file is /home/oracle/Ora12c/db/network/
+&#8618;admin/listener.ora
+Log messages written to /home/oracle/Ora12c/diag/tnslsnr/
+&#8618;HOSTNAME/listener/alert/log.xml
+Listening on: (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=1.2.3.4)
+&#8618;(PORT=1521)))
+Listening on: (DESCRIPTION=(ADDRESS=(PROTOCOL=ipc)(KEY=EXTPROC)))
+
+Connecting to (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=1.2.3.4)
+&#8618;(PORT=1521)))
+STATUS of the LISTENER
+------------------------
+Alias             LISTENER
+Version           TNSLSNR for Linux: Version 12.1.0.2.0 - Production
+Start Date        19-FEB-2016 13:18:55
+Uptime            0 days 0 hr. 0 min. 0 sec
+Trace Level       off
+Security          ON: Local OS Authentication
+SNMP              OFF
+Parameter File    /home/oracle/Ora12c/db/network/admin/listener.ora
+Listener Log File /home/oracle/Ora12c/diag/tnslsnr/HOSTNAME/listener/
+&#8618;alert/log.xml
+Listening Endpoints Summary...
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=1.2.3.4)(PORT=1521)))
+  (DESCRIPTION=(ADDRESS=(PROTOCOL=ipc)(KEY=EXTPROC)))
+Services Summary...
+Service "mydb" has 1 instance(s).
+  Instance "mydb", status UNKNOWN, has 1 handler(s) for this service...
+The command completed successfully
+</pre>
+</p><p>
+It is important that the listener not engage in &ldquo;port
+redirection&rdquo; of
+clients to separate server ports (most commonly seen in MTS/Shared Server).
+Any feature causing the TNS Listener to engage in such activity must be
+disabled.
+</p><p>
+To configure stunnel, the root user must create a keypair for TLS. This
+keypair can be &ldquo;signed&rdquo; by a Certificate Authority (CA) if
+desired&mdash;this
+is conventionally useful for Web site encryption (HTTPS) since the lack of a
+recognized CA signature will trigger browser security warnings. Oracle
+clients can verify server keys only when signed by a recognized CA, which
+is addressed in the final section of this article. To obtained signed keys,
+follow the instructions on the stunnel Web site
+(<a href="https://www.stunnel.org/howto.html" target="_self">https://www.stunnel.org/howto.html</a>). Otherwise, for more
+informal use, a self-signed key can be generated with the following
+commands:
+
+<pre     class="programlisting">
+cd /etc/pki/tls/certs
+make stunnel.pem
+</pre>
+</p><p>
+The process of key generation will ask a number of questions:
+
+<pre     class="programlisting">
+Generating a 2048 bit RSA private key
+....................................................................+++
+.................................+++
+writing new private key to '/tmp/openssl.hXP3gW'
+-----
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name 
+or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [XX]:US
+State or Province Name (full name) []:IL
+Locality Name (eg, city) [Default City]:Chicago
+Organization Name (eg, company) [Default Company Ltd]:ACME Corporation
+Organizational Unit Name (eg, section) []:Widget Division
+Common Name (eg, your name or your server's hostname) []:darkstar
+Email Address []:linus@posix.org
+</pre>
+</p><p>
+The key produced above will be set for expiration in 365 days from the day
+it was created. If you would like to generate a key with a longer life, you
+can call OpenSSL directly:
+
+<pre     class="programlisting">
+openssl req -new -x509 -days 3650 -nodes \
+	-out stunnel.pem -keyout stunnel.pem
+</pre>
+</p><p>
+The key will look something like this:
+
+<pre     class="programlisting">
+# cat /etc/pki/tls/certs/stunnel.pem
+-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC23m+w0BLxI2zB
+/p8/TiuFcEurTLbLCQwcO/FE+vNcJpddckuF6/VgpBAJk+d9i7NZNqrjMH711H18
+3AYhewZTCbRUMQE3ndaYEIxSt4Qhbm8XbfUfx6Fmg4CnWh/XzE7B8Z7XbHpwRQ4d
+kQOzICzb1nt96QKdWoAob73+hv7qdi3UjJ3/20z3Cx5LWfWoa32Y50//tvBjBtcQ
+H7QpiE2tfLWHTQ5tztkqVY/MZJWVgoT5LnqQlZeZB/C4izSYNo9EGAnw4ThaFJ/y
+NdvmyK6sYaO3Dq4eFO78O+zzqyfhPCtcfb8lMuRTZa8uiv7ziVf0A3eGSwKYonUf
+iL7su0kJAgMBAAECggEASyeDk5EQF9ZNPjUc0XGY5VBPaOkwPqVLOtdPwt+34Glj
+z93HOBTPVZZXmPgWLTyaytFyzcgChZl8sTHjuyLKaJoWaHtzWp4dsYUrhlsxjGPM
+eD6SfSsYI/9rglvBtnia7Y4Vj8dfUoCu2mvcr2NLzFWLjyWSE4U8ImI6HT7xyP1y
+5Ab8JYX5C0qODTjjPldovz8Fm9XE7yKVg5XQ9aA8axq1uWY7ruzxXli/+h7TJLPe
+v/yCCeKLqL+gSkORjhg8ZsK/9p6InMN6uFUeSvb0Y9eLnLnJ6tCUGh4m+cgXulrD
+UleXxeFzxnS3ydCNHVDngXyaJ1U+bLGVeHOLRcZHAQKBgQDY5jU+rU8VPXrbPJae
+fZ8swf3Pi00QUKN4P5Zyy5cs18KMgDRHRaUdYmVCpTISR7Wi0XHEI7iHDpKlL//k
+zCT0LW+fk+4A7bP5yUhLLtd175RUpR3ieBuXbAZRqDaPMDJ1xpZj+hDiShPv+OGR
+k7ETnBDm/zk1T+F2Lu6qebLbcQKBgQDX1b6I7eRDkyFZITZX1v+S6PkoTMQMeCGX
+cSwVvuDuiszgbf7IImWvvFxd7h+WJZEVv4jV645LOsvkY6XyFXdW7iNJGkKgThg6
+YNE3X5f1oGvo5E3+HNXS3vGs76YVKTraDd0SKIRT98m2jiXCVCw+KWlR5GR+xp2A
+8exCoTYLGQKBgQDJdcmu1brGt7wNNlGQFI5sPCNLSs/hf4TWg/lx1rgr5pvFdK8a
+JA4hJOt444eGgySqfm91Bti2WUrMM7EzCoqoYitzxSsjoaWxNMv5SSDHYigcFuGT
+IIxAMQ4NenhytwmnazT016gnBzdNhZW+abfnxuXMKPMyGWgJJb54iWEfgQKBgQDV
+N3xgfNHwx5o8GIk8wVH86VWqMBvETbCxkMWCPeyq+kdmtoLpZsGZl7SPvjtJ8paf
+K3WcDnWlb9IYLzCyM+6O2/XTs7N59WwNz7MexrqxlebETTWXARlilYed1aj2YqKW
+4vcvhwMiiDimtUor7Uc/qV033y4/5ymVRmilceiXkQKBgEbFhAKXP9qZMdfLevWp
+VXAZCc5mQ2hxQOSQRAL5VvTUXm6ZwVXVf/U42JH3YXiVXbwDbEjjxS/8MtSbQU9z
+LoVQ/+bvc3xQ08u8kxdQiWzTzwRxHJM/znxpoD9astItq4uWU58hCoUNItHEKGJt
+60bczdu3rZLZIB1n2zSM6soF
+-----END PRIVATE KEY-----
+-----BEGIN CERTIFICATE-----
+MIID/TCCAuWgAwIBAgIJALT/9skCvdR5MA0GCSqGSIb3DQEBCwUAMIGUMQswCQYD
+VQQGEwJVUzELMAkGA1UECAwCSUwxEDAOBgNVBAcMB0NoaWNhZ28xGTAXBgNVBAoM
+EEFDTUUgQ29ycG9yYXRpb24xGDAWBgNVBAsMD1dpZGdldCBEaXZpc2lvbjERMA8G
+A1UEAwwIZGFya3N0YXIxHjAcBgkqhkiG9w0BCQEWD2xpbnVzQHBvc2l4Lm9yZzAe
+Fw0xNTEwMzAwMzI2NTJaFw0yNTEwMjcwMzI2NTJaMIGUMQswCQYDVQQGEwJVUzEL
+MAkGA1UECAwCSUwxEDAOBgNVBAcMB0NoaWNhZ28xGTAXBgNVBAoMEEFDTUUgQ29y
+cG9yYXRpb24xGDAWBgNVBAsMD1dpZGdldCBEaXZpc2lvbjERMA8GA1UEAwwIZGFy
+a3N0YXIxHjAcBgkqhkiG9w0BCQEWD2xpbnVzQHBvc2l4Lm9yZzCCASIwDQYJKoZI
+hvcNAQEBBQADggEPADCCAQoCggEBALbeb7DQEvEjbMH+nz9OK4VwS6tMtssJDBw7
+8UT681wml11yS4Xr9WCkEAmT532Ls1k2quMwfvXUfXzcBiF7BlMJtFQxATed1pgQ
+jFK3hCFubxdt9R/HoWaDgKdaH9fMTsHxntdsenBFDh2RA7MgLNvWe33pAp1agChv
+vf6G/up2LdSMnf/bTPcLHktZ9ahrfZjnT/+28GMG1xAftCmITa18tYdNDm3O2SpV
+j8xklZWChPkuepCVl5kH8LiLNJg2j0QYCfDhOFoUn/I12+bIrqxho7cOrh4U7vw7
+7POrJ+E8K1x9vyUy5FNlry6K/vOJV/QDd4ZLApiidR+Ivuy7SQkCAwEAAaNQME4w
+HQYDVR0OBBYEFEgCdENJ+1y0STMyQtuz3uqDON3NMB8GA1UdIwQYMBaAFEgCdENJ
++1y0STMyQtuz3uqDON3NMAwGA1UdEwQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEB
+AITW7cBNdWBcgagsinGKfyESBlJ7JvxvsMzYVhI8myC8ht/3nFMyTHmBgtmxdNbW
+mCCzDdeSigQf/iEzH02k/EK7L7I3DATGBW6w9WiYBdqrZJl98CIxoY9j+GV0AeL1
+INMSb5G4R2ygnekXVNTJsICeVHTRujBJsD4psZB5dhSI888rA2MrdQ8jAFGDk7Z4
+VYckA2gQ+70yXXxpFSD4n2ecq3ebNtej07zR2wAtAkt/JtuGiUjbl1m4ZFTPoTwr
+xDYMcezEgopMzYMihv6CQ0CEU+qL+92CYtEDsd1hzn74SlBK9HMKjMLrbBZPhbE4
+/JMRW5oa/+TFZIRcacTxgAw=
+-----END CERTIFICATE-----
+</pre>
+</p><p>
+The <tt  >PRIVATE KEY</tt> section above is the most sensitive
+portion of the file; ensure that it is not seen or copied by anyone that you do not trust, and
+any recordings on backup media should be encrypted. The <tt  >BEGIN
+CERTIFICATE</tt>
+section is presented to TLS clients (that is, sqlplus) when they connect to
+stunnel.
+</p><p>
+It is likely wise to compute custom primes for the Diffie-Hellman key
+exchange algorithm, following guidance from the stunnel manual page:
+
+<pre     class="programlisting">
+openssl dhparam 2048 &gt;&gt; stunnel.pem
+</pre>
+</p><p>
+The previous command will add another section to your stunnel.pem file for
+high-security Diffie-Hellman primes:
+
+<pre     class="programlisting">
+-----BEGIN DH PARAMETERS-----
+MIIBCAKCAQEAoHi5jzY5ZVwGCFFm1EhVsePXxNwCSs/eQbaC3rc+iXENL8xk21uq
+6eSwYIQWUeDN/h6wBBDe6dpFoNDJQeqKCmUa8aojGHnkcqsJBdVUKVF5/7rWb1Yi
+TzvbeZt8UvYnNUErJEpgBMiKPDYipE2BZ6k61WwkK6WV6svGAHpIc3o/9kU+72uf
+dPFaNIygAb2HLaJYvXq9OYGvrMsmyZTh3fnpg2RiZSVJf+i4BfyeLiYkwnSZozAS
+2rQ4hf2E5WY6jiAcNZBLKvqR8lUuIaXd9+VkiCSV0c2pXzb2ElxOk8sheAHliwip
+SaKC694z9l63eNKQW2J4WI97wkil0qa4MwIBAg==
+-----END DH PARAMETERS-----
+</pre>
+</p><p>
+The Oracle TNS Listener conventionally runs at port 1521. In this exercise,
+let's run Oracle TLS services at port 1522, which has the current service
+name:
+
+<pre     class="programlisting">
+# grep 1522 /etc/services
+ricardo-lm   1522/tcp      # Ricardo North America License
+                           # Manager
+ricardo-lm   1522/udp      # Ricardo North America License
+                           # Manager
+</pre>
+</p><p>
+Place the following file to control stunnel for the &ldquo;ricardo&rdquo; service
+(alter the IP address 1.2.3.4 to the location of your TNS Listener):
+
+<pre     class="programlisting">
+# cat /etc/stunnel/ricardo.conf 
+sslVersion	=	TLSv1.2
+	options	=	NO_SSLv3
+	options	=	NO_SSLv2
+	options	=	SINGLE_DH_USE
+	options	=	SINGLE_ECDH_USE
+	options	=	CIPHER_SERVER_PREFERENCE
+	cert	=	/etc/pki/tls/certs/stunnel.pem
+	FIPS	=	no
+	debug	=	6
+	syslog	=	yes
+	chroot	=	/var/empty
+	setuid	=	nobody
+	setgid	=	nobody
+	connect	=	1.2.3.4:1521
+
+; best-practice ciphers:
+; https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers/
+ciphers=ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:
+&#8618;DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:RSA+AES:RSA+3DES:
+&#8618;!aNULL:!MD5:!DSS
+</pre>
+</p><p>
+Note above that you are configuring TLS for best-practice encryption with
+the highest quality protocols and ciphers
+(<a href="https://www.rfc-editor.org/rfc/rfc7525.txt" target="_self">https://www.rfc-editor.org/rfc/rfc7525.txt</a>). The Oracle clients appear
+compatible with these settings. Note that Michal Trojnara, the author of
+stunnel, does &ldquo;not recommend using DH ciphersuites in the hardened set.
+ECDH ciphersuites are much more secure and much faster - RFC 7525 should be
+considered outdated after the recent attacks on DH.&rdquo; On the other hand,
+there have been recent questions of software patents on Elliptic Curve
+(<a href="http://security.stackexchange.com/questions/3519/can-ecc-be-used-without-infringing-on-patents" target="_self">security.stackexchange.com/questions/3519/can-ecc-be-used-without-infringing-on-patents</a>), 
+although Sun/Oracle contributed the ECC implementation in OpenSSL and used
+great care to avoid patented methods. Red Hat/Fedora went further in
+enabling only the Suite B subset of NIST ECC curves for protection from
+Certicom (whether this is a sufficient courtroom defense against CryptoPeak
+is another matter:
+<a href="http://www.theregister.co.uk/2015/12/01/cryptopeak_sues_" target="_self">www.theregister.co.uk/2015/12/01/cryptopeak_sues_</a>).
+Beyond that, in my previous coverage of the Stribika
+SSH Guide [see &ldquo;Cipher Security&rdquo; by Charles Fisher, September
+2015],
+I wrote that the author is &ldquo;...advising against the use of NIST elliptic
+curves because they are notoriously hard to implement correctly. So much
+so, that I wonder if it's intentional. Any simple implementation will seem
+to work but leak secrets through side channels. Disabling them doesn't seem
+to cause a problem; clients either have Curve25519 too, or they have good
+enough DH support.&rdquo; Trojnara has responded that the question of
+&ldquo;side-channel attacks on ECDHE is pure nonsense, since by definition (the
+last 'E' stands for 'ephemeral'), there is no persistent secret here an
+attacker might retrieve with [any available] side-channel attacks.&rdquo; In any
+case, Hynek Schlawack's Web site on the subject has not endorsed one over
+the other so far, while his silence on the growing questions behind
+Diffie-Hellman key exchange is somewhat unsettling
+(<a href="https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers" target="_self">https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers</a>). Your legal environment
+and encryption stance will decide your cipher string.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x1d1a7a0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Other Articles by Charles Fisher</b></p><p>
+&ldquo;Cipher Security&rdquo;, <span   class="emphasis"><em>LJ</em></span>, September 2015:
+<a href="http://www.linuxjournal.com/content/cipher-security-how-harden-tls-and-ssh?page=0,0" target="_self">www.linuxjournal.com/content/cipher-security-how-harden-tls-and-ssh?page=0,0</a>
+</p><p>
+&ldquo;Infinite BusyBox with systemd&rdquo;, <span   class="emphasis"><em>LJ</em></span>,
+March 2015: <a href="http://www.linuxjournal.com/content/infinite-busybox-systemd" target="_self">www.linuxjournal.com/content/infinite-busybox-systemd</a>
+</p><p>
+&ldquo;Strengthening Diffie-Hellman in SSH and TLS&rdquo;,
+LinuxJournal.com, October 29, 2015: <a href="http://www.linuxjournal.com/content/strengthening-diffie-hellman-ssh-and-tls" target="_self">www.linuxjournal.com/content/strengthening-diffie-hellman-ssh-and-tls</a>
+</p><p>
+&ldquo;Secure File Transfer&rdquo;, <span   class="emphasis"><em>LJ</em></span>, January 2016:
+<a href="http://www.linuxjournal.com/content/secure-file-transfer" target="_self">www.linuxjournal.com/content/secure-file-transfer</a>
+</p></div><p>
+Use the following systemd unit files to configure stunnel for inetd-style
+operation (if you aren't using an OS based on systemd, see my previous
+articles for a discussion of [x]inetd):
+
+<pre     class="programlisting">
+# cat /etc/systemd/system/ricardo.socket
+[Unit]
+Description=oracle stunnel
+[Socket]
+ListenStream=1522
+Accept=yes
+[Install]
+WantedBy=sockets.target
+
+
+# cat /etc/systemd/system/ricardo@.service
+[Unit]
+Description=oracle stunnel service
+[Service]
+ExecStart=-/usr/bin/stunnel /etc/stunnel/ricardo.conf
+StandardInput=socket
+</pre>
+</p><p>
+Assuming that the above unit files are in place, connections on 1522 can be
+enabled both at boot and for the present environment with these commands:
+
+<pre     class="programlisting">
+systemctl start ricardo.socket
+
+systemctl enable ricardo.socket
+</pre>
+</p><p>
+The enable command will place systemd's startup link:
+
+<pre     class="programlisting">
+Created symlink from
+/etc/systemd/system/sockets.target.wants/ricardo.socket to
+/etc/systemd/system/ricardo.socket.
+</pre>
+</p><p>
+It might be useful to telnet to port 1522, as stunnel will print
+informative error messages to standard output in case of trouble. The most
+practical telnet client is likely BusyBox
+(<a href="https://busybox.net/downloads/binaries/latest" target="_self">https://busybox.net/downloads/binaries/latest</a>).
+</p><p>
+Remote connections to port 1522 might be blocked by your Linux firewall.
+The root user can permit them to pass to stunnel with the following:
+
+<pre     class="programlisting">
+iptables -I INPUT -p tcp --dport 1522 --syn -j ACCEPT
+</pre>
+</p><p>
+The TNS Listener can be instructed to restrict the origin of sessions, and
+it can be used to ban clear-text traffic completely by adding your IP
+equivalent to the following fragment of the
+$ORACLE_HOME/network/admin/sqlnet.ora file on the server:
+
+<pre     class="programlisting">
+TCP.INVITED_NODES=(127.0.0.1,1.2.3.4)
+TCP.VALIDNODE_CHECKING=yes
+</pre>
+</p><p>
+Perform this modification after all testing is successful, and note that
+any configured clients using the TNS Listener will be shut down if and when
+the configuration is thus restricted.
+</p><p>
+It is likely wise to use a stunnel binary provided by Oracle Corporation,
+but the versions that it provides are rather old. If you can load stunnel
+version 5, you can omit the <tt  >NO_SSL</tt> options shown
+above. However, the
+Oracle version 4 stunnel binaries are somewhat more likely to be tolerated
+in a critical support situation involving Oracle. On the other hand,
+commercial support from stunnel.org definitely prefers version 5
+(<a href="https://www.stunnel.org/index.html" target="_self">https://www.stunnel.org/index.html</a>). If
+support is an important factor, the experience and availability of the use
+of both versions will be helpful.
+</p><p>
+Special thanks to Michal Trojnara, the author of stunnel, for his helpful
+comments on this article and work in stunnel development. Commercial
+support, licensing and consulting for stunnel is available from his
+organization; please visit <a href="http://www.stunnel.org/support.html" target="_self">www.stunnel.org/support.html</a> for his
+latest release.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x2027bb8"></a>
+Database Client</h2></div></div><p>
+Using the sqlplus client utility that is bundled with a local database
+server, a TLS session can be established through the stunnel that was
+previously configured on the remote server. Doing so requires a new client
+key that is stored in a &ldquo;wallet&rdquo;, which is created below.
+</p><p>
+Use the following commands to configure the local sqlplus:
+
+<pre     class="programlisting">
+export ORACLE_SID=yourdb ORACLE_HOME=/home/oracle/Ora12c/db
+mkdir /home/oracle/wallet
+$ORACLE_HOME/bin/orapki wallet create -wallet /home/oracle/wallet \
+	-pwd SECRET123 -auto_login_local
+$ORACLE_HOME/bin/orapki wallet add -wallet /home/oracle/wallet \
+	-pwd SECRET123 -dn "CN=%yourdb%" -keysize 2048 \
+	-self_signed -validity 3650
+</pre>
+</p><p>
+The output of both calls to the orapki utility above should be this banner:
+
+<pre     class="programlisting">
+Oracle PKI Tool : Version 12.1.0.2
+Copyright (c) 2004, 2014, Oracle and/or its affiliates. All 
+rights reserved.
+</pre>
+</p><p>
+Directives also must be placed to find the new wallet repository&mdash;add the
+following to your sqlnet.ora file:
+
+<pre     class="programlisting">
+$ cat $ORACLE_HOME/network/admin/sqlnet.ora
+
+WALLET_LOCATION =
+   (SOURCE =
+     (METHOD = FILE)
+     (METHOD_DATA =
+       (DIRECTORY = /home/oracle/wallet)
+     )
+   )
+
+SSL_CLIENT_AUTHENTICATION = FALSE
+</pre>
+</p><p>
+Finally, call sqlplus with a database account and a connect descriptor that
+invokes the TLS port at 1522 (note that the newlines within the single
+quotes are optional and are included here for clarity):
+
+<pre     class="programlisting">
+$ORACLE_HOME/bin/sqlplus RemoteUser@'(description=
+(address=
+ (protocol=tcps)
+ (host=1.2.3.4)
+ (port=1522)
+)
+(connect_data=(sid=mydb)))'
+</pre>
+</p><p>
+Assuming success, enter the password for your RemoteUser account, then
+issue an SQL command:
+
+<pre     class="programlisting">
+SQL*Plus: Release 12.1.0.2.0 Production on Fri Feb 19 13:26:56 2016
+
+Copyright (c) 1982, 2014, Oracle.  All rights reserved.
+
+Enter password: 
+Last Successful login time: Fri Feb 19 2016 13:15:54 -06:00
+
+Connected to:
+Oracle Database 12c Enterprise Edition Release 12.1.0.2.0 - 64bit
+Production
+With the Partitioning, OLAP, Advanced Analytics and Real 
+Application Testing options
+
+SQL&gt; SELECT COUNT(*) FROM DBA_OBJECTS;
+
+  COUNT(*)
+----------
+     19633
+</pre>
+</p><p>
+A few points to consider:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Changing <tt  >protocol=tcps</tt> to
+<tt  >protocol=tcp</tt> and further modifying
+<tt  >port=1521</tt>
+above will log in with a clear-text session (if your firewall and listener
+allow access).
+</p></li><li><p>
+The <tt  >host=</tt> clause above can reference a DNS hostname instead of an IP
+address if that is more convenient.
+</p></li><li><p>
+The <tt  >TWO_TASK</tt> environment variable can be set with the contents within the
+single quotation marks above. If this is done, then sqlplus will connect silently to
+the remote server as if it was local.
+</p></li><li><p>
+The connect descriptor definition within the single quotation marks above would
+likely be moved into your TNSNAMES.ORA or network TNS resolution method
+(ldap, onames).
+</p></li><li><p>
+The wallet is not required on the server&mdash;this functionality is handled by
+stunnel. The Oracle client needs the wallet if the client's TLS
+implementation will be used. It is possible to configure stunnel in client
+mode, then dispense with wallets on both sides.
+</p></li><li><p>
+While the sqlplus session is active, a stunnel process will appear on the
+server (be cautious of NPROC or other kernel limits):
+
+<pre     class="programlisting">
+# ps -ef | grep stunnel
+
+nobody   16810     1  0 13:26 ?        00:00:00 /usr/bin/stunnel
+ &#8618;/etc/stunnel/ricardo.conf
+</pre>
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x2028768"></a>
+Database Link</h2></div></div><p>
+With two or more Oracle database servers, sessions and transactions can be
+initiated between them to gather and modify data in &ldquo;two-phase
+commits&rdquo;.
+Linkages between accounts and servers are established with the command
+below (if you have moved tcps hosts into your TNSNAMES.ORA, you can
+reference them here also):
+
+<pre     class="programlisting">
+SQL&gt; CREATE DATABASE LINK MyDBLink
+ CONNECT TO RemoteUser
+ IDENTIFIED BY PassWord
+ USING '(description=
+  (address=
+   (protocol=tcps)
+   (host=1.2.3.4)
+   (port=1522)
+  )
+  (connect_data=(sid=mydb)))';
+
+Database link created.
+</pre>
+</p><p>
+Once the link is established, remote tables can be suffixed by the link
+name (which can be joined to other local or remote tables):
+
+<pre     class="programlisting">
+SQL&gt; SELECT COUNT(*) FROM ALL_OBJECTS@MyDBLink;
+
+  COUNT(*)
+----------
+     1851
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x20289d0"></a>
+Server Verification</h2></div></div><p>
+It may be necessary for keys to be verified on either side of the
+connection to assure authorized use. The native Oracle TLS implementation
+requires all keys subject to verification to be signed by a recognized CA
+(the CA's public keys may need to be added to the certificate store used by
+Oracle).
+</p><p>
+Note that stunnel also can verify keys and act as a client as well
+as a server. The stunnel verification options are much more flexible than
+Oracle's, and if CA signatures are not desired but TLS verification is
+mandated, then Oracle's TLS should be disabled entirely.
+</p><p>
+In the examples below, let's assume that the server's public key has a CA
+signature. To extract that public key, the following awk pattern is useful:
+
+<pre     class="programlisting">
+awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/' \
+	/etc/pki/tls/certs/stunnel.pem &gt; /tmp/pkey
+</pre>
+</p><p>
+Move the /tmp/pkey file to the client, then load it into the wallet:
+
+<pre     class="programlisting">
+$ORACLE_HOME/bin/orapki wallet add -wallet /home/oracle/wallet \
+	-pwd SECRET123 -trusted_cert -cert /tmp/pkey
+</pre>
+</p><p>
+After loading the key, verify that it is now present in the wallet:
+
+<pre     class="programlisting">
+$ORACLE_HOME/bin/orapki wallet display -wallet /home/oracle/wallet \
+	-pwd SECRET123
+</pre>
+</p><p>
+The key should appear in the Trusted Certificates section:
+
+<pre     class="programlisting">
+Oracle PKI Tool : Version 12.1.0.2
+Copyright (c) 2004, 2014, Oracle and/or its affiliates. All 
+rights reserved.
+
+Requested Certificates:
+User Certificates:
+Subject:        CN=%yourdb%
+Trusted Certificates:
+Subject: EmailAddress=linus@posix.org,CN=1.2.3.4,OU=Widget 
+ &#8618;Division,O=ACME Corporation,L=Chicago,ST=IL,C=US
+Subject:        CN=%yourdb%
+</pre>
+</p><p>
+The client can verify the server keys with the
+<tt  >SSL_SERVER_CERT_DN</tt> clause in
+the TNS descriptor:
+
+<pre     class="programlisting">
+$ORACLE_HOME/bin/sqlplus fishecj@'(description=
+(address=
+ (protocol=tcps)
+ (host=1.2.3.4)
+ (port=1522)
+)
+(connect_data=
+ (sid=mydb)
+ (security=(SSL_SERVER_CERT_DN="CN=1.2.3.4,OU=Widget Division,
+&#8618;O=ACME Corporation,L=Chicago,ST=IL,C=US")
+)))'
+</pre>
+</p><p>
+If the CA signature is not recognized, the sqlplus login will fail
+with the following:
+
+<pre     class="programlisting">
+ERROR:
+ORA-29024: Certificate validation failure
+</pre>
+</p><p>
+Additionally, stunnel will record the following in /var/log/secure:
+
+<pre     class="programlisting">
+LOG7: SSL alert (read): fatal: unknown CA
+LOG3: SSL_accept: 14094418: error:14094418:SSL
+routines:SSL3_READ_BYTES:tlsv1 alert unknown ca
+</pre>
+</p><p>
+Such errors indicate that the CA is not properly loaded into the bundle
+used by the database.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x20290b0"></a>
+Conclusions</h2></div></div><p>
+Oracle database security has received pointed criticism through the years
+and releases, which has slowly improved the architecture and closed
+exploitable weaknesses. For many, these improvements are inadequate in both
+speed and scope. In such cases, stunnel is a valuable tool for
+authentication, isolation and privacy of critical data within Oracle.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c21580.0x20291b8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Charles Fisher has an electrical engineering degree from the University of
+Iowa and works as a systems and database administrator for a Fortune 500
+mining and manufacturing corporation. He has previously published both
+journal articles and technical manuals on Linux for
+<span   class="emphasis"><em>UnixWorld</em></span> and other McGraw-Hill publications.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../264/toc264.html">Issue Table of Contents</a>
+    <a class="link3" href="../264/12003.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

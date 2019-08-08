@@ -1,0 +1,508 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel Korner</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Read-copy update, a synchronization technique optimized&#10;for read-mostly data structures, is new with the 2.5/2.6 kernel and&#10;promises better SMP scalability.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2303580.0x23faab0"></a>Kernel Korner</h1></div><div><h3 class="subtitle"><i>
+Using RCU in the Linux 2.5 Kernel</i></h3></div><div><div class="author"><h3 class="author">Paul E. McKenney</h3></div><div class="issuemoyr">Issue #114, October 2003</div></div><div><p>
+Read-copy update, a synchronization technique optimized
+for read-mostly data structures, is new with the 2.5/2.6 kernel and
+promises better SMP scalability.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23fb298"></a></h2></div></div><p>
+The Linux hacker's toolbox already contains numerous symmetric multiprocessing (SMP) tools, so why
+bother with read-copy update (RCU)? Figure 1 answers this question, presenting hash-lookup performance
+with per-bucket locks on a four-CPU, 700MHz Pentium III system.
+Your mileage will vary with different workloads and on different hardware.
+For an excellent write-up on the use of other SMP techniques,
+see Robert Love's article in the August 2002 issue of <i  >Linux Journal</i> [available at <a href="../100/5833.html" target="_self">/article/5833</a>].
+</p><div       class="mediaobject"><a href="6993f1.large.jpg"><img src="6993f1.jpg"></a><div class="caption"><p>
+Figure 1. Hash-lookup performance scales poorly with number of CPUs.
+</p></div></div><p>
+All accesses are read-only, so one might expect rwlock to work as well as
+this system.
+However, one would be mistaken; rwlock actually scales negatively from one to
+two CPUs, partly because this variant of rwlock avoids starvation,
+thus incurring greater overhead. A much larger critical section is
+required for rwlock to be helpful. Although rwlock beats refcnt
+(a spinlock and reference counter) for small numbers of CPUs,
+even refcnt beats rwlock at four CPUs. In both cases, the scaling is
+atrocious; refcnt at four CPUs achieves only 54% of the ideal four-CPU
+performance, and rwlock achieves only 39%.
+</p><p>
+Simple spinlock incurs less overhead than either rwlock or refcnt, and
+it also scales somewhat better at 57%. But this scaling is still quite poor.
+Although some spinning occurs, due to CPUs attempting to access the same
+hash chain, such spinning accounts for less than one-quarter of the 43%
+degradation at four CPUs.
+</p><p>
+Only brlock scales linearly. However, brlock's single-CPU
+performance is subpar, requiring more than 300 nanoseconds to search
+a single-element hash chain with simple integer comparison. This process should
+not take much more than 100ns to complete.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23fb710"></a>
+Not Your Parents' Microprocessor</h2></div></div><p>
+Figure 2 illustrates the past quarter century's progress in hardware
+performance. The features that make the new kids (brats) so proud, however, are
+double-edged swords in SMP systems.
+</p><div       class="mediaobject"><a href="6993f2.large.jpg"><img src="6993f2.jpg"></a><div class="caption"><p>
+Figure 2. New, fast &ldquo;brat&rdquo; processors change the OS design rules.
+</p></div></div><p>
+Unfortunately, many algorithms fail to take advantage of the brat's
+strengths, because they were developed back when the old man was in
+his prime. Unless you like slow, stately computing, you
+need to work with the brat.
+</p><p>
+The increase in CPU clock frequency has been astounding&mdash;where the
+old man might have been able to interfere with AM radio signals, the
+young brat might be able to synthesize them digitally. But memory
+speeds have not increased nearly as fast as CPU clock rates, so
+a single DRAM access can cost the brat up to a thousand instructions.
+Although the brat compensates for DRAM latency with large caches, these
+caches cannot help data bounced among CPUs.
+For example, when a given CPU acquires a lock, the lock has a 75%
+chance of being in another CPU's cache. The acquiring CPU stalls until the lock reaches its cache.
+</p><p>
+Cacheline bouncing explains much of the scaling shortfall in Figure 1,
+but it does not explain poor single-CPU performance. When there is only
+one CPU, no other caches are present in which the locks might hide.
+This is where the brat's 20-stage pipeline shows its dark side.
+SMP code must ensure that no critical section's instructions or
+memory operations bleed out into surrounding code. After all,
+the whole point of a lock is to prevent multiple CPUs from
+concurrently executing any of the critical section's operations.
+</p><p>
+Memory barriers prevent such bleeding. These memory barriers are
+included implicitly in atomic instructions on x86 CPUs, but they are separate
+instructions on most other CPUs. In either case, locking primitives must
+include memory barriers. But these barriers cause pipeline flushes and
+stalls, the overhead of which increases with pipeline length. This overhead
+is responsible for the single-CPU slowness shown in Figure 1.
+</p><p>
+Table 1 outlines the costs of basic operations on
+700MHz Intel Pentium III machines, which can retire
+two integer instructions per clock. The atomic
+operation timings assume the data already
+resides in the CPU's cache. All of these
+timings can vary, depending on the cache state,
+bus loading and the exact sequence of operations.
+</p><div class="table"><a name="N0x2303580.0x23fbc38"></a><p class="title"><b>Table 1. Time Required for Common Operations on a 700MHz Pentium
+III</b></p><table     summary="Table 1. Time Required for Common Operations on a 700MHz Pentium&#10;III6993t1.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>Operation</th><th>Cost (ns)</th></tr></thead><tbody><tr><td>Instruction</td><td>0.7</td></tr><tr><td>Clock cycle</td><td>1.4</td></tr><tr><td>L2 cache hit</td><td>12.9</td></tr><tr><td>Atomic increment</td><td>58.2</td></tr><tr><td>cmpxchg atomic increment</td><td>107.3</td></tr><tr><td>Main memory</td><td>162.4</td></tr><tr><td>CPU-local lock</td><td>163.7</td></tr><tr><td>Cache transfer</td><td>170.4&ndash;360.9</td></tr></tbody></table></div><p>
+The overheads increase relative to
+instruction execution overhead. For example,
+on a 1.8GHz Pentium 4, atomic increment costs
+about 75ns&mdash;slower than the 700MHz Pentium III,
+despite having a more than twice as fast clock.
+</p><p>
+These overheads also explain rwlock's poor performance. The read-side
+critical section must contain hundreds of instructions for it to continue
+executing once some other CPU read acquires the lock, as illustrated in
+Figure 3. In this figure, the vertical arrows represent time passing on
+two pairs of CPUs, one pair using rwlock and the other using spinlock.
+The diagonal arrows represent data moving between the CPUs' caches.
+The rwlock critical sections do not overlap at all;
+the overhead of moving the lock from one CPU to the other rivals that
+of the critical section.
+</p><div       class="mediaobject"><a href="6993f3.large.jpg"><img src="6993f3.jpg"></a><div class="caption"><p>
+Figure 3. Timelines for rwlock and Spinlock on Two-CPU Systems
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23fc9f8"></a>
+Lesson: Avoid Expensive Operations</h2></div></div><p>
+If you care about performance, you want to avoid these expensive operations.
+Avoiding them is precisely what RCU does, at least for read-only accesses to
+read-mostly data structures, although the DEC Alpha still requires some
+read-side memory barriers. As seen in Figure 4, RCU scales
+well and has good single-CPU performance for the hash-table-search
+benchmarklet.
+</p><div       class="mediaobject"><a href="6993f4.large.jpg"><img src="6993f4.jpg"></a><div class="caption"><p>
+Figure 4. RCU Read Performance by Number of Processors
+</p></div></div><p>
+Of course, updates do slow down RCU, as shown in Figure 5. This graph
+illustrates the relative performance of these synchronization primitives as the
+workload varies from read-only (left-hand side) to write-only (right-hand
+side). RCU is better than brlock across the board. In fact, RCU
+has replaced brlock in the 2.5 kernel, thanks to Steve Hemminger of OSDL
+and a number of Linux's networking luminaries. RCU is the best option overall
+as long as fewer than about one-third of the accesses are updates.
+Again, your mileage will vary depending on your workload and hardware.
+In particular, workloads with greater per-element local
+processing&mdash;for example, more complex comparisons&mdash;would scale better. As always,
+use the right tool for the job.
+</p><div       class="mediaobject"><a href="6993f5.large.jpg"><img src="6993f5.jpg"></a><div class="caption"><p>
+Figure 5. RCU Performance by Fraction of Accesses That Are Updates
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23f3758"></a>
+How Does RCU Work?</h2></div></div><p>
+If reading CPUs never make their presence known, how can
+updating CPUs avoid messing up readers? With locks, the updating
+CPU examines the lock state to determine when it is safe to
+carry out the update. With RCU, the updating CPU must make this
+determination indirectly.
+</p><p>
+The trick is RCUs reading CPUs are not permitted to
+block while traversing the data structure, the same as when CPUs holding a
+spinlock or rwlock are not permitted to block. This means that once
+an element is unlinked from a list, any CPU that subsequently performs a
+context switch cannot possibly gain a reference to this element. Context
+switch is a quiescent state: CPUs undergoing context switches cannot
+hold references to RCU-protected data structures. Any time period
+during which all CPUs pass through a quiescent state is a grace period.
+A CPU may therefore free up an element after a grace period has elapsed
+from the time that it unlinked the element from the list.
+</p><p>
+Thus, a simple, though inefficient, RCU-based deletion algorithm could
+perform the following steps in a non-preemptive Linux kernel:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Unlink element B from the list, but do not free it&mdash;the state of
+the list as shown in Step 2 of Figure 6.
+</p></li><li><p>
+Run on each CPU in turn. At this point, each CPU has performed one
+context switch after element B has been unlinked. Thus, there cannot be
+any more references to element B, as shown in Step 3 (Figure 6).
+</p></li><li><p>
+Free up element B, as shown in Step 4 (Figure 6).
+</p></li></ul></div><div       class="mediaobject"><a href="6993f6.large.jpg"><img src="6993f6.jpg"></a><div class="caption"><p>
+Figure 6. Steps of a Simple RCU-Based Deletion Algorithm
+</p></div></div><p>
+Andrea Arcangeli created a more efficient algorithm that boasts extremely
+short grace periods, which was the first Linux RCU implementation
+shipped. Dipankar Sarma coded up an even more efficient RCU
+implementation that maintains callback cache locality and permits
+a grace period to service any number of concurrent updates.
+Dipankar's algorithm is included in the 2.5 kernel and was
+described in detail at the Ottawa Linux Symposium in 2002.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23f3d88"></a>
+RCU API</h2></div></div><p>
+Listing 1 shows the external API for RCU. The synchronize_kernel() function
+blocks for a full grace period. This is an easy-to-use function, but
+it incurs expensive context-switch overhead. It also cannot be called
+with locks held or from interrupt context. However, it does allow
+concurrent callers to share a grace period.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23f3e90"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. The RCU API</b></p><pre     class="programlisting">
+void synchronize_kernel(void);
+
+void call_rcu(struct rcu_head *head,
+              void (*func)(void *arg),
+              void *arg);
+
+struct rcu_head {
+        struct list_head list;
+        void (*func)(void *obj);
+        void *arg;
+};
+
+void rcu_read_lock(void);
+
+void rcu_read_unlock(void);
+</pre></div><p>
+In contrast, call_rcu() schedules a callback function func(arg)
+after a full grace period. Because call_rcu() never sleeps, it may be
+called with locks held and from interrupt context. The call_rcu()
+function uses its struct rcu_head argument to remember its callback
+function and argument during the grace period. An rcu_head is often
+placed within the structure being protected by RCU, eliminating the need
+to allocate it separately.
+</p><p>
+The primitives rcu_read_lock() and rcu_read_unlock() demark a
+read-side RCU critical section but generate no code in non-preemptive
+kernels. In preemptive kernels, they disable preemption, thereby
+preventing preemption from prematurely ending a grace period.
+RCU-like mechanisms also may be used in preemptive kernels without
+suppressing preemption, as demonstrated by the K42 research OS.
+</p><p>
+Most modern microprocessors feature weak memory-consistency models,
+which require special memory-barrier instructions. However, these
+instructions are difficult to understand and even more difficult to test,
+so the Linux list-manipulation API is extended to include memory barriers,
+as suggested by Manfred Spraul and as shown in Listing 2. The hlist
+primitives recently were added by Andi Kleen in order to reduce memory
+requirements for large hash tables.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23f41a8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 2. RCU Extensions to the Linux List-Manipulation API</b></p><pre     class="programlisting">
+list_add_rcu(struct list_head *new,
+             struct list_head *head);
+list_add_rcu_tail(struct list_head *new,
+                  struct list_head *head);
+list_del_rcu(struct list_head *entry);
+list_for_each_rcu(struct list_head *pos,
+                  struct list_head *head);
+list_for_each_safe_rcu(struct list_head *pos,
+                       struct list_head *n,
+                       struct list_head *head);
+list_for_each_entry_rcu(struct list_head *pos,
+                        struct list_head *n,
+                        struct list_head *head);
+list_for_each_continue_rcu(struct list_head *pos,
+                           struct list_head *head);
+hlist_del_rcu(struct hlist_node *n);
+void hlist_del_init(struct hlist_node *n);
+hlist_add_head_rcu(struct hlist_node *n,
+                   struct hlist_head *h);
+
+</pre></div><p>
+When RCU is applied to data structures other than lists, memory-barrier
+instructions must be specified explicitly. For an example, see
+Mingming Cao's RCU-based modifications to System V IPC.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23f4410"></a>
+How to Use RCU</h2></div></div><p>
+Although RCU has been used in many interesting and surprising
+ways, one of the most straightforward uses is as a replacement for
+reader-writer locking. In fact, RCU may be thought of as the next step
+in a progression. The rwlock primitives
+allow readers to run in parallel with each other, but not in parallel
+with updaters. RCU, on the other hand, allows readers to run in parallel both with each
+other and with updaters.
+</p><p>
+This section presents the analogy between rwlock and RCU, protecting
+the simple doubly linked list data structure shown in Listing 3 with
+reader-writer locks and then with RCU. This structure has a
+struct list_head, a search key, a single integer for data and a
+struct rcu_head.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x23f4570"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. A Data Structure Protected by RCU</b></p><pre     class="programlisting">
+struct el {
+     struct list_head list;
+     long key;
+     long data;
+     struct rcu_head my_rcu_head;
+};
+
+</pre></div><p>
+The reader-writer-lock/RCU analogy substitutes primitives as shown in
+Table 2. The asterisked primitives are no-ops in non-preemptible kernels;
+in preemptible kernels, they suppress preemption, which is an extremely
+cheap operation on the local task structure. Because rcu_read_lock()
+does not block interrupt contexts, it is necessary to add primitives
+for this purpose where needed. For example, read_lock_irqsave must
+become rcu_read_lock(), followed by local_irq_save().
+</p><div class="table"><a name="N0x2303580.0x23f47d8"></a><p class="title"><b>Table 2. Reader-Writer Lock and RCU Primitives</b></p><table     summary="Table 2. Reader-Writer Lock and RCU Primitives6993t2.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>Reader-Writer Lock</th><th>Read-Copy Update</th></tr></thead><tbody><tr><td>rwlock_t</td><td>spinlock_t</td></tr><tr><td>read_lock()</td><td>rcu_read_lock() *</td></tr><tr><td>read_unlock()</td><td>rcu_read_unlock() *</td></tr><tr><td>write_lock()</td><td>spin_lock()</td></tr><tr><td>write_unlock()</td><td>spin_unlock()</td></tr><tr><td>list_add()</td><td>list_add_rcu()</td></tr><tr><td>list_add_tail()</td><td>list_add_tail_rcu()</td></tr><tr><td>list_del()</td><td>list_del_rcu()</td></tr><tr><td>list_for_each()</td><td>list_for_each_rcu()</td></tr></tbody></table></div><p>
+Table 3 illustrates this transformation for some simple linked-list
+operations. Notice that line 10 of the rwlock delete() function is
+replaced with a call_rcu() that delays the invocation of my_free() until
+the end of a grace period. The rest of the functions are transformed
+in a straightforward fashion, as indicated in Table 2.
+
+</p><p>
+Although this analogy can be quite compelling and useful&mdash;in Dipankar
+Sarma's and Maneesh Soni's use of RCU in dcache, for example&mdash;there are
+some caveats:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Read-side critical sections may see stale data that has been
+removed from the list but not yet freed. There are some situations
+where this is not a problem, such as routing tables for best-effort protocols. In other situations, such stale data may be detected and
+ignored, as happens in the 2.5 kernel's System V IPC implementation.
+</p></li><li><p>
+Read-side critical sections may run concurrently with
+write-side critical sections.
+</p></li><li><p>
+The grace period delays the freeing of memory, which
+means the memory footprint is somewhat larger when using RCU
+than it is when using reader-writer locking.
+</p></li><li><p>
+When changing to RCU, write-side reader-writer locking code that
+modifies list elements in place often must be restructured to prevent
+read-side RCU code from seeing the data in an inconsistent state.
+In many cases, this restructuring is quite straightforward;
+for example, you could create a new list element with the desired
+state, then replace the old element with the new one.
+</p></li></ul></div><p>
+Where it applies, this analogy can deliver full parallelism
+with hardly any increase in complexity.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x2708e50"></a>
+RCU Synchronizing with NMIs</h2></div></div><p>
+Retrofitting existing code with RCU as shown above can produce
+significant performance gains. The best results, of course, are
+obtained by designing RCU into the algorithms and code from the start.
+</p><p>
+The i386 oprofile code contains an excellent example of
+designed-in RCU. This code can use NMIs (nonmaskable interrupts)
+to handle profiling independently of the normal clock interrupt, which
+permits profiling of the clock interrupt handler. Synchronizing with
+NMIs traditionally has been difficult; by definition, no way exists to
+block an NMI. Straightforward locking designs therefore are
+subject to deadlock, where the CPU holding the lock receives an NMI,
+and the NMI handler spins forever on this same lock. Another approach is
+to mask NMIs in software using things like spin_trylock(). This method,
+however,
+produces cache bouncing and memory-barrier overhead, and the
+NMIs thus masked are lost. The solution in nmi_timer_int.c is as shown in Listing 4.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x2708fb0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. Using RCU in nmi_timer_int.c</b></p><pre     class="programlisting">
+static void timer_stop(void)
+{
+        enable_timer_nmi_watchdog();
+        unset_nmi_callback();
+        synchronize_kernel();
+}
+
+static struct oprofile_operations nmi_timer_ops = {
+        .start  = timer_start,
+        .stop   = timer_stop,
+        .cpu_type = "timer"
+};
+
+</pre></div><p>
+The synchronize_kernel() ensures that any NMI handlers executing
+the old NMI callback upon entry to timer_stop() have completed before
+timer_stop() returns. The code for oprofile_stop() and oprofile_shutdown()
+shown in Listing 5 illustrates why this is important. Notice that
+oprofile_ops-&gt;stop() invokes timer_stop(). Therefore, if oprofile_stop()
+and oprofile_shutdown() were called in quick succession, the newly
+freed CPU buffers could be accessed by an ongoing NMI. This action could
+surprise any code quickly reallocating this memory.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x2709218"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. More Code from nmi_timer_int.c</b></p><pre     class="programlisting">
+
+void oprofile_stop(void)
+{
+        down(&amp;start_sem);
+        if (!oprofile_started)
+                goto out;
+        oprofile_ops-&gt;stop();
+        oprofile_started = 0;
+        /* wake up the daemon to read remainder */
+        wake_up_buffer_waiter();
+out:
+        up(&amp;start_sem);
+}
+
+void oprofile_shutdown(void)
+{
+        down(&amp;start_sem);
+        sync_stop();
+        if (oprofile_ops-&gt;shutdown)
+                oprofile_ops-&gt;shutdown();
+        is_setup = 0;
+        free_event_buffer();
+        free_cpu_buffers();
+        up(&amp;start_sem);
+}
+
+</pre></div><p>
+Use of RCU eliminates this race naturally, without incurring any
+locking or memory-barrier overhead.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x2709480"></a>
+Incremental Use of RCU</h2></div></div><p>
+
+Using RCU is not an all-or-nothing affair. It may be applied
+incrementally to particular code paths as needed. A good example of
+this is a patch coded by Dipankar Sarma that prevents ls
+/proc from
+blocking fork(). The changes are as follows:
+</p><div class="orderedlist"><ol type="1"><li><p>
+The read_lock() and read_unlock() of tasklist_lock
+in get_pid_list() are replaced by rcu_read_lock() and
+rcu_read_unlock(), respectively.
+</p></li><li><p>
+A struct rcu_head is added to task_struct in order
+to track the task structures waiting for a grace period
+to expire.
+</p></li><li><p>
+The put_task_struct() macro invokes
+__put_task_struct() via call_rcu() rather
+than directly. This ensures that all concurrently executing
+get_pid_list() invocations complete before any
+task structures that they might have been referencing are freed.
+</p></li><li><p>
+The SET_LINKS() and REMOVE_LINKS() macros use
+the _rcu form of the list-manipulation primitives.
+</p></li><li><p>
+The for_each_process() macro gets a
+read_barrier_depends() to make this code safe for
+the DEC Alpha.
+</p></li></ol></div><p>
+The problem is get_pid_list() traverses the entire tasklist in order
+to build the PID list needed by ls /proc. It read-holds tasklist_lock
+during this traversal and blocks updates to the tasklist, such as those
+performed by fork(). On machines with large numbers of tasks,
+this can cause severe difficulties, particularly given multiple
+instances of certain performance-monitoring tools.
+</p><p>
+Dipankar's modifications are shown in Table 4, changing only
+two files, adding 13 lines and deleting seven for a six-line net
+addition to the kernel. This patch does delete a pair of tasklist_lock
+uses, but none of the other 249 uses of tasklist_lock are modified.
+This example demonstrates use of RCU for a late-in-cycle optimization.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2303580.0x2709ab0"></a>
+Where Do We Go from Here?</h2></div></div><p>
+RCU will become more important as CPU architecture continues to
+evolve. Nonetheless, other primitives always will be needed.
+It is quite likely that Rusty Russell's implementation of RCU
+(the call_rcu() and synchronize_kernel() primitives themselves)
+can be modified to be entirely free of locks, memory barriers
+and atomic instructions. This implementation might run faster
+than the current 2.5 kernel implementation.
+</p><p>
+Numerous people are looking at new uses of RCU in the VFS layer,
+VM code, filesystems and networking code. I look forward to
+continuing to learn about RCU and its uses and am grateful to the many
+people who have tried it out.
+</p></div></div>
+<div class="authorblurb"><p>
+Paul E. McKenney has worked on SMP and NUMA algorithms for longer than
+he cares to admit. Prior to that, he worked on packet-radio and
+Internet protocols (but long before the Internet became popular). His
+hobbies include running and the usual house-wife-and-kids habit.
+This work represents the view of the author and does not necessarily
+represent the view of IBM.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../114/toc114.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

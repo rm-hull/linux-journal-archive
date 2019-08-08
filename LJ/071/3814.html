@@ -1,0 +1,365 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The Linux Process Model</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    A look at the fundamental building blocks of the Linux&#10;    kernel.&#10;    "><meta name="keywords" content="process, kernel, threads"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1c7c580.0x1d73ab0"></a>The Linux Process Model</h1></div><div><div class="author"><h3 class="author">Moshe Bar</h3></div><div class="issuemoyr">Issue #71, March 2000</div></div><div><p>
+    A look at the fundamental building blocks of the Linux
+    kernel.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7c580.0x1d745b0"></a></h2></div></div><p>This month, we begin looking at Linux
+internals. We will travel the innards of the Linux kernels of the
+2.0.<span   class="emphasis"><em>x</em></span>, 2.2.<span   class="emphasis"><em>x</em></span> and the new
+2.4.<span   class="emphasis"><em>x</em></span> series. Although many articles are
+written every week on how best to use Linux, very few have reviewed
+the internals of the kernel. Why is it necessary to know how the
+kernel works?
+</p><p>For one thing, understanding your kernel better will enable
+you to prevent problems before they occur. If you are using Linux
+as a server, most problems will start to appear under stress. This
+is exactly when it becomes essential to know your way around the
+kernel to assess the nature of the problems.</p><p>If you ever need to check back with the kernel source, you
+can either install the source from your distribution's CD or go to
+<a href="http://lxr.linux.no/source" target="_self">http://lxr.linux.no/source/</a>
+to navigate through all the source code on-line.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7c580.0x1d748c8"></a>The Linux Process Model</h2></div></div><p>UNIX systems have a fundamental building block: the process,
+including the thread and lightweight processes. Under Linux, the
+process model has evolved considerably with each new
+version.</p><p>The fundamental data structure within the kernel controlling
+all processes is the process structure, which grows and shrinks
+dynamically as processes are forked and finished or killed.</p><p>The process structure (called task_struct in the kernel
+source code) is about 1KB in size. You can get the exact size with
+this program:</p><pre     class="programlisting">
+#define __KERNEL__
+#include &lt;linux/sched.h&gt;
+main()
+{
+printf("sizeof(struct task_struct) - %d\n",
+   sizeof(struct task_struct));
+}
+</pre><p>On Intel 386 machines, it is exactly 960 bytes. Please note,
+however, that unlike other UNIX systems, this process structure
+does not occupy space in the true sense of the word.
+</p><p>Since 2.2.<span   class="emphasis"><em>x</em></span>, the task_struct is
+allocated at the bottom of the kernel stack. We can overlap the
+task_struct on the kernel stack because the task_struct is a
+per-task structure exactly as the kernel stack.</p><p>The kernel stack has a <span   class="emphasis"><em>fixed</em></span> size of
+8192 bytes on the Intel x86. If the kernel will recurse on the
+stack for 8192-960=7232 bytes, then the task_struct will be
+overwritten and therefore corrupted, causing the kernel to
+crash.</p><p>Basically, the kernel decreases the size of the
+<span   class="emphasis"><em>usable</em></span> kernel stack to around 7232 bytes by
+allocating the task structure at the bottom of the stack. It is
+done this way, because 7KB are more than enough for the kernel
+stack and the rest is used for the task_struct. These are the
+advantages of this order:</p><div class="itemizedlist"><ul type="disc"><li><p>The kernel doesn't have to access memory to get its
+kernel structure.</p></li><li><p>Memory usage is reduced.</p></li><li><p>An additional dynamic allocation is avoided at task
+creation time.</p></li><li><p>The task_struct will always start on a PAGE_SIZE
+boundary, so the cache line is always aligned on most hardware in
+the market.</p></li></ul></div><p>Once Linux is in kernel mode, you can get the address of the
+task_struct at any time with this very fast pseudo-code:
+<pre     class="programlisting">
+task_struct = (struct task_struct *) STACK_POINTER &amp; 0xffffe000;
+</pre>
+
+
+This is exactly how the above pseudo-code is implemented in C under
+Linux:
+<pre     class="programlisting">
+/* cut-and-pasted from
+linux/include/asm-i386/current.h */
+static inline struct task_struct * get_current(void)
+{
+        struct task_struct *current;
+        __asm__(-andl %%esp,%0;
+        -:-=- (current) : "0" (~8191UL));
+        return current;
+        }
+</pre>
+
+
+For example, on a Pentium II, recalculating the task_struct
+beginning from the stack pointer is much faster than passing the
+task_struct address through the stack across function calls, as is
+done in some other operating systems, e.g., Solaris 7. That is, the
+kernel can derive the address of the task_struct by checking only
+the value of the stack pointer (no memory accesses at all). This is
+a big performance booster and shows once again that fine
+engineering can be found in free software. The code to this was
+written by Ingo Molnar, a Hungarian kernel hacker. The kernel stack
+is set by the CPU automatically when entering kernel mode by
+loading the kernel stack pointer address from the CPU Task Segment
+State that is set at fork time.
+</p><p>The layout of the x86 kernel stack looks like this:</p><pre     class="programlisting">
+----- 0xXXXX0000 (bottom of the stack and address
+                 of the task struct)
+TASK_STRUCT
+----- 0xXXXX03C0 (last byte usable from the kernel
+                  as real kernel stack)
+KERNEL_STACK
+----- 0xXXXX2000 (top of the stack, first byte
+                  used as kernel stack)
+</pre><p>Note that today, the size of the task_struct is exactly 960
+bytes. It is going to change across kernel revisions, because every
+variable removed or inserted to the task_struct will change the
+size. In turn, the upper limit of the kernel stack will change with
+the size of task_struct.
+</p><p>The memory for the process data structure is allocated
+dynamically during execution of the Linux kernel. More precisely,
+the kernel doesn't allocate the task_struct at all, only the
+two-pages-wide kernel stack of which task_struct will be a
+part.</p><p>In many UNIX systems, there is a maximum processes parameter
+for the kernel. In commercial operating systems like Solaris, it is
+a self-tuned parameter. In other words, it adjusts according to the
+amount of RAM found at boot time. However, in Solaris, you can
+still adjust this parameter in /etc/system.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7c580.0x1d75318"></a>What about Linux?</h2></div></div><p>In Linux 2.3.<span   class="emphasis"><em>x</em></span> (and in the future,
+2.4.0), it is a run-time tunable parameter as well. On
+2.2.<span   class="emphasis"><em>x</em></span>, it's a compile-time tunable parameter.
+To change it in 2.2.<span   class="emphasis"><em>x</em></span>, you need to change the
+NR_TASKS preprocessor define in Linux/include/linux/tasks.h:</p><pre     class="programlisting">
+#define NR_TASKS 512 /* On x86 Max 4092 or 4090
+                        with APM configured. */
+</pre><p>Increase this number up to 4090 to increase the maximum limit
+of concurrent tasks.
+</p><p>In 2.3.<span   class="emphasis"><em>x</em></span>, it is a tunable parameter
+which defaults to <span   class="emphasis"><em>size-of-memory-in-the-system</em></span>
+/ <span   class="emphasis"><em>kernel-stack-size</em></span> / 2. Suppose you have
+512MB of RAM; then, the default upper limit of available processes
+will be 512*1024*1024 / 8192 / 2 = 32768. Now, 32768 processes
+might sound like a lot, but for an enterprise-wide Linux server
+with a database and many connections from a LAN or the Internet, it
+is a very reasonable number. I have personally seen UNIX boxes with
+a higher number of active processes. It might make sense to adjust
+this parameter in your installation. In 2.3.<span   class="emphasis"><em>x</em></span>,
+you can also increase the maximum number of tasks via a
+<span   class="bold"><b>sysctl</b></span> at runtime. Suppose the
+administrator wants to increase the number of concurrent tasks to
+40,000. He will have to do only this (as root):</p><pre     class="programlisting">
+echo 40000 &gt; /proc/sys/kernel/threads-max
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7c580.0x1d75840"></a>Processes and Threads</h2></div></div><p>In the last 10 years or so, there has been a general move
+from heavyweight processes to a threaded model. The reason is
+clear: the creation and maintenance of a full process with its own
+address space takes up a lot of time in terms of milliseconds.
+Threads run within the same address space as the parent process,
+and therefore require much less time in creation.</p><p>What's the difference between process and thread under Linux?
+And, more importantly, what is the difference from a scheduler
+point of view? In short&mdash;nothing.</p><p>The only worthwhile difference between a thread and a process
+is that threads share the same address space completely. All the
+threads run in the same address space, so a context switch is
+basically just a jump from one code location to another.</p><p>A simple check to avoid the TLB (translation lookaside
+buffer, the mechanism within the CPU that translates virtual memory
+addresses to actual RAM addresses) flush and the memory manager
+context switch is this:</p><pre     class="programlisting">
+/* cut from linux/arch/i386/kernel/process.c */
+/* Re-load page tables */
+{
+        unsigned long new_cr3 = next-&gt;tss.cr3;
+        if (new_cr3 !=3D prev-&gt;tss.cr3)
+        asm volatile("movl %0,%%cr3": :"r" (new_cr3));
+        }
+</pre><p>The above check is in the core of the Linux kernel context
+switch. It simply checks that the page-directory address of the
+current process and the one of the to-be-scheduled process are the
+same. If they are, then they share the same address space (i.e.,
+they are two threads), and nothing will be written to the %%cr3
+register, which would cause the user-space page tables to be
+invalidated. That is, putting any value into the %%cr3 register
+automatically invalidates the TLB; in fact, this is actually how
+you force a TLB flush. Since two tasks in the same address space
+never switch the address space, the TLB will never be invalidated.
+</p><p>With the above two-line check, Linux makes a distinction
+between a kernel-process switch and a kernel-thread switch. This is
+the <span   class="emphasis"><em>only</em></span> noteworthy difference.</p><p>Since there is no difference at all between threads and
+processes, the Linux scheduler is very clean code. Only a few
+places related to signal handling make a distinction between
+threads and processes.</p><p>In Solaris, the process is greatly disadvantaged compared to
+the thread and lightweight processes (LWP). Here is a measurement I
+did on my Solaris server, an Ultra 2 desktop, 167MHz processor,
+running Solaris 2.6:</p><pre     class="programlisting">
+hirame&gt; ftime
+Completed 100 forks
+Avg Fork Time: 1.137 milliseconds
+hirame&gt; ttime
+Completed 100 Thread Creates
+Avg Thread Time: 0.017 milliseconds
+</pre><p>I executed 100 forks and measured the time elapsed. As you
+can see, the average fork took 1.137 milliseconds, while the
+average thread create took .017 milliseconds (17 microseconds). In
+this example, thread creates were about 67 times faster. Also, my
+test case for threads did not include flags in the thread create
+call to tell the kernel to create a new LWP with the thread and
+bind the thread to the LWP. This would have added additional weight
+to the call, bringing it closer to the fork time.
+</p><p>Even if LWP creation closes the gap in creation times between
+processes (forks) and threads, user threads still offer advantages
+in resource utilization and scheduling.</p><p>Of course, the Linux SMP (and even uniprocessor) scheduler is
+clever enough to optimize the scheduling of the threads on the same
+CPU. This happens because by rescheduling a thread, there won't be
+a TLB flush and basically no context switch at all&mdash;the virtual
+memory addressing won't change. A thread switch is very lightweight
+compared to a process switch, and the scheduler is aware of that.
+The only things Linux does while switching between two threads (not
+in strict order) are:</p><div class="itemizedlist"><ul type="disc"><li><p>Enter schedule().</p></li><li><p>Restore all registers of the new thread (stack
+pointer and floating point included).</p></li><li><p>Update the task structure with the data of the new
+thread.</p></li><li><p>Jump to the old entry point of the new
+thread.</p></li></ul></div><p>Nothing more is done. The TLB is not touched, and the address
+space and all the page tables remain the same. Here, the big
+advantage of Linux is that it does the above very fast.
+</p><p>Other UNIX systems are bloated by SMP locks, so the kernel
+loses time getting to the task switch point. If that weren't true,
+the Solaris kernel threads wouldn't be slower than the user-space
+kernel threads. Of course, the kernel-based threads will scale the
+load across multiple CPUs, but operating systems like Solaris pay a
+big fixed cost on systems with few CPUs for the benefit of scaling
+well with many CPUs. Basically, there is no technical reason why
+Solaris kernel threads should be lighter than Linux kernel threads.
+Linux is just doing the minimum possible operations in the context
+switch path, and it's doing them fast.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7c580.0x216e3d8"></a>Threaded Kernel</h2></div></div><p>Linux kernel threading has constantly improved. Let's look at
+the different versions again:</p><div class="itemizedlist"><ul type="disc"><li><p>2.0.<span   class="emphasis"><em>x</em></span> had no kernel
+threading.</p></li><li><p>2.2.<span   class="emphasis"><em>x</em></span> has kernel threading
+added.</p></li><li><p>2.3.<span   class="emphasis"><em>x</em></span> is very
+SMP-threaded.</p></li></ul></div><p>In 2.2.<span   class="emphasis"><em>x</em></span>, many places are still
+single-threaded, but 2.2.<span   class="emphasis"><em>x</em></span> kernels actually
+scale well only on two-way SMPs. In 2.2.<span   class="emphasis"><em>x</em></span>, the
+IRQ/timer handling (for example) is <span   class="emphasis"><em>completely</em></span>
+SMP-threaded, and the IRQ load is distributed across multiple CPUs.
+</p><p>In 2.3.<span   class="emphasis"><em>x</em></span>, most worthwhile code sections
+within the kernel are being rewritten for SMP threading. For
+example, all of the VM (virtual memory) is SMP-threaded. The most
+interesting paths now have a much finer granularity and scale very
+well.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7c580.0x216eab8"></a>Performance Limitations</h2></div></div><p>For the sake of system stability, a kernel has to react well
+in stress situations. It must, for instance, reduce priorities and
+resources to processes that misbehave.</p><p>How does the scheduler handle a poorly written program
+looping tightly and forking at each turn of the loop (thereby
+forking off thousands of processes in a few seconds)? Obviously,
+the scheduler can't limit the creation of processes time-wise,
+e.g., a process every 0.5 seconds or similar.</p><p>After a fork, however, the &ldquo;runtime priority&rdquo; of the
+process is divided between the parent and the child. This means the
+parent/child will be penalized compared to the other tasks, and the
+other tasks will continue to run fine up to the first recalculation
+of the priorities. This keeps the system from stalling during a
+fork flooding. The code for this is the concerned code section in
+linux/kernel/fork.c:</p><pre     class="programlisting">
+/*
+ "share" dynamic priority between parent
+ * and child, thus the total amount of dynamic
+ * priorities in the system doesn't change, more
+ * scheduling fairness. This is only important
+ * in the first time slice, in the long run the
+ * scheduling behaviour is unchanged.
+ */
+current-&gt;counter &gt;&gt;= 1;
+p-&gt;counter = current-&gt;counter;
+</pre><p>Additionally, there is a per-<span   class="emphasis"><em>user</em></span> limit
+of threads that can be set from
+<span   class="bold"><b>init</b></span> before spawning the first
+user process. It can be set with <b  >&nbsp;ulimit -u</b>
+in bash. You can tell it that <b  >user moshe</b> can run
+a maximum ten concurrent tasks (the count includes the shell and
+every process run by the user).
+</p><p>In Linux, the root user always retains some spare tasks for
+himself. So, if a user spawns tasks in a loop, the administrator
+can just log in and use the
+<span   class="bold"><b>killall</b></span> command to remove all
+tasks of the offending user. Due to the fact that the &ldquo;runtime
+priority&rdquo; of the task is divided between the parent and the child,
+the kernel reacts smoothly enough to handle this type of
+situation.</p><p>If you wanted to amend the kernel to allow only one fork per
+processor tick (usually one every 1/100th second; however, this
+parameter is tunable), called a jiffie, you would have to patch the
+kernel like this:</p><pre     class="programlisting">
+--- 2.3.26/kernel/fork.c        Thu Oct 28 22:30:51 1999
++++ /tmp/fork.c Tue Nov  9 01:34:36 1999
+@@ -591,6 +591,14 @@
+        int retval = -ENOMEM;
+        struct task_struct *p;
+        DECLARE_MUTEX_LOCKED(sem);
++       static long last_fork;
++
++       while (time_after(last_fork+1, jiffies))
++       {
++               __set_current_state(TASK_INTERRUPTIBLE);
++               schedule_timeout(1);
++       }
++       last_fork = jiffies;
+        if (clone_flags &amp; CLONE_PID) {
+/* This is only allowed from the boot up thread */
+</pre><p>This is the beauty of open source. If you don't like
+something, just change it!
+</p><p>Here ends the first part of our tour through the Linux
+kernel. In the next installment, we will take a more detailed look
+at how the scheduler works. I can promise you some surprising
+discoveries. Some of these discoveries caused me to revalue
+completely the probable impact of Linux on the corporate server
+market. Stay tuned.</p><p><a href="3814s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="3814aa.jpg"></div>
+
+       email: <a href="mailto:moshe@moelabs.com">moshe@moelabs.com</a>
+       </p><p>
+      <span   class="bold"><b>Moshe Bar</b></span>
+      (moshe@moelabs.com) is an Israeli
+      system administrator and OS researcher, who started learning UNIX
+      on a PDP-11 with AT&amp;T UNIX Release 6 back in 1981. He holds an
+      M.Sc. in computer science. Visit Moshe's web site at
+      <a href="http://www.moelabs.com" target="_self">http://www.moelabs.com/</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../071/toc071.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,242 @@
+/*
+ * This code is based very heavily (read pretty
+ * much copied verbatim) from the Linux Kernel
+ * Module Programming Guide.
+ *
+ * Parts of the Elan specific bits were gleaned
+ * from the sc520 watcdog driver
+ */
+
+
+#include <linux/kernel.h>   
+#include <linux/module.h>   
+#include <linux/proc_fs.h>
+#include <asm/uaccess.h>
+#include <asm/io.h>
+
+MODULE_LICENSE( "GPL" );
+
+static __u16 *mmcrbase,*pio_fun,*pio_dir,*pio_dat;
+
+
+#define BUFSIZE 32
+
+
+static ssize_t led_output(
+       struct file *file,   /* The file read */
+       char *buf,           /* The buffer to put
+			     * data to (in the
+			     * user segment) */
+       size_t len,          /* The length of the
+			       buffer */
+       loff_t *offset)      /* Offset in the file
+			       - ignore */
+{
+  __u16 dat = readw( pio_dat );
+  char my_buffer[BUFSIZE];  
+  static int finished = 0;
+  int i;
+
+  if ( finished ){
+    finished = 0;
+    return 0;
+  }
+
+  if ( dat & 0x200 ){
+    len = sprintf( my_buffer, "on\n" );
+  }
+  else {
+    len = sprintf( my_buffer, "off\n" );
+  }
+
+  for(i=0; i < len && my_buffer[i]; i++  ){
+    put_user( my_buffer[i], buf + i );
+  }
+ 
+  finished = 1;
+  
+  return i;
+}
+
+static ssize_t led_input(
+     struct file *file,   /* The file itself */
+     const char *buf,     /* The buffer with
+			     input */
+     size_t length,       /* The buffer's
+			     length */
+     loff_t *offset)      /* offset to file -
+			     ignore */
+{
+  int i;
+  char my_buffer[BUFSIZE];
+  __u16 dat = readw( pio_dat );
+
+  for(i=0; i<BUFSIZE-1 && i<length; i++)
+    get_user(my_buffer[i], buf+i);
+  my_buffer[i] = '\0';    
+
+  /*
+   * Now decide what to do...
+   */
+
+  if ( strncmp( my_buffer, "on", 2 ) == 0 ){
+    dat |= 0x200;
+  }
+  else if ( strncmp( my_buffer,"off",3)==0){
+    dat &= ~0x200;
+  }
+  else if ( strncmp( my_buffer,"toggle",6)==0){
+    dat ^= 0x200;
+  }
+  writew( dat, pio_dat );
+  
+  return i;
+}
+
+
+
+static struct proc_dir_entry *pde;
+
+
+static int led_permission(
+    struct inode *inode, 
+    int op)
+{
+  if (op==4 || (op == 2 && current->eui==pde->uid))
+    return 0; 
+
+  /* If it's anything else, access is denied */
+  return -EACCES;
+}
+
+
+static int led_open(
+	       struct inode *inode, 
+	       struct file *file)
+{
+  MOD_INC_USE_COUNT; 
+  return 0;
+}
+
+
+static int led_close(
+	       struct inode *inode, 
+	       struct file *file)
+{
+  MOD_DEC_USE_COUNT;
+  return 0;  /* success */
+}
+
+
+static struct file_operations file_ops =
+  {
+    NULL,         /* module owner */
+    NULL,         /* llseek */
+    led_output,   /* "read" from the file */
+    led_input,    /* "write" to the file */
+    NULL,         /* readdir */
+    NULL,         /* poll */
+    NULL,         /* ioctl */
+    NULL,         /* mmap */
+    led_open,     /* Somebody opened the file */
+    NULL,         /* flush */
+    led_close,    /* release */
+    NULL,         /* fsync */
+    NULL,         /* fasync */
+    NULL,         /* lock */
+    NULL,         /* readv */
+    NULL,         /* writev */
+    NULL,         /* sendpage */
+    NULL          /* get_unmapped_area */
+  };
+
+
+
+static struct inode_operations inode_ops =
+  {
+    NULL, /* create */
+    NULL, /* lookup */
+    NULL, /* link */
+    NULL, /* unlink */
+    NULL, /* symlink */
+    NULL, /* mkdir */
+    NULL, /* rmdir */
+    NULL, /* mknod */
+    NULL, /* rename */
+    NULL, /* readlink */
+    NULL, /* follow_link */
+    NULL, /* truncate */
+    led_permission, /* check for permissions */
+    NULL, /* revalidate */
+    NULL, /* setattr */
+    NULL  /* getattr */
+  };
+
+
+
+
+static int init()
+{
+  if ( (pde = create_proc_entry( 
+               "led", 
+	       S_IFREG|S_IRUGO|S_IWUSR, 
+	       &proc_root)) ){
+
+    unsigned long cbar = inl_p(0xfffc);
+    __u16 fun, dir, dat;
+
+
+    pde->size = BUFSIZE;
+    pde->proc_iops = &inode_ops;
+    pde->proc_fops = &file_ops;
+
+    if ( cbar & 0x80000000 ){
+      mmcrbase = (__u16 *)(cbar & 0x3FFFFFFF);
+    }
+    else {
+      mmcrbase = (__u16 *)0xFFFEF000;
+    }
+    
+    pio_fun = (__u16 *)((char *)mmcrbase + 0xc20 );
+    pio_fun = ioremap( (unsigned long)pio_fun ,2 );
+    pio_dir = (__u16 *)((char *)mmcrbase + 0xc2a );
+    pio_dir = ioremap( (unsigned long)pio_dir ,2 );
+    pio_dat = (__u16 *)((char *)mmcrbase + 0xc30 );
+    pio_dat = ioremap( (unsigned long)pio_dat ,2 );
+
+    /*
+     * Make sure PIO12 is set as an output
+     * (initially off)
+     */
+    dir = readw( pio_dir );
+    fun = readw( pio_fun );
+    dat = readw( pio_dat );
+
+    dir |=  0x200;
+    fun &= ~0x200;
+    dat &= ~0x200;
+
+    writew( fun, pio_fun );
+    writew( dir, pio_dir );
+    writew( dat, pio_dat );
+      
+    return 0;
+  }
+  return -ENOMEM;
+}
+
+
+/* Cleanup - unregister our file from /proc */
+static void cleanup()
+{
+
+  iounmap( pio_fun );
+  iounmap( pio_dat );
+  iounmap( pio_dir );
+
+  remove_proc_entry(pde->name, &proc_root );
+}  
+
+
+module_init(init);
+module_exit(cleanup);

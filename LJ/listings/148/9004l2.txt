@@ -1,0 +1,511 @@
+Listing 2. Hole-Punching Implementation
+
+/* Copyright Girish Venkatachalam 2006
+ * girish1729@gmail.com
+ *
+ * You are free to modify it to suit your requirements.
+ * The licensing terms of this program is along the lines
+ * of the BSD license. You are free to use this for commercial
+ * purposes provide you retain this notice.
+ *
+ *
+ *
+ */
+#include "p2pcommon.h"
+
+struct sockaddr_in sa[4];
+struct sockaddr_in myu[4];
+
+
+void setreuse(int sock) {
+        const int one = 1;
+
+#ifdef SO_REUSEADDR
+        if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
+                                (const void*)&one, sizeof(one)) < 0)
+                perrdie("setsockopt(SO_REUSEADDR)");
+#endif
+#ifdef SO_REUSEPORT
+        if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT,
+                                (const void*)&one, sizeof(one)) < 0)
+                perrdie("setsockopt(SO_REUSEPORT)");
+#endif
+}
+
+void setnonblock(int sock)
+{
+#ifdef WIN32
+        unsigned long fl = 1;
+        if (ioctlsocket(sock, FIONBIO, &fl) < 0)
+                perrdie("socketioctl");
+#else
+        int fl = fcntl(sock, F_GETFL);
+        if (fl < 0)
+                perrdie("fcntl");
+        if (fcntl(sock, F_SETFL, fl | O_NONBLOCK) < 0)
+                perrdie("fcntl");
+#endif
+}
+void setblock(int sock)
+{
+#ifdef WIN32
+        unsigned long fl = 0;
+        if (ioctlsocket(sock, FIOBIO, &fl) < 0)
+                perrdie("socketioctl");
+#else
+        int fl = fcntl(sock, F_GETFL);
+        if (fl < 0)
+                perrdie("fcntl");
+        if (fcntl(sock, F_SETFL, fl & ~O_NONBLOCK) < 0)
+                perrdie("fcntl");
+#endif
+}
+
+
+int recvudp(int udp,struct sockaddr_in *privpeer,struct sockaddr_in
+*pubpeer,struct connection *conn)
+{
+        struct sockaddr_in tsin;
+        socklen_t sinlen;
+        struct reply rp;
+        int rc;
+
+
+
+        sinlen = sizeof(tsin);
+        rc = recvfrom(udp,(char*)&rp, sizeof(rp), 0,
+                        (struct sockaddr*)&tsin, &sinlen);
+        if (rc < (signed)sizeof(rp)) {
+
+                syslog(LOG_INFO,
+                                "Received runt packet\n");
+                return -1;
+        }
+
+        if (rp.magic != htonl(REPLMAGIC)) {
+
+                syslog(LOG_INFO,
+                                "Reply with bad magic value\n");
+                return -1;
+        }
+
+        syslog(LOG_INFO, "Server reports my UDP address as %s:%d\n",
+                        inet_ntoa(rp.pubaddr),
+                        ntohs(rp.pubport));
+        if(pubpeer) { /* hole punch packet */
+                if(rp.pubaddr.s_addr == conn->ctx->mypriv.sin_addr.s_addr)
+                        return 1;
+                else if(rp.pubaddr.s_addr ==
+conn->ctx->mypub.sin_addr.s_addr)
+                        return 0;
+                return -1;
+        }
+        else { /* UDP bounce packet */
+                /* record the address reported by the server */
+                privpeer->sin_family = AF_INET;
+                privpeer->sin_addr = rp.pubaddr;
+                privpeer->sin_port = rp.pubport;
+        }
+
+        return 0;
+}
+
+int holepunch(struct connection *conn) {
+        struct msg m;
+        int ret;
+
+        if(conn->peerid == 0) /* We are just starting the p2p app */
+                return holepunch_algo(conn,0,0,OUTBOUND);
+
+        /* XXX What happens here actually is a bit confusing and
+         *  I am not too happy with this design. Hopefully if time
+         * permits I will change it one day...
+         *
+         * Once I get a holepunch request I send a request to the
+         * mediation server to locate the private and public address
+         * of the peer whose ID is given to me.
+         * So all that happens here is send the request to mediation
+         * server. Once the request is processed, two things can
+         * happen.
+         *
+         * 1) The peer's address information is returned in a PEER_COORD
+         *    message. Then this is recevied by the p2p code and the
+         *    function holepunch_algo() is called with the appropriate
+         *    arguments. Then once the holepunching finishes or fails,
+         *   control is returned back to the user.
+         * 2) The ID given is wrong and hence no matching peer could
+         *    be found, so we have to return to the user saying that
+         *    he has to try again with the right ID.
+         *
+         */
+        m.op = GET_PEER;
+        m_st.peerpl.id = conn->peerid;
+        do {
+        ret = send(conn->ctx->tcpsock,(char *)&m,sizeof(m),0);
+
+        } while(eblock());
+
+        if(ret == 0 || ret == -1) {
+                perror("Send");
+        }
+
+        return 0;
+
+}
+
+/*            The UDP hole punching algorithm
+ *
+ * It is a very simple algorithm. How it works is, first it sends UDP
+ * packets to five different hosts from the same port number to the same
+ * port number. The last request is sent to the actual peer with which
+ * we want to communicate.
+ *
+ * The peer's NAT drops the packet since it was an unsolicited packet.
+ * At the same time the peer also sends these five packets. So this
+ * packet arrives at our NAT device but our NAT lets it in since
+ * we first sent out the packet to the same host and port...
+ *
+ * We are interested in finding out the port number
+ * allocated to all these requests at the NAT device.
+ *
+ * In case we find that all these numbers match then we are happy and
+ * happily return the UDP socket to the user.
+ * The way we figure out the port number allocated at the NAT device is
+ * by sending the NAT device's source port number in the body of the
+ * response to the packets sent above.
+ *
+ * The real fun starts when there is a difference between the port
+ * numbers allocated in the NAT device for the two requests.
+ * In this case we find out the delta, the difference between these two
+ * numbers and the algorithm assumes that the delta will be constant
+ * under favourable circumstances.
+ *
+ * Now this is only half the story. Determining the source port is
+ * important but it is not everything. In the next step, the peer sends
+ * a packet to the same port number. Once the peers are able
+ * to communicate using the  peer's port number and NAT IP, then we
+ * hand over control pack to the p2p app.
+ *
+ * There is another twist to the algo. In case both peers are behind
+ * the same NAT device and in the same network, then they can
+ * communicate directly without UDP hole punching.
+ * This is attempted first. Only when this approach doesn't succeed when
+ * we go in for hole punching.
+ *
+ */
+
+
+int holepunch_algo(struct connection *conn,struct sockaddr_in
+*privpeer,struct sockaddr_in *pubpeer,int direction)
+{
+        struct sockaddr_in sinudp1,tmpsin;
+        uint16_t tpport = 9856,ourport = 17000;
+        struct request rq;
+        struct timeval t;
+        int udp1,udprecv;
+        fd_set rfds,wfds;
+        int ret,diff,diff2,consistent = 0,linkdown = 0;
+        int i = 0,first,third,fds,selret;
+#ifdef WIN32
+        WSADATA wsaData;
+
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+                perrdie("Windows sockets 2.2 startup");
+        {
+                syslog(LOG_INFO, "Using %s (Status: %s)\n",
+                                wsaData.szDescription,
+wsaData.szSystemStatus);
+                syslog(LOG_INFO, "with API versions %d.%d to %d.%d\n\n",
+                                LOBYTE(wsaData.wVersion),
+HIBYTE(wsaData.wVersion),
+  LOBYTE(wsaData.wHighVersion), HIBYTE(wsaData.wHighVersion));
+        }
+#endif
+
+
+
+        udp1 = mksock(SOCK_DGRAM);
+        setreuse(udp1);
+
+
+        /* Lookup the mediators */
+        lookup(SERV1, &sa[0],tpport);
+        lookup(SERV2, &sa[1],tpport);
+        lookup(SERV3, &sa[2],ourport);
+        lookup(SERV4, &sa[3],ourport);
+
+        sinudp1.sin_family = AF_INET;
+        sinudp1.sin_addr.s_addr = INADDR_ANY;
+        sinudp1.sin_port = htons(tpport);
+
+        if (bind(udp1, (struct sockaddr*)&sinudp1, sizeof(sinudp1)) < 0){
+                perrdie("Bind 9856 UDP port");
+                syslog(LOG_ERR,"Problem binding to UDP port 9856");
+        }
+
+
+
+        /* Clear the variables in which we collect
+         * our various NATted public addresses
+         * as we discover them. */
+        tmpsin.sin_family = AF_INET;
+        tmpsin.sin_addr.s_addr = INADDR_ANY;
+        tmpsin.sin_port = 0;
+
+        if((privpeer != NULL) && (pubpeer != NULL) && direction ==
+OUTBOUND) {
+                /* We are NOT connecting for the first time */
+                udprecv = conn->ctx->clientsock;
+        }
+        else {
+                udprecv = conn->ctx->udpsock;
+        }
+
+        for(i=0;i<4;i++)
+                myu[i] = tmpsin;
+
+
+
+        /* Send ping datagrams from our primary UDP socket
+           to servers 1 and 2. */
+
+        rq.magic = htonl(REQMAGIC);
+        syslog(LOG_INFO,"Proceeding to punch hole");
+
+
+        for(i=0;i<4;i++) {
+                int sock;
+                if(i == 0 || i == 1)
+                        sock = udp1;
+                else
+                        sock = conn->ctx->udpsock;
+
+
+                if (sendto(sock, (const char*)&rq, sizeof(rq), 0,
+                                        (struct sockaddr*)&sa[i],
+sizeof(sa[i])) < 0) {
+                        syslog(LOG_ERR,"Problem sending to
+%s:%d",inet_ntoa(sa[i].sin_addr),ntohs(sa[i].sin_port));
+                        perrdie("sendto");
+                }
+        }
+
+
+        first = 0, third = 0;
+        for(;;) {
+                fds = 0;
+                FD_ZERO(&rfds);
+                FD_ZERO(&wfds);
+                if(first != 2) {
+                        FD_SET(udp1,&rfds);
+                        FD_SET(udp1,&wfds);
+                        fds = udp1 + 1;
+                }
+                if(third != 2) {
+                        FD_SET(udprecv,&rfds);
+                        FD_SET(udprecv,&wfds);
+                        fds = udprecv + 1 > fds ? udprecv + 1 : fds;
+                }
+                /* Right now we just assume that 4 seconds
+                 * timeout is enough for most practical purposes
+                 */
+                t.tv_sec = 6;
+                t.tv_usec = 0;
+
+                if(fds == 0) /* We are done */
+                        break;
+
+                ret = select(fds,&rfds,NULL,NULL,&t);
+
+                if(ret == -1) {
+                        perror("Select");
+                        syslog(LOG_ERR,"Select() failed,Yuck!");
+                }
+                if(ret == 0) {
+                        linkdown = 1;
+                        syslog(LOG_ERR,"Didn't get reply from UDP bounce
+server(s)");
+                        break;
+                }
+                else {
+                        if(FD_ISSET(udp1,&rfds)) {
+                                if(first == 0) {
+                                        recvudp(udp1,&myu[0],NULL,conn);
+                                        first = 1;
+                                }
+                                else {
+                                        recvudp(udp1,&myu[1],NULL,conn);
+                                        first = 2;
+                                        close(udp1);
+                                }
+
+                        }
+                        if(FD_ISSET(udprecv,&rfds)) {
+                                if(third == 0) {
+                                        recvudp(udprecv,&myu[2],NULL,conn);
+                                        third = 1;
+                                }
+                                else {
+                                        recvudp(udprecv,&myu[3],NULL,conn);
+                                        third = 2;
+                                }
+                        }
+                }
+        }
+        close(udp1);
+        /* We are unable to contact any mediation servers possibly
+         * because Internet is down. But still we run the hole
+         * punching code to reach  the peer. And then
+         * declare the hole punching failed
+         */
+        if(linkdown) {
+                close(conn->ctx->udpsock);
+                return LINK_DOWN;
+
+
+
+        }
+        /* Check for public address/port number consistency */
+        if (myu[0].sin_addr.s_addr == myu[1].sin_addr.s_addr &&
+                        myu[0].sin_port == myu[1].sin_port) {
+                if (myu[2].sin_addr.s_addr == myu[3].sin_addr.s_addr &&
+                                myu[3].sin_port == myu[3].sin_port) {
+
+                        if((myu[0].sin_port != 0)
+                                        || (myu[3].sin_port != 0)) {
+                                consistent = 1;
+                                syslog(LOG_INFO,"We do consistent UDP
+translation, that is good news");
+                        }
+                }
+
+        } else {
+                diff = abs(ntohs(myu[1].sin_port) -
+ntohs(myu[0].sin_port));
+                diff2 = abs(ntohs(myu[3].sin_port) -
+ntohs(myu[2].sin_port));
+        }
+
+        if((privpeer != NULL) && (pubpeer != NULL)) {
+
+                /* Now send packets to both the private and the public
+ * addreses of the peer*/
+                ret = sendto(conn->ctx->udpsock,
+                                (const char *)&rq,
+                                sizeof(rq), 0,
+                                (struct sockaddr *)privpeer,
+                                sizeof(*privpeer));
+                if(ret == -1) {
+
+                        perrdie("Hole punch to private address sendto");
+                }
+
+                ret = sendto(conn->ctx->udpsock,
+                                sizeof(rq), 0,
+                                (struct sockaddr *)pubpeer,
+                                sizeof(*pubpeer));
+                if(ret == -1) {
+                        perrdie("Hole punch to public address sendto");
+                }
+                /* Right now we just assume that 4 seconds
+                 * timeout is enough for most practical purposes
+                 */
+                do {
+                        t.tv_sec = 4;
+                        t.tv_usec = 0;
+
+
+                        FD_ZERO(&rfds);
+                        FD_SET(udprecv,&rfds);
+                        fds = udprecv + 1;
+
+                        selret = select(fds,&rfds,NULL,NULL,&t);
+
+                        if(selret == -1) {
+                                perror("Select");
+                                syslog(LOG_ERR,"Select() failed,Yuck!");
+                        }
+                        if(selret == 0) {
+                                syslog(LOG_ERR,"Didn't get reply from
+holepunching the peer");
+                                ret = -1;
+                                break;
+                        }
+
+                        ret = recvudp(udprecv,privpeer,pubpeer,conn);
+                }while(0);
+        }
+        else { /* we are connecting for the first time */
+                syslog(LOG_INFO,"Proceeding to return after first time
+invocation of holepunching");
+                conn->ctx->mypub = myu[3];
+                if(!consistent && (diff == diff2)) {
+                        uint16_t tmp;
+                        tmp = ntohs(myu[3].sin_port);
+                        tmp += 2*diff;
+                        conn->ctx->mypub.sin_port = htons(tmp);
+
+                }
+                return 0;
+        }
+
+        if(ret == 0) { /* The public address is hole punched */
+                struct msg m;
+                int n;
+                syslog(LOG_INFO,"The peer's public address is responding");
+                conn->peer = *pubpeer;
+                conn->ctx->mypub = myu[3];
+                m.op = HOLEPUNCHING_COMPLETE;
+                m_st.peerpl.id = conn->peerid;
+                do {
+                        n = send(conn->ctx->tcpsock,&m,sizeof(m),0);
+                }while(eblock());
+        } else if (ret == 1) { /* The private address is hole punched */
+                struct msg m;
+                int n;
+                syslog(LOG_INFO,"The peer's private address is
+responding");
+                conn->peer = *privpeer;
+                conn->ctx->mypub = myu[3];
+                m.op = HOLEPUNCHING_COMPLETE;
+                m_st.peerpl.id = conn->peerid;
+                do {
+                        n = send(conn->ctx->tcpsock,&m,sizeof(m),0);
+                }while(eblock());
+
+
+        } else if(ret == -1) { /* Good, no response :-) */
+                if(consistent) { /* no problem, we only have to ask
+                                  * the peer to send a datagram and
+                                  * then we are set */
+                        syslog(LOG_INFO,"No response but consistent
+translation");
+                        conn->ctx->mypub = myu[3];
+                        conn->peer = *pubpeer;
+                        peer_holepunch(conn);
+                }
+                else {
+                        if(diff == diff2) {
+                                syslog(LOG_INFO,"I get  the same delta
+during translation, this may WORK");
+                                uint16_t tmp;
+                                conn->peer = *pubpeer;
+                                conn->ctx->mypub = myu[3];
+                                tmp = ntohs(myu[3].sin_port);
+                                tmp += 2*diff;
+                                conn->ctx->mypub.sin_port = htons(tmp);
+                                peer_holepunch(conn);
+
+                        }
+                        else { /* Hard luck, we have to give up :-( */
+                                close(conn->ctx->udpsock);
+
+                        }
+                }
+
+        }
+
+        return 0;
+
+}
+

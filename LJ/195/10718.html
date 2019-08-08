@@ -1,0 +1,407 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+MySQL Replication
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;MySQL has been running on Linux in the data center for many years, but&#10;MySQL replication still is not widely understood.&#10;Whether you're setting up a multinational asynchronous solution or a local&#10;cluster,&#10;there is a type of replication for your application.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x104e580.0x1145ac0"></a>
+MySQL Replication
+</h1></div><div><div class="author"><h3 class="author">
+Michael
+ 
+Nugent
+</h3></div><div class="issuemoyr">Issue #195, July 2010</div></div><div><p>
+MySQL has been running on Linux in the data center for many years, but
+MySQL replication still is not widely understood.
+Whether you're setting up a multinational asynchronous solution or a local
+cluster,
+there is a type of replication for your application.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x104e580.0x11462a8"></a></h2></div></div><p>
+MySQL databases come in all shapes and sizes, but most often are deployed
+behind Web sites. As sites grow, the companies behind them often become
+concerned about uptime and want to move to a high-availability model.
+Unfortunately, by this point, options often are limited based on the data and
+database engines previously chosen.
+</p><p>
+The first decision to make when moving to a high-availability model is
+actually whether
+to do it. This may seem obvious, but it often is assumed that high
+availability always is a good option. Opting to move in this
+direction, also means adds significant complexity to the
+system as a whole. When deploying a clustered solution, the number of boxes
+increase. Thus, the number of individual failures will increase, even though
+the downtime of the clustered application decreases overall. In addition, as
+availability increases, cost increases. Adding a second box for failover
+doubles the cost of the server, and adding failover clusters in alternative
+geographies can double (or more) the operational cost of the entire data center. In
+addition to this, moving to an NDB cluster adds additional hardware
+itself.
+</p><p>
+Before considering the level of availability you need, consider the
+cost of downtime compared to the operational costs of running failover
+facilities. Very few facilities need to continue running if there is a
+global extinction event, and planning for that situation would require the budget of a
+large government. Planning for failure as a result of a multinational
+economic disaster is more reasonable, but it still requires the budget of a
+large multinational corporation. When planning for national and
+localized disasters, the cost becomes more reasonable for most companies to
+handle. Based on this end-of-the-world thought experiment and the needs of
+most users, concentration on the development of high availability for MySQL
+mostly focuses on the single geography cluster.
+</p><p>
+Although you can build clusters in many ways, using combinations of block
+replication and SAN storage, the official MySQL solutions are replication and
+NDB (Network DataBase) clusters. Each has pros and cons, and
+your choice is not based on newer or older developments within MySQL,
+but on what is right for your application. In addition to choosing a type
+of replication, the version of MySQL is also critical. Because of continuing
+software development, at least version 5.1 is required for many of the
+features described here. If your current database has a lower version,
+strongly consider upgrading the database software before implementing these
+solutions. Active development on version 5.0 ended in December 2009, and
+active development on version 5.1 will end in December 2010.
+</p><p>
+MySQL replication establishes a master-slave or master-master relationship
+between a pair of servers. These servers can be chained to build a circular
+set of many servers, or one master can be used for many slaves, but the
+relationship itself exists between only two. A single MySQL server can 
+have only a single master. Replication is more flexible than NDB in terms of
+what types of engines and features can be used. Although NDB clusters are
+limited to NDB tables, replication can be used with almost any of the
+standard MySQL table types, including MyIASM and InnoDB.
+</p><p>
+Multimaster replication examples usually are set up with only two servers,
+but they can be done with any number in a circular set. To set up a circular set
+with three servers, the [mysqld] section of the my.cnf configuration file should
+include the following:
+
+
+<pre     class="programlisting">
+server-id=1                  # This must be unique per server.
+auto_increment_offset=1      # Must be unique per server but less
+                             # than the auto_increment_increment
+                             # value below.
+auto_increment_increment=3   # Set to at least the maximum
+                             # number of servers in the circle
+</pre>
+</p><p>
+The auto_increment_offset value determines the starting point for
+auto_increment columns and must be unique per server but less than
+the auto_increment_increment value.
+The auto_increment_increment value determines the interval between
+auto_increment values on a particular server. To prevent conflicts,
+set it to at least the maximum number of servers in the circle.
+</p><p>
+Now, to determine the next value in an auto_increment column, the server
+multiplies the next value expected in counting order by the
+auto_increment_increment value, plus the auto_increment_offset value.
+If N is the next expected value in a sequence (for example, 1, 2, 3, 4, 5
+and so on),
+the next value for an auto_increment column becomes:
+
+<pre     class="programlisting">
+N x auto_increment_increment + auto_increment_offset
+</pre>
+</p><p>
+In addition, add the following values:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+log_slave_updates: this tells the server to log updates from its master into its
+own log, so that the machine can act as both a master and a slave.
+</p></li><li><p>
+slave_exec_mode=IDEMPOTENT: this feature is strictly optional. It allows the slave to skip
+errors. Although it can be useful to make sure that slave
+replication does not stop due to an error, it can be dangerous,
+as it can cause the slave to desynchronize from the master,
+resulting in a different data set on each server. Use
+of InnoDB tables and transactions and rollbacks can help
+limit this possibility.
+</p></li></ul></div><p>
+Once the my.cnf file is set up, each server needs to have the replication user
+granted access for replication and set to point at the master database:
+
+
+<pre     class="programlisting">
+server A mysql&gt; GRANT REPLICATION CLIENT,
+                      REPLICATION SLAVE,
+                      SELECT, FILE, PROCESS,
+                      SUPER RELOAD ON *.* TO 'replication'@'%s'
+                      identified by 'replpass';
+server A mysql&gt; flush privileges;
+server A mysql&gt; change master to
+                       MASTER_HOST="serverB.example.com",
+                       MASTER_USER="replication",
+                       MASTER_PASSWORD='replpass';
+server A mysql&gt; start slave;
+server B mysql&gt; GRANT REPLICATION CLIENT ... ;  (as above)
+server B mysql&gt; flush privileges;
+server B mysql&gt; change master to
+                       MASTER_HOST="serverC.example.com",
+                       MASTER_USER="replication",
+                       MASTER_PASSWORD='replpass';
+server B mysql&gt; start slave;
+server C mysql&gt; GRANT REPLICATION CLIENT ... ;  (as above)
+server C mysql&gt; flush privileges;
+server C mysql&gt; change master to
+                       MASTER_HOST="serverA.example.com",
+                       MASTER_USER="replication",
+                       MASTER_PASSWORD='replpass';
+server C mysql&gt; start slave;
+</pre>
+</p><p>
+In this scenario, server A gets data from server B, which gets data from
+server C, which gets data circularly from server A. Data can be inserted into
+any of the three servers and will be replicated to the other two. This doesn't
+speed up writes (except possibly for additional drive spindles), but it can add
+additional speed for reads if the application rotates between servers in the
+cluster. In addition, if there is hardware failure, the highly available
+nature of the cluster contains copies of data. Removing a dead slave can be
+as simple as using the &ldquo;change master&rdquo; statement to point at the grandfather
+server or replacing the dead server and simply copying a snapshot of the
+data.
+</p><p>
+In contrast to the loosely bound multimaster replication, NDB clusters can
+be viewed as a single entity. In fact, they're so tightly coupled, an NDB
+cluster entity can be used as a single server in a multimaster replication
+scenario. Although NDB is a huge advantage in terms of cluster synchronicity
+and management, the NDB engine does not support all the features of other
+MySQL engines, and the NDB engine is the only one that can be used in an NDB
+cluster. The NDB engine does not support savepoints within MySQL and,
+thus,
+cannot support transactions and rollbacks. As a result of this, when an
+<tt  >ALTER TABLE</tt> or <tt  >CREATE TABLE</tt> command is issued, the table being altered should
+not be accessed. Although it locks the table on the current node, this is a
+local lock only and may cause data integrity problems or even crashes if the
+table is accessed on another node.
+</p><p>
+Before setting up software for an NDB cluster, hardware is a concern.
+Because the clusters can act as a synchronous unit and there is no encryption
+built in to the package, a private network or VLAN is a best practice to
+employ. If the idea is to use NDB in a Web application, the inter-database
+links should be separated from the links that are used to execute queries.
+</p><p>
+Networking in an NDB cluster can be set up in a number of different ways, but
+most users prefer standard TCP-over-Gigabit or higher-speed networks.
+100Mbit networks will work, but they will be far less efficient for larger
+systems. 10Mbit networks are not supported. Although the replication
+configuration requires only the MySQL servers to be part of the setup, NDB
+requires management nodes and data nodes in addition to the MySQL servers.
+All of these should demonstrate the lowest latency possible. Jumbo frames 
+also are a good idea on Gigabit networks, because fitting as much data into the packet
+as possible decreases the possibility of any kind of errors interrupting
+the synchronous transfer of data between NDB nodes.
+</p><p>
+In addition to networks, increased RAM is a necessity as caching becomes more
+of a priority to decrease network traffic. The best way to increase IO to
+disk is to increase spindles. Adding more, smaller disks will increase the
+IO throughput of any given node, but this is especially important on the data
+nodes, because these are the ones that have the actual data on disk. Increasing
+the number of data nodes also will increase the read speed of the cluster as
+a whole, but it will not increase the write speed significantly. If the
+database is behind a Web server, the read-to-write ratio is usually so
+high,
+this is exactly the kind of performance that is good for the
+application. If most of the application's queries are for writing data,
+focusing on the speed of single nodes is the best strategy.
+</p><p>
+Before setting up the configuration for an NDB cluster, be sure that it is
+available in your distribution on MySQL. The <tt  >show
+engines</tt> command should
+include an engine type of <tt  >NDBCLUSTER</tt> with the
+<tt  >Support</tt> column set to
+<tt  >Yes</tt>. If this is not available, check your distribution for an external
+package, or install or compile the community package from <a href="http://www.mysql.com" target="_self">www.mysql.com</a>.
+</p><p>
+The NDB configuration has three types
+of servers. The management
+server does configuration and monitoring of the cluster via the ndb_mgmd
+d&aelig;mon. The data nodes store the data running the ndbd d&aelig;mon, and the SQL
+nodes run the mysqld server itself. Although it is possible to run multiple
+types of d&aelig;mons on the same physical servers, it is not recommended in a
+production environment. The best practice is to separate all of them onto
+their own pieces of hardware.
+</p><p>
+NDB clusters consist of two configuration files. The first file, my.cnf, is
+the standard configuration file for MySQL. The second
+file, config.ini, is read only by the management server. The
+config.ini file includes configuration for the data nodes and is passed
+to them by the management server.
+</p><p>
+The additions to the my.cnf file are fairly straightforward:
+
+
+<pre     class="programlisting">
+[ndb_mgm]
+ndb-connectstring=manage.example.com:1186  # The management server
+[ndb_mgmd]
+config-file=/etc/config.ini
+
+[ndbd]
+ndb-connectstring=manage.example.com:1186  # The management server
+
+[mysqld]
+ndbcluster                     	 # This turns the cluster on
+ndb-force-send=1	             # Sends buffers immediately
+ndb-index-stat-enable=1          # Optimizes queries with NDB
+                                 # index statistics
+engine-condition-pushdown=1
+
+[mysql_cluster]
+ndb-connectstring=manage.example.com:1186  # The management server
+</pre>
+</p><p>
+The <tt  >engine-condition-pushdown</tt> option forces MySQL to send the query directly
+to the storage engine instead of evaluating it in the mysql d&aelig;mon.
+In an NDB cluster, this allows the NDB engine to spread queries
+across multiple data nodes.
+</p><p>
+A basic config.ini file also is fairly easy to write. It must be placed in
+the location specified by the config-file line in the my.cnf file:
+
+
+<pre     class="programlisting">
+# Management Node
+[ndb_mgmd default]
+DataDir=/var/lib/mysql-cluster   # This is where the management
+                                 # server keeps data
+
+[ndb_mgmd]
+HostName=manage.example.com      # The machine's hostname
+
+[ndbd default]
+NoOfReplicas=2                   # There are 2 data nodes
+
+[ndbd]
+HostName=datanode.example.com	 # The machine's hostname
+
+[mysqld]
+HostName=datanode.example.com    # The machine's hostname
+DataDir=/var/lib/mysql           # This is where the data
+                                 # node keeps data
+</pre>
+</p><p>
+In this scenario, there are three servers, one of each type:
+a management server, a data node and an SQL node.
+Queries are sent to the SQL server, which then interoperates with the data nodes. Because the SQL
+servers can talk to multiple data nodes as necessary with the optimizer
+inside the NDB engine (set via the
+<tt  >engine-condition-push</tt> variable above),
+this type of replication can operate on some SELECT queries far faster than
+the multimaster replication setup discussed above. On the other hand, NDB
+uses synchronous replication, so queries that write data, such as INSERTs and
+UPDATEs, can take longer, because the data must be written to each node on the
+cluster.
+</p><p>
+The problem of extending systems across various locations is well known in
+the industry. With Web servers and static content, this is a fairly simple
+situation. With cacheable content, this can be done using various caching
+services.
+</p><p>
+Dealing with MySQL across multiple geographies is complex at best. It is not
+reasonable to set up an NDB cluster with nodes in separate data
+centers.
+Even if there is dedicated bandwidth between the boxes in the cluster, the
+latency across the link will cause large delays in issuing write commands to the
+system.
+</p><p>
+The accepted way to set up a multi-geography NDB cluster is to have two
+separate NDB clusters, one per data center, and set up an asynchronous
+multimaster (or master-slave for failover only) replication system between
+the two. To do this, set up NDB clusters normally, add the auto_increment
+statements to the my.cnf file, add replication user permissions, and issue the
+&ldquo;change master&rdquo; statement at the MySQL prompt.
+</p><p>
+This asynchronous relationship between geographies will create a great way to
+distribute your load across the systems, but it is still asynchronous. There
+can be cases where queries will return different results from the different
+locations where the data has not yet completed replication. If the application
+is a Web site showing photographs, this is generally not a problem. If the
+application is a bank, this inconsistency could result in large problems.
+</p><p>
+Building a MySQL cluster, either using replication or NDB clusters, is a
+difficult task to get right the first time. Doing it in a hurry or with
+existing data in the system makes it even harder. Setting up a few systems
+as a test lab is a necessity. Although virtual machines are a good platform for
+setting up the configuration of the system, testing end-to-end performance 
+also is a necessity in order to verify that the application will not suffer from poor
+database performance. This requires time on the actual hardware with the
+actual data and, if possible, a file full of actual queries run on the
+system. Multi-geography setups are even more difficult with a small budget, and it is
+good practice to think hard about the operational expense of running a second
+location compared to the cost of downtime. Finally, as good as your
+replications and
+clusters are, they are not a substitute for backups. Save early; save often.
+</p></div></div>
+<div class="authorblurb"><p>
+Michael Nugent has spent a good deal of his time designing large-scale
+solutions to fit into tiny budgets, leveraging Linux to fulfill the
+roles that typically would be filled by large commercial appliances.
+Recently, Michael has been working to design large multi-geography
+database solutions for growing startups in the Silicon Valley area.
+When not building systems, he likes sailing, MIG welding and
+hanging out with his cat, MIDI. Michael can be reached
+at <a href="mailto:michael@michaelnugent.org">michael@michaelnugent.org</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../195/toc195.html">Issue Table of Contents</a>
+    <a class="link3" href="../195/10718.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

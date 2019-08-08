@@ -1,0 +1,197 @@
+
+#include <libmap.h>
+
+/* Prototypes for inlined routines */
+void search (int firstpass, 
+	     uint64_t texta, uint64_t textb, uint64_t textc, uint64_t pattern, int *result);
+void compare (char a0,char a1,char a2,char a3,char a4,char a5,char a6,char a7,
+              char b0,char b1,char b2,char b3,char b4,char b5,char b6,char b7, int *r);
+
+/* The Brute Force text search algorithm for the MAP */
+void BF(long long Text[], int m, long long Patterns[], int n, int *found, int mapid) {
+   int      i, j;
+   int      find;
+   int      starting;
+   int      vld;
+   uint64_t evalue0,value0,evalue1,value1;
+   uint64_t text;
+   int      result0,result1,result2,result3,result4;
+   int      result5,result6,result7,result8,result9;
+   uint64_t pattern0,pattern1,pattern2,pattern3,pattern4;
+   uint64_t pattern5,pattern6,pattern7,pattern8,pattern9;
+
+   OBM_BANK_A (al, long long, MAX_OBM_SIZE)
+   OBM_BANK_B (bl, long long, MAX_OBM_SIZE)
+
+   find = 0;
+   i = 0;
+   starting = 1;
+   /* 
+    * Initiate a transfer from the microprocessor memory 
+    * to the MAP.  This is a streaming transfer that does not
+    * get buffered into Onboard Memory.  Instead it stransfers
+    * through 2 64 bit words in 2 banks giving maximum bandwidth.
+    * A valid bit (vld) is set whenever valid data can be picked up.
+    */
+   DMA_CPU_STREAM (CM2OBM,al, MAP_OBM_stripe(0,"A,B"), Patterns, 1, m, 0); 
+   /*
+    * This loop continues until all of the requested search patterns
+    * have been streamed into the scalars: pattern0 ... pattern9
+   do {
+   	/*
+	 * Here is the actual receipt of streaming data
+	 */
+   	recv_stream_from_dma_a_and_b (&al[0], &value0, &value1, &vld);
+	if (vld) {
+		if(i == 0)  {pattern0 = value0; pattern1 = value1;}
+		if(i == 2)  {pattern2 = value0; pattern3 = value1;}
+		if(i == 4)  {pattern4 = value0; pattern5 = value1;}
+		if(i == 6)  {pattern6 = value0; pattern7 = value1;}
+		if(i == 8)  {pattern8 = value0; pattern9 = value1;}
+	}
+	/*
+	 * Use an accumulator functional unit to increment the 
+	 * loop variable "i" thus avoiding a loop carried scalar
+	 * dependency and consequent loop slowdown.
+	 */ 
+	cg_accum_add_32_np (2, vld, 0, starting, &i);
+	starting = 0;
+   } while (i < m/8);	
+   j = 0;
+   starting = 1;
+   text = 0;
+   /*
+    * Initiate a streaming stransfer for the 20MB of text to be searched
+    */
+   DMA_CPU_STREAM (CM2OBM,al, MAP_OBM_stripe(0,"A,B"), Text, 1, n, 1); 
+   /*
+    * This is the main loop for processing the text to be searched.
+    * This loop continues until all 20MB of data has streamed through
+    * the search logic.
+    */
+   do {
+   	/*
+	 * Text to be searched is presented 2 words at a time.
+	 */
+   	recv_stream_from_dma_a_and_b (&al[0], &evalue0, &evalue1, &vld);
+	cg_accum_add_32_np (2, vld, 0, starting, &j);  // increment loop index
+	if (vld) {
+		/* 
+		 * If a DES key is provided, the incomong Text is encrypted.
+		 * The des routines are provided as a Verilog macro that is 
+		 * integrated at compile time. des is pipelined and therefore
+		 * has minimal impact on the compute time for the 20MB Text.
+		 */
+		if (key) { 
+			des(evalue0,key,1,&value0);
+	        	des(evalue1,key,1,&value1);
+		}
+		/*
+		 * The actual search for any of the 10 patterns is done
+		 * here.  Note that since there is no data dependency
+		 * all of these 10 searches can actually occur in parallel.
+		 * This is accomplished by inlining the search routine. 
+		 * There will be 10 intantiations of the search that can
+		 * all proceed in parallel.
+		 */
+		search (starting, text, value0, value1, pattern0, &result0);
+		search (starting, text, value0, value1, pattern1, &result1);
+		search (starting, text, value0, value1, pattern2, &result2);
+		search (starting, text, value0, value1, pattern3, &result3);
+		search (starting, text, value0, value1, pattern4, &result4);
+		search (starting, text, value0, value1, pattern5, &result5);
+		search (starting, text, value0, value1, pattern6, &result6);
+		search (starting, text, value0, value1, pattern7, &result7);
+		search (starting, text, value0, value1, pattern8, &result8);
+		search (starting, text, value0, value1, pattern9, &result9);
+		/*
+		 * Here we just accumulate the number of finds that each
+		 * search routine has come up with.
+		 */
+		cg_accum_add_32_np (result0+result1+result2+result3+result4+
+				    result5+result6+result7+ result8+result9, 
+				    1, 0, starting, &find);
+		text = value1;
+	}
+	starting = 0;
+   } while (j < n/8);
+   *found = find;
+}
+
+/*
+ * The search routine uses a brute force search.  This is actually very fast because
+ * the comparisons can all be done in parallel. 
+ */
+void search (int firstpass, uint64_t texta, uint64_t textb, uint64_t textc, uint64_t pattern, int *result) {
+
+char p0, p1, p2, p3, p4, p5, p6, p7;
+char t0, t1, t2, t3, t4, t5, t6, t7;
+char t8, t9, ta, tb, tc, td, te, tf;
+char tg, th, ti, tj, tk, tl, tm, tn;
+int  r0, r1, r2, r3, r4, r5, r6, r7;
+int  r8, r9, ra, rb, rc, rd, re, rf;
+   /*
+    * Split the 64 bit Text and Search Pattern out into bytes
+    * to make the comparisons simple
+    *.
+   split_64to8(pattern,&p7,&p6,&p5,&p4,&p3,&p2,&p1,&p0);
+   split_64to8(texta,  &t7,&t6,&t5,&t4,&t3,&t2,&t1,&t0);
+   split_64to8(textb,  &tf,&te,&td,&tc,&tb,&ta,&t9,&t8);
+   split_64to8(textc,  &tn,&tm,&tl,&tk,&tj,&ti,&th,&tg);
+   /*
+    * Do parallel Search Pattern comparisons in every starting position
+    * across 16 byte positions of the Text. Note that this allows 
+    * finding overlapping patterns. Notice that there are no data 
+    * dependencies among the compare routines input. Therefore all
+    * of the compares can occur in parallel.  The compare routines is 
+    * inlined, creating 16 instantiations of the resulting logic.
+    */
+   if (firstpass == 0) {
+        /* On the 1st time through we only have 2 64 bit wds of text.
+	 * After the 1st time, we always have 3 64 bit wds of text
+	 * to work on.
+	 */
+   	compare(t0,t1,t2,t3,t4,t5,t6,t7,p0,p1,p2,p3,p4,p5,p6,p7,&r0);
+   	compare(t1,t2,t3,t4,t5,t6,t7,t8,p0,p1,p2,p3,p4,p5,p6,p7,&r1);
+   	compare(t2,t3,t4,t5,t6,t7,t8,t9,p0,p1,p2,p3,p4,p5,p6,p7,&r2);
+   	compare(t3,t4,t5,t6,t7,t8,t9,ta,p0,p1,p2,p3,p4,p5,p6,p7,&r3);
+   	compare(t4,t5,t6,t7,t8,t9,ta,tb,p0,p1,p2,p3,p4,p5,p6,p7,&r4);
+   	compare(t5,t6,t7,t8,t9,ta,tb,tc,p0,p1,p2,p3,p4,p5,p6,p7,&r5);
+   	compare(t6,t7,t8,t9,ta,tb,tc,td,p0,p1,p2,p3,p4,p5,p6,p7,&r6);
+   	compare(t7,t8,t9,ta,tb,tc,td,te,p0,p1,p2,p3,p4,p5,p6,p7,&r7);
+   } else {
+   	r0 = 0;
+   	r1 = 0;
+   	r2 = 0;
+   	r3 = 0;
+   	r4 = 0;
+   	r5 = 0;
+   	r6 = 0;
+   	r7 = 0;
+   }
+   compare(t8,t9,ta,tb,tc,td,te,tf,p0,p1,p2,p3,p4,p5,p6,p7,&r8);
+   compare(t9,ta,tb,tc,td,te,tf,tg,p0,p1,p2,p3,p4,p5,p6,p7,&r9);
+   compare(ta,tb,tc,td,te,tf,tg,th,p0,p1,p2,p3,p4,p5,p6,p7,&ra);
+   compare(tb,tc,td,te,tf,tg,th,ti,p0,p1,p2,p3,p4,p5,p6,p7,&rb);
+   compare(tc,td,te,tf,tg,th,ti,tj,p0,p1,p2,p3,p4,p5,p6,p7,&rc);
+   compare(td,te,tf,tg,th,ti,tj,tk,p0,p1,p2,p3,p4,p5,p6,p7,&rd);
+   compare(te,tf,tg,th,ti,tj,tk,tl,p0,p1,p2,p3,p4,p5,p6,p7,&re);
+   compare(tf,tg,th,ti,tj,tk,tl,tm,p0,p1,p2,p3,p4,p5,p6,p7,&rf);
+
+   *result = r0+r1+r2+r3+r4+r5+r6+r7+r8+r9+ra+rb+rc+rd+re+rf;
+}
+
+/*
+ * The compare routine simply does a byte by byte compare and returns
+ * a zero, non-zero result. 
+ */
+void compare (char a0,char a1,char a2,char a3,char a4,char a5,char a6,char a7,
+              char b0,char b1,char b2,char b3,char b4,char b5,char b6,char b7, int *r) {
+	      /*
+	       * Note that al of the "=="'s are done by multiple pipelined functional
+	       * units operating in parallel.  So the comparison takes 1 clock cycle.
+	       */
+	      *r = ((a0==b0)&(a1==b1)&(a2==b2)&(a3==b3)&
+	            (a4==b4)&(a5==b5)&(a6==b6)&(a7==b7));
+}
+

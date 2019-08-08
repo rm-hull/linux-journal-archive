@@ -1,0 +1,413 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>A NATural Progression</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    David continues his series on the Netfilter framework with a&#10;    look at NAT and how to avoid common errors when constructin&#10;    iptales rules.&#10;    "><meta name="keywords" content="iptables, patch-o-matic, Netfilter, packets, DNAT, SNAT"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xdb4580.0xeabab0"></a>A NATural Progression</h1></div><div><div class="author"><h3 class="author">David A. Bandel</h3></div><div class="issuemoyr">Issue #98, June 2002</div></div><div><p>
+    David continues his series on the Netfilter framework with a
+    look at NAT and how to avoid common errors when constructin
+    iptales rules.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdb4580.0xeac660"></a></h2></div></div><p><span   class="emphasis"><em>Editor's Note: Due to a printer
+error, David Bandel's article on iptables building was not complete
+in the magazine. We present it here in it's entirety.</em></span>
+</p><p>One of the best tools at our disposal within the Netfilter
+framework is NAT. NAT allows us to obfuscate (but not hide) our
+true network, forcing would-be black hats to work harder (and
+possibly go after easier targets). It also permits us to make the
+best use of limited IPs. Last month [see &ldquo;Netfilter 2: in the POM
+of Your Hands&rdquo; in the May 2002 issue of <i  >LJ</i>]
+we looked at extending iptables to include experimental or beta
+matches and targets. This month we look at doing NAT the correct
+way, take a closer look at one or two other matches, then see what
+some of the more common errors are when constructing iptables rules
+and how to avoid them.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdb4580.0xeac870"></a>SNAT, DNAT and Managing Services</h2></div></div><p>Given the shortage of usable IPv4 addresses left today, it's
+likely your ISP didn't provide you enough IPs to run all your
+systems. If you're lucky, you got more than half a dozen you could
+actually use. But if you don't use them, you'll lose them. And you
+don't want that, or there's no room for expansion tomorrow. So
+you're going to make your firewall look like as many systems as you
+have IPs to use. How to do that? The easiest way is to assign all
+your IPs to one NIC (the one connected to your ISP) and SNAT
+connections so they look like they come from each IP in turn (this
+example assumes your internal network is 192.168.0.0/24, which is
+bound to eth1, and your usable IPs are
+209.127.112.26-209.127.112.30, which are bound to eth0):</p><pre     class="programlisting">
+iptables -t nat -A POSTROUTING
+-o eth0 -s
+--to-source <span   class="emphasis"><em>209.127.112.26-209.127.112.30</em></span>
+</pre><p>Now iptables will NAT the first connection to .26, the second
+to .27, the third to .28 and so on, wrapping around to .26 after
+the connection to .30.
+</p><p>One word of caution: test this before you deploy it. I've had
+one router that didn't like seeing multiple IPs sourced from the
+same MAC address. It would pass the first connection, but
+subsequent connections would time out. The router's built-in
+firewall (which couldn't be turned off by the client) most likely
+thought the other packets were spoofed and was silently dropping
+them.</p><p>Let's make sure we accept all outgoing connections but only
+accept incoming connections that are related to these outgoing
+connections:</p><pre     class="programlisting">
+iptables -t filter -A FORWARD -i ! eth0 -m state
+--state NEW,ESTABLISHED,RELATED -j ACCEPT
+iptables -t filter -A FORWARD -i eth0 -m state
+--state ESTABLISHED,RELATED -j ACCEPT
+iptables -t filter -A FORWARD -i eth0 -m state
+--state NEW,INVALID -j DROP
+</pre><p>Now that we've managed outgoing traffic, let's assume we've
+moved all our services inside this firewall. We'll further assume
+they are all inside eth1 on the 192.168.0.0/24 network. Each
+service has two IPs associated with it: an external IP that the
+world sees and an internal IP that we see. Specifically, we'll
+assign the following:
+<div class="itemizedlist"><ul type="disc"><li><p>Apache web server (serves both insecure and secure
+connections): 209.127.112.26 and 192.168.0.4</p></li><li><p>FTP server: 209.127.112.27 and 192.168.0.5</p></li><li><p>Primary DNS server: 209.127.112.26 and
+192.168.0.6</p></li><li><p>Secondary DNS server: 209.127.112.28 and
+192.168.0.7</p></li><li><p>Primary mail server: 209.127.112.28 and
+192.168.0.8</p></li><li><p>Secondary mail server: 209.127.112.29 and
+192.168.0.9</p></li></ul></div>
+
+</p><p>Because of our iptables state table rules above, each service
+(or more specifically, each port that corresponds to that service)
+will not only have to be forwarded through the firewall to the
+correct IP inside, but we'll need a rule to accept that NEW
+traffic. Starting with Apache, which in our case uses both ports 80
+and 443 (for SSL), we have:</p><pre     class="programlisting">
+iptables -t filter -I FORWARD -i eth0
+-d
+iptables -t nat -A PREROUTING -d
+-p tcp --dport 80 -j DNAT --to-destination
+iptables -t filter -I FORWARD -i eth0
+-d <span   class="emphasis"><em>209.127.112.26</em></span> -p tcp --dport 443 -j
+ACCEPT
+iptables -t nat -A PREROUTING -d
+--dport 443 -j DNAT --to-destination <span   class="emphasis"><em>192.168.0.4</em></span>
+</pre><p>Notice that we had to insert a rule in the FORWARD chain.
+This is because we already have a more general rule that would have
+dropped NEW connections. We can insert a rule anywhere in a chain,
+but if we don't specify where, the default is to insert it as the
+first rule. Normally, this will not be a problem and will put our
+specific rules ahead of our general rules.
+</p><p>Note that we also specified the IP on which this connection
+should show. This is not necessary because connections showing up
+on other IPs will be handled by the state table and dropped, unless
+we've done something really questionable and started a web server
+on our firewall. If no ports on our firewall are open, we're okay.
+We always can protect them just in case by ensuring we also have
+stateful rules for our INPUT chain:</p><pre     class="programlisting">
+iptables -t filter -A INPUT -i ! eth0 -m state
+--state NEW,RELATED,ESTABLISHED -j ACCEPT
+iptables -t filter -A INPUT -i eth0 -m state
+--state RELATED,ESTABLISHED -j ACCEPT
+iptables -t filter -A INPUT -i eth0 -m state
+--state NEW,INVALID -j DROP
+</pre><p>The first rule above allows NEW, ESTABLISHED and RELATED
+connections from lo (the localhost interface) as well as any
+internal devices, omitting only our external device, which is dealt
+with in the next two rules.
+</p><p>Next we look at the FTP connection. This is straightforward
+and exactly the same as the above rules, but for port 21:</p><pre     class="programlisting">
+iptables -t filter -I FORWARD -i eth0 -p tcp
+--dport 21 -j ACCEPT
+iptables -t nat -A PREROUTING -i eth0
+-d
+--to-destination <span   class="emphasis"><em>192.168.0.5</em></span>
+</pre><p>We don't have to worry about the FTP-data channel (port 20)
+because our FTP server opens it outgoing, and our state rules will
+pass this new connection out.
+</p><p>Now it gets a little more difficult. DNS works on both UDP
+for normal queries and TCP for zone transfers. If we don't want to
+allow zone transfers to the outside, we only open UDP. If we want
+to allow zone transfers, then we have to allow both. Assuming we
+want to allow both, we know that we can specify UDP, TCP or ICMP as
+protocols. You must specify -p (protocol) in order to specify a
+port. If you want both UDP and TCP, you should be able to say &ldquo;not
+ICMP&rdquo;, and the other two are assumed automatically. Unfortunately,
+it doesn't work that way.</p><p>When you specify a protocol, even if you say <b  >-p !
+ICMP</b>, it's the ICMP match module that is loaded, not the
+TCP and UDP match modules. So you'll get an error message when you
+specify a port. This is a danger with using a negative match; the
+match module that is loaded is the module specified, not the
+modules you may assume are loaded. You must specify positively each
+match you want so the corresponding match module is loaded.</p><p>For now, let's assume you are only interested in opening the
+UDP port:</p><pre     class="programlisting">
+iptables -t filter -I FORWARD -i eth0
+-d
+iptables -t nat -A POSTROUTING -i eth0
+-d
+--to-destination
+iptables -t filter -I FORWARD -i eth0
+-d
+iptables -t nat -A POSTROUTING -i eth0
+-d
+--to-destination <span   class="emphasis"><em>192.168.0.8</em></span>
+</pre><p>And finally, we need to deal with our mail host:
+<pre     class="programlisting">
+iptables -t filter -I FORWARD -i eth0
+-d <span   class="emphasis"><em>209.127.112.28</em></span> -i eth0 -p TCP --dport 25 -J
+ACCEPT
+iptables -t nat -A POSTROUTING -i eth0
+-d
+--to-destination
+iptables -t filter -I FORWARD -i eth0
+-d <span   class="emphasis"><em>209.127.112.29</em></span> -i eth0 -p UDP --dport 25 -J
+ACCEPT
+iptables -t nat -A POSTROUTING -i eth0
+-d
+--to-destination <span   class="emphasis"><em>192.168.0.9</em></span>
+</pre>
+
+
+We can now accept incoming mail. Does anyone see a problem here?
+</p><p>If we test our outgoing mail using <b  >mail -v
+user@another.dom</b>, our firewall will grab one of
+209.127.112.25-209.127.112.30. If our DNS records say our MX host
+is 209.127.112.28, then we have only a 20% chance of grabbing that
+IP and an 80% chance that upstream mail hosts will bounce our mail
+as not being from a host with a DNS MX RR&mdash;not good.</p><p>So how do we fix this? If we have the luxury of adding
+<span   class="emphasis"><em>all</em></span> our IPs as MX hosts, that would solve part
+of the problem, but then upstream hosts might spend time connecting
+to IPs of ours that don't DNAT the mail through. And we really
+don't want all those IPs to appear as MX IPs.</p><p>The correct response is to add a more specific SNAT rule
+ahead of the general SNAT rules that will handle outgoing traffic
+on port 25. The danger here is that if we can't trust our internal
+users, we also must make sure that internal users can't abuse port
+25. So we'll add three rules for outgoing traffic, one to SNAT port
+25 traffic coming from our primary mail server (192.168.0.8) only
+out through 209.127.112.28, and two to block port 25 traffic from
+all other internal addresses except our true mail host:</p><pre     class="programlisting">
+iptables -t filter -I FORWARD -i eth1
+-s
+iptables -t filter -I FORWARD -i eth1 -p tcp
+--dport 25 -s
+-I POSTROUTING -o eth0 -p tcp --dport 25
+-s <span   class="emphasis"><em>192.168.0.8</em></span> -j SNAT --to-source <span   class="emphasis"><em>209.127.112.28</em></span>
+</pre><p>Some of you may think: hah! caught him. The first two rules
+above are reversed. Well, yes, they are. But that's because we're
+inserting them one at a time as the first rule, so rule two above
+will really be rule one in the FORWARD chain after running them
+both. The SNAT rule is in another chain, so it could have gone
+anywhere. Also, I suggest you make sure the first rule above is
+correct for your system. If the untrusted network is
+192.168.0.0/24, and the trusted network is 192.168.1.0/24, you may
+need the source (-s) to be 192.168.0.0/23 to cover both. Or,
+perhaps just drop the -s option and match on the inbound interface
+(-i).
+</p><p>I suggest that the best way to build a firewall is to walk
+through each chain to see where and how (or even if) a particular
+packet will be handled. Don't do as we've been doing here inserting
+rules seemingly willy-nilly. Build your chain on paper with all the
+rules in the correct order. Then you won't make mistakes. You can
+always check afterward to make sure the rules are as you think you
+wanted them with: <b  >iptables -t &lt;table&gt; -L
+-nv</b>. The above rule with the -v included will show you
+how many packets and how many bytes are affected by this rule. If,
+after a week has gone by, you still have rules with 0 bytes
+affected by it, you might want to relook at that rule's position in
+the chain. But just because a rule has affected packets doesn't
+mean it's in the right place. It may have only affected half the
+packets that really should have been affected.</p><p>I'm waiting for someone to write &ldquo;the killer app&rdquo; for
+Netfilter, and that would be a utility that runs tests, analyzes
+the rules and allows you to move them around and test again. But
+until that day comes, you'll have to do it by hand.</p><p>Some of you may have noticed that I make heavy use of -i
+eth0, or -i ! eth0, but in general match an interface. Often, you
+can probably see that this isn't necessary because I've limited the
+source IP address or some other part of the packet header that
+pretty much ensures matching what we want. But I do this for a
+particular reason. I turn off rp_filters (reverse path filters).
+These tend to interfere with legitimate VPN packets. Besides,
+Linux's rp_filter is nowhere near as granular as iptables.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdb4580.0xeadcb8"></a>Protecting Your Data</h2></div></div><p>It's very difficult to make sure someone on the inside isn't
+passing data through your firewall that shouldn't go out. And maybe
+some folks have a legitimate reason for passing company data out
+through the firewall. But let's assume for now that that's not the
+case. You want to stop certain data from leaving (or at least
+attempt to do so).</p><p>We can try to prevent certain data from leaving by marking
+that data, then looking for that mark using the string match. Here
+I suggest a policy of putting a string, such as &ldquo;Copyright,
+foo.corp, not for publication&rdquo; at the top of those files you don't
+want sent through the firewall. Then, on the inner firewall, or as
+a rule on eth2 (where eth0 is the Internet, eth1 is the untrusted
+LAN and eth2 is the trusted LAN) on your outer firewall, you might
+want something like this:</p><pre     class="programlisting">
+iptables -t filter -I FORWARD -i eth2 -m string
+--string="Copyright, foo.corp, not for publication"
+-j DROP
+</pre><p>A few words about this particular solution. First, ensure you
+have the ipconntrack module loaded. This will defragment packets
+and result in a much higher likelihood of seeing the string.
+Second, don't expect this to catch everything. Particularly, if a
+file has been compressed, the phrase will not be recognizable as
+such. So this does have limitations.
+</p><p>It will work very nicely, however, if you are running an IIS
+server and want to drop packets with the string root.exe, for
+example. The rule might look like this:</p><pre     class="programlisting">
+iptables -t filter -I FORWARD -m string
+--string=root.exe -j DROP
+</pre><p>While it might be amusing to use the MIRROR target and turn
+the attack back on the attacker, this would be an ethically
+questionable thing to do.
+</p><p>You also have the PSD (port-scan detection) match if you're
+still subject to this kind of activity. I don't see so much port
+scanning anymore as I see script kiddies that have a particular
+tool; they aim it at my systems and fire. Usually it's an FTP
+attack designed to compromise an IIS server running FrontPage
+extensions. I see an FTP in, then lots of activity trying to create
+_vti_private files and the like. We can stop this with:</p><pre     class="programlisting">
+iptables -t filter -I FORWARD -i eth0 -p tcp
+--dport 21 -m string
+--string="_vti_private" -j REJECT
+</pre><p>Obviously, if you're running a FrontPage server and folks
+aren't &ldquo;publishing&rdquo; to it (which uses port 80) but moving their
+sites via FTP, the above won't work.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdb4580.0x12a6328"></a>Targets and Matches and More, Oh My!</h2></div></div><p>This article has not touched on a large number of extensions
+and targets. Some of you with very specific routing requirements
+might want to look at the MARK target, with or without the realm
+match, to do some really funky routing tricks. This will require
+use of iproute2 in conjunction with iptables. This is a very
+powerful combination for ISPs or others with very specific routing
+and bandwidth-limiting requirements.</p><p>Others of you probably wanted to see some ULOG target
+examples or iplimit or mport examples. But these are very similar
+to other matches or targets and are handled in the same way. Often
+the help in the kernel configuration will show you enough of an
+iptables rule fragment to make use of these extensions.</p><p>Just remember, only ACCEPT, DROP or REJECT are final targets
+for a packet and stop iptables processing of a packet. The RETURN
+target only terminates a chain, but not iptables processing.</p><p>I also haven't touched on the MANGLE table. But this table
+works in the same manner as the mangle target in ipchains. Try it
+out if you're so inclined. You may find you won't be able to use
+the numeric (hex) targets but have to use the descriptive values.
+If you can't remember what they are, try:</p><pre     class="programlisting">
+iptables -j TOS -h
+</pre><p>This trick also works if you need a list of the ICMP types
+because you want to handle a particular ICMP type with iptables
+(such as permitting pings, which will be dropped by a firewall with
+<b  >-m state --state ESTABLISHED,RELATED</b>):
+<pre     class="programlisting">
+iptables -p icmp -h
+</pre>
+
+
+Armed with the correct ICMP name, echo-request, you can permit
+pings:
+<pre     class="programlisting">
+iptables -t filter -I INPUT -i eth0 -p icmp
+--icmp-type echo-request -j ACCEPT
+</pre>
+
+
+You also can rate-limit this using either iplimit or limit if
+you're concerned about this. But note that limiting pings doesn't
+limit the amount of traffic on your link, just the rate at which
+you'll respond to this traffic. Anyway, standard ping packets are
+so small and normally sent only once a second by any given host
+that they're barely noticeable as traffic.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdb4580.0x12a66f0"></a>Errors</h2></div></div><p>Some common errors I've seen with iptables scripts include
+choosing an inappropriate interface for packets. This includes not
+selecting all interfaces that might be affected. Often lo, the
+localhost interface, is forgotten about on systems used as both
+firewall and host (usually a system used in a home). I've also seen
+outgoing packets using the MANGLE table, the OUTPUT chain or the
+SNAT target that have <b  >-i &lt;interface&gt;</b>
+rather than <b  >-o &lt;interface&gt;</b>.</p><p>Sometimes rules get so specific nothing matches them. Try the
+most general rule you can get away with, adding match extensions
+only as required. Just be careful where these rules are located in
+relation to other rules, so they're not picking up packets you
+don't want them to.</p><p>Ensure you're using the right case: ipchains uses lowercase
+for its built-in chains, but iptables uses uppercase. Targets are
+also uppercase. Almost everything else is lowercase. If you're
+using the short options (as I did in this article), the chain
+action (Insert, Append, Delete, etc.) uses uppercase.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdb4580.0x12a6958"></a>Conclusion</h2></div></div><p>Netfilter and iptables make an extremely powerful firewall.
+But to take advantage of it, you need to master the basic syntax as
+explained in my first article (&ldquo;Taming the Wild Netfilter&rdquo;,
+published in the September 2001 issue of <i  >LJ</i>),
+have an understanding of the modules and matches available to you
+and have an understanding of what a particular system can know
+about a packet. Armed with these three things, you can build highly
+complex, tailored firewall solutions for whatever problem you might
+have.</p><p>Know how to take advantage of new and experimental matches
+and targets (and always test them). You learned this in last
+month's article with the iptables build targets of pending-patches,
+most-of-pom and patch-o-matic. Testing by creating and sending
+specific packets to a firewall interface is beyond the scope of
+this particular article, but a number of utilities exist to assist
+you here (sendip or ipmagic come to mind).</p><p>Build the missing modules for the kernel (make sure they're
+selected).</p><p>Build your rule chains, more specific rules first followed by
+more general rules. If it helps you organize things, go ahead and
+build custom user chains that can be called from another chain.
+While this was not covered specifically in this article, it was
+addressed in the September 2001 article. Use everything at your
+disposal, including the LOG target to help you see if particular
+rules were applied and to which packets.</p><p>With just some basic knowledge, iptables are not difficult to
+use. Read some iptables scripts on the Internet. I don't recommend
+using them as they are; they almost certainly won't work for you
+without a lot of tweaking, but they will show you syntax, rules
+(from which you can grab fragments), thought processes, etc.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="5839aa.jpg"></div>
+
+        <span   class="bold"><b>David
+      A. Bandel</b></span>
+      (<a href="mailto:david@pananix.com">david@pananix.com</a>)
+      is a Linux/UNIX consultant currently living in the Republic of
+      Panama. He is coauthor of Que Special Edition: Using Caldera
+      OpenLinux.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../098/toc098.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

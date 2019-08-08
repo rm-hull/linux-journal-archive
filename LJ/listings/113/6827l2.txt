@@ -1,0 +1,338 @@
+/* 
+ * pump.c 
+ * 
+ * Sample the gpio pin periodically and report the
+ * status as 'on' or 'off' to reflect the state of
+ * the connected pump.  This was based very
+ * heavily on the examples in The Linux Kernel
+ * Module Programming Guide.
+ */
+
+#include <linux/kernel.h>   /* Kernel work */
+#include <linux/module.h>   /* A module */
+#include <linux/proc_fs.h>
+#include <asm/uaccess.h>
+#include <asm/io.h>
+#include <linux/timer.h>
+#include <linux/sched.h>    /* For jiffies */
+
+
+MODULE_LICENSE( "GPL" );
+
+static __u16 *mmcrbase,*pio_fun,*pio_dir,*pio_dat;
+
+
+#define BUFSIZE 32     /* buffer to copy to
+			  user-land */
+#define DMASK 0x1000;  /* the gpio pin of
+			  interest */
+
+/*
+ * Module parameters to tweak the samples
+ *
+ * nsamp controls the number of microsamples to
+ * take per macro sample.  Each of the nsamp
+ * samples is taken 1 jiffy apart.  
+ * 
+ * mper is the macro interval.  One set of
+ * microsamples is taken every mper seconds.
+ *
+ * verbose controls the logging of info to klog
+ */
+static int nsamp = HZ/60;     /* want to sample as
+				 fast as possible
+				 for 1 period */
+
+static int mper = 5;          /* seconds per
+				 filtered
+				 datapoint  */
+static int verbose = 0;
+
+#define MAXSAMPLES HZ/2
+
+MODULE_PARM( mper, "i" );
+MODULE_PARM( nsamp, "i" );
+MODULE_PARM( verbose, "i" );
+
+/*
+ * This timer is used to take N samples every M
+ * seconds.
+ * 
+ * The sample results are stored in a buffer and
+ * checked for each read of the /proc/pump file.
+ */
+
+static struct timer_list timer;
+static unsigned char sample_buf[MAXSAMPLES];
+static int pump_state = 0;
+
+static void sample( unsigned long data ){
+
+  static int remaining_samples = 0;
+  __u16 dat;
+  int ntimeout = 1;
+  int mtimeout = HZ*mper - nsamp*ntimeout;
+
+  if ( remaining_samples ){
+    /* 
+     * Take another microsample
+     */
+    timer.expires = jiffies + ntimeout;
+    remaining_samples--;
+    dat = readw( pio_dat ) & DMASK;
+    if ( dat == 0 ){ 
+      /* low true logic at the pin */
+      sample_buf[remaining_samples] = 1; 
+    }
+    add_timer( &timer );
+  }
+  else {
+    /*
+     * We have accumulated a full buffers worth of
+     * samples.  Decide if the pump is on.
+     */
+    int i;
+    char buf[MAXSAMPLES];
+
+    pump_state = 0;
+
+    for( i = 0; i < nsamp; i++ ){
+      /* itegrate the pin signal */
+      pump_state += sample_buf[i];
+
+      /* convert to a printable buffer for
+	 osciloscope mode */
+      buf[i] = sample_buf[i] + '0';
+      
+      /* clear the buffer for next time */
+      sample_buf[i] = 0;
+    }
+    buf[i] = '\0';
+
+    if((verbose==1 && pump_state) || (verbose>1) ){
+      /* print the signal trace */
+      printk( KERN_INFO 
+	      "Sample buffer at tick (%ld) %s\n", 
+	      jiffies, buf );
+    }
+
+    /* long tick between samples */
+    remaining_samples = nsamp;
+    timer.expires = jiffies + mtimeout;
+    add_timer(&timer);
+  }
+
+}
+
+
+static ssize_t pump_output(
+	struct file *file,   /* The file read */
+	char *buf,           /* The buffer to put
+			      * data to (in the
+			      * user segment) */
+	size_t len,          /* The length of the
+				buffer */
+	loff_t *offset)      /* Offset in the file
+				- ignore */
+{
+  char my_buffer[BUFSIZE];  
+  static int finished = 0;
+  int i;
+
+
+  if ( finished ){ /* flag so we indicate EOF */
+    finished = 0;
+    return 0;
+  }
+
+  if ( pump_state ){             
+    len = sprintf( my_buffer, "on\n" );
+  }
+  else {
+    len = sprintf( my_buffer, "off\n" );
+  }
+  
+  /* copy out to userlane */
+  for(i=0; i < len && my_buffer[i]; i++  ){
+    put_user( my_buffer[i], buf + i );
+  }
+  
+  finished = 1;
+  
+  return i;
+}
+
+static struct proc_dir_entry *pde;
+
+static int pump_permission(
+	  struct inode *inode, 
+	  int op)
+{
+  if (op==4 || (op==2 && current->euid==pde->uid))
+    return 0; 
+
+  /* If it's anything else, access is denied */
+  return -EACCES;
+}
+
+
+static int pump_open(
+     struct inode *inode, 
+     struct file *file)
+{
+  MOD_INC_USE_COUNT; 
+  return 0;
+}
+
+
+static int pump_close(
+     struct inode *inode, 
+     struct file *file)
+{
+  MOD_DEC_USE_COUNT;
+  return 0;  /* success */
+}
+
+
+static struct file_operations file_ops =
+  {
+    NULL,         /* module owner */
+    NULL,         /* llseek */
+    pump_output,  /* "read" from the file */
+    NULL,         /* "write" to the file */
+    NULL,         /* readdir */
+    NULL,         /* poll */
+    NULL,         /* ioctl */
+    NULL,         /* mmap */
+    pump_open,    /* Somebody opened the file */
+    NULL,         /* flush */
+    pump_close,   /* release */
+    NULL,         /* fsync */
+    NULL,         /* fasync */
+    NULL,         /* lock */
+    NULL,         /* readv */
+    NULL,         /* writev */
+    NULL,         /* sendpage */
+    NULL          /* get_unmapped_area */
+  };
+
+
+
+static struct inode_operations inode_ops =
+  {
+    NULL, /* create */
+    NULL, /* lookup */
+    NULL, /* link */
+    NULL, /* unlink */
+    NULL, /* symlink */
+    NULL, /* mkdir */
+    NULL, /* rmdir */
+    NULL, /* mknod */
+    NULL, /* rename */
+    NULL, /* readlink */
+    NULL, /* follow_link */
+    NULL, /* truncate */
+    pump_permission, /* check for permissions */
+    NULL, /* revalidate */
+    NULL, /* setattr */
+    NULL  /* getattr */
+  };
+
+
+static void start_timer( void ){
+  int ntimeout = 1;
+
+  if ( verbose ){
+  	printk( KERN_INFO 
+	" Starting timer (%dHZ) mper=%d, "
+         "nsamp=%d\n", 
+	 HZ, mper, nsamp );
+  }
+
+  init_timer( &timer );
+  timer.expires = jiffies + ntimeout;
+  timer.function = sample;
+  timer.data = 0;
+  add_timer( &timer );
+}
+
+
+static int init()
+{
+  if ( (pde = create_proc_entry( 
+		"pump", 
+		S_IFREG|S_IRUGO, 
+		&proc_root)) ){
+
+    unsigned long cbar = inl_p(0xfffc);
+    __u16 fun, dir, dat;
+    int n=0;
+
+    /* set the various pde file structures */
+    pde->size = BUFSIZE;
+    pde->proc_iops = &inode_ops;
+    pde->proc_fops = &file_ops;
+
+
+    /* taken from the wdt520.c watchdog code */
+    if ( cbar & 0x80000000 ){
+      mmcrbase = (__u16 *)(cbar & 0x3FFFFFFF);
+    }
+    else {
+      mmcrbase = (__u16 *)0xFFFEF000;
+    }
+    
+    pio_fun = (__u16 *)((char *)mmcrbase + 0xc20 );
+    pio_fun = ioremap( (unsigned long)pio_fun ,2 );
+    pio_dir = (__u16 *)((char *)mmcrbase + 0xc2a );
+    pio_dir = ioremap( (unsigned long)pio_dir ,2 );
+    pio_dat = (__u16 *)((char *)mmcrbase + 0xc30 );
+    pio_dat = ioremap( (unsigned long)pio_dat ,2 );
+
+    /*
+     * Make sure PIO12 is set as an input
+     */
+    dir = readw( pio_dir );
+    fun = readw( pio_fun );
+    dat = readw( pio_dat );
+
+    dir &= ~DMASK;
+    fun &= ~DMASK;
+
+    writew( fun, pio_fun );
+    writew( dir, pio_dir );
+
+    /* 
+     * ensure that the passed parameters are still
+     * sensible
+     */
+    if ( (nsamp == 0) || (nsamp >= MAXSAMPLES) ){ 
+      nsamp = MAXSAMPLES>>1; 
+    }
+
+
+    while ( n < nsamp ){
+      sample_buf[n++] = 0;
+    }
+
+    start_timer();
+      
+    return 0;
+  }
+  return -ENOMEM;
+}
+
+
+/* Cleanup - unregister our file from /proc */
+static void cleanup()
+{
+
+  iounmap( pio_fun );
+  iounmap( pio_dat );
+  iounmap( pio_dir );
+  del_timer( &timer );
+  remove_proc_entry(pde->name, &proc_root );
+}  
+
+module_init(init);
+module_exit(cleanup);

@@ -1,0 +1,692 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Three Ways to Web Server Concurrency
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Multiprocessing, multithreading and evented I/O: the trade-offs in Web&#10;servers.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1d35580.0x1e2cac0"></a>
+Three Ways to Web Server Concurrency
+</h1></div><div><div class="author"><h3 class="author">
+Martin
+ 
+Kalin
+</h3></div><div class="issuemoyr">Issue #214, February 2012</div></div><div><p>
+Multiprocessing, multithreading and evented I/O: the trade-offs in Web
+servers.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e2d1f8"></a></h2></div></div><p>
+A Web server needs to support concurrency. The server should service
+clients in a timely, fair manner to ensure that no client starves
+because some other client causes the server to hang. Multiprocessing
+and multithreading, and hybrids of these, are traditional ways to
+achieve concurrency. Node.js represents another way, one based on system libraries
+for asynchronous I/O, such as epoll (Linux) and kqueue (FreeBSD). To
+highlight the trade-offs among the approaches, I have three echo servers
+written in close-to-the-metal C: a forking_server, a threading_server
+and a polling_server.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e2d3b0"></a>
+Shared Code</h2></div></div><p>
+The Web servers use utils.c (Listing 1). The function
+<tt  >error_msg</tt> prints
+messages and optionally terminates the server;
+<tt  >announce_client</tt> dumps
+information about a connection; and
+<tt  >generate_echo_response</tt> creates a
+syntactically correct HTTP response.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e2d618"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. utils.c</b></p><pre     class="programlisting">
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;netinet/in.h&gt;
+#include &lt;fcntl.h&gt;
+#include "utils.h"
+
+void error_msg(const char* msg, bool halt_flag) {
+    perror(msg);
+    if (halt_flag) exit(-1); 
+}
+
+/* listening socket */
+int create_server_socket(bool non_blocking) {
+  /* Modify as needed. */
+  const int port = 3000;  
+  
+  struct sockaddr_in server_addr;
+  
+  /* create, bind, listen */
+  int sock = socket(AF_INET,     /* family */
+		    SOCK_STREAM, /* TCP */
+		    0);          
+  if (socket &lt; 0) error_msg("Problem with socket call", true);
+
+  /* non-blocking? */
+  if (non_blocking) fcntl(sock, F_SETFL, O_NONBLOCK);
+  
+  /* bind */
+  bzero(&amp;server_addr, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = INADDR_ANY;
+  server_addr.sin_port = htons(port); /* host to network endian */
+  if (bind(sock, (struct sockaddr*) &amp;server_addr, 
+   &#8618;sizeof(server_addr)) &lt; 0) 
+    error_msg("Problem with bind call", true);
+
+  /* listen */  
+  fprintf(stderr, "Listening for requests on port %i...\n", port);
+  if (listen(sock, BACKLOG) &lt; 0)
+    error_msg("Problem with listen call", true);
+
+  return sock;
+}
+
+void announce_client(struct in_addr* addr) {
+  char buffer[BUFF_SIZE + 1];
+
+  inet_ntop(AF_INET, addr, buffer, sizeof(buffer));
+  fprintf(stderr, "Client connected from %s...\n", buffer);
+}
+
+void generate_echo_response(char request[ ], char response[ ]) {
+  strcpy(response, "HTTP/1.1 200 OK\n");        
+  strcat(response, "Content-Type: text/*\n");
+  strcat(response, "Accept-Ranges: bytes\n"); 
+  strcat(response, "Connection: close\n\n");
+  strcat(response, request);
+}
+</pre></div><p>
+The central function is <tt  >create_server_socket</tt>, which creates a blocking or a 
+nonblocking listening socket. This function invokes three system
+functions:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >socket</tt> &mdash; create socket.
+</p></li><li><p>
+<tt  >bind</tt> &mdash; set port.
+</p></li><li><p>
+<tt  >listen</tt> &mdash; await connections.
+</p></li></ul></div><p>
+The first call creates a TCP-based socket, and the bind call then specifies
+the port number at which the Web server awaits connections. The listen
+call starts the waiting for up to <tt  >BACKLOG</tt> connections:
+
+<pre     class="programlisting">
+
+if (listen(sock, BACKLOG) &lt; 0) /* BACKLOG == 12 */
+  error_msg("Problem with listen call", true);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e2dd50"></a>
+A Multiprocessing Server</h2></div></div><p>
+The forking_server in Listing 2 supports concurrency through
+multiprocessing, an approach that early Web servers, such as Apache 1
+used to launch Web applications written as, for example, C or Perl
+scripts. Separate processes handle separate connections. This approach
+is hardly outdated, although modern servers, such as Apache 2, typically
+combine multiprocessing and multithreading.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e2df08"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. forking_server.c</b></p><pre     class="programlisting">
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;netinet/in.h&gt;
+#include &lt;signal.h&gt;
+#include "utils.h"
+
+int main() {
+  /* Avoid zombies. */
+  signal(SIGCHLD, SIG_IGN);
+
+  char buffer[BUFF_SIZE + 1];      
+
+  struct sockaddr_in client_addr;
+  socklen_t len = sizeof(struct sockaddr_in);
+
+  /* listening socket */
+  int sock = create_server_socket(false);
+
+  /* connections + requests */
+  while (true) {
+     int client = accept(sock, 
+			(struct sockaddr*) &amp;client_addr, 
+			&amp;len);
+    if (client &lt; 0) error_msg("Problem with accept call", true);
+
+    announce_client(&amp;client_addr.sin_addr);
+
+    /* fork child */
+    pid_t pid = fork();
+    if (pid &lt; 0) error_msg("Problem with fork call", false);
+
+    /* 0 to child, child's PID to parent */
+    if (0 == pid) {  /** child **/
+      close(sock);   /* child's listening socket */
+
+      /* request */
+      bzero(buffer, sizeof(buffer));
+      int bytes_read = recv(client, buffer, sizeof(buffer), 0); 
+      if (bytes_read &lt; 0) error_msg("Problem with 
+          &#8618;recv call", false);
+      
+      /* response */
+      char response[BUFF_SIZE * 2]; 
+      bzero(response, sizeof(response));
+      generate_echo_response(buffer, response);
+      int bytes_written = send(client, response, 
+        &#8618;strlen(response), 0); 
+      if (bytes_written &lt; 0) error_msg("Problem with 
+         &#8618;send call", false);
+
+      close(client); 
+      exit(0);       /* terminate */
+    } 
+    else             /** parent **/
+      close(client); /* parent's read/write socket. */
+  } 
+
+  return 0; 
+}
+</pre></div><p>
+The <tt  >forking_server</tt> divides the labor among a parent process and as many
+child processes as there are connected clients. A client is active until
+the connection closes, which ends the session.
+</p><p>
+The parent process executes <tt  >main</tt> from the first instruction. The parent
+listens for connections and per connection:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Spawns a new process to handle the connection.       
+</p></li><li><p>
+Resumes listening for other connections.
+</p></li></ul></div><p>
+The following is the critical code segment:
+
+
+<pre     class="programlisting">
+pid_t pid = fork(); /* spawn child */
+if (0 == pid) {     /* child */
+   close(sock);     /* close inherited listening socket */
+   /* handle request and terminate */
+   ...
+}               
+else                /* parent */
+  close(client);    /* close client, resume listening */
+</pre>
+</p><p>
+The parent executes the call to fork. If the call succeeds, fork returns
+a non-negative integer: 0 to the forked child process and the child's
+process identifier to the parent. The child inherits the parent's open
+socket descriptors, which explains the if-else construct:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+if clause: the child closes its copy of the listening socket because
+accepting clients is the parent's job. The child handles the client's
+request and then terminates with a call to exit.
+</p></li><li><p>
+else clause: the parent closes the client socket because a forked child
+handles the client. The parent resumes listening for connections.
+</p></li></ul></div><p>
+Creating and destroying processes are expensive. Modules, such as FastCGI,
+remedy this inefficiency through pre-forking. At startup, FastCGI creates
+a pool of reusable client-handling processes.
+</p><p>
+An inefficiency remains, however. When one process preempts another,
+a context switch occurs with the resultant system working to ensure that
+the switched-in and switched-out process behaves properly. The kernel
+maintains per-process context information so that a preempted process
+can restart. The context's three main structures are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The page table: maps virtual addresses to physical ones.
+</p></li><li><p>
+The process table: stores vital information.
+</p></li><li><p>
+The file table: tracks the process' open files.
+</p></li></ul></div><p>
+The CPU cycles that the system spends on context switches cannot be spent
+on applications such as Web servers. Although measuring the latency of
+a context switch is nontrivial, 5ms&ndash;10ms per switch is a ballpark
+and even optimistic range. Pre-forking mitigates the inefficiency of
+process creation and destruction but does not eliminate context switching.
+</p><p>
+What good is multiprocessing? The process structure frees the programmer
+from synchronizing concurrent access to shared memory locations. Imagine,
+for example, a Web application that lets a user play a simple word
+game. The application displays scrambled letters, such as
+&ldquo;kcddoe&rdquo;, and
+a player tries to unscramble the letters to form a word&mdash;in this case
+&ldquo;docked&rdquo;. This is a single-player game, and the application must track
+the game's state: the string to be unscrambled, the player's movement of
+letters one at a time and on so. Suppose that there is a global variable:
+
+<pre     class="programlisting">
+typedef struct {
+  /* variables to track game's state */
+} WordGame;
+WordGame game; /* single, global instance */
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e2ec70"></a></h2></div></div><p>
+so that the application has, in the source code, exactly one WordGame
+instance visible across the application's functions (for example, move_letter,
+submit_guess). Concurrent players need separate WordGames, so that one
+player cannot interfere with another's game.
+</p><p>
+Now, consider two child processes C1 and C2, each handling a player. Under
+Linux, a forked child inherits its parent's address space; hence, C1 and
+C2 begin with the same address space as each other and their parent. If
+none of the three processes thereafter executes a write operation, no
+harm results. The need for separate address spaces first arises with
+write operations. Linux thus enforces a copy-on-write (COW) policy with
+respect to memory pages. If C1 or C2 performs a write operation on an
+inherited page, this child gets its own copy of the page, and the child's
+page table is updated. In effect, therefore, the parent and the forked
+children have separate address spaces, and each client effectively has
+its own copy of the writable WordGame.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e25660"></a>
+A Multithreading Server</h2></div></div><p>
+The multithreading_server shown in Listing 3 avoids the context-switch downside
+of the forking_server but faces challenges of its own. Each process has
+at least one thread of execution. A single multithreaded process has
+multiple threads. The threading_server is multithreaded.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e257c0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. threading_server.c</b></p><pre     class="programlisting">
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;netinet/in.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;pthread.h&gt;
+#include "utils.h"
+
+/* thread routine */
+void* handle_client(void* client_ptr) {
+  pthread_detach(pthread_self()); /* terminates on return */
+
+  /* read/write socket */
+  int client = *((int*) client_ptr);
+
+  /* request */
+  char buffer[BUFF_SIZE + 1];
+  bzero(buffer, sizeof(buffer));
+  int bytes_read = recv(client, buffer, sizeof(buffer), 0); 
+  if (bytes_read &lt; 0) error_msg("Problem with recv call", false);
+
+  /* response */
+  char response[BUFF_SIZE * 2]; 
+  bzero(response, sizeof(response));
+  generate_echo_response(buffer, response);
+  int bytes_written = send(client, response, strlen(response), 0); 
+  if (bytes_written &lt; 0) error_msg("Problem with send call", false);
+
+  close(client); 
+
+  return NULL;
+} /* detached thread terminates on return */
+
+int main() {  
+  char buffer[BUFF_SIZE + 1];      
+  
+  struct sockaddr_in client_addr;
+  socklen_t len = sizeof(struct sockaddr_in);
+
+  /* listening socket */
+  int sock = create_server_socket(false);
+
+  /* connections */
+  while (true) {
+    int client = accept(sock, 
+			(struct sockaddr*) &amp;client_addr, 
+			&amp;len);
+    if (client &lt; 0) error_msg("Problem accepting a 
+        &#8618;client request", true);
+
+    announce_client(&amp;client_addr.sin_addr);
+
+    /* client handler */
+    pthread_t tid;
+    int flag = pthread_create(&amp;tid,          /* id */
+			      NULL,          /* attributes */
+			      handle_client, /* routine */
+			      &amp;client);      /* routine's arg */
+    if (flag &lt; 0) error_msg("Problem creating thread", false);
+  } 
+
+  return 0; 
+}
+</pre></div><p>
+The threading_server mimics the division-of-labor strategy in the
+forking_server, but the client handlers are now threads within a single
+process instead of forked child processes. This difference is huge. Thanks
+to COW, separate processes effectively have separate address spaces,
+but separate threads within a process share one address space.
+</p><p>
+When a client connects, the threading_server delegates the handling to
+a new thread:
+
+<pre     class="programlisting">
+
+pthread_create(&amp;tid,          /* id */
+	       NULL,          /* attributes */
+               handle_client, /* routine */
+               &amp;client);      /* arg to routine */
+
+</pre>
+</p><p>
+The thread gets a unique identifier and executes a thread routine&mdash;in
+this case, handle_client. The threading_server passes the client socket
+to the thread routine, which reads from and writes to the client.
+</p><p>
+How could the WordGame be ported to the forking_server? This server must
+ensure one WordGame instance per client. The single WordGame:
+
+<pre     class="programlisting">
+WordGame game; /* one instance */
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e25be0"></a></h2></div></div><p>
+could become an array of these:
+
+
+<pre     class="programlisting">
+WordGame games[BACKLOG]; /* BACKLOG == max clients */
+</pre>
+</p><p>
+When a client connects, the threading_server could search for an available
+game instance and pass this to the client-handling thread:
+
+
+<pre     class="programlisting">
+int game_index = get_open_game(); /* called in main so thread safe */
+</pre>
+</p><p>
+In the function main, the threading_server would invoke get_open_game, and
+each client-handling thread then would have access to its own WordGame
+instance:
+
+<pre     class="programlisting">
+
+games[game_index].socket = client;   
+pthread_create(&amp;tid,                 /* id */
+               NULL,                 /* attributes */
+               handle_client,        /* routine */
+               &amp;games[game_index]);  /* WordGame arg */
+
+</pre>
+</p><p>
+A WordGame local to the thread_routine also would work:
+
+<pre     class="programlisting">
+void* handle_client(void* client_ptr) {
+  WordGame game; /* local so thread safe */
+  /* ... */
+}
+</pre>
+</p><p>
+Each thread gets its own copy of locals, which are thereby threadsafe. Of
+importance is that the programmer rather than the system ensures one
+WordGame per client.
+</p><p>
+The threading_server would be more efficient with a thread pool. The
+pre-forking strategy used in FastCGI for processes extends nicely
+to threads.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e260b0"></a>
+A Polling Server</h2></div></div><p>
+Listing 4 is a polling_server, which resembles the forking_server in some
+respects and the threading_server in others.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e26210"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. polling_server.c</b></p><pre     class="programlisting">
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;netinet/in.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;sys/epoll.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;errno.h&gt;
+#include "utils.h"
+
+#define MAX_BUFFERS (BACKLOG + 1) /* max clients + listener */
+
+int main() {
+  char buffer[BUFF_SIZE + 1];      
+
+  /* epoll structures */
+  struct epoll_event event,     /* server2epoll */
+    event_buffers[MAX_BUFFERS]; /* epoll2server */
+  
+  int epollfd = epoll_create(MAX_BUFFERS); /* arg just a hint */ 
+  if (epollfd &amp;lt; 0) error_msg("Problem with epoll_create", 
+      &#8618;true);
+
+  struct sockaddr_in client_addr;
+  socklen_t len = sizeof(struct sockaddr_in);
+
+  int sock = create_server_socket(true); /* non-blocking */
+
+  /* polling */
+  event.events = EPOLLIN | EPOLLET; /* incoming, edge-triggered */
+  event.data.fd = sock;             /* register listener */
+  if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sock, &amp;event) &lt; 0) 
+    error_msg("Problem with epoll_ctl call", true);
+  
+  /* connections + requests */
+  while (true) {
+    /* event count */
+    int n = epoll_wait(epollfd, event_buffers, MAX_BUFFERS, -1);
+    if (n &lt; 0) error_msg("Problem with epoll_wait call", true);
+
+    /*
+       -- If connection, add to polling: may be none or more
+       -- If request, read and echo 
+    */
+    int i;
+    for (i = 0; i &lt; n; i++) {
+      /* listener? */
+      if (event_buffers[i].data.fd == sock) {
+	while (true) {
+	  socklen_t len = sizeof(client_addr);
+	  int client = accept(sock,
+			      (struct sockaddr *) &amp;client_addr, 
+			      &amp;len);
+
+	  /* no client? */
+	  if (client &lt; 0 &amp;&amp; (EAGAIN == errno || 
+              &#8618;EWOULDBLOCK == errno)) break;
+	  
+	  /* client */
+	  fcntl(client, F_SETFL, O_NONBLOCK); /* non-blocking */
+	  event.events = EPOLLIN | EPOLLET;   /* incoming, 
+                                                 edge-triggered */
+	  event.data.fd = client;
+	  if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client, &amp;event) &lt; 0)
+	    error_msg("Problem with epoll_ctl ADD call", false);	  
+	  
+	  announce_client(&amp;client_addr.sin_addr);
+	}
+      }
+      /* request */
+      else {
+	bzero(buffer, sizeof(buffer));
+	int bytes_read = recv(event_buffers[i].data.fd, buffer,
+        &#8618;sizeof(buffer), 0); 
+
+	/* echo request */
+	if (bytes_read &lt; 0) {
+	  char response[BUFF_SIZE * 2]; 
+	  bzero(response, sizeof(response));
+	  generate_echo_response(buffer, response);
+	  int bytes_written = 
+	    send(event_buffers[i].data.fd, response, 
+            &#8618;strlen(response), 0); 
+	  if (bytes_written &lt; 0) error_msg("Problem with 
+              &#8618;send call", false);
+	
+	  close(event_buffers[i].data.fd); /* epoll stops 
+                                              polling fd */
+	}  
+      } 
+    } 
+  } 
+
+  return 0;
+}
+</pre></div><p>
+The polling_server is complicated:
+
+<pre     class="programlisting">
+while (true)         /* listening loop */
+  for (...)          /* event loop */
+     if (...)        /* accepting event? */
+       while (true)  /* accepting loop  */
+     else            /* request event */
+</pre>
+</p><p>
+This server executes as one thread in one process and so must support
+concurrency by jumping quickly from one task (for example, accepting connections)
+to another (for example, reading requests). These nimble jumps are among
+nonblocking I/O operations, in particular calls to accept (connections)
+and recv (requests).
+</p><p>
+The polling_server's call to accept returns immediately:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+If there are no clients waiting to connect, the server moves on to check
+whether there are requests to read.
+</p></li><li><p>
+If there are waiting clients, the polling_server accepts them in a
+loop.
+</p></li></ul></div><p>
+The polling_server uses the epoll system library, declaring a single
+epoll structure and an array of these:
+
+
+<pre     class="programlisting">
+struct epoll_event              
+      event,                     /* from server to epoll */
+      event_buffers[MAX_EVENTS]; /* from epoll to server */
+</pre>
+</p><p>
+The server uses the single structure to register interest in connections
+on the listening socket and in requests on the client sockets. The epoll
+library uses the array of epoll structures to record such events. The
+division of labor is:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The polling_server registers events of interest with epoll.
+</p></li><li><p>
+The epoll library records detected events in epoll_event structures.
+</p></li><li><p>
+The polling_server handles epoll-detected events.
+</p></li></ul></div><p>
+The polling_server is interested in incoming (EPOLLIN) events and
+in edge-triggered (EPOLLET) rather than level-triggered events. The
+distinction comes from digital logic design but examples abound. A
+red traffic light is a level-triggered event signaling that a vehicle
+should remain stopped, whereas the transition from green to red is an
+edge-triggered event signaling that a vehicle should come to a stop. The
+polling_server is interested in connecting and requesting events when
+these first occur.
+</p><p>
+A for loop iterates through detected events. Above the loop, the statement:
+
+
+<pre     class="programlisting">
+int n = epoll_wait(epollfd, event_buffers, MAX_EVENTS, -1);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e26c60"></a></h2></div></div><p>
+gets an event count, where the events are either connections or requests.
+</p><p>
+My polling_server takes a shortcut. When the server reads a request,
+it reads only the bytes then available. Yet the server might require
+several reads to get the full request; hence, the server should buffer the
+partials until the request is complete. I leave this fix as an exercise
+for the reader.
+</p><p>
+How could the WordGame be ported to the polling_server? This server,
+like the threading_server, must ensure one WordGame instance per client
+and must coordinate a client's access to its WordGame. On the upside,
+the polling_server is single-threaded and thereby threadsafe. Unlike
+the forking_server, the polling_server does not incur the cost of context
+switches among forked children.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e26e70"></a>
+Conclusions</h2></div></div><p>
+Which is the best way to client concurrency? A reasoned answer must
+consider traditional multiprocessing and multithreading, together with
+hybrids of these. The &ldquo;evented I/O&rdquo; way that epoll exemplifies also
+deserves study. In the end, the selected method must meet the challenges
+of supporting concurrency across real-world Web applications under
+real-world conditions.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1d35580.0x1e26fd0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+The three Web servers together with an iterative_server are available at
+<a href="http://condor.depaul.edu/mkalin" target="_self">condor.depaul.edu/mkalin</a>.
+</p><p>
+For more on Node.js, see: <a href="http://nodejs.org" target="_self">nodejs.org</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Martin Kalin is a professor at the College of Computing and Digital Media at DePaul University,
+Chicago, Illinois. He earned his PhD at Northwestern University.
+Martin has co-authored various books on C and C++, authored a book on Java and,
+most recently, a book on Java Web services.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../214/toc214.html">Issue Table of Contents</a>
+    <a class="link3" href="../214/11155.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,261 @@
+#!/bin/bash
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+# $Header: /var/log/sar/RCS/intr,v 1.4 1997/06/19 05:28:18 dgavin Exp $
+#
+# intr - display interrupt activity
+#
+# NOTE: Some DEC AXP systems have a lot more than 16 interrupts!
+#       This script assumes interrupts 0 - 15 only.
+#
+# input - /var/log/sar/data/intr.Mondd.yy
+# output- chart for each active interrupt showing interrupts per second
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+trap '/bin/rm /tmp/gnuplot.intr* 2>/dev/null;exit' SIGHUP SIGINT SIGQUIT SIGTERM
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Function definitions
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+function checkForEmpty {
+if [ ! -f ${1} ] ; then echo "0 0" >${1} ; fi
+return
+}
+function minMax {
+MINMAX=`awk '
+BEGIN{min=0;max=0;}
+{
+ if ( $2 > max) { max = $2;}
+ if ( $2 < min) { min = $2;}
+}
+END{ printf("%d %d\n",min,max);}' $1`
+return
+}
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Mainline code
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Variable initialization
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+HARDCOPY=""
+GHOSTVIEW=""
+CMDNAME=`basename $0`
+#
+HELP="${CMDNAME} generates X11 or hardcopy graph of interrupt activity."
+USAGE="${CMDNAME} [-DHLVhPp] [MonDD[.YY]]
+  -D turns on execution tracing
+  -H displays help info and exits
+  -L displays RCS log and exits
+  -V display Revision info and exits
+  -h displays help info and exits
+  -P Print without display
+  -p display and offer print option
+
+  MonDD.YY - day to work with, defaults to today
+   i.e. Jun12.97 -the year will default to this year
+
+"
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Parse options
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+while getopts DHLVhPp c ; do
+  case ${c} in
+    h|H) echo -e "\n${HELP}\n\n${USAGE}\n"
+       exit 1
+       ;;
+    p) HARDCOPY="YES"
+       GHOSTVIEW="YES"
+       ;;
+    P) HARDCOPY="YES"
+       GHOSTVIEW=""
+       ;;
+    D) echo "DEBUG ON"
+       set -x
+       DEBUG="yes"
+       trap '' SIGHUP SIGINT SIGQUIT SIGTERM
+       ;;
+    L) echo '
+$Log: intr,v $
+Revision 1.4  1997/06/19 05:28:18  dgavin
+cleanup
+dgavin
+
+Revision 1.3  1997/06/12 03:52:08  dgavin
+added comment about Alpha interrupts
+
+Revision 1.2  1997/06/12 03:45:10  dgavin
+removed extra log area
+
+Revision 1.1  1997/06/12 03:39:28  dgavin
+Initial revision
+
+'
+       exit 1
+       ;;
+    V) echo '$Revision: 1.4 $'
+       exit 1
+       ;;
+    ?) echo -e "\n${USAGE}\n"
+       exit 3
+       ;;
+  esac
+done
+# re-align the positional parameters as $1, $2,...
+shift `expr ${OPTIND} - 1`
+#
+cd /var/log/sar/data
+if [ $# -eq 0 ] ; then
+ FN="intr.`date +%b%d.%y`"
+else
+ l=`echo ${1} | wc -c`
+ l=`expr ${l} + 0`
+ case ${l} in
+  6) FN="intr.${1}.`date +%y`";;
+  9) FN="intr.${1}";;
+  *) echo -e "\n${CMDNAME}: Invalid date  - ${1}\n"
+     exit
+     ;;
+ esac
+fi
+if [ ! -f ${FN} ] ; then
+  echo "No such file: ${FN}"
+  exit
+fi
+if [ ! -r ${FN} ] ; then
+  echo "File not readable: ${FN}"
+  exit
+fi
+if [ ! -s ${FN} ] ; then
+  echo "File empty: ${FN}"
+  exit
+fi
+#
+#                                               1       1       1       1 1 1
+#hhmm total    0        1      2 3 4  5 6 7 8 9 0       1       2       3 4 5
+#0940 71648935 67091830 275952 0 0 23 0 1 0 0 0 1146614 1018791 2115723 1 0 0
+#0945 71682636 67121886 276671 0 0 23 0 1 0 0 0 1147073 1020430 2116551 1 0 0
+
+awk '
+BEGIN{}
+{
+ if (NR == 1) {
+   mm=substr($1,3,2) * .016;
+   tim=substr($1,1,2)+mm;
+   old_time = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+   toks = split($0,old_array," ")
+ } else {
+   mm=substr($1,3,2) * .016;
+   tim=substr($1,1,2)+mm;
+   now = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+   delta_tim = now - old_time;
+   if(delta_tim < 1) {
+     delta_tim = 1;
+   } 
+   toks = split($0,array," ")
+   for (i=1;i<=toks;i++) {
+     if ( old_array[i] > array[i] ) {
+       old_array[i] = 0 ;
+     }
+   }
+   if ( delta_tim < 1 ) { delta_tim = 1;}
+   for (i=3;i<=toks;i++) {
+     Delta = (array[i] - old_array[i])/delta_tim;
+     fn="/tmp/gnuplot.intr." i - 3;
+     printf("%5.2f %9.4f\n",tim,Delta) > fn ;
+   } 
+   toks = split($0,old_array," ")
+   old_time = now;
+ }
+}
+END{}' ${FN}
+#
+# Get system name and date of report into variables...
+system=`hostname -s`
+sysdate=`echo ${FN} | cut -c 6-`
+echo "Generating plot for $system $sysdate"
+#
+#
+# Start building the /tmp/gnuplot.intr.script
+#
+if [ -z ${HARDCOPY} ]; then
+  TERMINAL="set terminal X11"
+  PAUSE="pause 10"
+  YLABEL=""
+else
+  TERMINAL='set terminal postscript landscape monochrome dashed "Times-Roman" 18
+set output "/tmp/gnuplot.ps"'
+  PAUSE=""
+  YLABEL="set ylabel Interrupts"
+fi
+cat <<EOF >/tmp/gnuplot.intr.script 
+${TERMINAL}
+set data style lines
+set nogrid
+set key
+set title "Interrupts Per Second - ${system} on ${sysdate}"
+set xlabel "Time of Day"
+set xrange [00:24]
+set xtics 0,1,24
+${YLABEL}
+set autoscale y
+EOF
+# get a properly sorted list of data files and eliminate
+# the ones with all zeroes (unused interrupt)
+for I in `/bin/ls -1 /tmp/gnuplot.intr.[0-9]* | \
+  /usr/bin/sort -n -t"." +2` ; do
+minMax ${I}
+set ${MINMAX}
+intr=`echo ${I} | cut -d"." -f3`
+if [ ${1} -eq 0 -a ${2} -eq 0 ] ; then
+ echo "Skipped ${intr}"
+else
+if [ ${intr} -lt 10 ]; then
+  INT=' '${intr}
+else
+  INT=${intr}
+fi
+# get the text associated with this interrupt number from /proc/interrupts
+TEXT=`grep "^${INT}" /proc/interrupts | awk \
+ '{ for (i=3;i<=NF;i++){ TEXT = TEXT" "$(i); } printf("%s\n", TEXT); }'`
+cat <<EOF >>/tmp/gnuplot.intr.script
+plot \
+"${I}" title "IRQ ${intr} (${TEXT} )" with line 1
+${PAUSE}
+EOF
+fi
+done
+echo "quit" >>/tmp/gnuplot.intr.script
+#
+# Generate the plots
+#
+gnuplot /tmp/gnuplot.intr.script
+#
+if [ .${HARDCOPY} = ".YES" ]; then
+  /usr/local/bin/psnup -8 -cq /tmp/gnuplot.ps 2>/dev/null \
+     >/tmp/gnuplot.intr.${system}.ps
+  if [ -z ${GHOSTVIEW} ] ; then
+    lpr /tmp/gnuplot.intr.${system}.ps
+  else
+    ghostview -upsidedown -magstep 3 /tmp/gnuplot.intr.${system}.ps
+    echo "Print ?"
+    read ans
+    if [ ${ans} = "y" ] ; then
+      lpr /tmp/gnuplot.intr.${system}.ps
+    fi
+  fi
+fi
+# clean up the junk
+if [ ${DEBUG}. = "." ]; then
+  rm /tmp/gnuplot.intr* 2>/dev/null
+fi
+exit

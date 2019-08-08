@@ -1,0 +1,558 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+At the Forge
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;In this article, Reuven shows how to connect a simple Clojure Web app to a PostgreSQL&#10;database.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x18cb580.0x19c2ac0"></a>
+At the Forge
+</h1></div><div><h3 class="subtitle"><i>
+Compojure
+</i></h3></div><div><div class="author"><h3 class="author">
+Reuven
+ M. 
+Lerner
+</h3></div><div class="issuemoyr">Issue #232, August 2013</div></div><div><p>
+In this article, Reuven shows how to connect a simple Clojure Web app to a PostgreSQL
+database.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19c33b0"></a></h2></div></div><p>
+In my last article, I started discussing Compojure, a Web framework written
+in the Clojure language. Clojure already has generated a great deal
+of excitement among software developers, in that it combines the
+beauty and expressive elegance of Lisp with the efficiency and
+ubiquity of the Java Virtual Machine (JVM). Clojure has other traits
+as well, including its famous use of software transactional memory
+(STM) to avoid problems in multithreaded environments. 
+</p><p>
+As a Web developer and a longtime Lisp aficionado, I've been
+intrigued by the possibility of writing and deploying Web applications
+written in Clojure. Compojure would appear to be a simple framework
+for creating Web applications, built on lower-level systems, such as
+&ldquo;ring&rdquo;, which handles HTTP requests.
+</p><p>
+In my last article, I explained how to create a simple Web
+application using the &ldquo;lein&rdquo; system, modify the project.clj
+configuration file and determine the HTML returned in response to a
+particular URL pattern (&ldquo;route&rdquo;). Here, I try to advance
+the application somewhat, looking at the things that are typically of
+interest to Web developers. Even if you don't end up using Clojure or
+Compojure, I still think you'll learn something from understanding
+how these systems approach the problem.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19c3720"></a>
+Databases and Clojure</h2></div></div><p>
+Because Clojure is built on the JVM, you can use the same objects in
+your Clojure program as you would in a Java program. In other words, if
+you
+want to connect to a PostgreSQL database, you do so with the same JDBC
+driver that Java applications do.
+</p><p>
+Installing the PostgreSQL JDBC driver requires two steps. First, you
+must download the driver, which is available at
+<a href="http://jdbc.postgresql.org" target="_self">jdbc.postgresql.org</a>. Second, you then must tell the JVM
+where it can find the classes that are defined by the driver. This is
+done by setting (or adding to) the CLASSPATH environment variable&mdash;that is, put the driver in:
+
+<pre     class="programlisting">
+export CLASSPATH=/home/reuven/Downloads:$CLASSPATH
+</pre>
+</p><p>
+Once you have done that, you can tell your Clojure project that you want
+to include the PostgreSQL JDBC driver by adding two elements to the
+<tt  >:dependencies</tt> vector within the
+<tt  >defproject</tt> macro:
+
+<pre     class="programlisting">
+(defproject cjtest "0.1.0-SNAPSHOT"
+  :description "FIXME: write description"
+  :url "http://example.com/FIXME"
+  :dependencies [[org.clojure/clojure "1.5.1"]
+                 [compojure "1.1.5"]
+                 [hiccup "1.0.3"]
+                 [org.clojure/java.jdbc "0.2.3"]
+                 [postgresql "9.1-901.jdbc4"]]
+  :plugins [[lein-ring "0.8.5"]]
+  :ring {:handler cjtest.handler/app}
+  :profiles
+  {:dev {:dependencies [[ring-mock "0.1.5"]]}})
+</pre>
+</p><p>
+Now you just need to connect to the database, as well as interact with
+it. Assuming you have created a database named &ldquo;cjtest&rdquo; on
+your 
+local PostgreSQL server, you can use the built-in Clojure REPL (<tt  >lein
+repl</tt>) to talk to the database. First, you need to load the database
+driver and put it into an &ldquo;sql&rdquo; namespace that will allow you to work
+with the driver:
+
+<pre     class="programlisting">
+(require '[clojure.java.jdbc :as sql])
+</pre>
+</p><p>
+Then, you need to tell Clojure the host, database and port to which you
+want to connect. You can do this most easily by creating a
+&ldquo;db&rdquo; map to
+build the query string that PostgreSQL needs:
+
+
+<pre     class="programlisting">
+(def db {:classname "org.postgresql.Driver" 
+	 :subprotocol "postgresql"
+	 :subname (str "//" "localhost" ":" 5432 "/" "cjtest")
+	 :user "reuven"
+	 :password ""})
+</pre>
+</p><p>
+With this in place, you now can issue database commands. The easiest
+way to do so is to use the <tt  >with-connection</tt> macro inside the
+&ldquo;sql&rdquo; namespace, which connects using the driver and then lets
+you
+issue a command. For example, if you want to create a new table
+containing a serial (that is, automatically updated primary key) column
+and a text column, you could do the following:
+
+
+<pre     class="programlisting">
+(sql/with-connection db 
+    (sql/create-table :foo [:id :serial] [:stuff :text]))
+</pre>
+</p><p>
+If you then check in psql, you'll see that the table has indeed been
+created, using the types you specified. If you want to insert
+data, you can do so with the <tt  >sql/insert-values</tt> function:
+
+<pre     class="programlisting">
+(sql/with-connection db (sql/insert-values 
+ &#8618;:foo [:stuff] ["first post"]))
+</pre>
+</p><p>
+Next, you get back the following map, indicating not only that the data was
+inserted, but also that it automatically was given an ID by
+PostgreSQL's sequence object:
+
+<pre     class="programlisting">
+{:stuff "first post", :id 1}
+</pre>
+</p><p>
+What if you want to retrieve all of the data you have inserted? You
+can use the <tt  >sql/with-query-results</tt> function, iterating over the
+results with the standard <tt  >doseq</tt> function:
+
+
+<pre     class="programlisting">
+(sql/with-connection db
+    (sql/with-query-results resultset ["select * from foo"]
+        (doseq [row resultset] (println row))))
+</pre>
+</p><p>
+Or, if you want only the contents of the &ldquo;stuff&rdquo; column, you can use:
+
+
+<pre     class="programlisting">
+(sql/with-connection db
+    (sql/with-query-results resultset ["select * from foo"]
+        (doseq [row resultset] (println (:stuff row)))))
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19c4488"></a>
+Databases and Compojure</h2></div></div><p>
+Now that you know how to do basic database operations from the Clojure
+REPL, you can put some of that code inside your Compojure
+application. For example, let's say you want to have an
+appointment calendar. For now, let's assume that there already is a
+PostgreSQL &ldquo;appointments&rdquo; databases defined:
+
+
+<pre     class="programlisting">
+CREATE TABLE Appointments (
+       id SERIAL,
+       meeting_at TIMESTAMP,
+       meeting_with TEXT,
+       notes TEXT
+);
+
+INSERT INTO Appointments (meeting_at, meeting_with, notes) 
+      VALUES ('2013-july-1 12:00', 'Mom', 'Always good to see Mom');
+</pre>
+</p><p>
+You'll now want to be able to go to /appointments in your Web application
+and see the current list of appointments. To do this, you need to
+add a route to your Web application, such that it'll invoke a function
+that then goes to the database and retrieves all of those elements.
+</p><p>
+Before you can do so, you need to load the PostgreSQL JDBC driver into
+your Clojure application. You can do this most easily in the
+<tt  >:require</tt>
+section of your namespace declaration in handler.clj:
+
+<pre     class="programlisting">
+(ns cjtest.handler
+  (:use compojure.core)
+  (:require [compojure.handler :as handler]
+            [compojure.route :as route]
+            [clojure.java.jdbc :as sql]))
+</pre>
+</p><p>
+(I did this manually in the REPL with the &ldquo;require&rdquo; function, with
+slightly different syntax.)
+</p><p>
+You then include your same definition of &ldquo;db&rdquo; in handler.clj, such that
+your database connection string still will be available.
+</p><p>
+Then, you add a new line to your <tt  >defroutes</tt> macro, adding a new
+<tt  >/appointments</tt> URL, which will invoke the
+<tt  >list-appointments</tt>
+function:
+
+<pre     class="programlisting">
+(defroutes app-routes
+  (GET "/" [] "Hello World")
+  (GET "/appointments" [] list-appointments)
+  (GET "/fancy/:name" [name] say-hello)
+  (route/resources "/")
+  (route/not-found "Not Found"))
+</pre>
+</p><p>
+Finally, you define <tt  >list-appointments</tt>, a function
+that executes an SQL
+query and then grabs the resulting records and turns them into a
+bulleted list in HTML:
+
+
+<pre     class="programlisting">
+(defn list-appointments
+  [req]
+  (html
+   [:h1 "Current appointments"]
+    [:ul
+     (sql/with-connection db
+         (sql/with-query-results rs ["select * from appointments"]
+           (doall
+            (map format-appointment rs))))]))
+</pre>
+</p><p>
+Remember that in a functional language like Clojure, the idea is to
+get the results from the database and then process them in some way,
+handing them off to another function for display (or further
+processing). The above function produces HTML output, using the
+Hiccup HTML-generation system. Using Hiccup, you easily can create (as
+in the above function) an H1 headline, followed by a &ldquo;ul&rdquo; list.
+</p><p>
+The real magic happens in the call to
+<tt  >sql/with-query-results</tt>. That
+function puts the results of your database call in the
+<tt  >rs</tt> variable.
+You then can do a number of different things with that resultset. In
+this case, let's turn each record into an &ldquo;li&rdquo; tag in the final
+HTML. The easiest way to do that is to apply a function to each
+element of the resultset. In Clojure (as in many functional
+languages), you do this with the <tt  >map</tt> function, which transforms a
+collection of items into a new collection of equal length. 
+</p><p>
+What does the <tt  >format-appointment</tt> function do? As you can imagine, it
+turns an appointment record into HTML:
+
+<pre     class="programlisting">
+(defn format-appointment [one-appointment]
+ (html [:li (:meeting_at one-appointment)
+	 " : "
+	 (:meeting_with one-appointment)
+	 " (" (:notes one-appointment) ")" ]))
+</pre>
+</p><p>
+In other words, you'll treat the record as if it were a hash and then
+retrieve the elements (keys) from that hash using Clojure's shorthand
+syntax for doing so. You wrap that up into HTML, and then you can display
+it for the user. The advantage of decomposing your display
+functionality into two functions is that you now can change the way in
+which appointments are displayed, without modifying the main function
+that's called when /appointments is requested by the user.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19bb978"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 1. handler.clj: Source Code for the Simple Appointment-Book
+System</b></p><pre     class="programlisting">
+(ns cjtest.handler
+  (:use compojure.core hiccup.core clj-time.format clj-time.coerce)
+  (:require [compojure.handler :as handler]
+            [compojure.route :as route]
+            [clojure.java.jdbc :as sql]))
+
+(defn say-hello
+  [req]
+  (html [:p [:b "Hello, "  (get (get req :route-params) :name) ]]))
+
+
+(def db {:classname "org.postgresql.Driver"
+         :subprotocol "postgresql"
+         :subname (str "//" "localhost" ":" 5432 "/" "cjtest")
+         :user "reuven"
+         :password ""})
+
+(defn format-meeting [one-meeting]
+  (html [:li (:meeting_at one-meeting)
+         " : "
+         (:meeting_with one-meeting)
+         " (" (:notes one-meeting) ")" ]))
+
+(defn new-meeting-form
+  [ req ]
+  (html [:form {:method "POST" :action "/create-meeting"}
+         [:p "Meeting at (in 2013-06-28T11:08 format): " [:input 
+         &#8618;{:type "text" :name "meeting_at"}]]
+         [:p "Meeting with: " [:input {:type "text" 
+         &#8618;:name "meeting_with"}]]
+         [:p "Notes: " [:input {:type "text" :name "notes"}]]
+         [:p [:input {:type "submit" :value "Add meeting"}]]]))
+
+(defn list-meetings
+  [req]
+  (html
+   [:h1 "Current meetings"]
+   [:ul
+    (sql/with-connection db
+      (sql/with-query-results rs ["select * from appointments"]
+        (doall
+         (map format-meeting rs))))]))
+
+
+(defn create-meeting
+  [req]
+  (sql/with-connection db
+    (let [form-params (:form-params req)
+          meeting-at-string (get form-params "meeting_at")
+          meeting-at-parsed (clj-time.format/parse
+(clj-time.format/formatters
+                  :date-hour-minute)
+                  meeting-at-string)
+          meeting-at-timestamp (clj-time.coerce/to-timestamp
+          &#8618;meeting-at-parsed)
+          meeting-with (get form-params "meeting_with")
+          notes (get form-params "notes")]
+      (sql/insert-values :appointments
+                         [:meeting_at :meeting_with :notes]
+                         [meeting-at-timestamp meeting-with notes]))
+    "Added!"))
+
+(defroutes app-routes
+  (GET "/" [] "Hello World")
+  (GET "/meetings" [] list-meetings)
+  (GET "/new-meeting" [] new-meeting-form)
+  (POST "/create-meeting" [] create-meeting)
+  (GET "/fancy/:name" [name] say-hello)
+  (route/resources "/")
+  (route/not-found "Not Found"))
+
+(def app
+  (handler/site app-routes))
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19bbb88"></a>
+Inserting Data</h2></div></div><p>
+Let's say you also want to insert data into your appointment book.
+To do that, you need an HTML form that then submits itself to a URL
+on your site. Let's first create a simple form&mdash;as always, written
+as a function:
+
+
+<pre     class="programlisting">
+(defn new-meeting-form
+  [ req ]
+  (html [:form {:method "POST" :action "/create-meeting"}
+         [:p "Meeting at (in 2013-06-28T11:08 format): " 
+         &#8618;[:input {:type "text" :name "meeting_at"}]]
+         [:p "Meeting with: " [:input {:type "text" 
+          &#8618;:name "meeting_with"}]]
+         [:p "Notes: " [:input {:type "text" :name "notes"}]]
+         [:p [:input {:type "submit" :value "Add meeting"}]]]))
+</pre>
+</p><p>
+Notice how the Hiccup library again lets you
+define HTML tags easily.
+In this case, because it's a form, you need to tell the form to which
+URL it should be submitted. So in this example, that'll be the
+/create-meeting URL. Thus, you need to define both /new-meeting and
+/create-meeting in your <tt  >defroutes</tt> macro call:
+
+<pre     class="programlisting">
+(defroutes app-routes
+  (GET "/" [] "Hello World")
+  (GET "/meetings" [] list-meetings)
+  (GET "/new-meeting" [] new-meeting-form)
+  (POST "/create-meeting" [] create-meeting)
+  (GET "/fancy/:name" [name] say-hello)
+  (route/resources "/")
+  (route/not-found "Not Found"))
+</pre>
+</p><p>
+As you can see, the routes distinguish between GET and POST requests.
+Thus, a GET request to /create-meeting will not have any effect (that is,
+it
+will result in the &ldquo;not found&rdquo; message being displayed); a POST
+request is needed to make it work.
+</p><p>
+Everything comes together when you want to add a new meeting to your
+database. You get the parameters from the submitted form and then
+insert them into the database. 
+</p><p>
+I'm still learning about Clojure and
+Compojure and continue to discover new libraries of functions that
+can make it easier to create HTML forms and work with databases.
+For example, I've recently discovered SQLKorma, a library that seems
+almost like Ruby's ActiveRecord, in that it provides a DSL that
+creates database queries.
+</p><p>
+The power of Clojure, like all Lisps, is partly based on the idea that
+you do everything in small steps and then combine those steps for the
+full power. Here, for example, is the function I wrote to add a
+new record (meeting) to the database:
+
+
+<pre     class="programlisting">
+(defn create-meeting
+  [req]
+  (sql/with-connection db
+    (let [form-params (:form-params req)
+          meeting-at-string (get form-params "meeting_at")
+          meeting-at-parsed (clj-time.format/parse 
+          &#8618;(clj-time.format/formatters
+                   :date-hour-minute)
+                   meeting-at-string)
+          meeting-at-timestamp (clj-time.coerce/to-timestamp 
+          &#8618;meeting-at-parsed)
+          meeting-with (get form-params "meeting_with")
+          notes (get form-params "notes")]
+   (sql/insert-values :appointments
+                      [:meeting_at :meeting_with :notes]
+                      [meeting-at-timestamp meeting-with notes]))
+    "Added!"))
+</pre>
+</p><p>
+The first and final parts of the function are similar in many ways to
+the database row insertion that you executed outside Compojure. You
+use <tt  >sql/with-connection</tt> to connect to a database, and within that use
+<tt  >sql/insert-values</tt> to insert a row into a specific table.
+</p><p>
+The interesting part of this function is, I believe, what happens in
+the middle. Using the &ldquo;let&rdquo; form, which performs local bindings of
+names to values, I can grab the values from the submitted HTML form
+elements, preparing them for entry into the database.
+</p><p>
+I further take
+advantage of the fact that Clojure's &ldquo;let&rdquo; allows you to bind names
+based on previously bound names. Thus, I can set
+<tt  >meeting-at-string</tt>
+to the HTML form value, and then <tt  >meeting-at-parsed</tt> to the value I get
+after converting the string to a parsed Clojure value, and then
+<tt  >meeting-at-timestamp</tt> to turn it into a data type that both Clojure and
+PostgreSQL can handle easily.
+</p><p>
+Much of the heavy lifting here is being done by the clj-time package,
+which handles a wide variety of different date/time packages.
+</p><p>
+In the end, you're able to go to /new-meeting, enter appropriate data
+into the HTML form and save that data to the database. You then
+can go to /meetings and view the full list of meetings you have set.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19bc580"></a>
+Conclusion</h2></div></div><p>
+I always have loved Lisp and often have wished I could find a
+way to use it practically in my day-to-day work. (Not that I dislike
+Ruby and Python, mind you, but the brainwashing I received in
+college was quite effective.) Playing with Clojure as a language, and
+Compojure to develop Web applications, has been a refreshing
+experience&mdash;one that I intend to continue trying and that I
+encourage you to attempt as well.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19bc688"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+The home page for the Clojure language is at <a href="http://clojure.org" target="_self">clojure.org</a> and
+includes a great deal of documentation. Documentation for Compojure
+is at its home page, <a href="http://compojure.org" target="_self">compojure.org</a>, and Hiccup is at
+<a href="https://github.com/weavejester/hiccup" target="_self">https://github.com/weavejester/hiccup</a>.
+</p><p>
+The SQLKorma library, which I referenced here, is at
+<a href="http://www.sqlkorma.com" target="_self">www.sqlkorma.com</a>.
+</p><p>
+The date and time routines are available at
+<a href="https://github.com/KirinDave/clj-time" target="_self">https://github.com/KirinDave/clj-time</a> on GitHub, and they provide a great
+deal of useful functionality for anyone dealing with dates and times
+in Clojure.
+</p><p>
+I found a number of good examples of using SQL and JDBC from within
+Clojure at Wikibooks:
+<a href="https://en.wikibooks.org/wiki/Clojure_Programming/Examples/JDBC_Examples" target="_self">https://en.wikibooks.org/wiki/Clojure_Programming/Examples/JDBC_Examples</a>.
+</p><p>
+Two good books about Clojure are <span   class="emphasis"><em>Programming Clojure</em></span> by Stuart
+Halloway and Aaron Bedra (published by the Pragmatic Programmers) and
+<span   class="emphasis"><em>Clojure Programming</em></span> by Chas Emerick, Brian Carper and Christophe Grand
+(published by O'Reilly). I've read both during the past year or two,
+and I enjoyed each of them for different reasons, without a clear
+preference.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18cb580.0x19bccb8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Web developer, trainer and consultant Reuven M. Lerner is finishing
+his PhD in Learning Sciences at Northwestern University. He lives in
+Modi'in, Israel, with his wife and three children. You can read more
+about him at <a href="http://lerner.co.il" target="_self">lerner.co.il</a>, or contact him at
+<a href="mailto:reuven@lerner.co.il">reuven@lerner.co.il</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../232/toc232.html">Issue Table of Contents</a>
+    <a class="link3" href="../232/11535.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

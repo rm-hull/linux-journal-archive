@@ -1,0 +1,482 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Archiving Data with Snapshots in LVM2
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Simplify the time-consuming data backup process with zero downtime using&#10;LVM2 snapshot.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1418580.0x150fac0"></a>
+Archiving Data with Snapshots in LVM2
+</h1></div><div><div class="author"><h3 class="author">
+Petros
+ 
+Koutoupis
+</h3></div><div class="issuemoyr">Issue #201, January 2011</div></div><div><p>
+Simplify the time-consuming data backup process with zero downtime using
+LVM2 snapshot.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x1510250"></a></h2></div></div><p>
+Sometimes we use a technology even though we're 
+unaware of its full features and capabilities and how they may be able
+to benefit us. One such feature is the data snapshot. The snapshot is
+a single state (that is, a copy) of a storage volume at a particular point
+in time. A volume can refer to a disk device or partition. The snapshot
+is primarily a data backup technology. Directed toward larger storage
+capacities, utilizing such a technique has advantages. For
+instance, full backups of an entire volume can take a long time and also
+use large amounts of storage space, even for files that will remain
+unchanged for some time to come. Also, when performing a data backup
+of entire volumes or subsets of volumes in a symmetric multiprocessing
+environment, write operations still may continue to modify the file data
+on that volume, preventing atomicity and, in turn, possibly leading to data
+corruption. There are ways around the latter in which the volume can
+be taken off-line or marked as read-only prior to the archival process,
+but in high-availability production environments, that may never be an
+option. This is where the snapshot comes in.
+</p><p>
+Used to avoid downtime and retain atomicity, the snapshot provides
+a read-only copy of a specified volume at a specific point in time,
+usually implemented by a copy-on-write mechanism. Some vendors and
+software implementations are known to support write commands via a
+concept known as branching snapshots, in which diverging versions of
+data are created via an extremely complex system of pointers, all based
+on the original snapshot. When you write to a snapshot or the original
+volume, the write will not be seen by the other. The way this works is
+when a volume marked for snapshot gets written to and data is modified,
+the original and unchanged data block(s) or file data (in the case of
+a file-based snapshot) will be copied to the space allocated for the
+snapshot. After all original and unmodified data are copied over to the
+snapshot, the original volume will be updated with the new data. When
+the snapshot volume needs to be mounted, using a system of pointers,
+the snapshot will reference the parent volume with the original data
+saved in the snapshot. With such a technique, it now becomes possible to
+archive valuable data incrementally without losing productivity or the
+risk of suffering from any data corruption.
+</p><p>
+The use of snapshot technologies can be seen in a variety of environments,
+ranging from external storage controllers, filesystems, virtual machines
+(such as VMware, VirtualBox and so on), databases and even volume managers,
+which is the focus of this article. Here, I cover the snapshot
+feature found in LVM2 and how to manage it, all from the command line.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x15104b8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Note:</b></p><p>
+LVM2 refers to a collection of user-space tools that provide logical
+volume management on Linux.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x15106c8"></a>
+The Linux Logical Volume Manager</h2></div></div><p>
+The second generation of the Linux Logical Volume Manager (LVM2) 
+is a logical volume manager capable of pooling multiple
+storage devices together to represent a single volume or volumes, either in a
+striped or mirrored fashion. Everything is created and managed on a layer-by-layer
+basis. First is the physical volume. It is followed
+by the volume group and then the mountable logical volume itself. Most
+mainstream Linux distributions usually have the LVM2 userland tools
+preinstalled. If you find that it's not installed on your distribution,
+download and install it via your distribution's package repository.
+</p><p>
+The idea is almost similar in concept to the Redundant Array of
+Independent Disks (RAID), and although LVM2 does not support any
+parity-driven striping, it still adds additional value. For instance, LVM2
+allows for the uninterrupted addition, removal and replacement of storage
+devices. It makes for easy dynamic resizing of volume groups and logical
+volumes. Most important, it supports the snapshot&mdash;the focus of this
+article. As of LVM2, write operations are supported to snapshot volumes.
+</p><p>
+As mentioned earlier, LVM2 volumes utilize a layered structure&mdash;that is,
+physical volumes (or PVs) must be created from a physical disk device. This
+can be accomplished with the pvcreate command followed by the list of
+physical partitions to label for LVM2 usage:
+
+
+<pre     class="programlisting">
+$ sudo pvcreate /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sdd1
+</pre>
+</p><p>
+With the newly labeled physical volumes, volume groups (or VGs) need
+to be created with the vgcreate command, followed by a name for the volume
+group and then a list of all physical volumes to use:
+
+<pre     class="programlisting">
+$ sudo vgcreate vg0 /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sdd1
+  Volume group "vg0" successfully created
+</pre>
+</p><p>
+By default, the volume groups are located in the /dev directory path. It
+is with this volume group that logical volumes (or LVs) can be created,
+formatted with a filesystem, mounted and, in turn, used for file I/O
+operations. The best feature of creating logical volumes is that you
+can use some or all available capacity of the VG. For instance, if a 1GB LV needs to be created from the 4GB VG, the lvcreate command 
+needs to be used followed by the name of the VG and then a size for the
+LV. When an LV is created, it will create a node name for accessibility
+in the /dev directory path under the volume group's name:
+
+<pre     class="programlisting">
+$ sudo lvcreate --name /dev/vg0/test_vg --size 1G
+  Logical volume "test_vg" created
+</pre>
+</p><p>
+The example above showcases the creation of a nonredundant LV. To create
+an LV with mirroring capabilities, invoke the lvcreate command with the
+-m option. The example below creates a 500MB-mirrored LV:
+
+<pre     class="programlisting">
+$ sudo lvcreate --size 500M -m1 --name mirrorlv vg0 
+ &#8618;/dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sdd1
+  Logical volume "mirrorlv" created
+</pre>
+</p><p>
+You can remove logical volumes, volume groups and physical volumes easily with
+the lvremove, vgremove and pvremove commands followed by their respective
+volume names:
+
+
+<pre     class="programlisting">
+$ sudo lvremove /dev/vg0/test_vg
+Do you really want to remove active logical volume "test_vg"? [y/n]: y
+  Logical volume "test_vg" successfully removed
+</pre>
+</p><p>
+Note that a list of all logical volumes, volume groups and physical
+volumes with detailed volume information can be displayed with the
+lvdisplay, vgdisplay and pvdisplay commands.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x1510d50"></a>
+LVM2 Snapshots</h2></div></div><p>
+Now that I've covered a brief summary of how LVM2 is structured and
+managed, it's time to focus on the snapshot feature. It is worth
+noting that the LVM2 snapshot feature can be used only on LVM2-managed
+logical volumes. Assuming that an LV already exists, possibly the partition
+for the / directory path, a second LV needs to be created for the
+snapshot of the original logical volume. With regard to size, another
+great feature of the snapshot is that the snapshot volume does not have
+to be equal in size to the original volume. The size even can be half or
+less than the original volume, allowing only that many changes of data to
+be backed up. By default, LVM2 will disable the snapshot automatically if
+the snapshot LV ever gets filled. The amount of storage space necessary
+is dependent on the usage of the snapshot. If the snapshot size equals
+the size of the original LV, it never will overflow, and snapshot service
+will not be interrupted. In the worst-case scenario, if it is found that space
+is running out on the snapshot, the LV always can be resized dynamically 
+to a larger capacity.
+</p><p>
+Define the size to allocate for the snapshot. Create the snapshot on
+the desired VG by using the lvcreate command, with the size followed by
+the snapshot switch, the name for the snapshot and the VG. In this example,
+only 500MB are allocated for modified data. Realistically, this is not an
+ideal size to use (it's too small but serves its purpose here):
+
+
+<pre     class="programlisting">
+$ sudo lvcreate -L500M -s -n rootsnapshot /dev/VolGroup/lv_root
+  Logical volume "rootsnapshot" created
+</pre>
+</p><p>
+The lvdisplay command displays all details pertaining to the snapshot
+LV. One detail to keep an eye on is the &ldquo;Allocated to snapshot&rdquo;
+value. In this example, it is set to 0.06%:
+
+
+<pre     class="programlisting">
+$ sudo lvdisplay /dev/VolGroup/rootsnapshot
+  --- Logical volume ---
+  LV Name                /dev/VolGroup/rootsnapshot
+  VG Name               VolGroup
+  LV UUID                kAc3Iq-Gn3e-pBWs-KC9V-bFi8-0fHr-SsdRLR
+  LV Write Access     read/write
+  LV snapshot status active destination for /dev/VolGroup/lv_root
+  LV Status              available
+  # open                  0
+  LV Size                  5.51 GiB
+  Current LE              1410
+  COW-table size       500.00 MiB
+  COW-table LE         125
+  Allocated to snapshot  0.06%
+  Snapshot chunk size    4.00 KiB
+  Segments               1
+  Allocation                inherit
+  Read ahead sectors   auto
+  - currently set to      256
+  Block device             253:3
+</pre>
+</p><p>
+If the original LV is written to, using the copy-on-write mechanism,
+the snapshot will write all original data from the original volume to
+the snapshot volume before it replaces the original volume with the new
+data. To better understand the mechanics behind the snapshot, mount the
+snapshot volume, so that it can be accessed like any other mounted device.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x15111c8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Mounting and Listing of the Snapshot-Enabled Volume</b></p><pre     class="programlisting">
+$ sudo mkdir -p /mnt/VolGroup/rootsnapshot
+$ sudo mount /dev/VolGroup/rootsnapshot /mnt/VolGroup/rootsnapshot/
+$ ls -l /mnt/VolGroup/rootsnapshot/
+total 124
+dr-xr-xr-x.   2   root root  4096  May 15 07:45  bin
+drwxr-xr-x.   2  root root  4096  May 15 06:59  boot
+drwxr-xr-x.   9  root root  4096  Sep  26 06:12 cgroup
+drwxr-xr-x.   2  root root  4096  May 15 06:59  dev
+drwxr-xr-x. 116 root root 12288 Sep  26 06:19  etc
+drwxr-xr-x.   3  root root  4096  May 15 08:10  home
+dr-xr-xr-x.  17  root root 12288  May 15 07:42  lib
+drwx------.   2 root root 16384  May 15 06:58  lost+found
+drwxr-xr-x.   3  root root  4096  Sep  26 06:15  media
+dr-xr-xr-x.   2   root root  4096  Sep  26 06:13 misc
+drwxr-xr-x.   3  root root  4096  Dec  4  2009   mnt
+dr-xr-xr-x.   2   root root  4096  Sep  26 06:13 net
+drwxr-xr-x.   2  root root  4096  Dec  4  2009   opt
+drwxr-xr-x.   2  root root  4096 May  15 06:59  proc
+dr-xr-x---.   4  root root  4096  Aug  31 15:54  root
+dr-xr-xr-x.   2  root root 12288  May 15 07:48  sbin
+drwxr-xr-x.   2 root root  4096   May 15 07:02  selinux
+drwxr-xr-x.   2 root root  4096   Dec  4  2009   srv
+drwxr-xr-x.   2 root root  4096   May 15 06:59  sys
+drwxrwxrwt. 15 root root  4096  Sep 26  06:27 tmp
+drwxr-xr-x.  14 root root  4096   May 15 07:14 usr
+drwxr-xr-x.  22 root root  4096   May 15 07:48 var
+</pre></div><p>
+Here is a simple exercise to verify that the snapshot is functional: write
+to the original volume&mdash;that is, modify an existing file or add/remove
+a file. The original data for those files will be present on the mounted
+snapshot. If a new file is added/removed from the original volume, it
+will not be present on the snapshot. Note that the same logic applies if
+the snapshot data is modified. The original volume will remain unaltered:
+
+
+<pre     class="programlisting">
+$ dd if=/dev/zero of=/home/petros/test.file count=65536
+65536+0 records in
+65536+0 records out
+33554432 bytes (34 MB) copied, 2.95349 s, 11.4 MB/s
+$ ls /home/petros/
+Desktop    Downloads  Music     Public     test.file
+Documents  drvadm     Pictures  Templates  Videos
+$ ls /mnt/VolGroup/rootsnapshot/home/petros/
+Desktop    Downloads  Music     Public     Videos
+Documents  drvadm     Pictures  Templates
+</pre>
+</p><p>
+Using the lvdisplay command, you now can observe that more space has
+been allocated for the snapshot volume. The value for the &ldquo;Allocated to
+snapshot&rdquo; field has increased to 0.24%:
+
+
+<pre     class="programlisting">
+$ sudo lvdisplay /dev/VolGroup/rootsnapshot
+  --- Logical volume ---
+  LV Name               /dev/VolGroup/rootsnapshot
+  VG Name               VolGroup
+  LV UUID                kAc3Iq-Gn3e-pBWs-KC9V-bFi8-0fHr-SsdRLR
+  LV Write Access     read/write
+  LV snapshot status active destination for /dev/VolGroup/lv_root
+  LV Status              available
+  # open                 1
+  LV Size                 5.51 GiB
+  Current LE             1410
+  COW-table size      500.00 MiB
+  COW-table LE        125
+  Allocated to snapshot  0.24%
+  Snapshot chunk size    4.00 KiB
+  Segments              1
+  Allocation               inherit
+  Read ahead sectors  auto
+  - currently set to     256
+  Block device           253:3
+</pre>
+</p><p>
+Removing a snapshot is almost as simple as creating it. First, unmount the
+snapshot, and then use the lvremove command to remove the LV from the VG:
+
+<pre     class="programlisting">
+$ sudo umount /mnt/VolGroup/rootsnapshot/
+$ sudo lvremove /dev/VolGroup/rootsnapshot
+</pre>
+</p><p>
+In some versions of various Linux distributions, including Red Hat
+Enterprise Linux (also in the latest beta release of RHEL 6), CentOS
+and even SUSE Linux, there exists a known problem when attempting
+to remove or deactivate logical volumes. Unable to remove the LV, the
+following error message will be returned: <tt  >Can't remove open logical
+volume "rootsnapshot"</tt>. If <tt  >dmsetup info -c
+rootsnapshot</tt> is invoked
+on the command line, the status of the LV will be returned and it will
+confirm the error message. To work around this, use the dmsetup command
+followed by the lvremove command. Confirm that the LV has been removed
+with the lvdisplay command:
+
+
+<pre     class="programlisting">
+$ sudo dmsetup remove /dev/mapper/VolGroup-rootsnapshot-cow
+$ sudo dmsetup remove /dev/mapper/VolGroup-rootsnapshot
+$ sudo lvremove /dev/VolGroup/rootsnapshot
+  Logical volume "rootsnapshot" successfully removed
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x15118a8"></a>
+Best Practices</h2></div></div><p>
+In some cases, it is advised to ensure that enough storage space is
+allocated for the snapshot or (as discussed below) a backup directory
+that will contain all of the archived snapshot data for restoring
+purposes. To extend an existing volume group, a new PV needs to be
+labeled. To do so, identify the physical storage device, and using fdisk,
+sfdisk or parted, create the desired partition size. Verify the partition
+by reading back the partition table. Then, continue to create the PV:
+
+
+<pre     class="programlisting">
+$ sudo sfdisk -l /dev/sde
+
+Disk /dev/sde: 261 cylinders, 255 heads, 63 sectors/track
+Units = cylinders of 8225280 bytes, blocks of 1024 bytes, 
+        counting from 0
+
+   Device Boot Start     End   #cyls    #blocks   Id  System
+/dev/sde1          0+    260     261-   2096451   83  Linux
+/dev/sde2          0       -       0          0           0   Empty
+/dev/sde3          0       -       0          0           0   Empty
+/dev/sde4          0       -       0          0           0   Empty
+
+$ sudo pvcreate /dev/sde1
+  Physical volume "/dev/sde1" successfully created
+</pre>
+</p><p>
+Append a newly labeled PV to an existing VG with the vgextend command:
+
+<pre     class="programlisting">
+$ sudo vgextend VolGroup /dev/sde1
+  Volume group "VolGroup" successfully extended
+</pre>
+</p><p>
+If at some point the PV needs to be removed from a VG, use the vgreduce
+command followed by the names of the VG and the PV:
+
+<pre     class="programlisting">
+$ sudo vgreduce VolGroup /dev/sde1
+</pre>
+</p><p>
+If the VG is being extended for the purpose of creating a backups
+directory to archive routine snapshots, following the normal lvcreate
+procedure, define the name, size and VG for the desired LV. Then, format
+the LV with a filesystem, and for file I/O accessibility, mount it to a
+directory path:
+
+
+<pre     class="programlisting">
+$ sudo lvcreate --name backups --size 1G VolGroup
+  Logical volume "backups" created
+$ sudo mke2fs -j /dev/VolGroup/backups
+$ sudo mkdir -p /mnt/VolGroup/backups
+$ sudo mount /dev/VolGroup/backups /mnt/VolGroup/backups
+</pre>
+</p><p>
+When the snapshot has been created, an archive can be made with the tar
+command, located in the newly created backups directory:
+
+<pre     class="programlisting">
+$ sudo tar -pczf /mnt/VolGroup/backups/rootsnapshot.tar.gz 
+ &#8618;/mnt/VolGroup/rootsnapshot
+</pre>
+</p><p>
+In an event of failure or if older revisions of files need to be
+retrieved, the archived snapshot can be used to restore the original
+data contents. This is an extremely ideal backup strategy when
+running a high-availability production environment. No downtime is
+required. Although this backup does not necessarily need to be written
+to a file, using the tar or dd commands, the snapshot can be written
+directly to another physical storage device, including a tape drive:
+
+<pre     class="programlisting">
+$ sudo tar -cf /dev/st0 /mnt/VolGroup/rootsnapshot
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x1508710"></a>
+Summary</h2></div></div><p>
+LVM2 comes prepackaged with some of the more common Linux-based
+distributions. In some cases, it even is used as part of the default
+filesystem layout. Its snapshot feature is one of those lesser-known
+treasures that really can be used to one's advantage, ranging from
+personal to larger-scale environments. All it takes is a little time,
+a little knowledge and a plan on design, deployment and configuration.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x1508818"></a></h2></div></div><div class="sidebar"><p class="title"><b>dmsetup(8)</b></p><p>
+dmsetup(8) is a low-level tool used to manage logical devices that use
+the device-mapper driver. The LVM2 user-space toolset relies heavily on
+the device-mapper kernel module and support library.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1418580.0x1508a28"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+LVM HOWTO: <a href="http://tldp.org/HOWTO/LVM-HOWTO/snapshotintro.html" target="_self">tldp.org/HOWTO/LVM-HOWTO/snapshotintro.html</a>
+</p><p>
+Logical Volume Manager (Wikipedia): <a href="http://en.wikipedia.org/wiki/Logical_Volume_Manager_(Linux)" target="_self">en.wikipedia.org/wiki/Logical_Volume_Manager_(Linux)</a>
+</p><p>
+Snapshot (Wikipedia): <a href="http://en.wikipedia.org/wiki/Snapshot_(computer_storage)" target="_self">en.wikipedia.org/wiki/Snapshot_(computer_storage)</a>
+</p><p>
+LVM2 Project Page: <a href="http://sourceware.org/lvm2" target="_self">sourceware.org/lvm2</a>
+</p><p>
+LVM2 Wiki: <a href="http://sources.redhat.com/lvm2/wiki" target="_self">sources.redhat.com/lvm2/wiki</a>
+</p><p>
+Known lvremove Bug (original no.): <a href="https://bugzilla.redhat.com/show_bug.cgi?id=577798" target="_self">https://bugzilla.redhat.com/show_bug.cgi?id=577798</a>
+</p><p>
+Known lvremove Bug for RHEL 6: <a href="https://bugzilla.redhat.com/show_bug.cgi?id=638711" target="_self">https://bugzilla.redhat.com/show_bug.cgi?id=638711</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Petros Koutoupis is a full-time Linux kernel, device driver and
+application developer for embedded and server platforms. He has been
+working in the data storage industry for more than six years and enjoys discussing
+the same technologies.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../201/toc201.html">Issue Table of Contents</a>
+    <a class="link3" href="../201/10902.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

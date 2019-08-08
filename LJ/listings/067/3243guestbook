@@ -1,0 +1,185 @@
+import java.io.*; 
+import javax.servlet.*; 
+import javax.servlet.http.*; 
+import java.sql.*;
+import java.util.Date;
+import java.util.*;
+
+// Servlet - implements a guest book.
+public class GuestBook extends HttpServlet { 
+	Connection con;
+	Statement stmt;
+	Properties props;
+
+	// Init gets called once and thats it.
+	// Loads the properties (using the base.dir redirection) and
+	// connects to the DB.
+	public void init(ServletConfig conf) throws ServletException { 
+		super.init(conf); 
+		try {
+			loadProperties();
+			Class.forName( props.getProperty( "login.jdbc" ));
+			con = DriverManager.getConnection( props.getProperty( "login.url"), 
+				props.getProperty( "login.user" ), props.getProperty( "login.passwd" ));
+			stmt = con.createStatement();
+		}
+		catch( Exception e ) {
+			throw new ServletException( e.toString());
+		}
+	} 
+
+	// Get a new key value
+	// Perform work in a transaction - commit at the end.
+	private int getKey( int id ) throws Exception {
+		con.setAutoCommit(false );
+		ResultSet rs = stmt.executeQuery( "select val from key_table where id = "+id );
+		int val = 0;
+		 
+		if( rs.next()) {
+			val = rs.getInt( "val" ) + 1;
+			stmt.executeUpdate( "update key_table set val = "+val+" where id = "+id );
+		}
+		else {
+			stmt.executeUpdate( "insert into key_table values( "+id+", 0)" );
+		}
+		con.commit();
+		con.setAutoCommit( true );
+		return val;
+	}
+		
+	// Handle individual requests
+	public void service(HttpServletRequest req, HttpServletResponse res) 
+		throws IOException{ 
+		//Get a channel to the Web browser, so we can send output 
+		ServletOutputStream out = res.getOutputStream(); 
+		res.setContentType("text/html"); // Required for HTTP 
+
+		try {
+			out.print( props.getProperty( "html.title" )); 
+
+			if( req.getParameter( "enter" ) != null ) {
+				out.print( props.getProperty( "html.header.form" ));
+				showForm( req, out );
+			}
+			else if( req.getParameter( "name" ) != null ) {
+				addEntries( req );
+				out.print( props.getProperty( "html.header.list" ));
+				listEntries( req, out );
+			}
+			else {
+				out.print( props.getProperty( "html.header.list" ));
+				listEntries( req, out );
+			}
+		}
+		catch( Exception e ) {
+			throw new IOException( e.toString());
+		}								 
+		finally {
+			out.print( props.getProperty( "html.footer" ));
+			out.close();
+		}
+	}
+
+
+	// Load the properties - use the "base.dir" property to locate property file.
+	// The 'base.dir' directory is a public readable/writable directory wherein 
+	// servlet developers may place their property files.
+	private void loadProperties( ) throws IOException {
+		props = new Properties();
+		props.load( new FileInputStream( System.getProperty( "base.dir" )+
+			"GuestBook.properties" ));
+	}
+
+
+	// Contruct a URL to this Servlet - for <A HREF's later.
+	private String getURL( HttpServletRequest req ) {
+		return req.getRequestURI();
+	}
+	
+	
+	// Print the DB guestbook entries.
+	private void listEntries( HttpServletRequest req, ServletOutputStream out ) throws Exception {
+		ResultSet rs = stmt.executeQuery( "select * from guest_book");
+
+		out.print( "<TABLE>" );
+		while( rs.next()) {
+			String email = rs.getString( "email" );
+			String comment = rs.getString( "comment" );
+			String name = rs.getString( "name" );
+			String addr = rs.getString( "addr" );
+			String tnbgColor = props.getProperty( "table.name.bgcolor" )!=null?
+				(" BGCOLOR="+props.getProperty( "table.name.bgcolor" )) :
+				"";
+
+			out.print( "<TR"+tnbgColor+"><TD>" );
+			if( email != null && email.length() > 1 )
+				out.print( "<A HREF=\"mailto:"+email+"\">"+name+"</A>" );
+			else
+				out.print( name );
+
+			out.print( "</TD><TD>"+rs.getString( "time" )+"</TD></TR>" );
+			out.print( "</TR>" );
+
+			if( addr != null ) 
+				out.print( "<TR><TD COLSPAN=2><EM>"+addr+"</EM></TD></TR>" );
+
+			if( comment != null ) 
+				out.print( "<TR><TD COLSPAN=2>"+comment+"</TD></TR>" );
+
+			out.print( "<TR><TD COLSPAN=2><BR></TD></TR>" );
+		}
+		out.print( "</TABLE>" );
+	}
+
+
+	// Display the form
+	private void showForm( HttpServletRequest req, ServletOutputStream out ) throws Exception {
+		out.print( "<FORM METHOD=post ACTION=\""+getURL( req )+"\">");
+		out.print( "<TABLE VALIGN=TOP>" );
+		out.print( "<TR><TD>Name</TD><TD><INPUT TYPE=text NAME=name SIZE=30></TD></TR>" );
+		out.print( "<TR><TD>Address</TD><TD><INPUT TYPE=text NAME=addr SIZE=30></TD></TR>" );
+		out.print( "<TR><TD>Email</TD><TD><INPUT TYPE=text NAME=email SIZE=30></TD></TR>" );
+		out.print( "<TR><TD VALIGN=TOP>Comment</TD><TD><TEXTAREA NAME=comment COLS=40 ROWS=5></TEXTAREA></TD></TR><BR>" );
+		out.print( "</TABLE>" );
+		out.print( "<INPUT TYPE=submit VALUE=\"Submit\"></FORM>" );
+	}
+	
+
+	// Replace 'from's in the comment text with 'to's
+	private String replace( String s, String from, String to ) {
+		StringBuffer sb = new StringBuffer();
+		int idx = 0;
+		int ldx = 0;
+
+		// copy the fragments between 'from's
+		while(( idx = s.indexOf( from, ldx )) != -1 ) {
+			sb.append( s.substring( ldx, idx ));
+			sb.append( to );
+			ldx = idx+1;
+		}
+
+		// No more 'from's - make sure to copy the rest
+		if( ldx < s.length()) {
+			sb.append( s.substring( ldx ));
+		}
+
+		return new String( sb );
+	}
+
+
+	// Add the new comment to the guestbook table. Only proceed if the length of the name supplied
+	// is longer than 0 chars.
+	private void addEntries( HttpServletRequest req ) throws Exception {
+		String name = req.getParameter( "name" );
+		
+		if( name.length() > 0 ) {
+			String comment = (req.getParameter( "comment")!=null)?req.getParameter( "comment"):"";
+			String email = (req.getParameter( "email" )!=null)?req.getParameter( "email" ):"";
+			String addr = (req.getParameter( "addr" )!=null)?req.getParameter( "addr" ):"";
+
+			stmt.executeUpdate( "insert into guest_book values( "+getKey( 1 )+",'','"+
+				name+"','"+addr+"','"+email+"','now','"+
+				replace( replace( comment, "\n", "<BR>" ), "'", "''" )+"')"); 
+		}
+	}
+}

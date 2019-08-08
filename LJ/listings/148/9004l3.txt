@@ -1,0 +1,620 @@
+Listing 3. p2p Client
+
+/* Copyright Girish Venkatachalam 2006
+ * girish1729@gmail.com
+ *
+ * You are free to modify it to suit your requirements.
+ * The licensing terms of this program is along the lines
+ * of the BSD license. You are free to use this for commercial
+ * purposes provide you retain this notice.
+ *
+ *
+ *
+ */
+#include "p2pcommon.h"
+
+int registermediator(struct context *ctx) {
+        int n;
+        struct msg m;
+        struct sockaddr_in mypriv;
+
+        m.op = REGISTER;
+        m_st.rpl.id = htonl(getmyid());
+        mypriv.sin_port = htons(17000);
+        mypriv.sin_addr = getprivip();
+        syslog(LOG_INFO,"My private address is
+%s:%d",inet_ntoa(mypriv.sin_addr),ntohs(mypriv.sin_port));
+        m_st.rpl.priv = mypriv;
+        m_st.rpl.pub  = ctx->mypub;
+        ctx->mypriv  = mypriv;
+
+        do {
+                n = send(ctx->tcpsock,(char *)&m,sizeof(m),0);
+        }while(eblock());
+        if(n == 0 || n == -1) {
+                syslog(LOG_ERR,"Couldn't send registration message..
+Exiting");
+                exit(128);
+        }
+        n = recv(ctx->tcpsock,(char *)&m,sizeof(m),0);
+        if(n == 0 || n == -1) {
+                syslog(LOG_ERR,"Couldn't recv registration result..
+Exiting");
+                exit(128);
+        }
+        if(m.op == REGISTRATION_COMPLETED) {
+                syslog(LOG_INFO,"Successfully registered with
+mediator,id=%d",getmyid());
+        }
+        else {
+                syslog(LOG_ERR,"Duplicate ID, can't register.. exiting");
+                exit(128);
+        }
+        return 0;
+}
+
+
+int hdl_clreqib(struct context *ctx,struct req_payload *st) {
+        int ret;
+        struct connection *conn = (struct connection *)malloc(sizeof(struct
+connection));
+        conn->ctx = ctx;
+        st->my.priv.sin_family = AF_INET;
+        st->my.pub.sin_family = AF_INET;
+        ret = holepunch_algo(conn,&st->my.priv,&st->my.pub,INBOUND);
+
+        if(conn) {
+                free(conn);
+        }
+        return 0;
+
+}
+
+int hdl_punchhole(int serversock,struct peercoord_payload *st) {
+        struct sockaddr_in p2p;
+        socklen_t l;
+        p2p.sin_family = PF_INET;
+        p2p.sin_port   = htons(15001);
+        inet_aton("127.0.0.1",&p2p.sin_addr);
+        l = sizeof(p2p);
+        st->pub.sin_family = AF_INET;
+        st->priv.sin_family = AF_INET;
+        sendto(serversock,st,sizeof(*st),0,(struct sockaddr *)&p2p,l);
+
+        return 0;
+}
+
+int peer_holepunch(struct connection *conn) {
+        struct msg m;
+        int ret;
+        m.op = NEW_CLIENT_REQ_OUTBOUND;
+        m_st.reqpl.my.pub = conn->ctx->mypub;
+        m_st.reqpl.my.priv = conn->ctx->mypriv;
+        m_st.reqpl.peer.id = conn->peerid;
+        do {
+                ret = send(conn->ctx->tcpsock,(char *)&m,sizeof(m),0);
+        }while(eblock());
+        if(ret == 0 || ret == -1) {
+                syslog(LOG_ERR,"Send() problem with mediator.. Exiting");
+                exit(128);
+        }
+        return 0;
+
+}
+
+int hdl_wrongid(int serversock) {
+        struct sockaddr_in p2p;
+        struct peercoord_payload pl;
+        socklen_t l;
+
+        p2p.sin_family = PF_INET;
+        p2p.sin_port   = htons(15001);
+        inet_aton("127.0.0.1",&p2p.sin_addr);
+        l = sizeof(p2p);
+        pl.id = 0;
+        sendto(serversock,&pl,sizeof(pl),0,(struct sockaddr *)&p2p,l);
+
+        return 0;
+}
+
+int hdl_hpend(int serversock) {
+        struct msg m;
+        struct sockaddr_in p2p;
+        socklen_t l;
+
+        p2p.sin_family = PF_INET;
+        p2p.sin_port   = htons(15001);
+        inet_aton("127.0.0.1",&p2p.sin_addr);
+        l = sizeof(p2p);
+        m.op = HOLEPUNCH_COMPLETED;
+        sendto(serversock,&m,sizeof(m),0,(struct sockaddr *)&p2p,l);
+
+        return 0;
+
+}
+
+/* This is the body of the client loop.
+ *
+ */
+int servemediator(int sock,int serversock,struct context *ctx) {
+        int b;
+        struct msg m;
+
+        b = recv(sock,(void *)&m,sizeof(m),0);
+
+        if( b == -1 || b == 0) {
+                perror("Recv() error from mediator.. Exiting");
+                close(sock);
+                exit(128);
+        }
+
+        switch(m.op) {
+                case  NEW_CLIENT_REQ_INBOUND:
+                        syslog(LOG_INFO,"New client inbound holepunch req
+payload");
+                        hdl_clreqib(ctx,&m_st.reqpl);
+                        break;
+                case PEER_COORD:
+                        syslog(LOG_INFO,"Peer coord payload to initiate
+hole punching");
+
+                        hdl_punchhole(serversock,&m_st.peerpl);
+                        break;
+                case PEERID_WRONG:
+                        syslog(LOG_INFO,"Wrong peer ID holepunch request");
+                        hdl_wrongid(serversock);
+                        break;
+                case HOLEPUNCH_COMPLETED:
+                        syslog(LOG_INFO,"*********** Holepunching complete
+*********");
+                        break;
+
+                default:
+                        syslog(LOG_ERR,"Garbled message from mediator ,
+m.op = %d",m.op);
+
+        }
+        return 0;
+}
+
+int doecho(int udpsock,char *buf,int len,struct sockaddr_in *tsin) {
+        /* Just bounce it back baby :-) */
+        /* But send the ack first */
+        struct request rq;
+        char mybuf[4096];
+        char c;
+        if(!dataintegrity(buf,len-20,CHECK_INTEGRITY)) {
+                c = 1;
+        }
+        else
+                c = 2;
+        sendto(udpsock,&c,1,0,(struct sockaddr *)tsin,sizeof(*tsin));
+
+        memcpy(mybuf,buf+sizeof(rq),len-20-sizeof(rq));
+        /* Now whatever is in mybuf is the payload sent by peer */
+
+        sendreply(udpsock,buf+sizeof(rq),len-20-sizeof(rq),tsin);
+        return 0;
+}
+
+void serveudp(int udpsock,int serversock)
+{
+        struct sockaddr_in tsin;
+        socklen_t sinlen;
+        unsigned char buf[4096];
+        struct request rq;
+        struct reply rp;
+        int rc;
+
+        sinlen = sizeof(tsin);
+        rc = recvfrom(udpsock, buf, sizeof(buf), 0,
+                        (struct sockaddr*)&tsin, &sinlen);
+
+        rq = *(struct request *)buf;
+        if((rc == sizeof(rq)) && ( rq.magic == htonl(REQMAGIC) ) ) {
+                /* This is definitely a UDP bounce request */
+                /* Build the reply and send it to the client */
+                rp.magic = htonl(REPLMAGIC);
+                rp.pubaddr = tsin.sin_addr;
+                rp.pubport = tsin.sin_port;
+                if (sendto(udpsock, &rp, sizeof(rp), 0,
+                                        (struct sockaddr*)&tsin,
+sizeof(tsin)) < 0)
+                {
+                        syslog(LOG_ERR,"Problem sending on udpsock to
+%s:%d",inet_ntoa(tsin.sin_addr),ntohs(tsin.sin_port));
+                        perror("sendto");
+                }
+
+                syslog(LOG_INFO, "UDP bounce request from %s:%d\n",
+                                inet_ntoa(tsin.sin_addr),
+                                ntohs(tsin.sin_port));
+
+
+        }
+        else {
+                struct sockaddr_in p2p;
+                socklen_t l;
+                struct p2p_payload payload;
+
+                p2p.sin_family = PF_INET;
+                p2p.sin_port   = htons(15001);
+                inet_aton("127.0.0.1",&p2p.sin_addr);
+                l = sizeof(p2p);
+
+                if(rq.magic  == htonl(SERVMAGIC)) {
+                        /* XXX act as p2p server */
+                        /* This is a dummy function just for testing
+                         * purposes, to be replaced with actual p2p
+                         *server code */
+                        doecho(udpsock,buf,rc,&tsin);
+
+                        syslog(LOG_INFO, "p2p Server UDP request from
+%s:%d\n",
+                                        inet_ntoa(tsin.sin_addr),
+                                        ntohs(tsin.sin_port));
+
+
+                }
+                else {
+
+                        /* If code reaches here , we are damn sure it is a
+                         * response to a client request packet */
+
+                        if( (rq.magic  == htonl(REPLMAGIC))
+                                        || rc == 1) {
+                                /* We have got a UDP bounce reply,
+                                 * as part of hole punching, what
+                                 * we have to do is bounce it to
+                                 * our local socket
+                                 * or else it is an ack packet */
+
+                                sendto(serversock,buf,rc,0,(struct sockaddr
+*)&p2p,l);
+                        }
+                        else {
+                                /* Fill the payload to send for p2p
+ * protocol backend */
+                                payload.peer = tsin;
+                                memcpy(payload.buf,buf,rc);
+                                payload.len = rc;
+
+                                sendto(serversock,&payload,sizeof(payload),0,(struct
+sockaddr *)&p2p,l);
+
+                                syslog(LOG_INFO, "Response to p2p client
+request from %s:%d\n",
+                                                inet_ntoa(tsin.sin_addr),
+                                                ntohs(tsin.sin_port));
+                        }
+
+                }
+
+        }
+
+}
+
+struct context *initializep2p()
+{
+        struct sockaddr_in sintcp,sinudp,udplocal;
+        socklen_t sinlen;
+        struct context *ctx;
+        struct connection *conn;
+        fd_set rfds,wfds;
+        int udpsock,tcpsock,serversock;
+        int  ret,on = 1,fds;
+        uint16_t servport1 = 1234,servport2 = 80;
+#ifdef WIN32
+        WSADATA wsaData;
+
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+                perrdie("Windows sockets 2.2 startup");
+        {
+                syslog(LOG_INFO, "Using %s (Status: %s)\n",
+                                wsaData.szDescription,
+wsaData.szSystemStatus);
+                syslog(LOG_INFO, "with API versions %d.%d to %d.%d\n\n",
+                                LOBYTE(wsaData.wVersion),
+HIBYTE(wsaData.wVersion),
+                                LOBYTE(wsaData.wHighVersion),
+HIBYTE(wsaData.wHighVersion));
+        }
+#endif
+
+
+
+        /* XXX Make this work on Windoze */
+        openlog("vembu-p2p",LOG_PERROR | LOG_CONS | LOG_PID,LOG_LOCAL2);
+        syslog(LOG_INFO,"Starting p2p ....");
+
+
+        ctx = (struct context *)malloc(sizeof(struct context));
+
+        lookup(MEDIATOR, &sintcp,servport1);
+        tcpsock = mksock(SOCK_STREAM);
+        sinlen = sizeof(sintcp);
+
+        setsockopt(tcpsock,SOL_SOCKET,SO_KEEPALIVE,&on,sizeof(on));
+
+        serversock = socket(PF_INET,SOCK_DGRAM,0);
+        sinudp.sin_family = PF_INET;
+        sinudp.sin_port   = htons(15000);
+        sinudp.sin_addr.s_addr = INADDR_ANY;
+
+        if(bind(serversock,(struct sockaddr *)&sinudp,sizeof(sinudp)) ==
+-1) {
+                syslog(LOG_ERR,"Coulnd't bind UDP loopback socket ..
+dying");
+                exit(128);
+        }
+        ctx->clientsock = socket(AF_INET,SOCK_DGRAM,0);
+        udplocal.sin_family = PF_INET;
+        udplocal.sin_port   = htons(15001);
+        udplocal.sin_addr.s_addr = INADDR_ANY;
+
+        if(bind(ctx->clientsock,(struct sockaddr
+*)&udplocal,sizeof(udplocal)) != 0)
+        {
+                syslog(LOG_ERR,"Loopback UDP bind problem");
+        }
+
+
+        udpsock = socket(AF_INET,SOCK_DGRAM,0);
+        sinudp.sin_family = PF_INET;
+        sinudp.sin_port   = htons(17000);
+        sinudp.sin_addr.s_addr = INADDR_ANY;
+
+        if(bind(udpsock,(struct sockaddr *)&sinudp,sizeof(sinudp)) == -1) {
+                syslog(LOG_ERR,"Coulnd't bind p2p UDP socket .. dying");
+                exit(128);
+        }
+
+        ret = connect(tcpsock,(struct sockaddr *)&sintcp,sinlen);
+
+
+        if(ret != 0) {
+                perrdie("Mediator port 1234 connect");
+                syslog(LOG_INFO,"Trying port 80");
+                sintcp.sin_port = htons(servport2);
+                ret = connect(tcpsock,(struct sockaddr *)&sintcp,sinlen);
+
+
+                if(ret != 0) {
+                        syslog(LOG_ERR,"Too bad, we coulnd't connect to
+mediator,dying...");
+                        exit(128);
+                }
+
+        }
+
+        syslog(LOG_INFO,"Successfully connected to mediator");
+        /* Good, now that we are connected let us first register */
+        /* But hey before we register we have to punch a hole :-) */
+        conn = (struct connection *)malloc (sizeof(struct connection));
+        conn->peerid = 0;
+        conn->ctx = ctx;
+        conn->ctx->tcpsock = tcpsock;
+        conn->ctx->udpsock = udpsock;
+        ret = holepunch(conn);
+        if(ret == LINK_DOWN) {
+                syslog(LOG_ERR,"My probes are not going through, kindly
+restart the daemon after you fix your network problem.. Exiting");
+                exit(128);
+        }
+
+
+        registermediator(ctx);
+
+        /* Now we have to fork into a separate process */
+        /* XXX do something like fork() for Windoze ... */
+        if ( fork() != 0) {
+                return ctx;
+        }
+
+
+
+        fds = udpsock > tcpsock ? udpsock + 1 : tcpsock + 1;
+
+
+        for(;;) {
+
+                FD_ZERO(&rfds);
+                FD_ZERO(&wfds);
+                FD_SET(udpsock,&rfds);
+                FD_SET(udpsock,&wfds);
+                FD_SET(tcpsock,&rfds);
+                FD_SET(tcpsock,&wfds);
+
+                select(fds,&rfds,NULL,NULL,NULL);
+
+                if(FD_ISSET(udpsock,&rfds)) {
+                        serveudp(udpsock,serversock);
+                }
+                if(FD_ISSET(tcpsock,&rfds)) {
+                        servemediator(tcpsock,serversock,ctx);
+                }
+
+        }
+
+
+        return 0;
+
+}
+
+/* Now our user API functions */
+
+struct connection *connectpeer(struct context *ctx,uint32_t peerid) {
+        struct sockaddr_in peer;
+        struct connection *conn;
+        struct peercoord_payload st;
+
+        socklen_t l = sizeof(peer);
+
+        conn = (struct connection *)malloc(sizeof(struct connection));
+        conn->ctx = ctx;
+        conn->peerid = htonl(peerid);
+        holepunch(conn);
+        recvfrom(conn->ctx->clientsock,&st,sizeof(st),0,(struct sockaddr
+*)&peer,&l);
+
+        if(st.id == 0) /* Wrong peer id passed */ {
+                return NULL;
+        }
+        holepunch_algo(conn,&st.priv,&st.pub,OUTBOUND);
+        return conn;
+}
+
+int sendrequest(struct connection *conn,char *buf,int len) {
+        int ret ;
+        char c;
+        struct sockaddr_in peer;
+        struct request rq;
+        unsigned char mybuf[4096];
+        socklen_t l = sizeof(conn->peer);
+
+        rq.magic = htonl(SERVMAGIC);
+        memcpy(mybuf,&rq,sizeof(rq));
+        memcpy(mybuf+sizeof(rq),buf,len);
+
+        dataintegrity(mybuf,len+sizeof(rq),ADD_INTEGRITY);
+        ret = sendto(conn->ctx->udpsock,mybuf,len+sizeof(rq)+20,0,(struct
+sockaddr *)&conn->peer,l);
+        if(ret == 0 || ret == -1) {
+
+                perror("p2p Send");
+                syslog(LOG_ERR,"Problem sending p2p protocol data to
+peer");
+        }
+        /* Check whether the data reached safely */
+        ret =  recvfrom(conn->ctx->clientsock,&c,1,0,(struct sockaddr
+*)&peer,&l);
+
+        if(c == 1)
+                return 0;
+        else
+                return -1; /* Data integrity failed */
+
+}
+
+int sendreply(int udpsock,char *buf,int len,struct sockaddr_in *tsin) {
+        int ret ;
+        char c;
+        struct sockaddr_in peer;
+        struct request rq;
+        unsigned char mybuf[4096];
+        socklen_t l = sizeof(peer);
+
+
+        rq.magic = htonl(CLIMAGIC);
+        memcpy(mybuf,&rq,sizeof(rq));
+        memcpy(mybuf+sizeof(rq),buf,len);
+
+        dataintegrity(mybuf,len+sizeof(rq),ADD_INTEGRITY);
+        ret = sendto(udpsock,mybuf,len+sizeof(rq)+20,0,(struct sockaddr
+*)tsin,sizeof(*tsin));
+        if(ret == 0 || ret == -1) {
+
+                perror("p2p Send");
+                syslog(LOG_ERR,"Problem sending p2p protocol data to
+peer");
+        }
+
+        /* Check whether the data reached safely */
+        ret =  recvfrom(udpsock,&c,1,0,(struct sockaddr *)&peer,&l);
+        if(c == 1)
+                return 0;
+        else
+                return -1; /* Data integrity failed */
+
+}
+
+
+int receivepeer(struct connection *conn,char *buf,int *len) {
+        struct p2p_payload payload;
+        struct sockaddr_in local;
+        struct request rq;
+        char c;
+        socklen_t l = sizeof(local);
+
+        recvfrom(conn->ctx->clientsock,&payload,sizeof(payload),0,(struct
+sockaddr *)&local,&l);
+        *len = payload.len-20-sizeof(rq);
+        if(conn->peer.sin_addr.s_addr == payload.peer.sin_addr.s_addr) {
+                if(!dataintegrity(payload.buf,payload.len-20,CHECK_INTEGRITY))
+{
+                        memcpy(buf,payload.buf+sizeof(rq),*len);
+                        c = 1;
+                        /* Sending ACK packet */
+                        sendto(conn->ctx->udpsock,&c,1,0,(struct sockaddr
+*)&conn->peer,l);
+
+                        return 0;
+                }
+                else {
+                        c = 2;
+                        /* Sending NACK packet */
+                        sendto(conn->ctx->udpsock,&c,1,0,(struct sockaddr
+*)&conn->peer,l);
+                        return -1; /* Our integrity check failed */
+                }
+
+        }
+        return -1;
+}
+
+int closepeer(struct connection *conn) {
+        if(conn) {
+                free(conn);
+        }
+        conn = NULL;
+        return 0;
+}
+
+Now an example application using this library.
+
+#include "p2pcommon.h"
+
+int main () {
+        struct context *ctx = NULL;
+        struct connection *conn = NULL;
+        char buf[1024],output[1024];
+        int len,ret = -1;
+
+        ctx = initializep2p();
+
+        conn = connectpeer(ctx,12345678);
+
+        if(conn == NULL) {
+                printf("Wrong ID passed or peer offline.. exiting\n");
+                close(ctx->tcpsock);
+                exit(128);
+        }
+
+        strcpy(buf,"God is great!");
+        len = strlen(buf);
+
+        ret = sendrequest(conn,buf,len);
+
+        if(ret != 0) {
+                printf("Reliable UDP sending failed, have to try again\n");
+                exit(128);
+        }
+
+
+        ret = receivepeer(conn,output,&len);
+
+        if(ret != 0) {
+                printf("Reliable UDP reception failed\n");
+                exit(128);
+        }
+        printf("I received %d bytes from peer\n",len);
+        printf("Data received is [%s]\n",output);
+
+        closepeer(conn);
+
+        /* Good, if the program did not crash,then memory has
+         * been freed successfully and there has not been any
+         * memory corruption */
+        return 0;
+}
+

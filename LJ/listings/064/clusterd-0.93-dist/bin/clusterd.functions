@@ -1,0 +1,219 @@
+#
+# Copyright (C) 1998, 1999 Philip J. Lewis
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+#
+#    Contact: lewispj@email.com
+#
+
+# set path to include the system scripts
+
+PATH=$PATH":/sbin:/usr/sbin:/etc/sysconfig/network-scripts:/usr/local/bin"
+NULL="/dev/null"
+
+alert_admin()
+{
+	logger -is -t clusterd $1
+}
+
+debug_output()
+{
+	echo $1
+}
+
+is_alive()
+{
+	# expire any arp cache entries first
+	arp -d $1 >$NULL 2>$NULL
+	# do a single ping with 3 sec timeout in bg
+	ping -c 2 $1 >$NULL 2>$NULL &
+	PINGPID=$!
+	# wait 3 seconds then kill ping process
+	sleep 5
+	kill -9 $PINGPID >$NULL 2>$NULL
+	# Return 0 for failure (ie. could kill ping), 1 for alive
+	if [ $? = 0 ]; then
+		echo 0
+		return 0
+	else
+		echo 1
+		return 1
+	fi
+}
+
+
+failover()
+{
+	if [ "$1" != "start" ]; then
+		# Start failover recovery
+		# must down redundant interface to prevent address clash
+		debug_output "stopping IP and MAC address takeover"
+		ifdown $LRI
+
+		debug_output "stopping all failover applications"
+		cluster_init_stop $REM
+
+		# start resync when remote is fully reachable
+		# if remote server is still up, and the remote standby lockfile is removed
+		if [ "$(is_alive $RHA)" = "1" -a  "$(remote_standby_lock_removed)" = "1" ]; then
+			debug_output "Stopping failover in Progress"
+
+			# resync is vital to avoid deletion of new files
+			# give back remote server's services
+			debug_output "resyncing"
+			# stop local services to allow remote to resync to local
+			cluster_init_stop $LOC
+
+			resync-after-failover
+
+			# remove no-sync lock file
+			#(ie. allow mirroring to remote to start again and allow
+			# remote server to go back into normal service)
+			rm -f /var/run/failover.$REM
+			
+			# start local services again when remote has finished resyncing
+			# if remote server is still up, wait for the lockfile to clear
+			if [ "$(is_alive $RHA)" = "1" ]; then
+				wait_remote_lock
+			fi
+			# start cluster services for this server
+			cluster_init_start $LOC
+		fi
+
+	else
+		######## FAILOVER PROCEDURE ########
+		debug_output "Failover start in progress"
+
+		# make sure redundant interface not in use - down it.
+		ifdown $LRI
+
+		# bring up redundant interface (ifcfg-eth2 must contain $RMM MACADDR)
+		debug_output "starting IP and MAC address takeover"
+		ifup $LRI
+
+		# take-over remote server's services
+		debug_output "starting remote takeover applications"
+		touch /var/run/failover.$REM
+		cluster_init_start $REM
+	fi
+}
+
+
+# maybe use /etc/resync.d directory for resync application descriptions
+resync-after-failover()
+{
+	debug_output "Resyncing files to remote server"
+	for i in $CONFIG/$REM/F*; do
+		# Check if the app file description is there.
+		[ ! -f $i ] && continue
+
+		# resync the application.
+		$INSTALL/sync-app $i $RHA --resync
+	done
+
+}
+
+get_local_config()
+{
+	. $1
+	LMA=$MAIN_IPADDR
+	LMI=$MAIN_INTERFACE
+	LMM=$MAIN_MACADDR
+	LHA=$HEARTBEAT_IPADDR
+	LHI=$HEARTBEAT_INTERFACE
+	LRI=$REDUNDANT_INTERFACE
+}
+
+get_remote_config()
+{
+	. $1
+	RMA=$MAIN_IPADDR
+	RMI=$MAIN_INTERFACE
+	RMM=$MAIN_MACADDR
+	RHA=$HEARTBEAT_IPADDR
+	RHI=$HEARTBEAT_INTERFACE
+	RRI=$REDUNDANT_INTERFACE
+}
+
+cluster_init_start()
+{
+	# Check if there is a directory for cluster init level?
+	if [ -d $CONFIG/$1 ]; then
+		# run the START scripts.
+		for i in $CONFIG/$1/S*; do
+			# Check if the script is there.
+			[ ! -f $i ] && continue
+			# Bring the subsystem up.
+			$i start
+		done
+	fi
+}
+
+
+cluster_init_stop()
+{
+	# Check if there is a directory for cluster init level?
+	if [ -d $CONFIG/$1 ]; then
+		# run the KILL scripts.
+		for i in $CONFIG/$1/K*; do
+			# Check if the script is there.
+			[ ! -f $i ] && continue
+			# Bring the subsystem down.
+			$i stop
+		done
+	fi
+}
+
+remote_lock_removed()
+{
+	ssh -lroot $RHA test -f /var/run/failover.$LOC
+	result_code=$?
+	if [ "$result_code" = "0" ]; then
+		# "Remote Server failover lockfile still exists"
+		echo 0
+		return 0
+	else
+		# "Remote Server failover lockfile is removed - clear to startup"
+		echo 1
+		return 1
+	fi
+}
+
+remote_standby_lock_removed()
+{
+	ssh -lroot $RHA test -f /var/run/standby
+	result_code=$?
+	if [ "$result_code" = "0" ]; then
+		# "Remote Server standby lockfile still exists"
+		echo 0
+		return 0
+	else
+		# "Remote Server standby lockfile is removed - clear to startup"
+		echo 1
+		return 1
+	fi
+}
+
+
+wait_remote_lock()
+{
+	# Before starting local services, make sure the remote server's failover
+	# lock file is not present
+	while [ "$(remote_lock_removed)" = "0" ]; do
+	        debug_output "remote server still has failover lockfile"
+	        sleep 3
+	done
+}
+

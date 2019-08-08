@@ -1,0 +1,190 @@
+#!/bin/bash
+
+# create a new minimal fedora install
+# suitable for use on a router box.
+
+# Where we are building the system
+# Warning: everything under this directory will
+# be removed.
+BUILDDIR=/extra_disk/wansys
+
+# Where the complete collection of Fedora Core 1
+# RPMs resides.
+# Copy these from the Fedora Core 1 install CDs.
+FEDORADIR=/extra_disk/fedora-rpms
+
+# Some setup parameters
+HOSTNAME=wan-router
+GATEWAY=192.168.1.1
+IPADDR=192.168.1.2
+NAMESERVER1=192.168.1.1
+NAMESERVER2=192.168.2.1
+DOMAIN=some-company.com
+
+# Initialize rpm db
+rpm --root $BUILDDIR --dbpath /var/lib/rpm \
+  --initdb || exit 1
+
+# The rpm directory has to be available under the
+# build directory.
+ln -s $FEDORADIR $BUILDDIR || exit 1
+
+# Need  /etc/fstab for some of the rpm installs.
+mkdir $BUILDDIR/etc
+cat >>$BUILDDIR/etc/fstab <<EOF
+LABEL=/                 /                      \
+ext3    noatime,commit=60  1 1
+none                    /dev/pts               \
+devpts  gid=5,mode=620  0 0
+none                    /proc                  \
+proc    defaults        0 0
+none                    /dev/shm               \
+tmpfs   defaults        0 0
+/tmp                    /tmp                   \
+tmpfs   defaults        0 0
+/var/impermanent        /var/impermanent       \
+tmpfs   defaults        0 0
+EOF
+
+# Need a /dev/null for some of the early
+# rpm installs
+mkdir $BUILDDIR/dev || exit 1
+mknod -m 444 $BUILDDIR/dev/null c 1 3 || exit 1
+
+# Similarly, we need /proc.
+mkdir ${BUILDDIR}/proc
+mount --bind /proc ${BUILDDIR}/proc
+
+cd $FEDORADIR || exit 1
+# Install base packages depended on by
+# everything else.
+rpm --root $BUILDDIR/ --excludedocs --dbpath \
+/var/lib/rpm --replacepkgs -i \
+rpmdb-fedora-1-0.20031103.i386.rpm \
+bash-2.05b-31.i386.rpm \
+glibc-2.3.2-101.i686.rpm \
+mktemp-1.5.1-1.i386.rpm \
+glibc-common-2.3.2-101.i386.rpm \
+basesystem-8.0-2.noarch.rpm \
+libgcc-3.3.2-1.i386.rpm \
+libtermcap-2.0.8-36.i386.rpm \
+tzdata-2003d-1.noarch.rpm \
+setup-2.5.27-1.1.noarch.rpm \
+filesystem-2.2.1-5.i386.rpm \
+termcap-11.0.1-17.noarch.rpm || exit 1
+
+# Install from our list of packages.
+cat >/tmp/pkglist.$$ <<EOF
+glibc-common-2.3.2-101.i386.rpm
+filesystem-2.2.1-5.i386.rpm
+libgcc-3.3.2-1.i386.rpm
+e2fsprogs-1.34-1.i386.rpm
+popt-1.8.1-0.30.i386.rpm
+glib2-2.2.3-1.1.i386.rpm
+mount-2.11y-29.i386.rpm
+...many more rpms, edited for space...
+EOF
+rpm --root $BUILDDIR --excludedocs --dbpath \
+/var/lib/rpm -i --replacepkgs  --aid \
+`cat /tmp/pkglist.$$`
+rm -f /tmp/pkglist.$$
+
+# Get rid of the fedora rpm database - we don't \
+# need it now that we've resolved dependencies \
+# during the install.
+rpm --root $BUILDDIR --dbpath /var/lib/rpm \
+-e rpmdb-fedora
+
+# Nuke some things we won't need, while preserving \
+# other files.
+cat >/tmp/config-keep.txt.$$ <<EOF
+usr/share/locale/en
+usr/share/locale/locale.alias
+usr/share/terminfo/a/ansi
+usr/share/terminfo/l/linux
+usr/share/terminfo/v/vt100
+usr/share/terminfo/v/vt102
+usr/share/terminfo/x/xterm
+usr/share/zoneinfo/America
+usr/share/zoneinfo/Etc
+usr/share/zoneinfo/posix
+usr/share/zoneinfo/Universal
+usr/share/zoneinfo/UCT
+usr/share/zoneinfo/UTC
+usr/share/zoneinfo/zone.tab
+usr/share/zoneinfo/Zulu
+usr/lib/locale/en_US
+usr/lib/locale/en_US.utf8
+EOF
+
+tar -C $BUILDDIR -T /tmp/config-keep.txt.$$ -z -c \
+-f $SAVEDIR/config-keep.tgz
+rm -rf $BUILDDIR/usr/share/locale/*
+rm -rf $BUILDDIR/usr/lib/locale/*
+rm -rf $BUILDDIR/usr/share/terminfo/*
+rm -rf $BUILDDIR/usr/share/zoneinfo/*
+tar -C $BUILDDIR -z -x -f $SAVEDIR/config-keep.tgz
+rm -f /tmp/config-keep.txt.$$
+
+# Rebuild locales
+/usr/sbin/chroot $BUILDDIR \
+/usr/sbin/build-locale-archive
+
+# Set up networking config files
+echo "Configuring networking"
+cat >$BUILDDIR/etc/sysconfig/network <<EOF
+NETWORKING=yes
+HOSTNAME=$HOSTNAME
+EOF
+
+cat >\
+$BUILDDIR/etc/sysconfig/network-scripts/ifcfg-eth0\
+<<EOF
+ONBOOT=yes
+USERCTL=no
+PEERDNS=yes
+GATEWAY=$GATEWAY
+TYPE=Ethernet
+IPADDR=$IPADDR
+DEVICE=eth0
+BOOTPROTO=none
+NETMASK=255.255.255.0
+EOF
+
+cat >$BUILDDIR/etc/resolv.conf <<EOF
+search $DOMAIN
+nameserver $NAMESERVER1
+nameserver $NAMESERVER2
+EOF
+
+cat >$BUILDDIR/etc/hosts <<EOF
+127.0.0.1 localhost localhost.localdomain
+$IPADDR $HOSTNAME $HOSTNAME.$DOMAIN.com
+EOF
+
+# Enable laptop mode
+cat >$BUILDDIR/etc/sysctl.conf <<EOF
+vm.laptop_mode = 1
+vm.bdflush = 30 500 0 0 60000 60000 60 20 0
+EOF
+
+# Clean out some docs and support files that
+# aren't properly excluded by
+# rpm --excludedocs
+rm -rf $BUILDDIR/usr/share/doc/*
+rm -rf $BUILDDIR/usr/share/info/*
+rm -rf $BUILDDIR/usr/share/vim
+rm -rf $BUILDDIR/usr/share/snmp
+rm -rf $BUILDDIR/usr/share/i18n
+rm -rf $BUILDDIR/usr/lib/gconv/*
+
+# Run kudzu
+/usr/sbin/chroot $BUILDDIR kudzu -q
+# Now turn off kudzu at boot
+/usr/sbin/chroot $BUILDDIR /sbin/chkconfig kudzu off
+
+# Remove link to fedora-rpms dir
+rm -f $BUILDDIR/fedora-rpms
+
+# Remove nightly rpm database log builder cron job
+rm -f $BUILDDIR/etc/cron.daily/rpm

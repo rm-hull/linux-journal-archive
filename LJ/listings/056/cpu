@@ -1,0 +1,221 @@
+#!/bin/bash
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+# $Header: /var/log/sar/RCS/cpu,v 1.4 1997/06/19 04:31:05 dgavin Exp dgavin $
+#
+# cpu - display cpu utilization
+#
+# input - /var/log/sar/data/cpu.Mondd.yy
+# output- chart showing time spent in user/sys/nice states
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+trap '/bin/rm /tmp/gnuplot.cpu.* 2>/dev/null;exit' SIGHUP SIGINT SIGQUIT SIGTERM
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Function definitions
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+function checkForEmpty {
+if [ ! -s ${1} ] ; then
+  echo "0 0" >${1}
+fi
+return
+}
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Mainline code
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Variable initialization
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+HARDCOPY=""
+GHOSTVIEW=""
+CMDNAME=`basename $0`
+#
+HELP="${CMDNAME} generates X11 or hardcopy graph of cpu utilization."
+USAGE="${CMDNAME} [-DHLVhPp] [MonDD[.YY]]
+  -D turns on execution tracing
+  -H displays help info and exits
+  -L displays RCS log and exits
+  -V display Revision info and exits
+  -h displays help info and exits
+  -P Print without display
+  -p display and offer print option
+
+  MonDD.YY - day to work with, defaults to today
+   i.e. Jun12.97 -the year will default to this year
+
+"
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Parse options
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+while getopts DHLVhPp c ; do
+  case ${c} in
+    h|H) echo -e "\n${HELP}\n\n${USAGE}\n"
+       exit 1
+       ;;
+    p) HARDCOPY="YES"
+       GHOSTVIEW="YES"
+       ;;
+    P) HARDCOPY="YES"
+       GHOSTVIEW=""
+       ;;
+    D) echo "DEBUG ON"
+       set -x
+       DEBUG="yes"
+       trap '' SIGHUP SIGINT SIGQUIT SIGTERM
+       ;;
+    L) echo '
+$Log: $
+'
+       exit 1
+       ;;
+    V) echo '$Revision: $'
+       exit 1
+       ;;
+    ?) echo -e "\n${USAGE}\n"
+       exit 3
+       ;;
+  esac
+done
+# re-align the positional parameters as $1, $2,...
+shift `expr ${OPTIND} - 1`
+#
+cd /var/log/sar/data
+if [ $# -eq 0 ] ; then
+ FN="cpu.`date +%b%d.%y`"
+else
+ l=`echo ${1} | wc -c`
+ l=`expr ${l} + 0`
+ case ${l} in
+  6) FN="cpu.${1}.`date +%y`";;
+  9) FN="cpu.${1}";;
+  *) echo -e "\n${CMDNAME}: Invalid date  - ${1}\n"
+     exit
+     ;;
+ esac
+fi
+if [ ! -f ${FN} ] ; then
+  echo "No such file: ${FN}"
+  exit
+fi
+if [ ! -r ${FN} ] ; then
+  echo "File not readable: ${FN}"
+  exit
+fi
+if [ ! -s ${FN} ] ; then
+  echo "File empty: ${FN}"
+  exit
+fi
+#
+#     user    nice    system  idle
+#0940 8065221 3719924 2017086 53289599
+awk '
+BEGIN{}
+{
+ if (NR == 1) {
+   old_user = $2;
+   old_nice = $3;
+   old_sys = $4;
+   old_idle = $5;
+ } else {
+   mm=substr($1,3,2) * .016;
+   tim=substr($1,1,2)+mm;
+   if ( old_user > $2 ) {
+     user = 0;
+     nice = 0;
+     sys = 0;
+     idle = 0;
+     reboot = 100;
+   } else {
+     user = $2 - old_user;
+     nice = $3 - old_nice;
+     sys = $4 - old_sys;
+     idle = $5 - old_idle;
+     reboot = -1;
+   }
+   total = user + nice + sys + idle ;
+   if ( user == 0 ) { puser = 0; } else { puser= (user / total) * 100;}
+   if ( sys  == 0 ) { psys  = 0; } else { psys = (sys  / total) * 100;}
+   if ( nice == 0 ) { pnice = 0; } else { pnice= (nice / total) * 100;}
+   if ( idle == 0 ) { pidle = 0; } else { pidle= (idle / total) * 100;}
+
+   printf("%5.2f %7.2f %7.2f %7.2f %7.2f %d\n",
+          tim, pidle+puser+psys+pnice,
+          puser+psys+pnice, psys+pnice, pnice,reboot) >"/tmp/gnuplot.cpu";
+
+   old_user = $2;
+   old_nice = $3;
+   old_sys = $4;
+   old_idle = $5;
+ }
+}
+END{}' ${FN}
+#
+# Get system name and date of report into variables...
+system=`hostname -s | /usr/bin/tr "[A-Z]" "[a-z]"`
+sysdate=`echo ${FN} | cut -c 5-`
+/bin/echo "Generating plot for $system $sysdate"
+#
+# Set gnuplot variables as needed
+#
+if [ -z ${HARDCOPY} ]; then
+  TERMINAL="set terminal X11"
+  PAUSE="pause 10"
+  YLABEL=""
+else
+  TERMINAL='set terminal postscript landscape monochrome dashed "Times-Roman" 18
+set output "/tmp/gnuplot.cpu.ps"'
+  PAUSE=""
+  YLABEL='set ylabel "Nice|Sys|User|Idle"'
+fi
+#
+# Generate the plots
+#
+gnuplot <<EOF
+${TERMINAL}
+set data style lines
+set nogrid
+set key
+set title "CPU Activity - $system On $sysdate"
+set xlabel "Time of Day"
+set xrange [00:24]
+set xtics 0,1,24
+${YLABEL}
+set yrange [0:140]
+set ytics 0,10,100
+plot \
+"/tmp/gnuplot.cpu" using 1:2 title "idle" with line 1, \
+"/tmp/gnuplot.cpu" using 1:3 title "user" with line 3, \
+"/tmp/gnuplot.cpu" using 1:4 title "sys" with line 2, \
+"/tmp/gnuplot.cpu" using 1:5 title "nice" with line 4, \
+"/tmp/gnuplot.cpu" using 1:6 title "reboot" with points 2
+${PAUSE}
+quit
+EOF
+#
+if [ .${HARDCOPY} = ".YES" ]; then
+  if [ -z ${GHOSTVIEW} ] ; then
+    lpr /tmp/gnuplot.cpu.ps
+  else
+    ghostview -upsidedown -landscape -magstep 0 /tmp/gnuplot.ps
+    echo "Print ?"
+    read ans
+    if [ ${ans} = "y" ] ; then
+      lpr /tmp/gnuplot.ps
+    fi
+  fi
+  rm /tmp/gnuplot.cpu.ps  2>/dev/null
+fi
+# clean up the junk
+if [ ${DEBUG}. = "." ]; then
+  rm /tmp/gnuplot.cpu 2>/dev/null
+fi

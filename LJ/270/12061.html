@@ -1,0 +1,1072 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Flat File Encryption with OpenSSL and GPG
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;PGP is the more well known utility for handling flat files, but OpenSSL&#10;offers a modular set of tools that allows easy mix and match of asymmetric&#10;key exchange, digest verification and symmetric ciphers. Comparing&#10;approaches with each yields new insight into the features and limitations&#10;of the whole collection of components.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x10d4580.0x11cbac0"></a>
+Flat File Encryption with OpenSSL and GPG
+</h1></div><div><div class="author"><h3 class="author">
+Charles
+ 
+Fisher
+</h3></div><div class="issuemoyr">Issue #270, October 2016</div></div><div><p>
+PGP is the more well known utility for handling flat files, but OpenSSL
+offers a modular set of tools that allows easy &ldquo;mix and match&rdquo; of asymmetric
+key exchange, digest verification and symmetric ciphers. Comparing
+approaches with each yields new insight into the features and limitations
+of the whole collection of components.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10d4580.0x11cc2a8"></a></h2></div></div><p>
+The Pretty Good Privacy (PGP) application, which has long been known as a
+primary tool for file encryption, commonly focused on email. It has
+management tools for exchanging credentials with peers and creating secure
+communication channels over untrusted networks. GNU Privacy Guard (GPG) has
+carried on this legacy with a free and open implementation included in most
+major Linux distributions. PGP/GPG has proven highly resistant to
+cryptographic attack and is a preeminent tool for secure communications.
+</p><p>
+OpenSSL is more known for network security, but it also has tools useful
+for most aspects of encrypting flat files. Although using OpenSSL requires
+more knowledge of specific algorithms and methods, it can be more flexible
+in a number of scenarios than other approaches. OpenSSH keys
+can be used transparently for flat file encryption with OpenSSL, allowing
+user and/or host SSH keys to pervade any number of unrelated services.
+</p><p>
+OpenSSL is also useful for illustrating the sequence of encryption
+techniques that create secure channels. This knowledge is applicable in
+many other situations, so the material is worth study even if there is no
+immediate need for the tools.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10d4580.0x11cc510"></a>
+OpenSSL Flat File Processing</h2></div></div><p>
+Many common programs in UNIX have implementations within the OpenSSL
+command-line utility. These include digest/checksum tools (md5sum, sha1sum,
+sha256sum), &ldquo;ASCII-Armor&rdquo; tools (base64/uuencode/uudecode),
+&ldquo;safe&rdquo; random
+number generation and MIME functions in addition to a suite of cipher and
+key management utilities. Because OpenSSL often is found on non-UNIX
+platforms, those utilities can provide a familiar interface on unfamiliar
+systems for UNIX administrators.
+</p><p>
+Let's begin with a complete script for flat file encryption with OpenSSL,
+using asymmetric exchange of a session key, SHA-256 digest checksums and
+the use of a symmetric cipher. This entire exchange, both to encode and
+decode, is presented in the following text for the Korn shell (GNU Bash
+also may
+be used with no required changes):
+
+<pre     class="programlisting">
+
+#!/bin/ksh
+
+set -euo pipefail
+IFS=$'\n\t' #http://redsymbol.net/articles/unofficial-bash-strict-mode/
+
+# openssl genrsa -aes256 -out ~/.prv.key 2868        # Make private key
+# openssl rsa -in ~/.prv.key -pubout -out ~/.pub.key # Make public key
+
+PVK=~/.prv.key; PBK=~/.pub.key
+SKEY=$(mktemp -t crypter-session_key-XXXXXX)          # Symmetric key
+
+case $(basename "${0}") in
+
+encrypter) ####sender needs only public key - not .pas or .prv.key#####
+ openssl rand -base64 48 -out "${SKEY}"              # Generate sesskey
+ openssl rsautl -encrypt -pubin -inkey "${PBK}" -in "${SKEY}" |
+  openssl base64;
+ echo __:
+ for F                                                # Generate digest
+ do echo $(openssl dgst -sha256 "${F}" | sed 's/^[^ ]*[ ]//') "${F}"
+ done | openssl enc -aes-128-cbc -salt -a -e -pass "file:${SKEY}"
+ echo __:
+ for F                                                # Encrypt files
+ do openssl enc -aes-128-cbc -salt -a -e -pass "file:${SKEY}" -in "${F}"
+    echo __:
+ done ;;
+
+decrypter) #####receiver###############################################
+ TMP=$(mktemp -t crypter-tmp-XXXXXX); PW=${HOME}/.pas; unset IFS
+ DGST=$(mktemp -t crypter-dgst-XXXXXX); #cd ${HOME}/dest #unpack dest
+ while read Z
+ do if [[ ${Z%%:*} == '__' ]]
+    then if [[ -s "${SKEY}" ]]
+         then if [[ -s "${DGST}" ]]
+              then openssl enc -aes-128-cbc -d -salt -a -in "${TMP}" \
+                    -pass "file:${SKEY}" -out "${NAME[I]}"
+                   ((I+=1))                           # Decrypt files
+              else openssl enc -aes-128-cbc -d -salt -a -in "${TMP}" \
+                    -pass "file:${SKEY}" -out "${DGST}"
+                   date +%Y/%m/%d:%H:%M:%S
+                   I=0
+                   while read hash file
+                   do echo "${hash} ${file}"
+                      HASH[I]=${hash}
+                      NAME[I]=$(basename "${file}")  # Unpack only @dest
+                      ((I+=1))
+                   done &lt; "${DGST}"
+                   I=0
+              fi
+         else openssl base64 -d -in "${TMP}" |       # Extract sesskey
+               openssl rsautl -decrypt -inkey "${PVK}" \
+                -passin "file:${PW}" -out "${SKEY}"
+
+             #Older OpenSSL: decrypt PVK; c/sha256/sha1/; no strict
+             #openssl rsa -in "${PVK}" -passin "file:${PW}" -out "$DGST"
+             #openssl base64 -d -in "${TMP}" |	      # Extract sesskey
+	     # openssl rsautl -decrypt -inkey "${DGST}" -out "${SKEY}"
+             #&gt; "${DGST}"
+         fi
+         &gt; "${TMP}"                                   # Erase tempfile
+    else echo "${Z}" &gt;&gt; ${TMP}
+    fi
+ done
+ I=0
+ while [[ ${I} -lt ${#NAME[*]} ]]                     # Verify digest
+ do F=$(openssl dgst -sha256 "${NAME[I]}" | sed 's/^[^ ]*[ ]//')
+    if [[ "${F}" = "${HASH[I]}" ]]
+    then echo "${NAME[I]}: ok"; else echo "${NAME[I]}: **SHA CORRUPT**"
+    fi
+    ((I+=1))
+ done
+ rm "${TMP}" "${DGST}" ;;
+
+esac
+rm "${SKEY}"
+
+</pre>
+</p><p>
+I will specifically cover everything above to the end of the
+<tt  >encrypter</tt>
+case block, as this succinctly addresses the major cryptographic components of
+most encryption tools&mdash;that is, SSH, TLS, PGP and so on.
+</p><p>
+First, I include a well known strict mode for Korn/Bash published by Aaron
+Maxwell that can prevent coding errors, as documented at the URL near the
+top of the script.
+</p><p>
+Next, I generate an RSA private key. RSA, as an &ldquo;asymmetric
+cipher&rdquo;, uses
+pairs of keys for communication and was developed by Ron Rivest, Adi
+Shamir and Leonard Adleman in 1977. Other asymmetric ciphers in common use
+are Diffie-Hellman key exchange and Elliptic Curve, but OpenSSL's support
+for RSA is more thorough, complete and widespread (a bug listed in
+OpenSSL's dhparam manual page indicates &ldquo;There should be a way to generate
+and manipulate DH keys.&rdquo;). With an asymmetric cipher, content encrypted by
+one key can only be read in clear text by the other. You can use such
+keypairs not only to communicate securely, but also to prove
+authenticity.
+Below is an example of the generation of an RSA private key of a
+non-standard size of 2868 bits:
+
+<pre     class="programlisting">
+$ openssl genrsa -aes256 -out ~/.prv.key 2868
+Generating RSA private key, 2868 bit long modulus
+.............++
+....................................................................++
+e is 65537 (0x10001)
+Enter pass phrase for /home/ol7_user/.prv.key:
+Verifying - Enter pass phrase for /home/ol7_user/.prv.key:
+
+$ chmod 400 .prv.key
+
+$ cat .prv.key
+-----BEGIN RSA PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: AES-256-CBC,16846D1D37C82C834E65B518C456DE2F
+
+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
+-----END RSA PRIVATE KEY-----
+</pre>
+</p><p>
+I have chosen this non-standard key size based upon recommendations from
+the US National Institute of Standards (NIST). NIST uses a &ldquo;general
+number field sieve&rdquo; on page 92 of its implementation guidance document to
+determine minimum RSA key size
+(<a href="http://csrc.nist.gov/groups/STM/cmvp/documents/fips140-2/FIPS1402IG.pdf" target="_self">csrc.nist.gov/groups/STM/cmvp/documents/fips140-2/FIPS1402IG.pdf</a>).
+You can implement this formula with the GNU
+<tt  >bc</tt> utility (part of GNU Coreutils):
+
+<pre     class="programlisting">
+$ cat keysize-NIST.bc 
+#!/usr/bin/bc -l
+l = read()
+scale = 14; a = 1/3; b = 2/3; t = l * l(2); m = l(t) # a^b == e(l(a) * b)
+n = e( l(m) * b ); o = e( l(t) * a ); p = (1.923 * o * n - 4.69) / l(2)
+print "Strength: ", p, "\n"
+
+$ echo 2868 | ./keysize-NIST.bc 
+Strength: 128.01675571278223
+$ echo 7295 | ./keysize-NIST.bc 
+Strength: 192.00346260354399
+$ echo 14446 | ./keysize-NIST.bc 
+Strength: 256.00032964845911
+
+$ echo 2048 | ./keysize-NIST.bc
+Strength: 110.11760837749330
+$ echo 2127 | ./keysize-NIST.bc
+Strength: 112.01273358822347
+</pre>
+</p><p>
+In general, asymmetric ciphers are slower and weaker than &ldquo;symmetric
+ciphers&rdquo; (which are defined as using only one key to both encrypt and
+decrypt). Later I will be using a 128-bit symmetric cipher to communicate
+the bulk of my data, so I will use an RSA key of (strictly) comparable
+strength of 2868 bits. Note that many people feel that RSA
+key sizes over 2048 bits are a waste
+(<a href="https://gnupg.org/faq/gnupg-faq.html#no_default_of_rsa4096" target="_self">https://gnupg.org/faq/gnupg-faq.html#no_default_of_rsa4096</a>). Still, the most forward thinkers in
+cryptography conjecture that there may be &ldquo;...some mathematical
+breakthrough that affects one or more public-key algorithms. There are a
+lot of mathematical tricks involved in public-key cryptanalysis, and
+absolutely no theory that provides any limits on how powerful those tricks
+can be....The fix is easy: increase the key lengths&rdquo;
+(<a href="https://www.schneier.com/blog/archives/2013/09/the_nsas_crypto_1.html" target="_self">https://www.schneier.com/blog/archives/2013/09/the_nsas_crypto_1.html</a>).
+In any case, I am 
+strictly following NIST's recommended guidelines as I generate the key.
+</p><p>
+I have listed 192- and 256-bit equivalences because this symmetric cipher is
+not approved for &ldquo;top secret&rdquo; use at 128 bits. For highly sensitive
+information that must be kept secret, consider an RSA key size of 7295 or
+14446 bits as (strictly) recommended by NIST's formula. Note that an RSA
+key size of 2048 bits computes to 110 bits of equivalent strength. This is
+below the requirement of RFC-7525
+(<a href="https://www.rfc-editor.org/rfc/rfc7525.txt" target="_self">https://www.rfc-editor.org/rfc/rfc7525.txt</a>) of a minimum of 112 bits of security (128
+recommended)&mdash;2127-bit RSA keys satisfy this mandate.
+</p><p>
+A corresponding public key can be generated for use with the script:
+
+<pre     class="programlisting">
+$ openssl rsa -in ~/.prv.key -pubout -out ~/.pub.key
+Enter pass phrase for /home/ol7_user/.prv.key:
+writing RSA key
+
+$ cat .pub.key
+-----BEGIN PUBLIC KEY-----
+MIIBiDANBgkqhkiG9w0BAQEFAAOCAXUAMIIBcAKCAWcKpAcsnLXxoH4+ed2Bof2I
+upOEwTYdz+N5R++7D/0Eo1LJKrq7CUq6D7jEjeBc/7Wr8mvvBVDgxi4eoYVpbaQa
+NgTn1OSa7V7HH0DPVVjXfpIfF6qgk5R98L1Tyqz2agR3GF6F6QL+cxAscl0uFU2g
+b/m66VHvxPVwi9ood20aPzBO6e01C6/l6l1tUMaS7PllQdFIXQe0i8ooAtEpvK5D
+uBMebUjK0NjPsYxLSQJvJkNW1Sx2KBbIRKFEWPBZ0tFZ8PNokjez2LEV+CaX3ccc
+tmeMvdg+w4PwuKmnWxCq0inFlDBE67aTMuYD8Wq7ATxtkkuc2aYL52jfD5YfTCkY
+N41aH2w9ICTsuoVNfMUBJRtbhA0w7uoxkWnV2/a6N7VLCbeJncDaNABiOsn80MzY
+bfJVrTHVqS0wPt3LY2Pt6/ZjQUejQwhKCjzgqx5DvzgGuTck3J0akhUvTe79OoCC
+ZSeanYhX5QIDAQAB
+-----END PUBLIC KEY-----
+</pre>
+</p><p>
+The private key is compatible with the OpenSSH Protocol 2
+RSA format, and you can generate what normally would be stored as the
+id_rsa.pub file with a simple <tt  >keygen</tt> command:
+
+<pre     class="programlisting">
+$ ssh-keygen -y -f ~/.prv.key 
+Enter passphrase: 
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABZwqkByyctfGgfj553YGh/Yi6k4TBNh3P43lH7
+7sP/QSjUskqursJSroPuMSN4Fz/tavya+8FUODGLh6hhWltpBo2BOfU5JrtXscfQM9VWNd+kh
+8XqqCTlH3wvVPKrPZqBHcYXoXpAv5zECxyXS4VTaBv+brpUe/E9XCL2ih3bRo/ME7p7TULr+X
+qXW1QxpLs+WVB0UhdB7SLyigC0Sm8rkO4Ex5tSMrQ2M+xjEtJAm8mQ1bVLHYoFshEoURY8FnS
+0Vnw82iSN7PYsRX4Jpfdxxy2Z4y92D7Dg/C4qadbEKrSKcWUMETrtpMy5gPxarsBPG2SS5zZp
+gvnaN8Plh9MKRg3jVofbD0gJOy6hU18xQElG1uEDTDu6jGRadXb9ro3tUsJt4mdwNo0AGI6yf
+zQzNht8lWtMdWpLTA+3ctjY+3r9mNBR6NDCEoKPOCrHkO/OAa5NyTcnRqSFS9N7v06gIJlJ5q
+diFfl
+</pre>
+</p><p>
+An SSH server also runs with several types of host keys (which do not
+normally use a password), usually of 2048 bits in size. A host's private
+RSA key can be used with my crypter script by generating a compatible
+public key with this command:
+
+<pre     class="programlisting">
+# openssl rsa -in /etc/ssh/ssh_host_rsa_key -pubout
+writing RSA key
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuxg2zI4ANHRCp+roqjnb
+z/h6dc/ijs8uEwXnXE9mID02QvzusciQeeBUcRPXU5ncdPMzNuhUeiNK9y02vs9G
+MzkV8vxciBGe6ovFERIDuE1QQPR3V1wZwsVjnG+65bxmGp5/OZpgE4WzMaMm3gla
+iDnhfMUllUVzErNoMnR5yCQaoIW9j/AUiBtAymQ07YJcuVrxXBjzGWc/7ryHU1KH
+IxKUJfwOhdgf81l0YNpoPdyImCV8PQdBIi8kTnuUl2hIPV2mOP3KWtINfOd94OLM
+qfXd5F9LKkKW4XH55wfmJBsO6DTwhzGI9YOayGVJhdraOk7R84ZC/K4rt5ondgpO
+3QIDAQAB
+-----END PUBLIC KEY-----
+</pre>
+</p><p>
+Since I will be using this RSA keypair for batch transfers, I will be
+recording the clear-text password for this key in the ~/.pas file. Because
+of this, the RSA key likely should not be used for SSH. OpenSSL is able to
+read passwords from a variety of other sources, so if you remove the ~/.pas
+file and supply the password from a more secure source, the use of a
+single RSA key for both SSH network sessions and OpenSSL flat file
+encryption becomes more of an option. Alternately, use a key without a
+password, and dispense with the <tt  >${PW}</tt> clauses above.
+</p><p>
+You cannot use the RSA keypair for the bulk of the encryption of a large
+amount of data, because RSA can encode only small amounts of information,
+as is detailed in the manual page:
+
+<pre     class="programlisting">
+$ man rsautl | col -b | awk '/NOTES/,/^$/'
+NOTES
+  rsautl, because it uses the RSA algorithm directly, can only be used 
+  to sign or verify small pieces of data.
+</pre>
+</p><p>
+Echoing a string of zeros to a text file, the maximum size of the
+clear-text input for RSA encryption with my 2868-bit RSA key is 348 bytes:
+
+<pre     class="programlisting">
+
+$ for((x=0;x&lt;348;x+=1));do echo -n 0 &gt;&gt; bar;done
+
+$ ll bar
+-rw-rw-r--. 1 ol7_user ol7_user 348 Jul  7 17:49 bar
+
+$ openssl rsautl -encrypt -pubin -inkey ~/.pub.key -in bar |
+	openssl base64
+BCfCA77mmbaLCsMQVFCw/uMYWI0+4FaK6meFuTL2OXP6neGa0elrszbAePeoCA/x
+dMykxgYBFa/uM2nJl9vagKOlU+DAlRojWGAjrCqfF9XNhdnOjsNINsgNTTzKlVxh
+aLfEMYB+vyIwWdaKTrpTz/v7wB20wL9l7eewLZh9yNy4tzyE83Tt5zsgWCvxIdLN
+cqkZw7aHvXuXMzdNZn0PoQV/VKLvlmJU5IpDxUCcfPnvZd//f5Akb0tKO44x9hpz
+jp/DhRqOYEaB67k5U8GZWYPZoy0XCfLAtSaLMnAkw6swqikVm1IDmLzsRsURgyGX
+Qafbh4F33ivn7jaRNbSKbFmSMYc1ShACJuTgTQ2N519gc84Sd1TvSyL7v+m5WqXF
+fuPJiIrpi6DkYZDOuNQP0cjEMVHLVuwjFh98uW7IyJY5sGVP+/cVlmVg9SUDhpNt
+t6naZ/CwkyHal6PaFa4AhlDGNJ/RVNc=
+
+$ echo -n 0 &gt;&gt; bar
+
+$ ll bar
+-rw-rw-r--. 1 ol7_user ol7_user 349 Jul  7 17:49 bar
+
+$ openssl rsautl -encrypt -pubin -inkey ~/.pub.key -in bar |
+	openssl base64
+RSA operation error
+139936549824416:error:0406D06E:rsa routines:
+RSA_padding_add_PKCS1_type_2:data too large for key size:
+rsa_pk1.c:151:
+
+</pre>
+</p><p>
+Similar testing with a 2048-bit RSA key yields a maximum of 245 bytes
+(slightly smaller than the size of the key).
+</p><p>
+Because of this limitation, I will generate a random 64-character password
+with OpenSSL's random number generator, encrypt a copy of it in the output
+with the public key, then use it for symmetric encryption for the bulk of
+the data as the &ldquo;session key&rdquo;. For this example, I will use the following
+password obtained from OpenSSL in this manner:
+
+<pre     class="programlisting">
+$ openssl rand -base64 48 
+d25/H928tZ1BaXzJ+jRg/3CmLYxaM5kCPkOvkIxKAoIE8ajiwu+0zWz0SpDXJ5J7
+</pre>
+</p><p>
+If I store this file as /tmp/skey, I can see the encryption take place:
+
+<pre     class="programlisting">
+$ openssl rsautl -encrypt -pubin -inkey ~/.pub.key -in /tmp/skey |
+	openssl base64
+Ac5XfYjJUpJGRiCNVSPcRi7SBrEVBtQhVHgqYWgQH6eFrDuQLX4s/S50qKt1ObjT
+17aV8pDMGqiHXOsbfD/P/GBpiymgQUJoa4VS40J+d5u9X20NmxmtNAvvlklmCC9q
+lzJcX6QXg4QEDTOHD+jU0B3K5QOB3von0IIVgauKGfDvgkOJiqjK9bUhhSgdnNe3
+yyivWXb8Xl+zDCSqtqtv0Xkzri2jmTXniu7HztGTnyOcpZ4PLFMT9ZC0Biu40xK9
+ubuMPcfpVKVKRuR0iAu1kkstQY2k6xieZiIDIMtg4vHJIdb793aC8Spuhjca1puS
+QaQTfkQIrN46oJ6IoGqmTMGem6IGiUAldan24nTl7C+Z7aF1nieXb55gDwfQcO55
+Uk/1tbgQR6MMzXG6BglmjD6oa/urKjI2taJT02c+IT6w6nXpGWrGBMY5S7G8u++Y
+tml7ILPwiA4lKhvukgbPZw/vFgNAGxo=
+</pre>
+</p><p>
+Note above the call to the base64 function&mdash;the encrypted output is a
+binary file, and it cannot be displayed directly with the standard ASCII
+seven-bit character set. The <tt  >base64</tt> encoder changes binary data into a stream
+of printable characters suitable for transmission over seven-bit
+channels&mdash;email, for example. This performs the same function as uuencode, using
+different ASCII symbols.
+</p><p>
+If I record the output of the encryption in the /tmp/ekey file, I can
+decrypt it with the private key:
+
+<pre     class="programlisting">
+
+$ openssl base64 -d &lt; /tmp/ekey |
+	openssl rsautl -decrypt -inkey ~/.prv.key 
+Enter pass phrase for .prv.key:
+d25/H928tZ1BaXzJ+jRg/3CmLYxaM5kCPkOvkIxKAoIE8ajiwu+0zWz0SpDXJ5J7
+
+</pre>
+</p><p>
+Note above in the decryption section that very old versions of the OpenSSL
+<tt  >rsautl</tt> command did not allow passwords to be specified on the command line.
+Therefore, an unencrypted copy of the key must be created before RSA
+decryption of the session key can take place. That procedure is documented
+in the comments for legacy systems and versions.
+</p><p>
+With the session key in hand, I next compute SHA-256 digest checksums of
+all the input files and record the encrypted results in the output.
+OpenSSL's version of the <tt  >sha256sum</tt> utility differs slightly in formatting
+from the conventional version. Also included are SHA-1, RIPEMD-160 and MD5
+checksums below:
+
+<pre     class="programlisting">
+$ sha256sum /etc/resolv.conf 
+04655aaa80ee78632d616c1...4bd61c70b7550eacd5d10e8961a70  /etc/resolv.conf
+
+$ openssl dgst -sha256 /etc/resolv.conf 
+SHA256(/etc/resolv.conf)= 04655aaa80ee78632d6...1c70b7550eacd5d10e8961a70
+
+
+$ openssl dgst -sha1 /etc/resolv.conf
+SHA1(/etc/resolv.conf)= adffc1b0f9620b6709e299299d2ea98414adca2c
+$ openssl dgst -ripemd160 /etc/resolv.conf 
+RIPEMD160(/etc/resolv.conf)= 9929f6385e3260e52ba8ef58a0000ad1261f4f31
+$ openssl dgst -md5 /etc/resolv.conf
+MD5(/etc/resolv.conf)= 6ce7764fb66a70f6414e9f56a7e1d15b
+</pre>
+</p><p>
+The SHA-family of digests were all created by the NSA, to
+whom we owe a great debt for their publication. The RIPEMD-160 digest was
+developed by researchers in Belgium and is an open alternative to SHA with
+no known flaws, but it is slower than SHA-1 and was released afterwards, so
+it is not used as often. MD5 digests should not be used beyond basic media
+error detection as they are vulnerable to tampering
+(<a href="http://www.mathstat.dal.ca/~selinger/md5collision" target="_self">www.mathstat.dal.ca/~selinger/md5collision</a>).
+</p><p>
+The script adjusts the format produced by OpenSSL to more closely mimic the
+standard utility, then uses the AES128-CBC symmetric cipher to code the
+digest for all the input files after printing a delimiter
+<tt  >(__:)</tt>. Very old
+versions of the OpenSSL utility might lack SHA-256&mdash;notes in the script
+detail downgrading to the weaker SHA-1 when using legacy systems (MD5
+never should be used). The <tt  >man dgst</tt> command will give full details on
+OpenSSL's digest options if the manual pages are available.
+</p><p>
+Finally, the script enters the main encryption loop where each file is
+processed with AES128-CBC, encoded with base64, separated by delimiters,
+then sent to STDOUT under the intention that the script be redirected/piped
+to a file or program for further processing. Information on OpenSSL's
+various symmetric ciphers can be found with the <tt  >man
+enc</tt> command when the
+manual pages are accessibly installed. An informative and amusing cartoon
+has been published online covering AES' history and theory of operation,
+for those who have a deeper interest in our chosen symmetric cipher
+(<a href="http://www.moserware.com/2009/09/stick-figure-guide-to-advanced.html" target="_self">www.moserware.com/2009/09/stick-figure-guide-to-advanced.html</a>). The
+GPG website currently advocates Camellia and Twofish in addition to AES,
+and Camellia can be found in OpenSSL.
+</p><p>
+OpenSSL can be called to encrypt a file to the standard output with AES
+like so:
+
+<pre     class="programlisting">
+openssl enc -aes-128-cbc -salt -a -e -pass file:pw.txt 
+ &#8618;-in file.txt &gt; file.aes
+</pre>
+</p><p>
+The encryption is undone like so:
+
+<pre     class="programlisting">
+openssl enc -aes-128-cbc -d -salt -a -pass file:pw.txt -in file.aes
+</pre>
+</p><p>
+Here is an example of a complete run of the script:
+
+<pre     class="programlisting">
+
+$ ln -s crypter.sh encrypter
+$ ln -s crypter.sh decrypter
+$ chmod 755 crypter.sh
+
+$ ./encrypter /etc/resolv.conf /etc/hostname &gt; foo
+
+$ ./decrypter &lt; foo
+2016/07/05:21:24:38
+04655aaa80ee78632d616c1...4bd61c70b7550eacd5d10e8961a70 /etc/resolv.conf
+4796631793e89e4d6b5b203...37a4168b139ecdaee6a4a55b03468 /etc/hostname
+resolv.conf: ok
+hostname: ok
+
+</pre>
+</p><p>
+To use this script, or otherwise use the OpenSSL utility for secure
+communication, it is only necessary to send a public key to a distant
+party. Assuming that the integrity of the public key is verified between
+the sender and receiver (that is, via an SHA-256 sum over the phone or another
+trusted channel), the sender can create a session key, then use it to
+encode and send arbitrary amounts of data through any untrusted yet
+reliable transfer medium with reasonable confidence of secrecy.
+</p><p>
+Note that the decryption block uses shell arrays, which are limited to 1024
+elements in some versions (ksh88, pdksh). That will be a hard file limit in
+those cases.
+</p><p>
+This entire script can be worked into an email system for automated
+transfers. To do this on Oracle Linux 7 with the default Postfix SMTP
+server, ensure that the following two lines are set in
+/etc/postfix/main.cf:
+
+<pre     class="programlisting">
+inet_interfaces = $myhostname, localhost
+...
+default_privs = nobody
+</pre>
+</p><p>
+Here I will place a copy of the SSH private RSA host key in the
+/etc/postfix directory, set the configuration and permissions, open
+firewall port 25, then generate a public key as outlined below:
+
+<pre     class="programlisting">
+cd /etc/postfix
+cp /etc/ssh/ssh_host_rsa_key .prv.key
+chown nobody:nobody .prv.key
+chmod 400 .prv.key
+chcon system_u:object_r:postfix_etc_t:s0 .prv.key
+iptables -I INPUT -p tcp --dport 25 --syn -j ACCEPT
+openssl rsa -in .prv.key -pubout -out .pub.key
+</pre>
+</p><p>
+Notice that I'm using the nobody user with the system host key. If you
+are not comfortable with this security, note that the key file is in the
+ssh_keys group, and create a separate user for postfix to handle the
+keypair.
+</p><p>
+Next, place a copy of decrypter in /etc/postfix. The script must be
+modified to do the following: 1) skip the email header, 2) remove the password clause from
+the host key processing, 3) set /tmp as the unpack directory and 4) define
+new locations for the keypair. Below, <tt  >sed</tt> is used with in-place editing to
+accomplish this:
+
+<pre     class="programlisting">
+sed -i.old '/^ while read Z/s:^:sed '"'"'1,/^$/d'"'"' |:
+	s/^[ ]*-passin "[^"]*"//
+	/^ DGST=/s:#.*$:cd /tmp:
+	/^PVK=/c \
+PVK=/etc/postfix/.prv.key; PBK=/etc/postfix/.pub.key' decrypter
+</pre>
+</p><p>
+With those changes in place, I create an email alias that will trigger the
+decrypter:
+
+<pre     class="programlisting">
+
+echo 'crypter: "| /etc/postfix/decrypter &gt;&gt; /tmp/cryp.log 2&gt;&amp;1"' \
+	&gt;&gt; /etc/aliases
+newaliases
+chcon system_u:object_r:postfix_local_exec_t:s0 decrypter
+postfix reload
+systemctl restart postfix.service
+
+</pre>
+</p><p>
+Now, pipe the encrypter output to the mail client:
+
+<pre     class="programlisting">
+cd /etc
+encrypter resolv.conf hostname | mail crypter@localhost
+</pre>
+</p><p>
+The files sent into the mail client should appear in /tmp. Move the public
+key to a remote server, and automatic encrypted file transfer over SMTP is
+established.
+</p><p>
+It is also possible to work RSA encryption in reverse, decrypting with the
+public key. This is useful in establishing authenticity of data&mdash;for
+example, to encrypt a small amount of clear text (bounded by RSA length
+limitations) with the private key:
+
+<pre     class="programlisting">
+echo 'I have control of the private key.' |
+  openssl rsautl -sign -inkey ~/.prv.key -passin "file:$HOME/.pas" |
+  openssl base64 &gt; blob
+</pre>
+</p><p>
+The blob file then can be posted in a public medium (website, file
+server and so on), and holders of the public key can successfully decrypt the
+message like so:
+
+<pre     class="programlisting">
+
+openssl base64 -d &lt; blob |
+	openssl rsautl -inkey ~/.pub.key -pubin
+
+</pre>
+</p><p>
+In doing so, users verify that the private key was involved in the creation
+of the message, lending some authenticity to the data that has been
+transferred. The public key is not assumed to be secret, so this
+establishes data authenticity, not data privacy.
+</p><p>
+Rather than arbitrary text, you can pipe in the text from an SHA-256
+signature program call, and thus &ldquo;sign&rdquo; a larger file in a way that proves
+authenticity:
+
+<pre     class="programlisting">
+openssl dgst -sha256 crypter.sh |
+  openssl rsautl -sign -inkey ~/.prv.key -passin "file:$HOME/.pas" |
+  openssl base64 &gt; csign
+</pre>
+</p><p>
+You decrypt this text in exactly the same manner as you did before, producing
+an SHA-256 clear-text digest that you can verify independently. However,
+OpenSSL can summarize in one step the signed SHA-256 checksum (note that
+full x.509 keys also can be manipulated to sign a digest):
+
+<pre     class="programlisting">
+openssl dgst -sha256 -sign ~/.prv.key \
+	-out crypter.sha256 crypter.sh
+</pre>
+</p><p>
+If the two files above are placed accessibly, holders of the public
+key can verify that the files have not been altered:
+
+<pre     class="programlisting">
+openssl dgst -sha256 -verify ~/.pub.key \
+	-signature crypter.sha256 crypter.sh
+</pre>
+</p><p>
+OpenSSL should output &ldquo;Verified OK&rdquo; when the files are intact. The
+capability of using an encrypted SHA-256 digest to verify a file
+securely is far beyond the features of the standard sha256sum utility and
+demonstrates authenticity unambiguously.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10d4580.0x1757720"></a>
+Introduction to GPG</h2></div></div><p>
+GNU Privacy Guard has much more comprehensive tools for the management of
+keypairs and peer identities. This includes databases for storing the
+various types of keys, tools for revocation of keys and mechanisms for
+establishing key reputation in a &ldquo;web of trust&rdquo;.
+</p><p>
+Oracle Linux 7 bundles GPG 2.0.22, which uses the 128-bit CAST5 symmetric
+cipher by default (newer versions have switched to AES128). Here, I will conform
+to the previous NIST guidelines for a 2868-bit asymmetric keypair of equal
+strength (note that the GPG documentation does warn that &ldquo;Moving past RSA-2048 means
+you lose the ability to migrate your certificate to a smartcard, or to
+effectively use it on some mobile devices, or to interoperate with other
+OpenPGP applications that don't handle large keys gracefully.&rdquo;):
+
+<pre     class="programlisting">
+
+$ gpg --gen-key
+
+gpg (GnuPG) 2.0.22; Copyright (C) 2013 Free Software Foundation, Inc.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+gpg: directory `/home/ol7_user/.gnupg' created
+gpg: new configuration file `/home/ol7_user/.gnupg/gpg.conf' created
+gpg: WARNING: options in `/home/ol7_user/.gnupg/gpg.conf' are not yet
+	active during this run
+gpg: keyring `/home/ol7_user/.gnupg/secring.gpg' created
+gpg: keyring `/home/ol7_user/.gnupg/pubring.gpg' created
+Please select what kind of key you want:
+   (1) RSA and RSA (default)
+   (2) DSA and Elgamal
+   (3) DSA (sign only)
+   (4) RSA (sign only)
+Your selection? 1
+RSA keys may be between 1024 and 4096 bits long.
+What keysize do you want? (2048) 2868
+Requested keysize is 2868 bits
+rounded up to 2880 bits
+Please specify how long the key should be valid.
+         0 = key does not expire
+        = key expires in n days
+      w = key expires in n weeks
+      m = key expires in n months
+      y = key expires in n years
+Key is valid for? (0) 5y
+Key expires at Sat 10 Jul 2021 08:40:19 PM CDT
+Is this correct? (y/N) y
+
+GnuPG needs to construct a user ID to identify your key.
+
+Real name: Oracle Linux
+Email address: ol7_user@localhost
+Comment: Test Key
+You selected this USER-ID:
+    "Oracle Linux (Test Key) &lt;ol7_user@localhost&gt;
+
+Change (N)ame, (C)omment, (E)mail or (O)kay/(Q)uit? O
+You need a Passphrase to protect your secret key.
+
+We need to generate a lot of random bytes. It is a good idea to perform
+some other action (type on the keyboard, move the mouse, utilize the
+disks) during the prime generation; this gives the random number
+generator a better chance to gain enough entropy.
+gpg: /home/ol7_user/.gnupg/trustdb.gpg: trustdb created
+gpg: key 6F862596 marked as ultimately trusted
+public and secret key created and signed.
+
+gpg: checking the trustdb
+gpg: 3 marginal(s) needed, 1 complete(s) needed, PGP trust model
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+gpg: next trustdb check due at 2021-07-11
+pub   2880R/6F862596 2016-07-12 [expires: 2021-07-11]
+      Key fingerprint = F423 3B2C ACE1 AD0E 95C3  4769 679D 66ED 6F86 2596
+uid                  Oracle Linux (Test Key) 
+sub   2880R/FF79FC31 2016-07-12 [expires: 2021-07-11]
+
+</pre>
+</p><p>
+Once the (rounded-up) 2880-bit private key has been created, a command is
+needed to generate a public key that can be shared with others:
+
+<pre     class="programlisting">
+$ gpg --export -a 
+
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+Version: GnuPG v2.0.22 (GNU/Linux)
+
+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
+=gBp9
+-----END PGP PUBLIC KEY BLOCK-----
+</pre>
+</p><p>
+This key typically would be included in a signature at the end of email
+messages, bundled with software or documentation that requires either
+privacy or authenticity, or pasted in a public forum (such as a website)
+where similar activities might take place.
+</p><p>
+Other GPG/PGP users that desired to communicate with the originator of this
+key might then import it, prior to engaging in these activities:
+
+<pre     class="programlisting">
+
+$ gpg --import /tmp/test.pub
+gpg: key F3BD3FF5:
+public key "Test User (Test Key) &lt;testuser@localhost&gt;" imported
+gpg: Total number processed: 1
+gpg:               imported: 1  (RSA: 1)
+$ gpg --import /tmp/ol7.pub 
+gpg: key 6F862596:
+public key "Oracle Linux (Test Key) &lt;ol7_user@localhost&gt;" imported
+gpg: Total number processed: 1
+gpg:               imported: 1  (RSA: 1)
+
+</pre>
+</p><p>
+There are many email packages that will use various PGP components
+directly, enabling integrated cryptography. My focus here is flat file
+encryption, so I will confine my GPG demonstration to this specific
+action and use it to encrypt the script from the last section, sending
+from ol7_user@localhost to testuser@localhost:
+
+<pre     class="programlisting">
+$ gpg -u ol7_user@localhost -r testuser@localhost --armor 
+ &#8618;--sign --encrypt crypter.sh
+
+You need a passphrase to unlock the secret key for
+user: "Oracle Linux (Test Key) "
+2880-bit RSA key, ID 6F862596, created 2016-07-12
+
+$ mv crypter.sh.asc /tmp
+
+$ head -5 /tmp/crypter.sh.asc
+-----BEGIN PGP MESSAGE-----
+Version: GnuPG v2.0.22 (GNU/Linux)
+
+hQF0A05zbjK/t9mRAQs/fog4FSkocxnJBKp1hb64yGf1xiecqLWwZBqct3kLiU5e
+Ekmqdt06E+XU4N3bMtt808SwSXSLvKWT18Iy6WtGz4r+B3dYAlHo1vfeSt3L5dE0
+</pre>
+</p><p>
+The recipient (testuser) is then able to log in and decrypt (which will go
+to the standard output by default):
+
+<pre     class="programlisting">
+gpg -d /tmp/crypter.sh.asc
+</pre>
+</p><p>
+Any activity that causes GPG to request the password to a key will spawn an
+&ldquo;agent&rdquo; that will tie future GPG sessions and supply credentials so the
+key password need not be entered repeatedly:
+
+<pre     class="programlisting">
+testuser 4252 0:00 gpg-agent --daemon --use-standard-socket
+</pre>
+</p><p>
+The holder of a GPG private key also can sign fies digitally in a manner
+similar to OpenSSL (but somewhat more flexibly). There are three methods to
+add signatures: create a compressed binary file that contains a packed copy
+of the original message, add a clear-text &ldquo;ASCII-armored&rdquo; signature that
+allows the original content to be read, or write a binary signature to a
+separate file (requiring both a clean file and signature to validate). The
+first method writes a compressed binary to a new file with a .gpg
+extension:
+
+<pre     class="programlisting">
+gpg -s crypter.sh
+(or)
+gpg --sign crypter.sh
+</pre>
+</p><p>
+The second method will add a clear-text signature, allowing the original
+content to remain visible, into a new file with an .asc extension:
+
+<pre     class="programlisting">
+gpg --clearsign crypter.sh
+</pre>
+</p><p>
+The third will write a binary signature to a separate file with a .sig
+extension:
+
+<pre     class="programlisting">
+gpg -b crypter.sh
+(or)
+gpg --detach-sign crypter.sh
+</pre>
+</p><p>
+All of these methods can be verified by holders of the public key with the
+<tt  >gpg -v (file)</tt> command, where
+<tt  >(file)</tt> points at the output of GPG.
+</p><p>
+Although GPG has the ability to support many types of digests and ciphers,
+forcing specific algorithms can cause compatibility problems with users of
+various distributions and versions of PGP software. It is wise to adhere to
+the capabilities of general versions, rather than specify algorithms
+directly (this discussion can be found in the <tt  >man
+gpg</tt> pages):
+
+<pre     class="programlisting">
+man gpg | col -b | awk '/^INTEROPERABILITY/,/reduce/'
+
+INTEROPERABILITY
+  GnuPG tries to be a very flexible implementation of the OpenPGP  
+  standard. In particular, GnuPG implements many of the optional 
+  parts of the standard, such as the SHA-512 hash, and the ZLIB and 
+  BZIP2 compression algorithms. It is important to be aware that 
+  not all OpenPGP programs implement these optional algorithms and 
+  that by forcing their use via the --cipher-algo, --digest-algo,  
+  --cert-digest-algo, or --compress-algo options in GnuPG, it is  
+  possible to create a perfectly valid OpenPGP message, but one 
+  that cannot be read by the intended recipient.
+
+  There are dozens of variations of OpenPGP programs available, and 
+  each supports a slightly different subset of these optional 
+  algorithms. For example, until recently, no (unhacked) version 
+  of PGP supported the BLOWFISH cipher algorithm. A message using 
+  BLOWFISH simply could not be read by a PGP user. By default, GnuPG 
+  uses the standard OpenPGP preferences system that will always do the 
+  right thing and create messages that are usable by all recipients, 
+  regardless of which OpenPGP program they use. Only override this safe 
+  default if you really know what you are doing.
+
+  If you absolutely must override the safe default, or if the 
+  preferences on a given key are invalid for some reason, you are far  
+  better off using the --pgp6, --pgp7, or --pgp8 options. These 
+  options are safe as they do not force any particular algorithms in  
+  violation of OpenPGP, but rather reduce the available algorithms 
+  to a "PGP-safe" list.
+</pre>
+</p><p>
+GPG also has the ability to be used non-interactively with the
+<tt  >--batch</tt> and
+the various <tt  >--passphrase</tt> options. It is likely unwise to use the same keys
+for both interactive and batch activity&mdash;use an email key for online
+communication and a batch key for automated activities. GPG offers several
+options for key revocation&mdash;be ready to use them for any key that is
+compromised, especially automated keys.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10d4580.0x17583d8"></a>
+Conclusion</h2></div></div><p>
+OpenSSL flat file use might be preferable to network services like TLS (or
+even SSH) for several reasons:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Removing TLS vastly reduces the attack surface of a server.
+</p></li><li><p>
+When an encryption process takes place offline and is not visible in action
+from the network, several classes of exploit are removed or greatly reduced
+in scope: timing attacks (such as Lucky Thirteen),
+other side-channel attacks (such as CRIME), and
+versioning attacks (such as DROWN).
+</p></li><li><p>
+Cipher algorithm code within OpenSSL is used in OpenSSH, which attests to
+quality. OpenSSH reviews are extremely thorough, and the security record is
+quite good.
+</p></li><li><p>
+One of OpenSSL's aes_core.c authors is Vincent Rijmen, who developed AES
+with fellow cryptographer Joan Daemen (although custom high-speed assembler
+code is substituted on architectures where it is available). Fragments of
+the aes_core.c code also are found in the libtomcrypt library that is
+used directly in the dropbear SSH server, which I discussed in a
+previous article (see &ldquo;Infinite BusyBox with systemd&rdquo; in the
+March 2015 issue: <a href="http://www.linuxjournal.com/content/infinite-busybox-systemd" target="_self">www.linuxjournal.com/content/infinite-busybox-systemd</a>).
+</p></li><li><p>
+OpenSSL's support for exotic systems introduces more problem code for
+networking than for basic math.
+</p></li><li><p>
+Far more time is spent in code reviews for OpenSSL's basic cipher
+algorithms than for the networking features. Merely the legal analysis of
+source code for the question of patent infringement can dwarf network
+security reviews (for example, Red Hat's recent decisions on Elliptic Curve within
+OpenSSL and Sun's careful coding of said routines to avoid existing
+patents). It was unlikely that the DTLS heartbeat TCP implementation
+received comparable analysis, and it became the greatest flaw ever found in
+OpenSSL (which never impacted flat file processing).
+</p></li><li><p>
+A scripted solution allows easier interfacing to custom programs (new
+compression tools, alternate data sources, legacy systems and applications
+and so on).
+</p></li></ul></div><p>
+There are a few drawbacks to using the crypter script as presented:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The script places delimiters between the content of each file. The number
+of files sent, and their length, will be known by anyone observing the
+traffic. Use a ZIP utility to send only one file if this is
+troublesome&mdash;some ZIP utilities use AES directly, allowing an RSA exchange of a ZIP
+archive's password, then the transmission of the ZIP over unencrypted
+channels (this might allow the ZIP file directory to be read by observers,
+even if the file content remains opaque).
+</p></li><li><p>
+The script will read each file twice&mdash;once for the digest and once for
+the symmetric algorithm. This will cost time, processing power and I/O
+(GPG does this all in one step).
+</p></li></ul></div><p>
+GPG also has a few concerns:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Some PGP implementations can have problems with larger RSA keys.
+</p></li><li><p>
+Compatibility issues between PGP implementations greatly influence chosen
+digests and ciphers.
+</p></li><li><p>
+GPG 2.0.22 (the older version found in Oracle Linux 7) uses the SHA-1
+digest, which has been deprecated.
+</p></li></ul></div><p>
+None of these tools are perfect, but they are the bedrock of secure
+communications. To ponder the scale of their influence upon commerce and
+trusted communication is almost beyond comprehension. These algorithms are
+as ubiquitous as they are generally unknown.
+</p><p>
+Hopefully, this tutorial has cast a bit more light upon them.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10d4580.0x175e6f8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Charles Fisher has an electrical engineering degree from the University of
+Iowa and works as a systems and database administrator for a Fortune 500
+mining and manufacturing corporation. He has previously published both
+journal articles and technical manuals on Linux for
+<span   class="emphasis"><em>UnixWorld</em></span> and other McGraw-Hill publications.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../270/toc270.html">Issue Table of Contents</a>
+    <a class="link3" href="../270/12061.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

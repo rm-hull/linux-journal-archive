@@ -1,0 +1,470 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Inside the Intel Compiler</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    How did Intel's compiler beat gcc on Benchmarks? Intel's&#10;    compiler developers explain IA-32 optimizations they use.&#10;    "><meta name="keywords" content="Fortran, compilers, Intel, parallelism, optimization"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x285b580.0x2952ab0"></a>Inside the Intel Compiler</h1></div><div><div class="authorgroup"><div class="author"><h3 class="author">Dale Schouten</h3></div><div class="author"><h3 class="author">Xinmin Tian</h3></div><div class="author"><h3 class="author">Aart Bik</h3></div><div class="author"><h3 class="author">Milind Girkar</h3></div><div class="issuemoyr">Issue #106, February 2003</div></div></div><div><p>
+    How did Intel's compiler beat gcc on Benchmarks? Intel's
+    compiler developers explain IA-32 optimizations they use.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x2954058"></a></h2></div></div><p>The increasing acceptance of Linux among
+developers and researchers has yet to be matched by a similar
+increase in the number of available development tools. The recently
+released Intel C++ and Fortran compilers for Linux aim to bridge
+this gap by providing application developers with highly
+optimizable compilers for the Intel IA-32 and Itanium processor
+families. These compilers provide strict ANSI support, as well as
+optional support for some popular extensions. This article focuses
+on the optimizations and features of the compiler for the Intel
+IA-32 processors. Throughout the rest of this article, we refer to
+the Intel C++ and Fortran compilers for Linux on IA-32 collectively
+as &ldquo;the Intel compiler&rdquo;.
+</p><p>The Intel compiler optimizes a program at all levels, from
+high-level loop and interprocedural optimizations to standard
+compiler data flow optimizations, in addition to efficient
+low-level optimizations, such as instruction scheduling, basic
+block layout and register allocation. In this article, we mainly
+focus on compiler optimizations unique to the Intel compiler. For
+completeness, however, we also include a brief overview of some of
+the more traditional optimizations supported by the Intel
+compiler.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x29541b8"></a>Traditional Compiler Optimizations</h2></div></div><p>Decreasing the number of instructions that are dynamically
+executed and replacing instructions with faster equivalents are
+perhaps the two most obvious ways to improve performance. Many
+traditional compiler optimizations fall into this category: copy
+and constant propagation, redundant expression elimination, dead
+code elimination, peephole optimizations, function inlining, tail
+recursion elimination and so forth.</p><p>The Intel compiler provides a rich variety of both types of
+optimizations. Many local optimizations are based on the
+static-single-assignment (SSA) form. Redundant (or partially
+redundant) expressions, for example, are eliminated according to
+Chow's algorithm (see Resource 6), where an expression is
+considered redundant if it is unnecessarily calculated more than
+once on an execution path. For instance, in the statement:</p><pre     class="programlisting">
+x[i] += a[i+j*n] + b[i+j*n];
+</pre><p>the expression i+j*n is redundant and needs to be calculated
+only once. Partial redundancy occurs when an expression is
+redundant on some paths but not necessarily all paths. In the code:
+<pre     class="programlisting">
+if (c) {
+    x = y+a*b;
+} else {
+    x = a;
+}
+z = a*b;
+</pre>
+
+
+the expression a*b is partially redundant. If the else branch is
+taken, a*b is only calculated once; but if the then branch is
+taken, it is calculated twice. The code can be modified as follows:
+<pre     class="programlisting">
+t = a*b;
+if (c) {
+    x = y+t;
+} else {
+    x = a;
+}
+z = t;
+</pre>
+
+
+so there is only one calculation of a*b, no matter which path is
+taken.
+</p><p>Clearly, this transformation must be used judiciously as the
+increase in temporary values, ideally stored in registers, can
+increase lifetimes and, hence, register pressure. An algorithm
+similar to Chow's algorithm (see Resource 9) is used to eliminate
+dead stores, in which a store is succeeded by another store to the
+same location before a fetch, and partially dead stores, which are
+dead along some but not necessarily all paths. Other optimizations
+based on the SSA form are constant propagation (see Resource 7) and
+the propagation of conditions. Consider the following
+example:</p><pre     class="programlisting">
+if (x&gt;0) {
+    if (y&gt;0) {
+        . . .
+        if (x == 0) {
+            . . .
+        }
+    }
+}
+</pre><p>Since x&gt;0 holds within the outmost if, unless x is
+changed, we know that x != 0, and therefore the code within the
+inner if is dead. Although this and the previous example may seem
+contrived, such situations are actually quite common in the
+presence of address calculations, macros or inlined functions.
+</p><p>Powerful memory disambiguation (see Resource 8) is used by
+the Intel compiler to determine whether memory references might
+overlap. This analysis is important to enhance, for instance,
+register allocation and to enable the detection and exploitation of
+implicit parallelism in the code, as discussed in the following
+sections. The Intel compiler also provides extensive
+interprocedural optimizations, including manual and automatic
+function inlining, partial inlining where only the hot parts of a
+routine are inlined, interprocedural constant optimizations and
+exception-handling optimizations. With the optional &ldquo;whole
+program&rdquo; analysis, the data layout of certain data structures,
+such as COMMON BLOCKS in Fortran, may be modified to enhance memory
+accesses on various processors. For example, the data layout could
+be padded to provide better data alignment. In addition, in order
+to make decisions that are more intelligent about when and where to
+inline, the Intel compiler relies on two types of profiling
+information: static profiling and dynamic profiling. Static
+profiling refers to information that can be deduced or estimated at
+compile time. Dynamic profiling is information gathered from actual
+executions of a program. These two types of profiling are discussed
+in the next section.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x29545d8"></a>Profiling Optimizations</h2></div></div><p>First, we will look at static profiling. Consider the
+following code fragment:</p><pre     class="programlisting">
+g();
+for (i=0; i&lt;10; i++) {
+    g();
+}
+</pre><p>Obviously, the call inside the loop executes ten times more
+often than the call outside the loop. In many cases, however, there
+is no way to make a good estimate. In the following code:
+<pre     class="programlisting">
+for (i=0; i&lt;10; i++) {
+    if (condition) {
+        g();
+    } else {
+        h();
+    }
+}
+</pre>
+
+
+it is difficult to say whether one condition is more likely to
+occur than another. If h() happened to be an exit or some other
+routine that was known not to return, it would be safe to assume
+the then branch was more likely taken and inlining g() may be
+worthwhile. Without such information, however, the decision of
+whether to inline one call or the other (or both) gets more
+complicated. Another option is to use dynamic profiling.
+</p><p>Dynamic profiling gathers information from actual executions
+of a program. This allows the compiler to take advantage of the way
+a program actually runs in order to optimize it. In a three-step
+process, the application is first built with profiling
+instrumentation embedded in it. Then the resulting application is
+run with a representative sample (or samples) of data, which yields
+a database for the compiler to use in a subsequent build of the
+application. Finally, the information in this database is used to
+guide optimizations such as code placement or grouping frequently
+executed basic blocks together, function or partial inlining and
+register allocation. Register allocation in the Intel compiler is
+based on graph fusion (see Resource 5), which breaks the code into
+regions. These regions are typically loop bodies or other cohesive
+units. With profile information, the regions can be selected more
+effectively and are based on the actual frequency of the blocks
+instead of syntactic guesses. This allows spills to be pushed into
+less frequently executed parts of the program.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x2954840"></a>Intra-Register Vectorization</h2></div></div><p>Exploiting parallelism is an important way to increase
+application performance in modern architectures. The Intel compiler
+can be key in the effort to exploit potential parallelism in a
+program by facilitating such optimizations as automatic
+vectorization, automatic parallelization and support for OpenMP
+directives. Let's look at the automatic conversion of serial loops
+into a form that takes advantage of the instructions provided by
+the Intel MMX technology or SSE/SSE2 (Streaming-SIMD-extensions), a
+process we refer to as &ldquo;intra-register vectorization&rdquo; (see
+Resource 1). For example, given the function:</p><pre     class="programlisting">
+void vecadd(float a[], float b[], float c[], int n)
+{
+  int i;
+  for (i = 0; i &lt; n; i++) {
+      c[i] = a[i] + b[i];
+  }
+}
+</pre><p>the Intel compiler will transform the loop to allow four
+single-precision floating-point additions to occur simultaneously
+using the addps instruction. Simply put, using a pseudo-vector
+notation, the result would look something like this:
+<pre     class="programlisting">
+for (i = 0; i &lt; n; i+=4) {
+    c[i:i+3] = a[i:i+3] + b[i:i+3];
+}
+</pre>
+
+
+A scalar cleanup loop would follow to execute the remainder of the
+instructions if the trip count n is not exactly divisible by four.
+Several steps are involved in this process. First, because it is
+possible that no information exists about the base addresses of the
+arrays, runtime code must be inserted to ensure that the arrays do
+not overlap (dynamic dependence testing) and that the bulk of the
+loop runs with each vector iteration having addresses aligned along
+16-byte boundaries (dynamic loop peeling for alignment). In order
+to vectorize efficiently, only loops of sufficient size are
+vectorized. If the number of iterations is too small, a simple
+serial loop is used instead. Besides simple loops, the vectorizer
+also supports loops with reductions (such as summing an array of
+numbers or searching for the max or min in an array, conditional
+constructs, saturation arithmetic and other idioms. Even the
+vectorization of loops with trigonometric mathematical functions is
+supported by means of a vector math library.
+</p><p>To give a taste of a realistic performance improvement that
+can be obtained by intra-register vectorization, we report some
+performance numbers for the double-precision version of the Linpack
+benchmark (available in both Fortran and C at
+<a href="http://www.netlib.org/benchmark" target="_self">www.netlib.org/benchmark</a>).
+This benchmark reports the performance of a linear equation solver
+that uses the routines DGEFA and DGESL for the factorization and
+solve phase, respectively. Most of the runtime of this benchmark
+results from repetitively calling the Level 1 BLAS routine DAXPY
+for different subcolumns of the coefficient matrix during
+factorization. Under generic optimizations (switch -O2), this
+benchmark reports 1,049 MFLOPS for solving a 100&times;100 system
+on a 2.66GHz Pentium 4 processor. When intra-register vectorization
+for the Pentium 4 processor is enabled (switch -xW), the
+performance goes up to 1,292 MFLOPS, boosting the performance by
+about 20%.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x2954b00"></a>OpenMP and Auto-Parallelization</h2></div></div><p>The OpenMP standard for C/C++ and Fortran
+(<a href="http://www.openmp.org" target="_self">www.openmp.org</a>) has
+recently emerged as the de facto standard for shared-memory
+parallel programming. It allows the user to specify parallelism
+without getting involved in the details of iteration partitioning,
+data sharing, thread scheduling and synchronization. Based on these
+directives, the Intel compiler will transform the code to generate
+multithreaded code automatically. The Intel compiler supports the
+OpenMP C++ 2.0 and OpenMP Fortran 2.0 standard directives for
+explicit parallelization. Applications can use these directives to
+increase performance on multiprocessor systems by exploiting both
+task and data parallelism.</p><p>The following is an example program, illustrating the use of
+OpenMP directives with the Intel C++ Linux OpenMP compiler:</p><pre     class="programlisting">
+#define N 10000
+void   ploop(void)
+{
+  int k, x[N], y[N], z[N];
+  #pragma omp parallel for private(k) shared(x,y,z)
+  for (k=0;  k&lt;N; k++) {
+    x[k] = x[k] * y[k] + workunit(z[k]);
+  }
+}
+</pre><p>The for loop will be executed in parallel by a team of
+threads that divide the iterations in the loop body amongst
+themselves. Variable k is marked private&mdash;each thread will have its
+own copy of k&mdash;while the arrays x, y and z are shared among the
+threads.
+</p><p>The resulting multithreaded code is illustrated below. The
+Intel compiler generates OpenMP runtime library calls for thread
+creation and management, as well as synchronization (see Resources
+1 and 2):</p><pre     class="programlisting">
+#define N 10000
+void  ploop(void)
+{
+    int k, x[N], y[N], z[N];
+    __kmpc_fork_call(loc,
+                     3,
+                     T-entry(_ploop_par_loop),
+                     x, y, z)
+    goto L1:
+    T-entry _ploop_par_loop(loc, tid,
+                            x[], y[], z[]) {
+       lower_k = 0;
+       upper_k = N;
+       __kmpc_for_static_init(loc, tid, STATIC,
+                              &amp;lower_k,
+                              &amp;upper_k, ...);
+       for (local_k=lower_k;  local_k&lt;=upper_k;
+            local_k++)  {
+          x[local_k] = x[local_k] * y[local_k]
+                       + workunit(z[local_k]);
+       }
+       __kmpc_for_static_fini(loc, tid);
+       T-return;
+    }
+L1: return;
+}
+</pre><p>The multithreaded code generator inserts the thread
+invocation call __kmpc_fork_call with the T-entry point and data
+environment (for example, thread id tid) for each loop. This call
+into the Intel OpenMP runtime library forks a number of threads
+that execute the iterations of the loop in parallel.
+</p><p>The serial loops annotated with the OpenMP directive are
+converted to multithreaded code by localizing the lower- and
+upper-loop bounds and by privatizing the iteration variable.
+Finally, multithreading runtime initialization and synchronization
+code is generated for each T-region defined by a [T-entry, T-ret]
+pair. The call __kmpc_for_static_init computes the localized loop
+lower-bound, upper-bound and stride for each thread according to a
+scheduling policy. In this example, the generated code uses static
+scheduling. The library call __kmpc_for_static_fini informs the
+runtime system that the current thread has completed one loop
+chunk.</p><p>Rather than performing source-to-source transformations, as
+is done in other compilers such as OpenMP NanosCompiler and OdinMP,
+the Intel compiler performs these transformations internally. This
+allows tight integration of the OpenMP implementation with other
+advanced, high-level compiler optimizations for improved
+uniprocessor performance such as vectorization and loop
+transformations.</p><p>Besides the compiler support for exploiting the OpenMP
+directive-guided explicit parallelism, users also can try
+auto-parallelization by using the option -parallel. Under this
+option, the compiler automatically analyzes the loops in the
+program to detect those that have no loop-carried dependency and
+can be executed in parallel profitably. The auto-parallelization
+phase in the compiler relies on the advanced memory disambiguation
+techniques for its analysis, as well as the profiling information
+for its heuristics in deciding when to parallelize.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x294b808"></a>CPU-Dispatch</h2></div></div><p>One of the unique features of the Intel compiler is
+CPU-Dispatch, which allows the user to target a single object for
+multiple IA-32 architectures by means of either manual CPU-Dispatch
+or Auto-CPU-Dispatch. Manual CPU-Dispatch allows the user to write
+multiple versions of a single function. Each function either is
+assigned a specific IA-32 architecture platform or is considered
+generic, meaning it can run on any IA-32 architecture. The Intel
+compiler generates code that dynamically determines on which
+architecture the code is running and accordingly chooses the
+particular version of the function that will actually execute. This
+runtime determination allows programmers to take advantage of
+architecture-specific optimizations, such as SSE and SSE2, without
+sacrificing flexibility, allowing execution of the same binary on
+architectures that do not support newer instructions.</p><p>Auto-CPU_Dispatch is similar but with the added benefit that
+the compiler automatically generates multiple versions of a given
+function. During compilation, the compiler decides which routines
+will gain from architecture-specific optimizations. These routines
+are then automatically duplicated to produce architecture-specific
+optimized versions, as well as generic versions. The benefit of
+this feature is, it does not require any rewrite by the programmer.
+A normal source file can take advantage of the Auto-CPU-Dispatch
+feature by the simple use of a command-line option. For example,
+given the function:</p><pre     class="programlisting">
+void init(float b[], double c[], int n)
+{
+  int i;
+  for (i = 0; i &lt; n; i++) {
+      b[i] = (float)i;
+  }
+  for (i = 0; i &lt; n; i++) {
+      c[i] = (double)i;
+  }
+}
+</pre><p>the Intel compiler can produce up to three versions of the
+function. A generic version of the function is generated that will
+run on any IA-32 processor. Another version would be tuned for the
+Pentium III processor by vectorizing the first loop with SSE
+instructions. A third version would be optimized for the Pentium 4
+processor by vectorizing both loops to take advantage of SSE2
+instructions.
+</p><p>The resulting function begins with dispatch code like
+this:</p><pre     class="programlisting">
+.L1  testl     $-512, __intel_cpu_indicator
+     jne       init.J
+     testl     $-128, __intel_cpu_indicator
+     jne       init.H
+     testl     $-1, __intel_cpu_indicator
+     jne       init.A
+     call      __intel_cpu_indicator_init
+     jmp       .L1
+
+</pre><p>Where init.A, init.H and init.J are the generic, SSE and SSE2
+optimized versions, respectively.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x294bb20"></a>Language Extensions</h2></div></div><p>While the Intel compiler is strictly ANSI-compliant, there
+are options to cover many GCC extensions, such as long long int,
+zero-length arrays or macros with variable number of arguments.
+GCC-style inline assembly code is also supported. DWARF2 debugging
+information is provided to use with standard debuggers such as GDB.
+Certain Microsoft extensions are also enabled, such as __declspec
+attributes, along with support for Microsoft-style inline assembly
+code.</p><p>In addition to inline assembly code, the Intel compiler also
+supports MMX and SSE/SSE2 intrinsics. These allow access to the
+processor-specific extensions without the performance and
+correctness problems often caused by using inline assembly that can
+interfere with the analysis and transformations of the Intel
+compiler. By using the provided intrinsics, the programmer can take
+advantage of specific instructions but still receive the benefits
+of register allocation, scheduling and other optimizations.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x294bc80"></a>Conclusions</h2></div></div><p>The Intel compiler for Linux is a state-of-the-art compiler
+that delivers performance among the best in the industry, using
+sophisticated techniques to enable advanced features of Intel IA-32
+architectures. More information can be found at
+<a href="http://developer.intel.com/software/products/compilers" target="_self">developer.intel.com/software/products/compilers</a>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x285b580.0x294bde0"></a>Acknowledgements</h2></div></div><p>Thanks to Zia Ansari and David Kreitzer for their help in
+describing some of the technical details of the compiler. We also
+thank all the other members of the Intel compiler team.</p><p>Intel, Pentium, Itanium and MMX are trademarks or registered
+trademarks of Intel Corporation or its subsidiaries in the United
+States and other countries.</p><p><a href="4885s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+          <div       class="mediaobject"><img src="4885aaDS.jpg"></div>
+          <span   class="bold"><b>Dale Schouten</b></span>
+          (<a href="mailto:Dale.A.Schouten@intel.com">Dale.A.Schouten@intel.com</a>)
+          works at the Intel Compiler Lab. He has a PhD from the University
+          of Illinois. In his other life, Dale is an unprofessional musician
+          and the father of two exceptional children.
+        </p><p>
+          <div       class="mediaobject"><img src="4885aaXT.jpg"></div>
+          <span   class="bold"><b>Xinmin Tian</b></span>
+          (<a href="mailto:Xinmin.Tian@intel.com">Xinmin.Tian@intel.com</a>)
+          works at the Intel Compiler Lab at Intel Corp. He manages the
+          OpenMP Parallelization group. He holds BSc, MSc and PhD degrees in
+          Computer Science from Tsinghua University.
+        </p><p>
+          <div       class="mediaobject"><img src="4885aaAB.jpg"></div>
+          <span   class="bold"><b>Aart Bik</b></span>
+          (<a href="mailto:Aart.Bik@intel.com">Aart.Bik@intel.com</a>)
+          received his MSc degree in Computer Science from Utrecht
+          University, The Netherlands, and his PhD degree from Leiden
+          University, The Netherlands. He is currently working on
+          vectorization and parallelization at the Intel Compiler Lab.
+        </p><p>
+          <div       class="mediaobject"><img src="4885aaMG.jpg"></div>
+          <span   class="bold"><b>Milind Girkar</b></span>
+          (<a href="mailto:Milind.Girkar@intel.com">Milind.Girkar@intel.com</a>)
+          received a PhD degree in Computer Science from the University of
+          Illinois at Urbana-Champaign. Currently, he manages the IA-32
+          Compiler Development group at the Intel Compiler Lab.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../106/toc106.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

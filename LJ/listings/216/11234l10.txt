@@ -1,0 +1,45 @@
+Listing 10. nagios/lib/puppet/parser/functions/purge_exported.rb
+
+# This function will be used by the exported
+# resources collector (the nagios box)
+Puppet::Parser::Functions::newfunction(:purge_exported,:doc => "delete expired resources.") do |args|
+
+  require 'rubygems'
+  require 'pg'
+  require 'puppet'
+
+  raise Puppet::ParseError, "Missing hostname." if args.empty?
+  hosts = args.flatten
+
+  begin
+    conn = PGconn.open(:dbname => 'puppet', :user => 'postgres')
+
+    hosts.each do |host|
+
+      Puppet.notice("Purging expired resources for host: #{host}")
+      conn.exec("SELECT id FROM hosts WHERE name = \'#{host}\'") do |host_id|
+
+        raise "Too many hosts" if host_id.ntuples > 1
+        conn.exec("SELECT id FROM resources WHERE host_id = #{host_id.values.flatten[0].to_i}") do |results|
+
+          resource_ids = []
+          results.each do |row|
+            resource_ids << Hash[*row.to_a.flatten]
+          end
+
+          resource_ids.each do |resource|
+            conn.exec("DELETE FROM param_values WHERE resource_id = #{resource['id']}")
+            conn.exec("DELETE FROM resources WHERE id = #{resource['id']}")
+          end
+        end
+
+        conn.exec("DELETE FROM hosts WHERE id = #{host_id.values}")
+      end
+    end
+  rescue => e
+    Puppet.notice(e.message)
+  ensure
+    conn.close
+  end
+end
+

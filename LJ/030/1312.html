@@ -1,0 +1,809 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Network Buffers and Memory Management</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Writing a network device driver for Linux is fundamentally&#10;    simple&mdash;most of the complexity (other than talking to the&#10;    hardware) involves managing network packets in memory.&#10;    "><meta name="keywords" content="development, programming, system, admin, kernel, memory"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2370580.0x2467ab0"></a>Network Buffers and Memory Management</h1></div><div><div class="author"><h3 class="author">Alan Cox</h3></div><div class="issuemoyr">Issue #30, October 1996</div></div><div><p>
+    Writing a network device driver for Linux is fundamentally
+    simple&mdash;most of the complexity (other than talking to the
+    hardware) involves managing network packets in memory.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x24684a8"></a></h2></div></div><p>The Linux operating system implements the
+industry-standard Berkeley socket API, which has its origins in the
+BSD Unix developments (4.2/4.3/4.4 BSD). In this article, we will
+look at the way the memory management and buffering is implemented
+for network layers and network device drivers under the existing
+Linux kernel, as well as explain how and why some things have
+changed over time.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x24685b0"></a>Core Concepts</h2></div></div><p>The networking layer is fairly object-oriented in its design,
+as indeed is much of the Linux kernel. The core structure of the
+networking code goes back to the initial networking and socket
+implementations by Ross Biro and Orest Zborowski respectively. The
+key objects are:</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>Device or
+Interface:</b></span> A network interface is programming code for
+sending and receiving data packets. Usually an interface is used
+for a physical device like an Ethernet card; however, some devices
+are software only, e.g., the loopback device used for sending data
+to yourself.</p></li><li><p><span   class="bold"><b>Protocol:</b></span> Each
+protocol is effectively a different networking language. Some
+protocols exist purely because vendors chose to use proprietary
+networking schemes, while others are designed for special purposes.
+Within the Linux kernel each protocol is a separate module of code
+which provides services to the socket layer.</p></li><li><p><span   class="bold"><b>Socket:</b></span> A socket
+is a connection in the networking that provides Unix file I/O and
+exists as a file descriptor to the user program. In the kernel each
+socket is a pair of structures that represent the high level socket
+interface and the low level protocol interface.</p></li><li><p><span   class="bold"><b>sk_buff:</b></span> All the
+buffers used by the networking layers are
+<b  >sk_buff</b>s. The control for these buffers is
+provided by core low-level library routines that are available to
+all of the networking system. <b  >sk_buff</b>s provide
+the general buffering and flow control facilities needed by network
+protocols.</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x2468be0"></a>Implementation of
+<b  >sk_buff</b>s</h2></div></div><p>The primary goal of the <b  >sk_buff</b> routines
+is to provide a consistent and efficient buffer-handling method for
+all of the network layers, and by being consistent to make it
+possible to provide higher level <b  >sk_buff</b> and
+socket handling facilities to all of the protocols.</p><p>A <b  >sk_buff</b> is a control structure with a
+block of memory attached. Two primary sets of functions are
+provided in the <b  >sk_buff</b> library. The first set
+consists of routines to manipulate doubly linked lists of
+<b  >sk_buffs</b>; the second of functions for
+controlling the attached memory. The buffers are held on linked
+lists optimised for the common network operations of append to end
+and remove from start. As so much of the networking functionality
+occurs during interrupts these routines are written to use atomic
+memory. The small extra overhead that results is well worth the
+pain it saves in bug hunting.</p><p>We use the list operations to manage groups of packets as
+they arrive from the network, and as we send them to the physical
+interfaces. We use the memory manipulation routines for handling
+the contents of packets in a standardised and efficient
+manner.</p><p>At its most basic level, a list of buffers is managed using
+functions like this:</p><pre     class="programlisting">
+void append_frame(char *buf, int len)
+{
+  struct sk_buff *skb=alloc_skb(len, GFP_ATOMIC);
+  if(skb==NULL)
+    my_dropped++;
+  else
+  {
+    skb_put(skb,len);
+    memcpy(skb-&gt;data,data,len);
+    skb_append(&amp;my_list, skb);
+  }
+}
+void process_queue(void)
+{
+  struct sk_buff *skb;
+  while((skb=skb_dequeue(&amp;my_list))!=NULL)
+  {
+    process_data(skb);
+    kfree_skb(skb, FREE_READ);
+  }
+}
+</pre><p>These two fairly simplistic pieces of code actually
+demonstrate the receive packet mechanism quite accurately. The
+<b  >append_frame()</b> function is similar to the code
+called from an interrupt by a device driver receiving a packet, and
+<b  >process_frame()</b> is similar to the code called to
+feed data into the protocols. If you look in net/core/dev.c at
+<b  >netif_rx()</b> and <b  >net_bh()</b>, you
+will see that they manage buffers similarly. They are far more
+complex, as they have to feed packets to the right protocol and
+manage flow control, but the basic operations are the same. This is
+just as true if you look at buffers going from the protocol code to
+a user application.</p><p>The example also shows the use of one of the data control
+functions, <b  >skb_put()</b>. Here it is used to reserve
+space in the buffer for the data we wish to pass down.</p><p>Let's look at <b  >append_frame()</b>. The
+<b  >alloc_skb()</b> function obtains a buffer of
+<b  >len</b> bytes (<a href="1312f1.html" target="_self">Figure
+1</a>), which consists of:</p><div class="itemizedlist"><ul type="disc"><li><p>0 bytes of room at the head of the buffer</p></li><li><p>0 bytes of data, and</p></li><li><p><b  >len</b> bytes of room at the end of
+the data.</p></li></ul></div><p>The <b  >skb_put()</b> function
+(<a href="1312f4.html" target="_self">Figure 4</a>) grows the
+<span   class="bold"><b>data</b></span> area upwards in memory
+through the free space at the buffer end, and thus reserves space
+for the <b  >memcpy()</b>. Many network operations that
+send data packets add space to the start of the frame each time a
+send is executed, so that headers can be added to the packets. For
+this reason, the <b  >skb_push()</b> function
+(<a href="1312f5.html" target="_self">Figure 5</a>) is provided so that the
+start of the data frame can be moved down through memory, if enough
+space has been reserved to leave room for completing this
+operation.</p><p><a href="1312f1.html" target="_self">Figure 1</a> &ldquo;After
+alloc_skb&rdquo;</p><p><a href="1312f2.html" target="_self">Figure 2</a> &ldquo;After
+skb_reserve&rdquo;</p><p><a href="1312f3.html" target="_self">Figure 3</a> &ldquo;An sk_buff
+Containing Data&rdquo;</p><p><a href="1312f4.html" target="_self">Figure 4</a> &ldquo;After skb_put has
+been Called on the Buffer&rdquo;</p><p><a href="1312f5.html" target="_self">Figure 5</a> &ldquo;After an skb_push
+has Occurred on the Previous Buffer&rdquo;</p><p>Immediately after a buffer has been allocated, all the
+available room is at the end. Another function,
+<b  >skb_reserve()</b> (<a href="1312f2.html" target="_self">Figure
+2</a>), can be called before data is added. This function
+allows you to specify that some of the space should be at the
+beginning of the buffer. Thus, many sending routines start with
+code that looks like:</p><pre     class="programlisting">
+    skb=alloc_skb(len+headspace, GFP_KERNEL);
+    skb_reserve(skb, headspace);
+    skb_put(skb,len);
+    memcpy_fromfs(skb-&gt;data,data,len);
+    pass_to_m_protocol(skb);
+</pre><p>In systems such as BSD Unix, you don't need to know in
+advance how much space you will need, as it uses chains of small
+buffers (mbufs) for its network buffers. Linux chooses to use
+linear buffers and save space in advance (often wasting a few bytes
+to allow for the worst case), because linear buffers make many
+other operations much faster.</p><p>Linux provides the following functions for manipulating
+lists:</p><div class="itemizedlist"><ul type="disc"><li><p><b  >skb_dequeue()</b> takes the first
+buffer from a list. If the list is empty, a <b  >NULL</b>
+pointer is returned. This function is used to pull buffers off
+queues. The buffers are added with the routines
+<b  >skb_queue_head()</b> and
+<b  >skb_queue_tail()</b>.</p></li><li><p><b  >skb_queue_head()</b> places a buffer
+at the start of a list. As with all the list operations, it is
+atomic.</p></li><li><p><b  >skb_queue_tail()</b> places a buffer
+at the end of a list and is the most commonly used function. Almost
+all the queues are handled with one set of routines queuing data
+with this function and another set removing items from the same
+queues with <b  >skb_dequeue()</b>.</p></li><li><p><b  >skb_unlink()</b> removes a buffer
+from whatever list contains it. The buffer is not freed, merely
+removed from the list. To make some operations easier, you need not
+know what list the buffer is in, and you can always call
+<b  >skb_unlink()</b> for a buffer which is not in any
+list. This function enables network code to pull a buffer out of
+use even when the network protocol has no idea who is currently
+using the buffer. A separate locking mechanism is provided, so that
+a buffer currently in use by a device driver can not be
+removed.</p></li><li><p>Some more complex protocols, like TCP, keep frames
+in order, and re-order their input as data is received. Two
+functions, <b  >skb_insert()</b> and
+<b  >skb_append()</b>, exist to allow users to place
+<b  >sk_buff</b>s before or after a specific buffer in a
+list.</p></li><li><p><b  >alloc_skb()</b> creates a new
+<b  >sk_buff</b> and initializes it. The returned buffer
+is ready to use but assumes you will fill in a few fields to
+indicate how the buffer should be freed. Normally this is done by
+<b  >skb-&gt;free=1</b>. A buffer can be flagged as not
+freeable by <b  >kfree_skb()</b> (see below).</p></li><li><p><b  >kfree_skb()</b> releases a buffer,
+and if <b  >skb-&gt;sk</b> is set, it lowers the memory
+use counts of the socket (<b  >sk</b>). It is up to the
+socket and protocol-level routines to increment these counts and to
+avoid freeing a socket with outstanding buffers. The memory counts
+are very important, as the kernel networking layers need to know
+how much memory is tied up by each connection in order to prevent
+remote machines or local processes from using too much
+memory.</p></li><li><p><b  >skb_clone()</b> makes a copy of a
+<b  >sk_buff</b>, but does not copy the data area, which
+must be considered read only.</p></li><li><p>Sometimes a copy of the data is needed for editing,
+and <b  >skb_copy()</b> provides the same facilities as
+<b  >skb_clone</b>, but also copies the data (and thus
+has a much higher overhead).</p></li></ul></div><p><a href="1312f6.html" target="_self">Figure 6</a> Flow of
+Packets</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x2863090"></a>Higher Level Support Routines</h2></div></div><p>The semantics of allocating and queuing buffers for sockets
+also involve flow control rules and for sending a whole list of
+interactions with signals and optional settings such as non
+blocking. Two routines are designed to make this easy for most
+protocols.</p><p>The <b  >sock_queue_rcv_skb()</b> function is used
+to handle incoming data flow control and is normally used in the
+form:</p><pre     class="programlisting">
+    sk=my_find_socket(whatever);
+    if(sock_queue_rcv_skb(sk,skb)==-1)
+    {
+        myproto_stats.dropped++;
+        kfree_skb(skb,FREE_READ);
+        return;
+    }
+</pre><p>This function uses the socket read queue counters to prevent
+vast amounts of data from being queued to a socket. After a limit
+is hit, data is discarded. It is up to the application to read fast
+enough, or as in TCP, for the protocol to do flow control over the
+network. TCP actually tells the sending machine to shut up when it
+can no longer queue data.</p><p>On the sending side, <b  >sock_alloc_send_skb()</b>
+handles signal handling, the non-blocking flag and all the
+semantics of blocking until there is space in the send queue, so
+that you cannot tie up all of memory with data queued for a slow
+interface. Many protocol send routines have this function doing
+almost all the work:</p><pre     class="programlisting">
+    skb=sock_alloc_send_skb(sk,....)
+    if(skb==NULL)
+        return -err;
+    skb-&gt;sk=sk;
+    skb_reserve(skb, headroom);
+    skb_put(skb,len);
+    memcpy(skb-&gt;data, data, len);
+    protocol_do_something(skb);
+</pre><p>Most of this we have met before. The very important line is
+<b  >skb-&gt;sk=sk</b>. The
+<b  >sock_alloc_send_skb()</b> has charged the memory for
+the buffer to the socket. By setting <b  >skb-&gt;sk</b>,
+we tell the kernel that whoever does a
+<b  >kfree_skb()</b> on the buffer should credit the
+memory for the buffer to the socket. Thus, when a device has sent a
+buffer and freed it, the user is able to send more.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x28635b8"></a>Network Devices</h2></div></div><p>All Linux network devices follow the same interface, but many
+functions available in that interface are not needed for all
+devices. An object-oriented mentality is used, and each device is
+an object with a series of methods that are filled into a
+structure. Each method is called with the device itself as the
+first argument, in order to get around the lack of the C++ concept
+of <b  >this</b> within the C language.</p><p>The file drivers/net/skeleton.c contains the skeleton of a
+network device driver. View or print a copy from a recent kernel
+and follow along throughout the rest of the article.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x2863770"></a>Basic Structure</h2></div></div><p><a href="1312f7.html" target="_self">Figure 7</a> Structure of a
+Linux Network Device</p><p>Each network device deals entirely in the transmission of
+network buffers from the protocols to the physical media, and in
+receiving and decoding the responses the hardware generates.
+Incoming frames are turned into network buffers, identified by
+protocol and delivered to <b  >netif_rx()</b>. This
+function then passes the frames off to the protocol layer for
+further processing.</p><p>Each device provides a set of additional methods for the
+handling of stopping, starting, control and physical encapsulation
+of packets. All of the control information is collected together in
+the device structures that are used to manage each device.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x28639d8"></a>Naming</h2></div></div><p>All Linux network devices have a unique name that is not in
+any way related to the file system names devices may have. Indeed,
+network devices do not normally have a file system representation,
+although you can create a device which is tied to the device
+drivers. Traditionally the name indicates only the type of a device
+rather than its maker. Multiple devices of the same type are
+numbered upwards from 0; thus, Ethernet devices are known as
+&ldquo;eth0&rdquo;, &ldquo;eth1&rdquo;, &ldquo;eth3&rdquo; etc. The naming scheme is important as
+it allows users to write programs or system configuration in terms
+of &ldquo;an Ethernet card&rdquo; rather than worrying about the manufacturer
+of the board and forcing reconfiguration if a board is
+changed.</p><p>The following names are currently used for generic
+devices:</p><div class="itemizedlist"><ul type="disc"><li><p>eth<span   class="emphasis"><em>n</em></span> Ethernet controllers,
+both 10 and 100Mbit/second</p></li><li><p>tr<span   class="emphasis"><em>n</em></span> Token ring devices</p></li><li><p>sl<span   class="emphasis"><em>n</em></span> SLIP devices and AX.25
+KISS mode</p></li><li><p>ppp<span   class="emphasis"><em>n</em></span> PPP devices both
+asynchronous and synchronous</p></li><li><p>plip<span   class="emphasis"><em>n</em></span> PLIP units; the number
+matches the printer port</p></li><li><p>tunl<span   class="emphasis"><em>n</em></span> IPIP encapsulated
+tunnels</p></li><li><p>nr<span   class="emphasis"><em>n</em></span> NetROM virtual
+devices</p></li><li><p>isdn<span   class="emphasis"><em>n</em></span> ISDN interfaces handled
+by isdn4linux (*)</p></li><li><p>dummy<span   class="emphasis"><em>n</em></span> Null devices</p></li><li><p>lo The loopback device</p></li></ul></div><p>(*) At least one ISDN interface is an Ethernet
+impersonator&mdash;the Sonix PC/Volante driver behaves in all aspects
+as if it was Ethernet rather than ISDN; therefore, it uses an
+&ldquo;eth&rdquo; device name. If possible, a new device should pick a name
+that reflects existing practice. When you are adding a whole new
+physical layer type, you should look for other people working on
+such a project and use a common naming scheme.</p><p>Certain physical layers present multiple logical interfaces
+over one media. Both ATM and Frame Relay have this property, as
+does multi-drop KISS in the amateur radio environment. Under such
+circumstances, a driver needs to exist for each active channel. The
+Linux networking code is structured in such a way as to make this
+manageable without excessive additional code. Also, the name
+registration scheme allows you to create and remove interfaces
+almost at will as channels come into and out of existence. The
+proposed convention for such names is still under some discussion,
+as the simple scheme of &ldquo;sl0a&rdquo;, &ldquo;sl0b&rdquo;, &ldquo;sl0c&rdquo; works for
+basic devices like multidrop KISS, but does not cope with multiple
+frame relay connections where a virtual channel can be moved across
+physical boards.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x2776218"></a>Registering a Device</h2></div></div><p>Each device is created by filling in a <b  >struct
+device</b> object and passing it to the
+<b  >register_netdev(struct device *)</b> call. This
+links your device structure into the kernel network device tables.
+As the structure you pass in is used by the kernel, you must not
+free this until you have unloaded the device with <b  >void
+unregister_netdev(struct device *)</b> calls. These calls are
+normally done at boot time or at module load/unload.</p><p>The kernel will not object if you create multiple devices
+with the same name, it will break. Therefore, if your driver is a
+loadable module you should use the <b  >struct device
+*dev_get(const char *name)</b> call to ensure the name is not
+already in use. If it is in use, you should pick another name or
+your new driver will fail. If you discover a clash, you must not
+use <b  >unregister_netdev()</b> to unregister the other
+device using the name!</p><p>A typical code sequence for registration is:</p><pre     class="programlisting">
+int register_my_device(void)
+{
+  int i=0;
+  for(i=0;i&lt;100;i++)
+  {
+    sprintf(mydevice.name,"mydev%d",i);
+    if(dev_get(mydevice.name)==NULL)
+    {
+      if(register_netdev(&amp;mydevice)!=0)
+        return -EIO;
+      return 0;
+    }
+  }
+  printk(
+"100 mydevs loaded. Unable to load more.\n");
+  return -ENFILE;
+}
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x27765e0"></a>The Device Structure</h2></div></div><p>All the generic information and methods for each network
+device are kept in the device structure. To create a device you
+need to supply the structure with most of the data discussed below.
+This section covers how a device should be set up.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x27766e8"></a>Naming</h2></div></div><p>First, the name field holds a string pointer to a device name
+in the formats discussed previously. The name field can also be
+<b  >" "</b> (four spaces), in which case the kernel
+automatically assigns an eth<span   class="emphasis"><em>n</em></span> name to it. This
+special feature should not be used. After Linux 2.0, we intend to
+add a simple support function of the form
+<b  >dev_make_name("eth")</b> for this purpose.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x27768f8"></a>Bus Interface Parameters</h2></div></div><p>The next block of parameters is used to maintain the location
+of a device within the device address spaces of the architecture.
+The <b  >irq</b> field holds the interrupt (IRQ) the
+device is using, and is normally set at boot time or by the
+initialization function. If an interrupt is not used, not currently
+known or not assigned, the value zero should be used. The interrupt
+can be set in a variety of fashions. The auto-irq facilities of the
+kernel can be used to probe for the device interrupt, or the
+interrupt can be set when loading the network module. Network
+drivers normally use a global int called <b  >irq</b> for
+this so that users can load the module with <b  >insmod
+mydevice irq=5</b> style commands. Finally, the IRQ field can
+be set dynamically using the <b  >ifconfig</b> command,
+which causes a call to your device that will be discussed later
+on.</p><p>The <b  >base_addr</b> field is the base I/O space
+address where the device resides. If the device uses no I/O
+locations or is running on a system without an I/O space concept,
+this field should be set to zero. When this address is user
+settable, it is normally set by a global variable called
+<b  >io</b>. The interface I/O address can also be set
+with <b  >ifconfig</b>.</p><p>Two hardware-shared memory ranges are defined for things like
+ISA bus shared memory Ethernet cards. For current purposes, the
+<b  >rmem_start</b> and <b  >rmem_end</b>
+fields are obsolete and should be loaded with 0. The
+<b  >mem_start</b> and <b  >mem_end</b>
+addresses should be loaded with the start and end of the shared
+memory block used by this device. If no shared memory block is
+used, then the value 0 should be stored. Those devices that allow
+the user to to set the memory base use a global variable called
+<b  >mem</b>, and then set the <b  >mem_end</b>
+address appropriately themselves.</p><p>The <b  >dma</b> variable holds the DMA channel in
+use by the device. Linux allows DMA (like interrupts) to be
+automatically probed. If no DMA channel is used or the DMA channel
+is not yet set, the value 0 is used. This option may have to
+change, since the latest PC boards allow ISA bus DMA channel 0 to
+be used by hardware boards and do not just tie it to memory
+refresh. If the user can set the DMA channel, the global variable
+<b  >dma</b> is used.</p><p>It is important to realise that the physical information is
+provided for control and user viewing (as well as the driver's
+internal functions), and does not register these areas to prevent
+them being reused. Thus, the device driver must also allocate and
+register the I/O, DMA and interrupt lines it wishes to use, using
+the same kernel functions as any other device driver. [See the
+recent Kernel Korner articles on writing a character device driver
+in issues 23, 24, 25, 26 and 28, or visit the new Linux Kernel
+Hackers' Guide at
+<a href="http://www.redhat.com:8080/HyperNews/get/khg.html" target="_self">www.redhat.com:8080/HyperNews/get/khg.html</a>,
+for more information on the necessary functions&mdash;ED]</p><p>The <b  >if_port</b> field holds the physical media
+type for multi-media devices such as combo Ethernet boards.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x2777190"></a>Protocol Layer Variables</h2></div></div><p>In order for the network protocol la</p><p>yers to perform in a sensible manner, the device has to
+provide a set of capability flags and variables that are also
+maintained in the device structure.</p><p>The <b  >mtu</b> is the largest payload that can be
+sent over this interface, i.e., the largest packet size not
+including any bottom layer headers that the device itself will
+provide. This number is used by the protocol layers such as IP to
+select suitable packet sizes to send. There are minimums imposed by
+each protocol. A device is not usable for IPX without a 576 byte
+frame size or higher. IP needs at least 72 bytes and does not
+perform sensibly below about 200 bytes. It is up to the protocol
+layers to decide whether to co-operate with your device.</p><p>The <b  >family</b> is always set to
+<b  >AF_INET</b> and indicates the protocol family the
+device is using. Linux allows a device to be using multiple
+protocol families at once, and maintains this information solely to
+look more like the standard BSD networking API.</p><p>The interface hardware <b  >type</b> field is taken
+from a table of physical media types. The values used by the ARP
+protocol (see RFC1700) are used by those media that support ARP,
+and additional values are assigned for other physical layers. New
+values are added whenever necessary both to the kernel and to
+<span   class="bold"><b>net-tools</b></span>, the package containing
+programs like <span   class="bold"><b>ifconfig</b></span> that need
+to be able to decode this field. The fields defined as of Linux
+pre2.0.5 are:</p><pre     class="programlisting">
+<span   class="bold"><b>From RFC1700:</b></span>
+<b  >ARPHRD_NETROM</b>   NET/ROM&trade; devices
+<b  >ARPHRD_ETHER</b>         10 and 100Mbit/second Ethernet
+<b  >ARPHRD_EETHER</b>   Experimental Ethernet (not used)
+<b  >ARPHRD_AX25</b>          AX.25 level 2 interfaces
+<b  >ARPHRD_PRONET</b>        PROnet token ring (not used)
+<b  >ARPHRD_CHAOS</b>         ChaosNET (not used)
+<b  >ARPHRD_IEE802</b>        802.2 networks notably token ring
+<b  >ARPHRD_ARCNET</b>        ARCnet interfaces
+<b  >ARPHRD_DLCI</b>          Frame Relay DLCI
+<span   class="bold"><b>Defined by Linux:</b></span>
+<b  >ARPHRD_SLIP</b>          Serial Line IP protocol
+<b  >ARPHRD_CSLIP</b>         SLIP with VJ header compression
+<b  >ARPHRD_SLIP6</b>         6bit encoded SLIP
+<b  >ARPHRD_CSLIP6</b>        6bit encoded header compressed SLIP
+<b  >ARPHRD_ADAPT</b>         SLIP interface in adaptive mode
+<b  >ARPHRD_PPP</b>      PPP interfaces (async and sync)
+<b  >ARPHRD_TUNNEL</b>   IPIP tunnels
+<b  >ARPHRD_TUNNEL6</b>  IPv6 over IP tunnels
+<b  >ARPHRD_FRAD</b>          Frame Relay Access Device
+<b  >ARPHRD_SKIP</b>          SKIP encryption tunnel
+<b  >ARPHRD_LOOPBACK</b> Loopback device
+<b  >ARPHRD_LOCALTLK</b> Localtalk apple networking device
+<b  >ARPHRD_METRICOM</b> Metricom Radio Network
+</pre><p>Those interfaces marked unused are defined types but without
+any current support on the existing net-tools. The Linux kernel
+provides additional generic support routines for devices using
+Ethernet and token ring.</p><p>The <b  >pa_addr</b> field is used to hold the IP
+address when the interface is up. Interfaces should start down with
+this variable clear. <b  >pa_brdaddr</b> is used to hold
+the configured broadcast address, <b  >pa_dstaddr</b> is
+the target of a point to point link, and <b  >pa_mask</b>
+is the IP netmask of the interface. All of these can be initialized
+to zero. The <b  >pa_alen</b> field holds the length of
+an address (in our case an IP address), and should be initialized
+to 4.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f2b18"></a>Link Layer Variables</h2></div></div><p>The <b  >hard_header_len</b> is the number of bytes
+the device needs at the start of a network buffer passed to it.
+This value does not have to equal the number of bytes of physical
+header that will be added, although this number is usually used. A
+device can use this value to provide itself with a scratch pad at
+the start of each buffer.</p><p>In the 1.2.x series kernels, the
+<b  >skb-&gt;data</b> pointer will point to the buffer
+start, and you must avoid sending your scratch pad. This also means
+that for devices with variable length headers you need to allocate
+<b  >max_size+1</b> bytes and keep a length byte at the
+start so that you know where the header actually begins (the header
+should be contiguous with the data). Linux 1.3.x makes life much
+simpler. It ensures that you have at least as much room as you
+requested, free at the start of the buffer. It is up to you to use
+<b  >skb_push()</b> appropriately, as we discussed in the
+section on networking buffers.</p><p>The physical media addresses (if any) are maintained in
+<b  >dev_addr</b> and <b  >broadcast</b>
+respectively and are byte arrays. Addresses smaller than the size
+of the array are stored starting from the left. The
+<b  >addr_len</b> field is used to hold the length of a
+hardware address. With many media there is no hardware address, and
+in this case, this field should be set to zero. For some other
+interfaces, the address must be set by a user program. The ifconfig
+tool permits the setting of an interface hardware address. In this
+case it need not be set initially, but the open code should take
+care not to allow a device to start transmitting before an address
+has been set.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f2f38"></a>Flags</h2></div></div><p>A set of flags is used to maintain the interface properties.
+Some of these are &ldquo;compatibility&rdquo; items and as such are not
+directly useful. The flags are:</p><div class="itemizedlist"><ul type="disc"><li><p><b  >IFF_UP</b> The interface is
+currently active. In Linux, the IFF_RUNNING and IFF_UP flags are
+basically handled as a pair, existing as two items for
+compatibility reasons. When an interface is not marked as IFF_UP,
+it can be removed. Unlike BSD, an interface that does not have
+IFF_UP set will never receive packets.</p></li><li><p><b  >IFF_BROADCAST</b> The interface has
+broadcast capability. There will be a valid IP address for the
+interface stored in the device addresses.</p></li><li><p><b  >IFF_DEBUG</b> Indicates debugging is
+desired. Not currently used.</p></li><li><p><b  >IFF_LOOPBACK</b> The loopback
+interface (lo) is the only interface that has this flag set.
+Setting it on other interfaces is neither defined nor a very good
+idea.</p></li><li><p><b  >IFF_POINTOPOINT</b> This interface
+is a point to point link (such as SLIP or PPP). There is no
+broadcast capability as such. The remote point to point address in
+the device structure is valid. Normally, a point to point link has
+no netmask or broadcast, but it can be enabled if needed.</p></li><li><p><b  >IFF_NOTRAILERS</b> More of a
+prehistoric than an historic compatibility flag. Not used.</p></li><li><p><b  >IFF_RUNNING</b> See
+<b  >IFF_UP</b></p></li><li><p><b  >IFF_NOARP</b> The interface does not
+perform ARP queries. Such an interface must have either a static
+table of address conversions or no need to perform mappings. The
+NetROM interface is a good example of this. Here all entries are
+hand configured as the NetROM protocol cannot do ARP
+queries.</p></li><li><p><b  >IFF_PROMISC</b> If it is possible,
+the interface will hear all of the packets on the network. This
+flag is typically used for network monitoring, although it can also
+be used for bridging. One or two interfaces like the AX.25
+interfaces are always in promiscuous mode.</p></li><li><p><b  >IFF_ALLMULTI</b> Receive all
+multicast packets. An interface, that cannot perform this operation
+but can receive all packets, will go into promiscuous mode when
+asked to perform this task.</p></li><li><p><b  >IFF_MULTICAST</b> Indicates that the
+interface supports multicast IP traffic, which is not the same as
+supporting a physical multicast. AX.25 for example supports IP
+multicast using physical broadcast. Point to point protocols such
+as SLIP generally support IP multicast.</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f3c48"></a>The Packet Queue</h2></div></div><p>Packets are queued for an interface by the kernel protocol
+code. Within each device, <b  >buffs[]</b> is an array of
+packet queues for each kernel priority level. These are maintained
+entirely by the kernel code, but must be initialized by the device
+itself on boot up. The intialization code used is:</p><pre     class="programlisting">
+int ct=0;
+while(ct&lt;DEV_NUMBUFFS)
+{
+    skb_queue_head_init(&amp;dev-&gt;buffs[ct]);
+    ct++;
+}
+</pre><p>All other fields should be initialized to 0.</p><p>The device gets to select the queue length it needs by
+setting the field <b  >dev-&gt;tx_queue_len</b> to the
+maximum number of frames the kernel should queue for the device.
+Typically this is around 100 for Ethernet and 10 for serial lines.
+A device can modify this dynamically, although its effect will lag
+the change slightly.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f3f08"></a>Network Device Methods</h2></div></div><p>Each network device has to provide a set of actual functions
+(methods) for the basic low level operations. It should also
+provide a set of support functions that interface the protocol
+layer to the protocol requirements of the link layer it is
+providing.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f4010"></a>Setup</h2></div></div><p>The <b  >init</b> method is called when the device
+is initialized and registered with the system, in order to perform
+any low level verification and checking needed. It returns an error
+code if the device is not present, if areas cannot be registered or
+if it is otherwise unable to proceed. If the
+<b  >init</b> method returns an error, the
+<b  >register_netdev()</b> call returns the error code,
+and the device is not created.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f4220"></a>Frame Transmission</h2></div></div><p>All devices must provide a transmit function. It is possible
+for a device to exist that cannot transmit. In this case, the
+device needs a transmit function that simply frees the buffer
+passed to it. The dummy device has exactly this functionality on
+transmit.</p><p>The <b  >dev-&gt;hard_start_xmit()</b> function is
+called to provide the driver with its own device pointer and
+network buffer (a <b  >sk_buff</b>) for transmitting. If
+your device is unable to accept the buffer, it should return 1 and
+set <b  >dev-&gt;tbusy</b> to a non-zero value. This
+action will queue the buffer to be retried again later, although
+there is no guarantee that a retry will occur. If the protocol
+layer decides to free the buffer that the driver has rejected, then
+the buffer will not be offered back to the device. If the device
+knows the buffer cannot be transmitted in the near future, for
+example due to bad congestion, it can call
+<b  >dev_kfree_skb()</b> to dump the buffer and return 0
+indicating the buffer has been processed.</p><p>If there is space the buffer should be processed. The buffer
+handed down already contains all the headers, including link layer
+headers, necessary and need only be loaded into the hardware for
+transmission. In addition, the buffer is locked, which means that
+the device driver has absolute ownership of the buffer until it
+chooses to relinquish it. The contents of a
+<b  >sk_buff</b> remain read-only, with the exception
+that you are guaranteed that the next/previous pointers are free,
+so that you can use the <b  >sk_buff</b> list primitives
+to build internal chains of buffers.</p><p>When the buffer has been loaded into the hardware or, in the
+case of some DMA driven devices, when the hardware has indicated
+transmission is complete, the driver must release the buffer by
+calling <b  >dev_kfree_skb(skb, FREE_WRITE)</b>. As soon
+as this call is made, the <b  >sk_buff</b> in question
+may spontaneously disappear, and the device driver should not
+reference it again.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f46f0"></a>Frame Headers</h2></div></div><p>It is necessary for the high level protocols to append low
+level headers to each frame before queuing it for transmission. It
+is also clearly undesirable that the protocol know in advance how
+to append low level headers for all possible frame types. Thus, the
+protocol layer calls down to the device with a buffer that has at
+least <b  >dev-&gt;hard_header_len</b> bytes free at the
+start of the buffer. It is then up to the network device to
+correctly call <b  >skb_push()</b> and to put the header
+on the packet using the <b  >dev-&gt;hard_header()</b>
+method. Devices with no link layer header, such as SLIP, may have
+this method specified as NULL.</p><p>The method is invoked by giving the buffer concerned, the
+device's pointers, its protocol identity, pointers to the source
+and destination hardware addresses and the length of the packet to
+be sent. As the routine can be called before the protocol layers
+are fully assembled, it is vital that the method use the length
+parameter, <span   class="bold"><b>not</b></span> the buffer
+length.</p><p>The source address can be NULL to mean &ldquo;use the default
+address of this device&rdquo;, and the destination can be NULL to mean
+&ldquo;unknown&rdquo;. If as a result of an unknown destination, the header
+can not be completed, the space should be allocated and any bytes
+that can be filled in should be filled in. The function must then
+return the negative of the bytes of header added. This facility is
+currently only used by IP when ARP processing must take place. If
+the header is completely built, the function must return the number
+of bytes of header added to the beginning of the buffer.</p><p>When a header cannot be completed the protocol layers will
+attempt to resolve the necessary address. When this situation
+occurs, the <b  >dev-&gt;rebuild_header()</b> method is
+called with the address at which the header is located, the device
+in question, the destination IP address and the network buffer
+pointer. If the device is able to resolve the address by whatever
+means available (normally ARP), then it fills in the physical
+address and returns 1. If the header cannot be resolved, it returns
+0 and the buffer will be retried the next time the protocol layer
+has reason to believe resolution will be possible.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f4ab8"></a>Reception</h2></div></div><p>There is no receive method in a network device, because it is
+the device that invokes processing of such events. With a typical
+device, an interrupt notifies the handler that a completed packet
+is ready for reception. The device allocates a buffer of suitable
+size with <b  >dev_alloc_skb()</b>, and places the bytes
+from the hardware into the buffer. Next, the device driver analyses
+the frame to decide the packet type. The driver sets
+<b  >skb-&gt;dev</b> to the device that received the
+frame. It sets <b  >skb-&gt;protocol</b> to the protocol
+the frame represents, so that the frame can be given to the correct
+protocol layer. The link layer header pointer is stored in
+<b  >skb-&gt;mac.raw</b>, and the link layer header
+removed with <b  >skb_pull()</b> so that the protocols
+need not be aware of it. Finally, to keep the link and protocol
+isolated, the device driver must set
+<b  >skb-&gt;pkt_type</b> to one of the following:</p><div class="itemizedlist"><ul type="disc"><li><p><b  >PACKET_BROADCAST</b> Link layer
+broadcast</p></li><li><p><b  >PACKET_MULTICAST</b> Link layer
+multicast</p></li><li><p><b  >PACKET_SELF</b> Frame to us</p></li><li><p><b  >PACKET_OTHERHOST</b> Frame to
+another single host</p></li></ul></div><p>This last type is normally reported as a result of an
+interface running in promiscuous mode.</p><p>Finally, the device driver invokes
+<b  >netif_rx()</b> to pass the buffer up to the protocol
+layer. The buffer is queued for processing by the networking
+protocols after the interrupt handler returns. Deferring the
+processing in this fashion dramatically reduces the time interrupts
+are disabled and improves overall responsiveness. Once
+<b  >netif_rx()</b> is called, the buffer ceases to be
+property of the device driver and can not be altered or referred to
+again.</p><p>Flow control on received packets is applied at two levels by
+the protocols. First, a maximum amount of data can be outstanding
+for <b  >netif_rx()</b> to process. Second, each socket
+on the system has a queue which limits the amount of pending data.
+Thus, all flow control is applied by the protocol layers. On the
+transmit side a per device variable
+<b  >dev-&gt;tx_queue_len</b> is used as a queue length
+limiter. The size of the queue is normally 100 frames, which is
+large enough that the queue will be kept well filled when sending a
+lot of data over fast links. On a slow link such as a slip link,
+the queue is normally set to about 10 frames, as sending even 10
+frames is several seconds of queued data.</p><p>One piece of magic that is done for reception with most
+existing devices, and one that you should implement if possible, is
+to reserve the necessary bytes at the head of the buffer to land
+the IP header on a long word boundary. The existing Ethernet
+drivers thus do:</p><pre     class="programlisting">
+skb=dev_alloc_skb(length+2);
+if(skb==NULL)
+    return;
+skb_reserve(skb,2);
+/* then 14 bytes of ethernet hardware header */
+</pre><p>to align IP headers on a 16 byte boundary, which is also the
+start of a cache line and helps give performance improvements. On
+the SPARC or DEC Alpha these improvements are very
+noticeable.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f7b68"></a>Optional Functionality</h2></div></div><p>Each device has the option of providing additional functions
+and facilities to the protocol layers. Not implementing these
+functions will cause a degradation in service available via the
+interface, but will not prevent operation. These operations split
+into two categories&mdash;configuration and activation/shutdown.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f7c70"></a>Activation and Shutdown</h2></div></div><p>When a device is activated (i.e., the flag
+<b  >IFF_UP</b> is set), the
+<b  >dev-&gt;open()</b> method is invoked if the device
+has provided one. This invocation permits the device to take any
+action such as enabling the interface that is needed when the
+interface is to be used. An error return from this function causes
+the device to stay down and causes the user's activation request to
+fail with an error returned by
+<b  >dev-&gt;open()</b></p><p>The <b  >dev-&gt;open()</b> function can also be
+used with any device that is loaded as a module. Here it is
+necessary to prevent the device from being unloaded while it is
+open; thus, the <b  >MOD_INC_USE_COUNT</b> macro must be
+used within the open method.</p><p>The <b  >dev-&gt;close()</b> method is invoked when
+the device is ready to be configured down and should shut off the
+hardware in such a way as to minimise machine load (e.g., by
+disabling the interface or its ability to generate interrupts). It
+can also be used to allow a module device to be unloaded after it
+is down. The rest of the kernel is structured in such a way that
+when a device is closed, all references to it by pointer are
+removed, in order to ensure that the device can be safely unloaded
+from a running system. The close method is not permitted to
+fail.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f8038"></a>Configuration and Statistics</h2></div></div><p>A set of functions provide the ability to query and to set
+operating parameters. The first and most basic of these is a
+<b  >get_stats</b> routine which when called returns a
+struct <b  >enet_statistics</b> block for the interface.
+This block allows user programs such as <b  >ifconfig</b>
+to see the loading of the interface and any logged problem frames.
+Not providing this block means that no statistics will be
+available.</p><p>The <b  >dev-&gt;set_mac_address()</b> function is
+called whenever a superuser process issues an ioctl of type
+<b  >SIOCSIFHWADDR</b> to change the physical address of
+a device. For many devices this function is not meaningful and for
+others it is not supported. In these cases, set this function
+pointer to <b  >NULL</b>. Some devices can only perform a
+physical address change if the interface is taken down. For these
+devices, check the <b  >IFF_UP</b> flag, and if it is
+set, return <b  >-EBUSY</b>.</p><p>The <b  >dev-&gt;set_config()</b> function is
+called by the <b  >SIOCSIFMAP</b> function when a user
+enters a command like <b  >ifconfig eth0 irq 11</b>. It
+then passes an <b  >ifmap</b> structure containing the
+desired I/O and other interface parameters. For most interfaces
+this function is not useful, and you can return NULL.</p><p>Finally, the <b  >dev-&gt;do_ioctl()</b> call is
+invoked whenever an ioctl in the range
+<b  >SIOCDEVPRIVATE</b> to
+<b  >SIOCDEVPRIVATE+15</b> is used on your interface. All
+these ioctl calls take a struct <b  >ifreq</b>, which is
+copied into kernel space before your handler is called and copied
+back at the end. For maximum flexibility any user can make these
+calls, and it is up to your code to check for superuser status when
+appropriate. For example, the PLIP driver uses these calls to set
+parallel port time out speeds in order to allow a user to tune the
+plip device for his machine.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f87c8"></a>Multicasting</h2></div></div><p>Certain physical media types, such as Ethernet, support
+multicast frames at the physical layer. A multicast frame is heard
+by a group of hosts (not necessarily all) on the network, rather
+than going from one host to another.</p><p>The capabilities of Ethernet cards are fairly variable. Most
+fall into one of three categories:</p><div class="itemizedlist"><ul type="disc"><li><p>No multicast filters. The card either receives all
+multicasts or none of them. Such cards can be a nuisance on a
+network with a lot of multicast traffic, such as group video
+conferences.</p></li><li><p>Hash filters. A table is loaded onto the card
+giving a mask of entries for desired multicasts. This method
+filters out some of the unwanted multicasts but not all.</p></li><li><p>Perfect filters. Most cards that support perfect
+filters combine this option with 1 or 2 above, because the perfect
+filter often has a length limit of 8 or 16 entries.</p></li></ul></div><p>It is especially important that Ethernet interfaces are
+programmed to support multicasting. Several Ethernet protocols
+(notably Appletalk and IP multicast) rely on Ethernet multicasting.
+Fortunately, most of the work is done by the kernel for you (see
+net/core/dev_mcast.c).</p><p>The kernel support code maintains lists of physical addresses
+your interface should be allowing for multicast. The device driver
+may return frames matching more than the requested list of
+multicasts if it is not able to do perfect filtering.</p><p>Whenever the list of multicast addresses changes, the device
+drivers <b  >dev-&gt;set_multicast_list()</b> function is
+invoked. The driver can then reload its physical tables. Typically
+this looks something like:</p><pre     class="programlisting">
+if(dev-&gt;flags&amp;IFF_PROMISC)
+    SetToHearAllPackets();
+else if(dev-&gt;flags&amp;IFF_ALLMULTI)
+    SetToHearAllMulticasts();
+else
+{
+    if(dev-&gt;mc_count&lt;16)
+    {
+        LoadAddressList(dev-&gt;mc_list);
+        SetToHearList();
+    }
+    else
+        SetToHearAllMulticasts();
+}
+</pre><p>There are a small number of cards that can only do unicast or
+promiscuous mode. In this case the driver, when presented with a
+request for multicasts has to go promiscuous. If this is done, the
+driver must itself set the <b  >IFF_PROMISC</b> flag in
+<b  >dev-&gt;flags</b>.</p><p>In order to aid the driver writer, the multicast list is kept
+valid at all times. This simplifies many drivers, as a reset from
+an error condition in a driver often has to reload the multicast
+address lists.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2370580.0x29f8ea8"></a>Ethernet Support Routines</h2></div></div><p>Ethernet is probably the most common physical interface type
+that can be handled. The kernel provides a set of general purpose
+Ethernet support routines that such drivers can use.</p><p><b  >eth_header()</b> is the standard Ethernet
+handler for the <b  >dev-hard_header</b> routine, and can
+be used in any Ethernet driver. Combined with
+<b  >eth_rebuild_header()</b> for the rebuild routine it
+provides all the ARP lookup required to put Ethernet headers on IP
+packets.</p><p>The <b  >eth_type_trans()</b> routine expects to be
+fed a raw Ethernet packet. It analyses the headers and sets
+<b  >skb-&gt;pkt_type</b> and
+<b  >skb-&gt;mac</b> itself as well as returning the
+suggested value for <b  >skb-&gt;protocol</b>. This
+routine is normally called from the Ethernet driver receive
+interrupt handler to classify packets.</p><p><b  >eth_copy_and_sum()</b>, the final Ethernet
+support routine is internally quite complex, but offers significant
+performance improvements for memory mapped cards. It provides the
+support to copy and checksum data from the card into a
+<b  >sk_buff</b> in a single pass. This single pass
+through memory almost eliminates the cost of checksum computation
+when used and improves IP throughput.</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Alan Cox</b></span>
+      has been working on Linux since version 0.95, when
+      he installed it in order to do further work on the AberMUD game. He
+      now manages the Linux Networking, SMP, and Linux/8086 projects and
+      hasn't done any work on AberMUD since November 1993.
+    </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../030/toc030.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

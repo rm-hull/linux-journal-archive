@@ -1,0 +1,113 @@
+;------------------------------------------------------------------
+; C prototype
+; AMDXYGRAD(float *data, int row_sz, float *result, float *quarter_vec)
+; 
+; Computes squared gradient in 4 directions (2 horizontal, 2 vertical)
+;   using implementation that efficiently utilizes 3DNow! capability
+;   Implemented by J. Bush and T. Newman, UAH Computer Science.
+; Input parameters:
+;   data - pointer to input image
+;   row_sz - number of elements per row of data
+;   result - pointer to output (result) image
+;   quarter_vec - constant array for division by 4
+; Register usage:
+;   eax - points to pixels in previous row of input data ("bottom row")
+;   ebx - points to pixels in next row of input data ("top row")
+;   ecx - points to pixels in current row of input data ("middle row")
+;   edx - points to pixels in output (result) image (these are output
+;           pixels corresponding to current input pixels at ecx)
+;   ebp - eventually used to store row_sz
+;      ebx,edx are also used as a temporary scratch registers during init.
+;------------------------------------------------------------------
+        global AMDXYGRAD
+        align 16
+
+AMDXYGRAD:
+        push ebp               ;save stack pointer
+        mov ebp, esp
+	femms                  ;clear MMX registers and switch to MMX/3DNow mode
+	
+	mov ebx, [ebp+20]      ;get quarter_vec pointer
+	movq mm7, [ebx]        ;load quarter_vec contents
+        mov eax, [ebp+8]       ;bottom row of data
+        mov edx, [ebp+12]      ;load row_sz, then
+        shl edx, 2             ;adjust for data element size (float = 4 bytes)
+        mov ecx, eax           ;duplicate pointer to start of row
+        mov ebx, eax           ;duplicate pointer
+        add eax, 4             ;add offset of a word (no x dir. grad. at start)
+        add ecx, edx           ;determine middle row start
+        shl edx, 1             ;get offset to top row
+        add ebx, edx           ;top row of data
+        add ebx, 4             ;add offset of a word to top row
+        mov edx, [ebp+16]      ;load pointer to result
+        mov ebp, [ebp+12]      ;row_sz equals no. of pixels processed by loop
+        add edx, 4             ;add offset of a word to result pointer
+
+gradcalcxy_loop:
+        movq mm0, [ecx]        ;get 4 middle row pixels into MM0 
+        movq mm1, [ecx+8]      ;and MM1
+        movq mm2, [ebx]        ;get first 2 bottom row pixels
+        movq mm4, [eax]        ;get first 2 top row pixels
+        movq mm3, [ebx+8]      ;get next 2 bottom row pixels
+        movq mm5, [eax+8]      ;get next 2 top row pixels
+
+        pfsub mm0, mm1         ;x directional subtr. of middle row pixel values 
+        movq mm6, [ecx+16]     ;move next 2 middle row pixels into MM6
+        pfsub mm2, mm4         ;subtr. pixels in top & bottom row (y dir.)
+        pfmul mm0, mm0         ;square x direction diff. ( delta(x) )
+        pfsub mm3, mm5         ;subtr. next pixels in y dir.
+        pfmul mm2, mm2         ;square  ( delta(y) )
+
+        pfadd mm0, mm2         ;add delta(x) and delta(y)
+        pfmul mm3, mm3         ;square delta(y) for next pixels
+	pfmul mm0, mm7	       ;divide results by 4
+        movq [edx], mm0        ;store first 2 pixels
+        pfsub mm1, mm6         ;subtr. next pixels in x direct.
+        pfmul mm1, mm1         ;square delta(x) for next pixels
+        pfadd mm1, mm3         ;add next delta(x) and delta(y)
+	pfmul mm1, mm7	       ;divide by 4	
+        movq [edx+8], mm1      ;store next 2 pixels
+
+        add eax, 16            ;increment pointers
+        add ebx, 16
+        add ecx, 16
+        add edx, 16
+        sub  ebp, 4            ;decrement counter
+        jz mv_previous         ;if ebp==0, jump
+        cmp  ebp, 4
+        jl remainder           ;else, if ebp<4, jump
+        jmp gradcalcxy_loop    ;else, repeat loop
+
+remainder:                     ;process the last pixel(s) in the row specially
+                               ;calculate gradient one pixel at a time to
+                               ;avoid going beyond row boundary
+        movq mm0, [ecx]
+        movq mm1, [ecx+8]
+        movq mm2, [ebx]
+        movq mm4, [eax]
+
+        pfsub mm0, mm1
+        pfsub mm2, mm4
+        pfmul mm0, mm0
+        pfmul mm2, mm2
+        pfadd mm0, mm2
+	pfmul mm0, mm7		;divide by 4
+        movq [edx], mm0
+        sub ebp, 2
+        add eax, 8
+        add ebx, 8
+        add edx, 8
+        add ecx, 8
+        cmp ebp , 1
+        jg remainder            ;if ebp>1, repeat loop
+        jle zero_out            ;else, jump
+mv_previous:                    ;if boundary was already reached, back up
+        sub edx, 4              ;to last pixel in the row
+zero_out:
+	pfsub mm7, mm7          ;zero out the last
+        movd [edx], mm7         ;pixel
+
+	femms
+        pop ebp
+        ret
+

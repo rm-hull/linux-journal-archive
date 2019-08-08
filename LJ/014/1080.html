@@ -1,0 +1,394 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The Linux keyboard driver</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Our Kernel Korner series continues with an article&#10;    describing the linux Keyboard driver. This artilce is not&#10;    for &ldquo;Kernel Hackers&rdquo; only&mdash;in fact, it will be most useful&#10;    to those who wish to use their own keyboard to its fullest&#10;    potential, and those who want to write programs to take&#10;    advantage of the many features in the Linux keyboard driver.&#10;    "><meta name="keywords" content="kernel, keyboard, driver"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x24e9580.0x25e0ab0"></a>The Linux keyboard driver</h1></div><div><div class="author"><h3 class="author">Andries E. Brouwer</h3></div><div class="issuemoyr">Issue #14, June 1995</div></div><div><p>
+    Our Kernel Korner series continues with an article
+    describing the linux Keyboard driver. This artilce is not
+    for &ldquo;Kernel Hackers&rdquo; only&mdash;in fact, it will be most useful
+    to those who wish to use their own keyboard to its fullest
+    potential, and those who want to write programs to take
+    advantage of the many features in the Linux keyboard driver.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e9580.0x25e1450"></a></h2></div></div><p>When you press a key on the console
+keyboard, the corresponding character is not simply added to the
+<span   class="bold"><b>tty</b></span> (generic terminal handling)
+input buffers as if it had come in over a serial port. A lot of
+processing is required before the kernel knows what the correct
+characters are. Only after processing can the generic tty code,
+which handles all interactive terminal devices, take over.
+</p><p>Roughly speaking, the picture is this: the keyboard produces
+scancodes, the scancodes are assembled into keycodes (one unique
+code for each key), and keycodes are converted to tty input
+characters using the kernel keymaps. After that, the normal `stty'
+processing takes place, just as for any other terminal.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e9580.0x25e1608"></a>Scancodes First</h2></div></div><p>The usual PC keyboards are capable of producing three sets of
+scancodes. Writing 0xf0 followed by 1, 2 or 3 to port 0x60 will put
+the keyboard in scancode mode 1, 2 or 3. Writing 0xf0 followed by 0
+queries the mode, resulting in a scancode byte 0x43, 0x41 or 0x3f
+from the keyboard. (Don't try this at home, kids. If you are not
+very careful, you will end up in a situation where rebooting is the
+only way out&mdash;and control-alt-delete will not be available to shut
+the computer down correctly. See the accompanying
+<a href="1080l1.html" target="_self">listing of kbd_cmd.c</a> for
+details.)</p><p>Scancode mode 2 is the default. In this mode, a key press
+usually produces a value s in the range 0x01-0x5f and the
+corresponding key release produces s+0x80. In scancode mode 3, the
+only key releases that produce a scan code are of both Shift keys,
+and the left Ctrl and Alt keys; for all other keys only the key
+presses are noted. The produced scancodes are mostly equal to those
+for scancode mode 2.</p><p>In scancode mode 1 most key releases produce the same values
+as in scancode mode 2, but for key presses there are entirely
+different, unrelated values. The details are somewhat messy.</p><p>A program can request the raw scancodes by</p><pre     class="programlisting">
+
+ioctl(0, KDSKBMODE, K_RAW);
+</pre><p>For example, <span   class="bold"><b>X</b></span>,
+<span   class="bold"><b>dosemu</b></span>,
+<span   class="bold"><b>svgadoom</b></span>, and
+<span   class="bold"><b>showkey -s</b></span> do this. The default
+keycode translation mode is restored by</p><pre     class="programlisting">
+
+ioctl(0, KDSKBMODE, K_XLATE);
+</pre><p>See the keyboard FAQ (in kbd-0.90.tar.gz) for some advice
+about how to get out of raw scancode mode from the shell prompt.
+(At a shell prompt the commands <b  >kbd_mode
+[-s|-k|-a|-u]</b> will set the keyboard mode to scancode
+mode, keycode mode, translation (`ASCII') mode and Unicode mode,
+respectively. But it is difficult to type this command when the
+keyboard is in raw scancode mode.)</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e9580.0x25e1b88"></a>Scancodes to Keycodes</h2></div></div><p>Life would have been easy had there been a 1-1 correspondence
+between keys and scancodes. (And in fact there is, in scancode mode
+3, but that does not suffice for Linux, since X requires both the
+key press and the key release events.)</p><p>But as it is, a single key press can produce a sequence of up
+to six scancodes, and the kernel has to parse the stream of
+scancodes and convert it into a series of key press and key release
+events. To this end, each key is provided with a unique keycode k
+in the range 1-127, and pressing key k produces keycode k, while
+releasing it produces keycode k+128. The assignment of key codes is
+in principle arbitrary (and has no relation to the key codes used
+by X), but at present the key code equals the scan code for those
+keys that produce a single scancode in the range 0x01-0x58.</p><p>The parsing works by</p><div class="itemizedlist"><ul type="disc"><li><p>recognizing the special sequence 0xe1 0x1d 0x45
+0xe1 0x9d 0xc5 produced by the Pause key</p></li><li><p>throwing out any fake Shift-down and Shift-up
+codes, inserted by the keyboard to make the kernel believe that you
+pressed Shift to undo the effect of NumLock</p></li><li><p>recognizing scancode pairs 0xe0 s</p></li><li><p>recognizing single scancodes s.</p></li></ul></div><p>Since s can take 127 values (0 is a keyboard error condition,
+and the high order bit indicates press/release) this means that
+parsing could result in 1+127+126=254 distinct keycodes. However,
+at present keycodes are restricted to the range 1-127 and we have
+to work a little to make things fit. (No doubt sooner or later
+keycodes will be integers instead of 7-bit quantities, and the
+keymaps will be sparse, but for the time being we can avoid
+that&mdash;since to my knowledge no actual PC keyboard has more than 127
+keys.) So, there are small tables that assign a keycode to a
+scancode pair 0xe0 s or to a single scancode in the range
+0x59-0x7f. In the default setting everything works for most current
+keyboards, but in case you have some strange keyboard, you can get
+the kernel to recognize an otherwise unrecognized key by filling an
+entry in these tables using the KDSETKEYCODE ioctl; see
+setkeycodes(8).</p><p>Two keys are unusual in the sense that their keycode is not
+constant, but depends on modifiers. The PrintScrn key will yield
+keycode 84 when combined with either Alt key, but keycode 99
+otherwise. The Pause key will yield keycode 101 when combined with
+either Ctrl key, but keycode 119 otherwise. (This has historic
+reasons, but might change, to free keycodes 99 and 119 for other
+purposes.)</p><p>At present there is no way to tell X about strange
+key(board)s. The easiest solution would be to make X use keycodes
+instead of scancodes, so that the information about strange keys
+and the scancodes they produce is located a single place.</p><p>A program can request to get keycodes by doing</p><pre     class="programlisting">
+
+ioctl(0, KDSKBMODE,
+K_MEDIUMRAW);
+</pre><p>For example, showkey does this. Warning: the details of the
+function of both the <b  >KDSETKEYCODE</b> ioctl and the
+<b  >K_MEDIUMRAW</b> keyboard mode are likely to change
+in the future.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e9580.0x25e2318"></a>Keymaps</h2></div></div><p>Keycodes are converted to keysymbols by looking them up on
+the appropriate keymap. There are eight possible modifiers (shift
+keys), and the combination of currently active modifiers and locks
+determines the keymap used.</p><p>Thus, what happens is approximately:</p><pre     class="programlisting">
+
+int shift_final = shift_state ^ kbd-&gt;lockstate;
+ ushort *key_map = key_maps[shift_final];
+ keysym = key_map[keycode];
+</pre><p>The eight modifiers are known as Shift, AltGr, Control, Alt,
+ShiftL, ShiftR, CtrlL and CtrlR. These labels have no intrinsic
+meaning, and the modifiers can be used for arbitrary purposes,
+except that the keymap for the Shift modifier determines the action
+of CapsLock (and that the Shift key partially suppresses keyboard
+application mode). By default Shift is bound to both Shift keys and
+Control keys and Alt and AltGr are bound to the left and right Alt
+keys. The remaining four modifiers are unbound in the default
+kernel. X is able to distinguish ShiftL and ShiftR, etc.</p><p>Thus, there are 256 possible keymaps&mdash;for plain symbols, for
+Shift+symbol, for Ctrl+AltL+Shift+symbol, etc. Usually, not all of
+the keymaps will be allocated (combinations with more than three
+modifiers are rather unusual), and in fact the default kernel
+allocates only 7 keymaps, namely the plain, Shift, AltR, Ctrl,
+Ctrl+Shift, AltL and Ctrl+AltL maps. You can allocate more keymaps
+simply by filling some of their entries using
+<span   class="bold"><b>loadkeys(1)</b></span>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e9580.0x25e25d8"></a>Key # symbols</h2></div></div><p>Key symbols are <b  >shorts</b>, i.e., they consist
+of two bytes. In Unicode mode, this short is just the 16-bit value
+returned&mdash;or, to be precise, the returned byte string is the UTF-8
+representation of this Unicode character. The keyboard is put into
+Unicode mode by</p><pre     class="programlisting">
+
+ioctl(0, KDSKBMODE, K_UNICODE);
+</pre><p>When not in Unicode mode, the high order byte is viewed as a
+type, and the low order byte as a value, and we do:</p><pre     class="programlisting">
+
+type = KTYP(keysym);
+ (*key_handler[type])(keysym &amp; 0xff, up_flag);
+</pre><p>The type selects a function from the array
+key_handler:</p><pre     class="programlisting">
+
+static k_hand key_handler[16] = {
+     do_self, do_fn, do_spec, do_pad, do_dead,
+     do_cons, do_cur, do_shift, do_meta, do_ascii,
+     do_lock, do_lowercase, do_ignore, do_ignore,
+     do_ignore, do_ignore
+ };
+</pre><div class="orderedlist"><ol type="1"><li><p><b  >do_self</b>, commonly used for
+ordinary keys, just returns the given value, after possibly
+handling pending dead diacriticals.</p></li><li><p><b  >do_fn</b>, commonly used for
+function keys, returns the string
+<b  >func_table[value]</b>. Strings can be assigned using
+loadkeys(1).</p></li><li><p><b  >do_spec</b> is used for special
+actions, not necessarily related to character input. It does
+<b  >spec_fn_table[value]();</b>, where</p><pre     class="programlisting">
+
+static void_fnp spec_fn_table[] = {
+do_null, enter, show_ptregs, show_mem,
+show_state, send_intr, lastcons, caps_toggle,
+num, hold, scroll_forw, scroll_back, boot_it,
+caps_on, compose, SAK, decr_console,
+incr_console, spawn_console, bare_num
+ };
+</pre><p>The associated actions (and their default key binding)
+are:</p><div class="itemizedlist"><ul type="disc"><li><p>Return (Enter): return a <b  >CR</b> and
+if <b  >VC_CRLF</b> mode set also a
+<b  >LF</b>. One sets/clears <b  >CRLF</b> mode
+by sending <b  >ESC [ 20 h</b> or <b  >ESC [ 20
+l</b> to the console.</p></li><li><p>Show_Registers (AltR-ScrollLock): print the
+contents of the CPU registers.</p></li><li><p>Show_Memory (Shift-ScrollLock): print current
+memory usage.</p></li><li><p>Show_State (Ctrl-ScrollLock): print the process
+tree.</p></li><li><p>Break (Ctrl-Break): send a Break to the current
+tty.</p></li><li><p>Last_Console (Alt-PrintScrn): switch to the last
+used console.</p></li><li><p>Caps_Lock (CapsLock): toggle the CapsLock
+setting.</p></li><li><p>Num_Lock (NumLock): in keyboard application mode:
+return <b  >ESC O P</b>; otherwise, toggle the NumLock
+setting. One sets/clears keyboard application mode by sending
+<b  >ESC = or ESC &gt;</b> to the console. (See also
+Bare_Num_Lock below.)</p></li><li><p>Scroll_Lock (ScrollLock): stop/start tty&mdash;roughly
+equivalent to <b  >^S/^Q</b>.</p></li><li><p>Scroll_Forward (Shift-PageDown): scroll console
+down.</p></li><li><p>Scroll_Backward (Shift-PageUp): scroll console up.
+These two functions are implemented by using the memory on the
+video card, and provide only a very limited scrollback facility.
+Moreover, all scrollback information is lost when you switch
+virtual consoles. So, for real scrollback use a program-like
+screen.</p></li><li><p>Boot (Ctrl-AltL-Del): reboot. If you press
+Ctrl-AltL-Del (or whatever key was assigned the keysym Boot by
+loadkeys) then either the machine reboots immediately (without
+sync), or <span   class="bold"><b>init</b></span> is sent a
+<b  >SIGINT</b>. The former behavior is the default. The
+default can be changed by root, using the system call
+<span   class="bold"><b>reboot():</b></span> see
+<span   class="bold"><b>ctrlaltdel(8)</b></span> and
+<span   class="bold"><b>init(8)</b></span>.
+</p><p>Some versions of init change the default. What happens when
+init gets SIGINT depends on the version of init used&mdash;often it will
+be determined by the pf (stands for powerfail) entry in
+/etc/inittab, which means that you can run an arbitrary program. In
+the current kernel, Ctrl-AltR-Del is no longer by default assigned
+to Boot, only Ctrl-AltL-Del is.</p><p>Sometimes when init hangs in a disk wait (and syncing is
+impossible) it can be useful to say ctrlaltdel hard, which may
+allow you to force a reboot without power cycling or pressing the
+reset button.</p></li><li><p>aps_On (none): set CapsLock.</p></li><li><p>ompose (Ctrl-.): start a compose sequence. The two
+following characters will be combined. This is a good way to get
+accented characters that you only rarely need. For example,
+<b  >Ctrl-.&gt;&lt;,&gt;&lt;c</b> will produce a
+c-cedilla, and <b  >Ctrl-.&amp;gt:&lt;a&gt;&lt;e</b> the
+Danish letter &aelig;. Precisely which combinations combine to what
+character; will show <span   class="bold"><b>dumpkeys(1)</b></span>,
+loadkeys(1) will set combinations.</p></li><li><p>SAK (none): Secure Attention Key. This is supposed
+to kill all processes related to the current tty, and reset the tty
+to a known default state. It is not completely implemented&mdash;it is
+not quite clear what resetting the keyboard/console should do to
+the fonts and keymaps. The easiest solution is to send a signal to
+some trusted daemon, and let it reset keyboard and console as
+desired. In this way we obtain something closely related to the
+Spawn_Console function below.</p></li><li><p>Decr_Console (AltL-LeftArrow): switch to the
+virtual console that precedes the current console in the cyclic
+order.</p></li><li><p>Incr_Console (AltL-RightArrow): switch to the
+virtual console that follows the current console in the cyclic
+order.</p></li><li><p>Spawn_Console or KeyboardSignal (AltL-UpArrow):
+send a specified process a specified signal. I use this to signal
+init that it should create a fresh virtual console for me.</p></li><li><p>Bare_Num_Lock (Shift-NumLock): toggle the NumLock
+setting (regardless of keyboard application mode).</p></li></ul></div><p>As long as no new releases of init and loadkeys have come
+out, you can play with this by using loadkeys and starting the
+program <a href="1080l2.html" target="_self">spawn_console</a>:</p><pre     class="programlisting">
+
+% loadkeys &gt;&gt; EOF
+ alt keycode 103 = 0x0212
+ EOF
+ % spawn_console &amp;
+</pre><p>Of course, if you put this in /etc/rc.local, you would
+probably want to start <span   class="bold"><b>getty</b></span>
+instead of <span   class="bold"><b>bash</b></span>.</p></li><li><p><b  >do_pad</b>, commonly used for the
+keypad keys. In keyboard application mode this produces some
+three-character string <b  >ESC O X</b> (with variable X
+depending on the key), provided that Shift is not pressed
+simultaneously. Otherwise, when NumLock is on, we get the symbol
+printed on the key (0123456789.+ -/* and CR).
+</p><p>Finally, if NumLock is not on, the four arrow keys yield
+<b  >ESC [ X</b> (with <b  >X=A</b>,
+<b  >B</b>, <b  >C</b>, or
+<b  >D</b>p when not in cursor key mode, and ESC O X
+otherwise, while the remaining keys are treated as function keys,
+and yield the associated string. For the middle key (keypad-5) we
+find four possibilities:</p><div class="itemizedlist"><ul type="disc"><li><p>in keyboard application mode (unshifted), ESC O
+u</p></li><li><p>in keyboard application mode, shifted, without
+NumLock, ESC O G</p></li><li><p>otherwise, without NumLock, ESC [ G</p></li><li><p>but with NumLock, 5.</p></li></ul></div><p>If you think this is unnecessarily complicated, I agree. It
+is a messy combination of VT100 and DOS keyboard behavior. However,
+so far suggestions for change have met with too much
+resistance.</p></li><li><p><b  >do_dead</b> is used for &ldquo;dead keys&rdquo;
+that provide the following key with a diacritical. By default there
+are no dead keys. One may define keys producing a dead grave,
+acute, circumflex, tilde, or diaeresis. How a dead key combines
+with a following key is specified using the compose mechanism
+discussed above.</p></li><li><p><b  >do_cons</b> is used for switching
+consoles. By default the combinations
+(Ctrl-)AltL-F<span   class="emphasis"><em>n</em></span> switch to virtual console
+<span   class="emphasis"><em>n</em></span> for <span   class="emphasis"><em>n</em></span> in the range
+1-12, and AltR-Fn switches to console <span   class="emphasis"><em>n</em></span>+12 for
+these same <span   class="emphasis"><em>n</em></span>.</p></li><li><p><b  >do_cur</b> handles cursor keys. One
+gets either <b  >ESC [ X</b> or <b  >ESC O
+X</b> (with <span   class="emphasis"><em>X</em></span> one of <b  >A, B,
+C</b>, or <b  >D</b>) depending on the cursor key
+mode. (One sets or clears cursor key mode by sending <b  >ESC [
+? 1 h</b> or <b  >ESC [ ? 1 l</b> to the
+console.)</p></li><li><p><b  >do_shift</b> maintains the shift
+state (the up/down state of the modifier keys).</p></li><li><p><b  >do_meta</b> is commonly used for
+ordinary keys combined with AltL. If the keyboard is in metamode,
+this will yield a pair <b  >ESC x</b>; otherwise
+<b  >x | 0x80</b> is produced, where
+<span   class="emphasis"><em>x</em></span> is the key pressed in both cases. (You can
+set or clear metamode using the tiny utility
+<span   class="bold"><b>setmetamode(1)</b></span>.)</p></li><li><p><b  >do_ascii</b> is used to construct
+given codes: press AltL, type a decimal code on the keypad, and
+release AltL. This yields the character with the given code. In
+Unicode mode the same works in hexadecimal: press AltR, type a
+hexadecimal code on the keypad, possibly using the ordinary a, b,
+c, d, e, and f keys, and release AltR. This yields the Unicode
+symbol with the code given.</p></li><li><p><b  >do_lock</b> toggles the state of the
+corresponding modifier key lock. (Recall the line we saw above:
+<b  >shift_final = shift_state ^ kbd-&lt;lockstate</b>.)
+Thus, if you have your Cyrillic keys under combinations with AltR,
+you can use AltR together with other keys to get only a few
+Cyrillic symbols, but should type AltGr_Lock if you plan to type a
+longish Cyrillic text. (Note that the right Alt key, that I called
+AltR here, is usually known as AltGr.)</p></li><li><p><b  >do_lowercase</b> is used for the
+handling of CapsLock. Note that CapsLock is different from
+ShiftLock. With ShiftLock, a digit 4 will be turned into a dollar
+sign (for default keyboard layout), but CapsLock will only affect
+lower case letters, and turn them into the corresponding upper case
+letters. Type 11 is equivalent to type 0, with the added
+information that the symbol may be affected by CapsLock (and the
+resulting character is the one that would have resulted from
+pressing Shift).</p></li></ol></div><p>As already mentioned, almost all of this can be changed
+dynamically by use of loadkeys(1). The current state is dumped by
+dumpkeys(1). A list of known symbols is provided by dumpkeys -l.
+The keycodes associated with the various keys can be found using
+showkey(1). These and many other utilities for keyboard and console
+can be found in kbd-0.90.tar.gz on ftp.funet.fi and its mirror
+sites.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e9580.0x28ee470"></a>Using loadkeys</h2></div></div><p>Use loadkeys to change the code produced by the BackSpace key
+from Delete to BackSpace:</p><pre     class="programlisting">
+
+% loadkeys
+keycode 14 = BackSpace
+</pre><p>Assign the string &ldquo;emacs\n&rdquo; to the function key F12, and &ldquo;rm
+*~\n&rdquo; to Shift-F12 (the keycode 88 was found using showkey; the F66
+is a random unused function key symbol):</p><pre     class="programlisting">
+
+% loadkeys
+ keycode 88 = F12
+ shift keycode 88 = F66
+ string F12 = "emacs\n"
+ string F66 = "rm *~\n"
+</pre><p>Create the compose combination that will compose | and S into
+$:</p><pre     class="programlisting">
+
+% loadkeys
+ compose '|' 'S' to '$'
+ compose 'S' '|' to '$'
+</pre><p>Reset to some default state:</p><pre     class="programlisting">
+
+% loadkeys -d
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e9580.0x28ee7e0"></a>Sequel</h2></div></div><p>After the above handling, the obtained character(s) are put
+in the raw tty queue. Depending on the mode of the tty, they will
+be processed and transferred to the cooked tty queue. (Don't
+confuse raw mode as <span   class="bold"><b>stty</b></span> knows it,
+with the raw scancode mode discussed above.) Finally, the
+application will get them when it does
+<b  >getchar();</b>.</p></div></div>
+<div class="authorblurb"><p>Andries Brouwer,
+      <a href="mailto:aeb@cwi.nl">aeb@cwi.nl</a>, has used Unix
+      for various mathematical, linguistic, and playful purposes the past
+      20 years or so. He might be known to some for the first net release
+      of <span   class="bold"><b>hack</b></span>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../014/toc014.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

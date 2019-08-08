@@ -1,0 +1,246 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Hack and /
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Automation makes things faster, if you don't count all that work&#10;ahead of time.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2612580.0x2709ac0"></a>
+Hack and /
+</h1></div><div><h3 class="subtitle"><i>
+Preseeding Full Disk Encryption
+</i></h3></div><div><div class="author"><h3 class="author">Kyle Rankin</h3></div><div class="issuemoyr">Issue #261, January 2016</div></div><div><p>
+Automation makes things faster, if you don't count all that work
+ahead of time.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2612580.0x270a3b0"></a></h2></div></div><p>
+Usually I try to write articles that are not aimed at a particular
+distribution. Although I may give examples assuming a Debian-based
+distribution, whenever possible, I try to make my instructions applicable to
+everyone. This is not going to be one of those articles. Here, I
+document a process I went through recently with Debian preseeding (a
+method of automating a Debian install, like kickstart on Red Hat-based
+systems) that I found much more difficult than it needed to be, mostly
+because documentation was so sparse. In fact, I really found only two solid
+examples to work from in my research, one of which referred to the other.
+</p><p>
+In this article, I describe how to preseed full-disk encryption in
+a Debian install. This problem came up as I was trying to create a
+fully automated &ldquo;OEM&rdquo; install for a laptop. The goal was to have an
+automated boot mode that would guide users through their OS install and
+use full-disk encryption by default, but would make the process as simple
+as possible for users. Normally, unless you are going to encrypt the
+entire disk as one big partition, the Debian installer makes you jump
+through a few hoops to set up disk encryption during an install. 
+</p><p>
+In my case, I couldn't just use the full disk, because I needed to carve off
+a small section of the disk as a rescue partition to store the OEM install
+image itself. My end goal was to make it so users just had to enter
+their passphrase, and it would set up an unencrypted /boot and rescue disk
+partition and an encrypted / and swap. As an additional challenge, I also
+wanted to skip the time-consuming disk-erasing process that typically
+happens when you enable disk encryption with Debian, since the disk was
+going to be blank to start with anyway.
+</p><p>
+Unfortunately, although there is a lot of documentation on how to automate
+ordinary partitioning and LVM with preseeding (I actually wrote a whole
+section on the topic myself in one of my books), I had a hard time finding
+much documentation on how to add encryption to the mix. After a lot of
+research, I finally found two posts (and as I mentioned, one of them referenced the other) that
+described the magic incantation that would enable this. Unfortunately, the
+only supported mode for encrypted disks in Debian preseed requires the use
+of LVM (something I confirmed later when I read the source code responsible
+for this part of the install). That's not the end of the world, but it would
+have been simpler in my mind if it didn't have that requirement.
+</p><p>
+Since you need a basic unencrypted /boot partition to load a kernel and
+prompt the user for a passphrase, I had to account for both and
+preserve a small 2GB rescue disk partition that already was present on the
+disk. After that, the remaining / and swap partitions were encrypted. Here
+is the partition section of the preseed config:
+
+
+<pre     class="programlisting">
+d-i partman-auto/method string crypto
+d-i partman-lvm/device_remove_lvm boolean true
+d-i partman-lvm/confirm boolean true
+d-i partman-auto-lvm/guided_size string max
+d-i partman-auto-lvm/new_vg_name string crypt
+d-i partman-auto/disk string /dev/sda
+d-i partman-auto/choose_recipe select root-encrypted
+d-i partman-auto/expert_recipe string                         \
+      root-encrypted ::                                       \
+              500 500 500 ext3                                \
+                      $primary{ } $bootable{ }                \
+                      method{ format } format{ }              \
+                      use_filesystem{ } filesystem{ ext4 }    \
+                      mountpoint{ /boot }                     \
+              .                                               \
+              2000 2000 2000 linux-swap                       \
+                      $lvmok{ } lv_name{ swap }               \
+                      in_vg { crypt }                         \
+                      $primary{ }                             \
+                      method{ swap } format{ }                \
+              .                                               \
+              500 10000 1000000000 ext4                       \
+                      $lvmok{ } lv_name{ root }               \
+                      in_vg { crypt }                         \
+                      $primary{ }                             \
+                      method{ format } format{ }              \
+                      use_filesystem{ } filesystem{ ext4 }    \
+                      mountpoint{ / }                         \
+              .                                               \
+              2000 2000 2000 ext4                             \
+                      $primary{ }                             \
+                      method{ keep }                          \
+                      use_filesystem{ } filesystem{ ext4 }    \
+                      label{ rescuedisk }                     \
+              .
+
+d-i partman-md/device_remove_md boolean true
+d-i partman-basicfilesystems/no_mount_point boolean false
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+</pre>
+</p><p>
+If you've never worked with preseeding, this entire section of code
+probably looks incredibly foreign. As preseeding in general is documented
+well in a number of other places, I'm not going to bother breaking down
+every setting here. Instead, let me highlight the settings that matter
+for disk encryption. The most important one tells partman (the preseed
+partition manager) to use encryption:
+
+<pre     class="programlisting">
+d-i partman-auto/method string crypto
+</pre>
+</p><p>
+Next, because preseeded encrypted partitions need to use LVM, I must add
+LVM-specific preseed settings:
+
+<pre     class="programlisting">
+d-i partman-lvm/device_remove_lvm boolean true
+d-i partman-lvm/confirm boolean true
+d-i partman-auto-lvm/guided_size string max
+d-i partman-auto-lvm/new_vg_name string crypt
+</pre>
+</p><p>
+In the last of these settings, I told partman to create a new LVM volume
+group named <tt  >crypt</tt> that I will use to store my encrypted partitions.
+Further down when I define my swap and root partitions, you can see where I
+defined the logical volumes by name and set what volume group they are in:
+
+<pre     class="programlisting">
+2000 2000 2000 linux-swap                       \
+        $lvmok{ } lv_name{ swap }               \
+        in_vg { crypt }                         \
+. . .
+500 10000 1000000000 ext4                       \
+        $lvmok{ } lv_name{ root }               \
+        in_vg { crypt }                         \
+</pre>
+</p><p>
+Once these settings were in place, I was able to preseed an install and have
+disk encryption be almost fully automated, except that the installer
+prompted me for a passphrase, which I wanted. 
+</p><p>
+The only missing piece to this automation was that the installer started
+overwriting the existing disk with random information. Now, there are good
+reasons why you may want to do this before setting up disk encryption, but
+in this case, the disk was blank beforehand, and I didn't want to wait the
+many hours it might take. Try as I might, no options to preseed this feature
+away seemed to work. After poring through the partman code to find the
+magic option, I finally resorted to patching the partman-crypto script
+on the fly in the middle of the install so that it skipped the erase
+process:
+
+
+<pre     class="programlisting">
+d-i partman/early_command \
+       string sed -i.bak 's/-f $id\/skip_erase/-d $id/g'
+/lib/partman/lib/crypto-base.sh
+</pre>
+</p><p>
+This is an ugly hack indeed, but it was the only way I was able to find
+that worked. With that in place, I was able have an automated partitioning
+recipe with full-disk encryption that skipped the disk-erasing section. My
+hope is that the next time other people need to do this and do a search
+on-line, they at least can find my article and the two other examples and
+won't have to burn so much time.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2612580.0x270acf8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Kyle Rankin is a Sr. Systems Administrator in the San Francisco Bay Area
+and
+the
+author of a number of books, including <span   class="emphasis"><em>The Official Ubuntu Server
+Book</em></span>,
+<span   class="emphasis"><em>Knoppix Hacks</em></span> and <span   class="emphasis"><em>Ubuntu Hacks</em></span>.
+He is currently the president of the North
+Bay Linux Users' Group.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../261/toc261.html">Issue Table of Contents</a>
+    <a class="link3" href="../261/11961.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

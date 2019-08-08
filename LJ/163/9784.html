@@ -1,0 +1,598 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Multiple Associations with Stream Control Transmission Protocol</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The elegant way SCTP handles multiple streams makes it ideal for things&#10;like chat clients.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xc6c580.0xd63ab0"></a>
+Multiple Associations with Stream Control Transmission Protocol</h1></div><div><div class="author"><h3 class="author">
+Jan
+ 
+Newmarch
+</h3></div><div class="issuemoyr">Issue #163, November 2007</div></div><div><p>
+The elegant way SCTP handles multiple streams makes it ideal for things
+like chat clients.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd64298"></a></h2></div></div><p>
+In two previous articles [in the September and October 2007 issues of
+<span   class="emphasis"><em>LJ</em></span>], I looked at the basics of SCTP, how you can use SCTP 
+as a replacement for TCP and how you can use SCTP to process multiple streams 
+within a single association. In this final article, I look at how a
+single endpoint deals with multiple associations (connections to other
+endpoints). First though, I explain how SCTP can give extra
+information about what is going on through events.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd644a8"></a>
+Events</h2></div></div><p>
+The SCTP stack can generate events when &ldquo;interesting&rdquo; things happen. By
+default, all event generation is turned off except for data events. In
+the last article, I discussed the SCTP call sctp_rcvmsg(). By default,
+this just returns the data read. But, I also wanted to find out on which
+stream the data came, and for this I had to turn on the data_io_event
+so the SCTP stack would fill in the sctp_sndrcvinfo structure, which
+has the sinfo_stream field. Events are listed in the sctp_event_subscribe
+structure:
+
+<pre     class="programlisting">
+struct sctp_event_subscribe { 
+    uint8_t sctp_data_io_event; 
+    uint8_t sctp_association_event; 
+    uint8_t sctp_address_event; 
+    uint8_t sctp_send_failure_event; 
+    uint8_t sctp_peer_error_event; 
+    uint8_t sctp_shutdown_event; 
+    uint8_t sctp_partial_delivery_event; 
+    uint8_t sctp_adaptation_layer_event; 
+    uint8_t sctp_authentication_event; 
+};
+</pre>
+</p><p>
+An application sets fields to one for events it is interested in
+and zero for the others. It then makes a call to setsockopt() with
+SCTP_EVENTS. For example:
+
+<pre     class="programlisting">
+
+memset(&amp;event, 0, sizeof(event)); 
+event.sctp_data_io_event = 1; 
+event.sctp_association_event = 1; 
+setsockopt(fd, IPPROTO_SCTP, SCTP_EVENTS, 
+           &amp;event, sizeof(event));
+
+</pre>
+</p><p>
+Events are delivered inline along with &ldquo;ordinary&rdquo; data whenever a read
+(using sctp_recvmsg or similar) is done. If the application turns
+on events, reads will contain a mixture of events and data. The
+application then will need to examine each read to see whether it is an event
+or data to be processed. This is quite straightforward. If the flags
+field in the sctp_recvmsg() call has the MSG_NOTIFICATION bit set,
+the read message contains an event; otherwise, it contains data as
+before. Pseudo-code for this is:
+
+<pre     class="programlisting">
+
+nread = sctp_rcvmsg(..., msg, ..., &amp;flags); 
+if (flags &amp; MSG_NOTIFICATION) 
+    handle_event(msg); 
+else 
+    handle_data(msg, nread);
+
+</pre>
+</p><p>
+Events can be used to tell the following: if a new association has started or if an
+old one has terminated; if a peer has changed state by, say, one of the
+interfaces becoming unavailable or a new interface becoming available;
+if a send has failed, a remote error has occurred or a remote peer
+has shut down; if partial delivery has failed; and if authentication
+information is available.
+</p><p>
+If an event is received in the event buffer, first its type must 
+be found, and then the buffer can be cast to a suitable type for that
+event. For example, the code to handle a shutdown event is:
+
+<pre     class="programlisting">
+
+void handle_event(void *buf) { 
+    union sctp_notification *notification; 
+    struct sn_header *head; 
+
+    notification = buf; 
+    switch(notification-&gt;sn_header.sn_type) { 
+    case SCTP_SHUTDOWN_EVENT: { 
+        struct sctp_shutdown_event *shut; 
+        shut = (struct sctp_shutdown_event *) buf; 
+        printf("Shutdown on assoc id %d\n", 
+                shut-&gt;sse_assoc_id); 
+        break; 
+    }
+    default: 
+        printf("Unhandled event type %d\n", 
+               notification-&gt;sn_header.sn_type);
+    }
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd64920"></a>
+Closing an Association</h2></div></div><p>
+A socket can support multiple associations. If you close a socket,
+it closes all of the associations! It is sometimes desirable to
+close only a single association but not the socket, so that the socket
+can continue to be used for the other associations.
+</p><p>
+SCTP can abort an association or close it gracefully. Graceful shutdown
+will ensure that any queued messages are delivered properly before
+shutdown, while abort does not do this. Either of these are signaled
+by setting the sinfo_flags in the sctp_sndrcvinfo structure to the
+appropriate value. A graceful shutdown is signaled by setting the
+shutdown flag and writing a message (with no data):
+
+<pre     class="programlisting">
+
+sinfo.sinfo_flags = SCTP_EOF; sctp_send(..., &amp;sinfo, ...);
+
+</pre>
+</p><p>
+The reader then will be sent an sctp_shutdown_event if it has that event
+type enabled. The code to handle such an event was shown above. This can
+be done only on one-to-many sockets though. For one-to-one sockets, you
+are limited to using close().
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd64b30"></a>
+Getting the Association ID</h2></div></div><p>
+Many of the calls that deal with associations take an association ID as
+a parameter. Whereas in TCP, a connection effectively is represented by the
+pair of source and destination endpoint IP addresses, in SCTP, the source
+and destination can both be multihomed, so they will be represented by the set
+of source and the set of destination addresses. For one-to-many sockets,
+the source addresses may be shared by many associations, so I need the
+destination addresses to identify an association properly. For a single
+association, these destination addresses all belong to a single endpoint
+computer. The SCTP variation on getsockopt()&mdash;that is,
+sctp_opt_info()&mdash;is used to find an association from an address. The reason I cannot
+simply use getsockopt() is that I need to pass in a socket address, and
+the return value includes the association value. This in/out semantics
+is not supported by all implementations of getsockopt(). The code is:
+
+
+<pre     class="programlisting">
+
+sctp_assoc_t get_associd(int sockfd, struct sockaddr *sa, socklen_t salen) { 
+    struct sctp_paddrinfo sp; 
+    int sz; 
+    
+    sz = sizeof(struct sctp_paddrinfo); 
+    bzero(&amp;sp, sz); 
+    memcpy(&amp;sp.spinfo_address, sa, salen); 
+    if (sctp_opt_info(sockfd, 0, SCTP_GET_PEER_ADDR_INFO, &amp;sp, &amp;sz) == -1) 
+        perror("get assoc"); 
+    return (sp.spinfo_assoc_id); 
+}
+
+</pre>
+</p><p>
+Note that <span   class="emphasis"><em>Unix Network
+Programming</em></span> (volume 1, 3rd
+ed.) by W. Richard Stevens, et al., gives different code: the specification has 
+changed since that book was written, and the above is now the preferred way 
+(and Stevens' code doesn't work under Linux anyway).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd64d98"></a>
+Multiple Associations</h2></div></div><p>
+A server can handle multiple clients in a number of ways: a TCP server
+can use a single server socket that listens for clients and deals with
+them sequentially, or it could fork off each new client connection as a
+separate process or thread, or it could have many sockets and poll or
+select between them. A UDP server typically will keep no client state
+and will treat each message in its entirety as a separate
+entity. SCTP offers another variation, roughly halfway between TCP
+and UDP.
+</p><p>
+An SCTP socket can handle multiple long-lived associations to many
+endpoints simultaneously. It supports the
+&ldquo;connection-oriented&rdquo; semantics
+of TCP by maintaining an association ID for each association. On the
+other hand, it is like UDP in that each read usually returns a complete
+message from a client. SCTP applications use the TCP model by using the
+one-to-one sockets that I have discussed in the previous two articles. And,
+it
+uses a one-to-many model, which is more like UDP by using a one-to-many
+socket. When you create a socket, you specify whether it is one-to-one or
+one-to-many. In the first article in this series, I created a one-to-one
+socket by the call:
+
+<pre     class="programlisting">
+sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)
+</pre>
+</p><p>
+To create a one-to-many socket, I simply change the second parameter:
+
+<pre     class="programlisting">
+sockfd = socket(AF_INET, SOCK_SEQPACKET, IPPROTO_SCTP)
+</pre>
+</p><p>
+A TCP server handles multiple connections simultaneously by essentially
+using concurrent reads. This is done by using multiple processes,
+threads, or by poll/select among many sockets. A UDP server typically
+uses a single read loop, handling each message as it arrives. An SCTP
+one-to-many server looks like a UDP server: it will bind a socket and
+listen. Then, instead of blocking on accept(), which would return a new
+one-to-one socket, it blocks on sctp_rcvmsg(), which returns a message
+from either a new or existing association. Pseudo-code for such a server is:
+
+<pre     class="programlisting">
+
+sockfd = socket(...); 
+bind(sockfd, ...); 
+listen(sockfd, ...); 
+while (true) { 
+    nread = sctp_rcvmsg(sockfd, ..., buf, ..., &amp;info); 
+    assoc_id = sinfo.sinfo_assoc_id; 
+    stream = sinfo.sinfo_stream; 
+    handle_message(assoc_id, stream, buf, nread); 
+}
+
+</pre>
+</p><p>
+A client also can use the one-to-many socket model. After binding to a
+port (probably an ephemeral one), it can use the single socket to connect
+to many other endpoints and use this single socket to send messages to
+any of them. It even can do away with an explicit connect operation and
+just start sending to new endpoints (an implicit connection is done if
+no existing association exists).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd651b8"></a>
+Peeled-Off Sockets</h2></div></div><p>
+One-to-one sockets follow the TCP model; one-to-many sockets follow
+the UDP model. Is it possible to have both at once? Yes, it is, to some
+extent. For example, you may have a server that you can talk to in two
+modes: ordinary user and superuser. Messages from ordinary users may
+be handled in UDP style, reading and just responding, while superuser
+connections may need to be treated differently. SCTP allows a connection
+on a one-to-many socket to be &ldquo;peeled off&rdquo; and become a one-to-one
+socket. This one-to-one socket may then be treated in TCP-style, while
+all other associations remain on the one-to-many socket.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd65318"></a>
+Lazy Person's Chat</h2></div></div><p>
+In this section, I discuss a simple example of how to build a simple chat
+server using SCTP. This isn't meant to be a competitor to the many chat
+systems around, rather it is to show some of the features of SCTP.
+</p><p>
+A chat server must listen for messages coming from a probably transient
+group of clients. When a message is received from any one client, it
+should send the message back out to all of the other clients.
+</p><p>
+UDP could be a choice here: a server simply can wait in a read loop, waiting
+for messages to come in. But, to send them back out, it needs to keep
+a list of clients, and this is a bit more difficult. Clients will come and go,
+so some sort of &ldquo;liveness&rdquo; test is needed to keep the list up to date.
+</p><p>
+SCTP is a better choice: it can sit in a read loop too, but it also
+keeps a list of associations and, better, keeps that list up to date by
+sending heartbeat messages to the peers. The list management is handled
+by SCTP.
+</p><p>
+TCP also could be a choice: each client would start a new client socket
+on the server. The server then would need to keep a list of the client
+sockets and do a poll/select between them to see if anyone is sending a
+message. Again, SCTP is a better choice: in the one-to-many mode, it will
+keep only a single socket, and there is no need for a poll/select loop.
+</p><p>
+When it comes to sending messages back to all the connected clients,
+SCTP makes it even easier&mdash;the flag SCTP_SENDALL that can can be set in
+the sctp_sndrcvinfo field of sctp_send(). So a server simply needs to
+read a message from any client, set the SCTP_SENDALL bit and write it
+back out. The SCTP stack then will send it to all live peers! There are only a
+few lines of code:
+
+<pre     class="programlisting">
+
+nread = sctp_recvmsg(sockfd, buf, SIZE, 
+                    (struct sockaddr *) &amp;client_addr, 
+                    &amp;len, &amp;sinfo, &amp;flags); 
+bzero(&amp;sinfo, sizeof(sinfo)); 
+sinfo.sinfo_flags |= SCTP_SENDALL; 
+sctp_send(sockfd, buf, nread, &amp;sinfo, 0);
+
+</pre>
+</p><p>
+The SCTP_SENDALL flag has been introduced only recently into SCTP and is
+not in current kernels (up to 2.6.21.1), but it should make it into the
+2.6.22 kernels. The full code for client and server is shown in Listings 1
+(chat_client.c) and 2 (chat_server.c).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd656e0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. chat_client.c</b></p><pre     class="programlisting">
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/select.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;netinet/in.h&gt;
+
+#include &lt;netinet/sctp.h&gt;
+
+#define SIZE 1024
+char buf[SIZE];
+#define STDIN 0
+char *msg = "hello\n";
+#define ECHO_PORT 2013
+
+int main(int argc, char *argv[]) {
+        int sockfd;
+        int nread, nsent;
+        int flags, len;
+        struct sockaddr_in serv_addr;
+        struct sctp_sndrcvinfo sinfo;
+        fd_set readfds;
+
+        if (argc != 2) {
+                fprintf(stderr, "usage: %s IPaddr\n", argv[0]);
+                exit(1);
+        }
+        /* create endpoint using  SCTP */
+        sockfd = socket(AF_INET, SOCK_SEQPACKET,
+                        IPPROTO_SCTP);
+        if (sockfd &lt; 0) {
+                perror("socket creation failed");
+                exit(2); }
+        /* connect to server */
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = inet_addr(argv[1]);
+        serv_addr.sin_port = htons(ECHO_PORT);
+
+        if (connect(sockfd,
+                    (struct sockaddr *) &amp;serv_addr,
+                    sizeof(serv_addr)) &lt; 0) {
+                perror("connect to server failed");
+                exit(3);
+        }
+        printf("Connected\n");
+
+        while (1) {
+                /* we need to select between messages FROM the user
+                   on the console and messages TO the user from the
+                   socket
+                */
+                FD_CLR(sockfd, &amp;readfds);
+                FD_SET(sockfd, &amp;readfds);
+                FD_SET(STDIN, &amp;readfds);
+                printf("Selecting\n");
+                select(sockfd+1, &amp;readfds, NULL, NULL, NULL);
+
+                if (FD_ISSET(STDIN, &amp;readfds)) {
+                        printf("reading from stdin\n");
+                        nread = read(0, buf, SIZE);
+                        if (nread &lt;= 0 )
+                                break;
+                        sendto(sockfd, buf, nread, 0,
+                               (struct sockaddr *) &amp;serv_addr,
+                               sizeof(serv_addr));
+                } else if (FD_ISSET(sockfd, &amp;readfds)) {
+                        printf("Reading from socket\n");
+                        len = sizeof(serv_addr);
+                        nread = sctp_recvmsg(sockfd, buf, SIZE,
+                                     (struct sockaddr *) &amp;serv_addr,
+                                     &amp;len,
+                                     &amp;sinfo, &amp;flags);
+                        write(1, buf, nread);
+                }
+        }
+        close(sockfd);
+        exit(0);
+}
+
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd658f0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. chat_server.c</b></p><pre     class="programlisting">
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;strings.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;netinet/in.h&gt;
+
+#include &lt;netinet/sctp.h&gt;
+
+#define SIZE 1024
+char buf[SIZE];
+#define CHAT_PORT 2013
+
+int main(int argc, char *argv[]) {
+        int sockfd, client_sockfd;
+        int nread, nsent, len;
+        struct sockaddr_in serv_addr, client_addr;
+        struct sctp_sndrcvinfo sinfo;
+        int flags;
+        struct sctp_event_subscribe events;
+        sctp_assoc_t assoc_id;
+
+        /* create endpoint */
+        sockfd = socket(AF_INET, SOCK_SEQPACKET,
+                        IPPROTO_SCTP);
+        if (sockfd &lt; 0) {
+                perror(NULL);
+                exit(2);
+        }
+        /* bind address */
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        serv_addr.sin_port = htons(CHAT_PORT);
+        if (bind(sockfd, (struct sockaddr *) &amp;serv_addr,
+                 sizeof(serv_addr)) &lt; 0) {
+                perror(NULL);
+                exit(3); }
+
+        bzero(&amp;events, sizeof(events));
+        events.sctp_data_io_event = 1;
+        if (setsockopt(sockfd, IPPROTO_SCTP,
+                       SCTP_EVENTS, &amp;events, sizeof(events))) {
+                perror("set sock opt\n");
+        }
+
+        /* specify queue */
+
+        listen(sockfd, 5);
+        printf("Listening\n");
+
+        for (;;) {
+                len = sizeof(client_addr);
+                nread = sctp_recvmsg(sockfd, buf, SIZE,
+                                     (struct sockaddr *) &amp;client_addr,
+                                     &amp;len,
+                                     &amp;sinfo, &amp;flags);
+
+                printf("Got a read of %d\n", nread);
+                write(1, buf, nread);
+                /* send it back out to all associations */
+
+                bzero(&amp;sinfo, sizeof(sinfo));
+                sinfo.sinfo_flags |= SCTP_SENDALL;
+
+                sctp_send(sockfd, buf, nread,
+                          // (struct sockaddr *) &amp;client_addr, 1,
+                          &amp;sinfo, 0);
+
+        }
+}
+
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd65b00"></a>
+Unordered Messages</h2></div></div><p>
+SCTP normally delivers messages within a stream in the order in which
+they were written. If you don't need this, you can turn off the
+ordering feature. This can make delivery of messages faster, as they
+don't have to be reassembled into the correct order.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0xd65c08"></a>
+New Protocols</h2></div></div><p>
+I have examined in these three articles how TCP applications can be moved to
+SCTP and discussed the new features of SCTP. So, why isn't everyone
+using SCTP now? Well, there is the inertia of moving people off the
+TCP applications onto the SCTP versions, and that will happen only when
+people become fed up with the TCP versions&mdash;and that may never happen.
+</p><p>
+The place to look for SCTP is in new applications using new protocols
+designed to take advantage of SCTP:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+SS7 (Signaling System 7, see Wikipedia) is a standard for
+control signaling in the PSTN (Public Switched Telephone Network). SS7
+signaling is done out of band, meaning that SS7 signaling messages
+are transported over a separate data connection. This represents a
+significant security improvement over earlier systems that used in-band
+signaling. SCTP basically was invented to handle protocols like SS7
+over IP. SS7 uses multihoming to increase reliability and streams to
+avoid the TCP problem of head-of-line blocking.
+</p></li><li><p>
+Diameter (RFC 3588, <a href="http://www.rfc-editor.org/rfc/rfc3588.txt" target="_self">www.rfc-editor.org/rfc/rfc3588.txt</a>)
+is an IETF protocol to supply an Authentication, Authorization
+and Accounting (AAA) framework for applications, such
+as network access or IP mobility. A good introduction is at
+<a href="http://www.interlinknetworks.com/whitepapers/Introduction_to_Diameter.pdf" target="_self">www.interlinknetworks.com/whitepapers/Introduction_to_Diameter.pdf</a>.
+It replaces an earlier protocol, Radius, that ran over UDP. Diameter uses
+TCP or SCTP for the added reliability of these transports. A Diameter
+server must support both TCP and SCTP; although at present, clients can choose
+either. SCTP is the default, and in the future, clients may be required to
+support SCTP. SCTP is preferred, because it can use streams to avoid the
+head-of-line blocking problem that exists with TCP.
+</p></li><li><p>
+DLM (Distributed Lock Manager, <a href="http://sources.redhat.com/cluster/dlm" target="_self">sources.redhat.com/cluster/dlm</a>)
+is a Red Hat project currently in the kernel. This can use either TCP
+or SCTP. SCTP has the advantage of multihome support. Although TCP 
+presently is the default, SCTP can be used by setting a kernel build
+configuration flag.
+</p></li><li><p>
+MPI (Message Passing Interface, <a href="http://www.mpi-forum.org" target="_self">www.mpi-forum.org</a>) is a de facto
+standard for communication among the processes modeling a parallel program
+on a distributed memory system (according to Wikipedia). It does not specify which
+transport protocol should be used, although TCP has been common in the
+past. 
+</p></li></ul></div><p>
+Humaira Kamal, in his Master's thesis, investigated using SCTP as
+a transport protocol and reported favourable results. He singled out the
+causes as being the message-based nature of SCTP and the use of streams
+within an association. These examples show that SCTP is being used in
+a variety of real-world situations to gain benefits over the TCP and
+UDP transports.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc6c580.0x12edc68"></a>
+Conclusion</h2></div></div><p>
+This series of articles has covered the basics of SCTP. There are
+many options that can control, in fine detail, the behaviour of an SCTP
+stack. There also is ongoing work in bringing a security model into
+SCTP, so that, for example, TLS can be run across SCTP. There also
+is work being done on different language bindings to SCTP, such as a Java
+language binding. SCTP will not make TCP and UDP disappear overnight,
+but I hope these articles have shown that it has features that can make
+writing many applications easier and more robust.
+</p><p>
+Of course, SCTP is not the only attempt to devise new
+protocols. For comparisons to other new procotols see
+&ldquo;Survey of Transport Protocols other than Standard TCP&rdquo; at
+<a href="http://www.ogf.org/Public_Comment_Docs/Documents/May-2005/draft-ggf-dtrg-survey-1.pdf" target="_self">www.ogf.org/Public_Comment_Docs/Documents/May-2005/draft-ggf-dtrg-survey-1.pdf</a>. This shows that SCTP stacks up very well against possible
+alternatives, so you might want to consider it for your next networking
+project!
+</p></div></div>
+<div class="authorblurb"><p>
+Jan Newmarch is Honorary Senior Research Fellow at Monash University. He
+has been using Linux since kernel 0.98. He has written four books and
+many
+papers and given courses on many technical topics, concentrating on
+network programming for the last six years. His Web site is
+<a href="http://jan.newmarch.name" target="_self">jan.newmarch.name</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../163/toc163.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

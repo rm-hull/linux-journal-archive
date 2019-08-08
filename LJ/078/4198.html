@@ -1,0 +1,512 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Securing DNS and BIND</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Decreasing the vulnerability of your DNS server is largely a matter&#10;    of staying current and private.&#10;    "><meta name="keywords" content="security, DNS, BIND, ns, logging"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1b2a580.0x1c21ab0"></a>Securing DNS and BIND</h1></div><div><div class="author"><h3 class="author">Michael D. Bauer</h3></div><div class="issuemoyr">Issue #78, October 2000</div></div><div><p>
+    Decreasing the vulnerability of your DNS server is largely a matter
+    of staying current and private.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x1c22608"></a></h2></div></div><p>In the SANS Institute's recent consensus
+document &ldquo;How to Eliminate the Ten Most Critical Internet Security
+Threats&rdquo;
+(<a href="http://www.sans.org/topten.htm" target="_self">www.sans.org/topten.htm</a>),
+the number-one category of vulnerabilities reported by survey
+participants was BIND weaknesses. BIND, of course, is the
+open-source software package that powers the majority of Internet
+DNS servers. In fact, again according to SANS, over 50% of BIND
+installations are vulnerable to well-known (and in many cases, old)
+exploits.
+</p><p>The good news is that armed with the simple concepts and
+techniques I'm about to describe, you can quickly and easily
+enhance BIND's security on your Linux (or other UNIX) DNS server.
+Since our focus here will be security, if you're an absolute BIND
+beginner you may wish to first start reading the BIND online
+documentation (see Conclusions, at end) or the first chapter or two
+of Albitz and Liu's book <span   class="emphasis"><em>DNS and BIND.</em></span></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x1c22818"></a>BIND Basics</h2></div></div><p>Having said that, let's begin with a brief look at how the
+Domain Name Service and BIND work. Suppose someone
+(myhost.someisp.com in Figure 1) is surfing the Web, and wishes to
+view the site
+<a href="http://www.wiremonkeys.org" target="_self">http://www.wiremonkeys.org/</a>.
+Suppose, also, that person's machine is configured to use the name
+server &ldquo;ns.isp.com&rdquo; for DNS lookups. Since the name
+www.wiremonkeys.org has no meaning to the routers through which the
+web query and its responses will pass, the user's web browser needs
+to learn www.wiremonkeys.org's IP address before attempting the
+query.</p><p>
+<div       class="mediaobject"><a href="4198f1.large.jpg"><img src="4198f1.jpg"></a><div class="caption"><p>Figure 1. myhost.someisp.com</p></div></div>
+</p><p>First, &ldquo;myhost&rdquo; asks &ldquo;ns&rdquo; whether it knows the IP
+address. Since ns.someisp.com isn't authoritative for
+wiremonkeys.org and hasn't recently communicated for any host that
+is, it begins a query of its own on the user's behalf. The process
+of making one or more queries in order to answer other queries is
+called <span   class="bold"><b>recursion</b></span>.</p><p>ns.someisp.com begins its recursive query by asking a &ldquo;root
+name server&rdquo; for the IP address of some host that's authoritative
+for the zone wiremonkeys.org. (All Internet DNS servers use a
+static &ldquo;hints&rdquo; file to identify the thirteen or so official root
+name servers. This list is maintained at
+<a href="ftp://ftp.rs.internic.net/domain" target="_self">ftp.rs.internic.net/domain</a>
+and is called named.root.) In our example, ns asks
+E.ROOT-SERVERS.NET (an actual root server, with a current IP
+address of 192.203.230.10), who replies that DNS for
+wiremonkeys.org is handled by &ldquo;ns-wiremonkeys.wiremonkeys.org&rdquo;,
+with an IP address of 55.100.55.100.</p><p>ns then asks ns-wiremonkeys for the IP address of
+www.wiremonkeys.org. ns-wiremonkeys returns the answer
+(55.100.55.200), which ns forwards back to myhost.someisp.com.
+Finally, myhost contacts 55.100.55.200 directly via HTTP and
+performs the web query.</p><p>This is the most common type of name lookup. It and other
+single-host type lookups are simply called &ldquo;queries&rdquo;; DNS queries
+are handled on UDP port 53.</p><p>Not all DNS transactions involve single-host lookups,
+however. Sometimes it is necessary to transfer entire name-domain
+(zone) databases: this is called a zone transfer, and it happens
+when you issue an <span   class="bold"><b>ls</b></span> command from
+the nslookup utility, or run <span   class="bold"><b>dig</b></span>.
+The main purpose of zone transfers, however, is for name servers
+that are authoritative for the same domain to stay in sync with
+each other (e.g., for &ldquo;master to slave&rdquo; updates). Zone transfers
+are handled on TCP port 53.</p><p>The last general DNS concept we'll touch on here is caching.
+Name servers cache all local zone files (i.e., their hints file
+plus all zone information for which they are authoritative), plus
+the results of all recursive queries they've performed since their
+last startup. That is, almost all: each resource record (RRs) has
+(or inherits their zone-file's default) time-to-live settings.
+These settings determine how long each RR can be cached before
+being refreshed.</p><p>This, of course, is only a fraction of what one needs to
+learn in order to fully understand and use BIND. I haven't even
+mentioned forwarders or reverse lookups. Hopefully, it's enough for
+the purposes of discussing BIND security.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x1c22f50"></a>DNS Security Principles</h2></div></div><p>DNS security can be distilled into two maxims: always run the
+latest version of your chosen DNS software package, and never
+provide unnecessary information or services to strangers. Put
+another way, keep current and be stingy!</p><p>This translates into a number of specific techniques. The
+first is to limit or even disable recursion. Limiting it is easy to
+do using configuration-file parameters; disabling recursion
+altogether may or may not be possible, depending on the name
+server's role.</p><p>If, for example, the server is an &ldquo;external&rdquo; DNS server
+with the sole purpose of answering queries regarding its
+organization's public servers, there is no reason for it to perform
+lookups of nonlocal host names (which is the very definition of
+recursion). On the other hand, if a server provides DNS resolution
+to end users on a local area network (LAN), it definitely needs to
+recurse queries from local hosts, but can probably be configured to
+refuse recursion requests, if not <span   class="emphasis"><em>all</em></span>
+requests, from nonlocal addresses.</p><p>Another way to limit DNS activity is to use split DNS
+services (see Figure 2). Split DNS refers to the practice of
+maintaining both public and private databases of each local name
+domain (zone). The public zone database contains as little as
+possible: NS records listing publicly accessible name servers, MX
+records listing external SMTP (e-mail) gateways, public web servers
+and other hosts that one wishes the outside world to know
+about.</p><p>
+<div       class="mediaobject"><img src="4198f2.jpg"><div class="caption"><p>Figure 2. Split DNS</p></div></div>
+</p><p>The private zone database may be a superset of the public
+one, or it may contain entirely different entries for certain
+categories or hosts. For example, many organizations use a
+Microsoft Exchange server for internal e-mail, but maintain a
+completely separate SMTP gateway system to receive mail from the
+outside world. This is sometimes actually the organization's
+firewall, or perhaps a dedicated mail server in a DMZ network
+connected to the firewall but separate from the internal
+network.</p><p>The value of such an architecture should be obvious:
+compromise of the SMTP gateway does not automatically result in the
+exposure of internal e-mail to outsiders. Other services commonly
+split this way are WWW (which separates public web data from
+intranet data), FTP, and virtually all other TCP/IP services for
+which it's desirable to differentiate between public and private
+data. DNS, however, is arguably the most important service to
+split, since most other TCP/IP services depend on it.</p><p>The other aspect to DNS stinginess is the content of zone
+files themselves. Even public zone databases may contain more
+information than they need to. Hosts may have needlessly
+descriptive names (e.g., you may be telling the wrong people which
+server does what), or too much or too granular contact information
+may be given. Some organizations even list individual systems'
+hardware and software names and versions! Such information is
+almost invariably more useful to prospective crackers than their
+intended audience.</p><p>Maintaining current software and keeping abreast of known DNS
+exposures is at least as important as carefully considering actual
+DNS data. Furthermore, it's easier: the latest version of BIND can
+always be downloaded for free from ftp.isc.org, and information on
+BIND vulnerabilities is disseminated via not only one, but several
+mailing lists and newsgroups (some of which are listed at the end
+of this article).</p><p>There's actually a third maxim for DNS security, but it's
+hardly unique to DNS: take the time to understand and
+<span   class="emphasis"><em>use</em></span> the security features of your software
+(and of your DNS-registration provider&mdash;Network Solutions and other
+top-level-domain registrars all offer several change request
+security options, including PGP. Make sure that your provider
+requires <span   class="emphasis"><em>at least</em></span> e-mail verification of all
+change requests for your zones!).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x1c23630"></a>Selecting and Installing the Appropriate BIND
+Software</h2></div></div><p>As of this writing, the most current version is 8.2.2, patch
+level 5. Due to a particularly nasty buffer-overflow problem that
+can lead to unauthorized root access of vulnerable systems (the
+&ldquo;NXT&rdquo; bug, described in CERT Advisory #CA-99-14) in
+<span   class="emphasis"><em>all</em></span> older 8.2 releases, it is
+<span   class="emphasis"><em>essential</em></span> that anyone using BIND be at least
+at version 8.2.2P5.</p><p>Note that for some time after BIND v.8.1 was initially
+released in May 1997, many users deliberately continued using BIND
+v.4 due to its stability (and possibly to postpone having to learn
+the new configuration-file syntax). In fact, the Internet Software
+Consortium(ISC) continued to support, and even patch, version 4,
+releasing BIND v.4.9.7 a full year after 8.1's debut.</p><p>However, the ISC no longer recommends that anybody continue
+using BIND v.4, even v.4.9.7. So it bears repeating: everyone who
+runs BIND on an Internet server should be running the latest
+release of version 8.<span   class="emphasis"><em>x</em></span>.</p><p>We've established that you need the latest version of BIND.
+But should you use a pre-compiled binary distribution (such as an
+RPM), or should you compile it from source? For most users, it's
+perfectly acceptable to use a binary distribution, provided it
+comes from a trusted source. Virtually all UNIX variants include
+BIND with their &ldquo;stock&rdquo; installations; just be sure to verify
+that you indeed have the latest version.</p><p>The command to do this with Red Hat Package Manager is
+<b  >rpm -q -v bind8</b> if the package has already been
+installed, or <b  >rpm -q -v -p ./&lt;path &amp; filename of
+package&gt;</b> if you have a package file, but it hasn't
+been installed yet. The rpm package name for BIND is usually
+&ldquo;bind8&rdquo; or &ldquo;bind&rdquo;.</p><p>If you perform this query and learn you have an old
+(pre-8.2.2p5 version), most package formats support an &ldquo;upgrade&rdquo;
+feature; simply download a more current package version from the
+Linux distribution web site, and upgrade it using your package
+manager. To do this with RPM, the command syntax is <b  >rpm -U
+./&lt;path &amp; filename of package&gt;</b>, assuming you
+don't need special install options. If the above doesn't work, you
+can try <b  >rpm -U --force ./&lt;path &amp; filename of
+package&gt;</b>.</p><p>If you can't find a suitable binary distribution, compiling
+it from source is easy: there is no &ldquo;configure&rdquo; script to run,
+and none of BIND v.8<span   class="emphasis"><em>x</em></span>'s Makefiles need be
+edited. Simply follow the brief instructions in the source's
+INSTALL file (<b  >make; make install</b> is all most
+people need to do).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x1c23c60"></a>Starting named: The Padded Cell</h2></div></div><p>It's premature to start
+<span   class="bold"><b>named</b></span> (the main process of BIND)
+just yet. But how you plan to run named will determine how it
+should be configured. Now is a good point, therefore, to talk about
+some startup options that can enhance security.</p><p>As with all Internet services, it's a good idea to run named
+in a &ldquo;padded cell&rdquo; in which a prospective cracker will be trapped
+should he/she exploit, for example, some obscure buffer-overflow
+vulnerability. Three flags make this cell easy to achieve:
+<b  >-u &lt;username&gt;</b>, <b  >-g &lt;group
+name&gt;</b> and <b  >-t &lt;directory for named to
+chroot to&gt;</b>.</p><p>The first causes named to run under the specified user name.
+The second causes named to run under the specified group name,
+while the third changes (&ldquo;chroots&rdquo;) the root of all paths
+referenced by named. Note that when running named chrooted, this
+new root is applied even <span   class="emphasis"><em>before</em></span> named.conf is
+read. Therefore if, for example, you invoke named with
+<b  >named -u named -g wheel -t /var/named</b>, then it
+will look for named.conf in /var/named/etc rather than in /etc.
+That is, the default location of named.conf is always /etc, but if
+named is chrooted to path /other/path, /etc will be translated as
+/other/path/etc.</p><p>The net effect of these three flags (when used properly) is
+that named's permissions, environment and even file system are
+severely limited. Should an unauthorized user somehow hijack named,
+instead of gaining root permissions (prior to BIND v.8, named ran
+as root) they'll gain the permissions of an unprivileged account.
+Furthermore, they'll see even <span   class="emphasis"><em>less</em></span> of the
+server's file system than an ordinary user can: directories
+connected to directory-tree nodes higher than the chroot-point
+won't, from named's perspective, even exist.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x201c328"></a>Overview of named.conf</h2></div></div><p>Running <span   class="bold"><b>named</b></span> in a padded
+cell is paranoid and elite in itself. But that's just the
+beginning! BIND 8.<span   class="emphasis"><em>x</em></span>'s configuration file,
+named.conf, with its large number of supported parameters, allows
+you to control named's behavior with a great deal of
+granularity.</p><p>Consider the example named.conf file as shown in Figure
+3.</p><p>
+<div       class="mediaobject"><img src="4198f3.jpg"><div class="caption"><p>Figure 3. Example named.conf File</p></div></div>
+</p><p>The hypothetical server whose configuration file is
+represented here is an external DNS server. Since its role is to
+provide information to the outside world about coolfroods.org's
+publicly accessible services, it has been configured without
+recursion. In fact, it has no &ldquo;.&rdquo; zone entry (i.e., no pointer to
+a hints file), so it knows nothing about and cannot even learn
+about hosts not described in its local zone files. Transfers of its
+local zone databases are restricted by IP address to a group of
+trusted slave servers, and logging has been enabled for a variety
+of event types.</p><p>So how do we do these and even more nifty and paranoid things
+with <b  >named.conf</b>?</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x201c850"></a>Useful named.conf Parameters: acl{}
+Sections</h2></div></div><p>Although strictly optional, Access Control Lists (acls)
+provide a handy means of labeling groups of IP addresses and
+networks. And since we're paranoid, we definitely want to restrict
+certain actions and data by IP address.</p><p>An acl may be declared anywhere within named.conf, but since
+this file is parsed from top to bottom, each acl must be declared
+before its first instance in a parameter. Thus, it makes sense to
+put acl definitions at the top of named.conf.</p><p>The format for these is simple:</p><pre     class="programlisting">
+acl acl_name { IPaddr1;
+IPaddr2; ...etc. };
+</pre><p>Note that the IP address list can contain either complete IP
+addresses in the form x.x.x.x or network addresses in the form
+x.x.x/24, x.x/16, etc. Now, each time named.conf is read, the
+parser will substitute all instances of the acl's name (that occur
+after its definition) with its corresponding IP address list.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x201cab8"></a>Global Options: The options{} Section</h2></div></div><p>The next thing to add is a list of global options. Some of
+the parameters that are valid for this section can also be used in
+zone sections; be aware that if a given parameter appears both in
+options{} and in a zone section, the zone version will supercede
+the global setting as it applies to that zone. In other words, the
+zone-section values of such parameters are treated as exceptions to
+the corresponding global values.</p><p>Listing 2 shows some useful parameters that can be used in
+options{}.</p><p><a href="4198l1.html" target="_self">Listing 2. options {}
+Listing</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x201ccc8"></a>Logging</h2></div></div><p>In addition to global options, we definitely want to set some
+logging rules. By default, named doesn't log much more than a few
+startup messages (such as errors and zones loaded), which are sent
+to the syslog d&lt;\#230&gt;mon (which in turn writes them to
+/var/log/messages or some other file). To log security events, zone
+transfers, etc., you need to add a <b  >logging{}</b>
+section to named.conf.</p><p>The <b  >logging{}</b> section consists of two
+parts: one or more <b  >channel{}</b> definitions (each
+of which defines a place to send log information) followed by one
+or more <b  >category{}</b> sections (wherein each event
+type you wish to track is assigned one or more channels). Channels
+usually point to either files or the local syslog
+d&lt;\#230&gt;mon, and categories are actually pre-defined; that
+is, you choose from a set of pre-defined categories, specifying in
+each case what is to be done with event messages from that
+category.</p><p>Channel definitions take the following format:
+<b  >channel</b>
+<span   class="bold"><b>channel-name</b></span>
+{{<span   class="bold"><b>filename</b></span>
+<b  >syslog</b>
+<span   class="bold"><b>syslog-type</b></span>|<b  >null</b>];
+<b  >print-time</b> [<b  >yes</b> |
+<b  >no</b>];
+<b  >print-category</b>[<b  >yes</b> |
+<b  >no</b>];};</p><p>Note that <span   class="emphasis"><em>filename</em></span> by default is put in
+named's working directory, but a full path may be given (that is
+assumed to be relative to the chrooted directory, if
+applicable).</p><p>Category specifications are much simpler:</p><p><span   class="bold"><b>category</b></span>
+<span   class="emphasis"><em>category-name</em></span>
+<span   class="bold"><b>{</b></span><span   class="emphasis"><em>channel-list</em></span>
+<span   class="bold"><b>;</b></span>
+<span   class="bold"><b>};</b></span></p><p>Note that as with IP address lists, the channel list is
+semicolon-delimited and must contain channels defined in a prior
+<b  >channel{}</b> statement. See the BIND Operator's
+Guide (BOG) for the full list of supported categories; suffice it
+to say that <b  >xfer-out</b>,
+<b  >security</b>, <b  >load</b>,
+<b  >os</b>, <b  >insist</b>,
+<b  >panic</b> and
+<span   class="bold"><b>maintenance</b></span> are usually of
+interest to the security-conscious DNS administrator.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x201da88"></a>A Note on Caching-Only Name Servers</h2></div></div><p>&ldquo;Caching-only&rdquo; name servers, which are not authoritative
+for any zones (i.e., are neither master, slave, nor even stub for
+anything), are inherently simpler and therefore easier to secure
+than other kinds of DNS servers. Little of what follows will apply
+when setting up a caching-only server.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x201db90"></a>zone{} Sections</h2></div></div><p>The last type of named.conf section we'll examine here is the
+<b  >zone{}</b> section. Like
+<b  >options{}</b>, there are many additional parameters
+besides those described below; see the BOG for more
+information.</p><p>The three parameters most useful in improving zone-by-zone
+security are:</p><pre     class="programlisting">
+allow-update { IP/acl-list ; };
+allow-query IP/acl-ist ; };
+allow-transfer IP/acl-list ; };
+</pre><p><span   class="bold"><b>allow-update</b></span> lists hosts
+that may submit Dynamic DNS updates for the zone;
+<span   class="bold"><b>allow-query</b></span> specifies which hosts
+may even submit simple DNS queries; and
+<span   class="bold"><b>allow-transfer</b></span> restricts who may
+download entire zone files. Note that all three of these parameters
+may be used in either/both <b  >zone{}</b> sections
+and/or the options{} section, with zone-specific settings
+overriding global settings.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x201dfb0"></a>Zone File Security</h2></div></div><p>Our secure DNS service, trapped in its padded cell and very
+particular about what it says to whom, is shaping up nicely. But
+what about the actual zone databases?</p><p>The good news here is that since our options are considerably
+more limited than with named.conf, there's less to do. The bad news
+is that there's at least one type of Resource Record that's both
+obsolete and even dangerous, and must be avoided by the
+security-conscious.</p><p>Here's a sample zone file for the hypothetical domain
+&ldquo;boneheads.com&rdquo; (see Figure 4.)</p><p>
+<div       class="mediaobject"><a href="4198f4.large.jpg"><img src="4198f4.jpg"></a><div class="caption"><p>Figure 4. Sample Zone File</p></div></div>
+</p><p>The first thing to consider is the Start-of-Authority (SOA)
+record. In the above example, the serial number follows the
+convention yyyymmdd##, which is both convenient and helps security,
+as it reduces the chances of accidentally loading an old (obsolete)
+zone file&mdash;the serial number serves as both an index and a time
+stamp.</p><p>The refresh interval is set to three hours, a reasonable
+compromise between bandwidth conservation and paranoia. That is,
+the shorter the refresh interval, the less damage a DNS-spoofing
+(cache-poisoning) attack can do, since any &ldquo;bad records&rdquo;
+propagated by such an attack will be corrected each time the zone
+is refreshed.</p><p>The expiry interval is set to two weeks. This is the length
+of time the zone file will still be considered valid, should the
+zone's master stop responding to refresh queries. There are two
+ways a paranoiac might view this parameter. On one hand, a long
+value ensures that should the master server be bombarded with
+denial-of-service attacks over an extended period of time, its
+slaves will continue using cached zone data and the domain will
+continue to be reachable (except, presumably, for its main DNS
+server!). But on the other hand, even in the case of such an
+attack, zone data may change, and sometimes old data causes more
+mischief than no data at all.</p><p>Similarly, the Time to Live interval should be short enough
+to facilitate reasonably speedy recovery from an attack or
+corruption, but long enough to prevent bandwidth cluttering. (The
+TTL determines how long the individual zone's Resource Records may
+remain in the caches of other name servers retrieving them via
+queries.)</p><p>Our other concerns in this zone file have to do with
+minimizing the unnecessary disclosure of information. First, we
+want to minimize aliases (&ldquo;A records&rdquo;) and canonical names
+(&ldquo;CNAMEs&rdquo;) in general, so that only those hosts who need to be
+are present. (Actually, we want split DNS, but when that isn't
+feasible or applicable, we should still try to keep the zone file
+sparse.)</p><p>Second, we want to minimize the amount of (recursive)
+glue-fetching that goes on. This occurs when a requested
+name-server (NS) record contains a name whose IP address (via an A
+record) is not present on the server answering the NS query. In
+other words, if server X knows that Y is authoritative for domain
+WUZZA.com but X doesn't actually know Y's IP address, life can get
+weird: this scenario paves the way for DNS-spoofing attacks.
+Therefore, if you really want to eliminate all recursion (and I
+hope you do by now), make sure none of your Resource Records
+require recursive glue-fetching, and then set the &ldquo;fetch-glue&rdquo;
+option to &ldquo;no&rdquo;.</p><p>Finally, we need to use RP and TXT records judiciously if at
+all, but must never, ever put any meaningful data into an HINFO
+record. RP, or Responsible Person, is used to provide the e-mail
+address of someone who administers the domain. This is best set to
+as uninteresting an address as possible, e.g.,
+&ldquo;information@wuzza.com&rdquo; or &ldquo;hostmaster@wuzza.com&rdquo;. Similarly,
+TXT records contain text messages that have traditionally provided
+additional contact information (phone numbers, etc.) but should be
+kept only specific enough to be useful, or better still, omitted
+altogether.</p><p>HINFO is a souvenir of simpler times: HINFO records are used
+to state the operating system, its version, and even hardware
+configuration of the hosts to which they refer! Back in the days
+when a large percentage of Internet nodes were in academic
+institutions and other open environments (and when computers were
+exotic and new), it seemed reasonable to advertise this information
+to one's users. Nowadays, HINFO has no valid use on public servers,
+other than obfuscation (i.e., intentionally providing false
+information to would-be attackers). In short, don't use HINFO
+records!</p><p>Returning to Figure 3, then, we see that the last few records
+are unnecessary at best and a cracker's gold mine at worst. And
+although we decided the SOA record looks good, the NS record
+immediately following points to a host on another domain
+altogether&mdash;remember, we don't like glue-fetching, and if that's
+the case here, we may want to add an A record for
+ns.otherdomain.com.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x1f30270"></a>Advanced BIND Security: TSIGs</h2></div></div><p>Whew! We've looked at BIND security from several important
+angles, but we haven't even mentioned cryptographic controls.
+Actually, the Secure DNS protocol (&ldquo;DNSSEC&rdquo;, described in RFC
+2535) merits an article of its own. This set of extensions to DNS
+provides a means of cryptographically signing zone-transfer and
+query transactions, including the secure exchange of all necessary
+key data. Since DNSSEC hasn't yet been widely implemented (and in
+fact isn't even fully supported in BIND v.8x), we'll limit our
+discussion of it to the use of Transaction Signatures
+(TSIGs).</p><p>Suppose you wish to sign all zone transfers between the
+zone's master and a slave. You would do the following:</p><div class="orderedlist"><ol type="1"><li><p>create a key for the zone</p></li><li><p>on each server, create a <b  >key{}</b>
+entry in named.conf containing the key</p></li><li><p>on each server, create a
+<b  >server{}</b> entry in named.conf for the other
+server which references the key declared in step (2).</p></li></ol></div><p>Step one is most easily done with BIND's
+<span   class="bold"><b>dnskeygen</b></span> command. To create a
+512-bit signing key that can be used by both master and slave, type
+<b  >dnskeygen -H 512 -h -n
+&lt;<i><tt>desired_keyname</tt></i>&gt;</b>. The
+output will be saved in two files named something like
+<b  >Kdesired_keyname.+157+00000.key</b> and
+<b  >Kdesired_keyname.+157+00000.private</b>. In this
+case, the key-string in both files should be identical; it will
+look something like
+&ldquo;ff2342AGFASsdfsa55BSopiue/-2342LKJDJlkjVVVvfjweovzp2OIPOTXUEdss2jsdfAAlskj==&rdquo;.
+</p><p>Steps two and three consist of creating entries similar to
+the following in named.conf on each server (substituting
+&ldquo;desired_keyname&rdquo; below with whatever you wish to name the
+key&mdash;this string must be the same on both servers!):</p><pre     class="programlisting">
+key desired_keyname {
+        algorithm hmac-md5;
+        secret "&lt;insert key-string from either keyfile here&gt;";
+}
+server &lt;IP address of other server&gt; {
+        transfer-format many-answers;
+        # (send responses in batches rather than singly)
+        keys { desired_keyname; };
+};
+</pre><p>Note that <b  >key{}</b> statements must always
+precede any other statements (e.g., <b  >server{}</b>
+statements) that refer to them. A logical place to put key-server
+statements is between <b  >options{}</b> and zone
+statements.
+</p><p>Now all you need to do is restart named (via a <b  >kill
+-HUP</b> or <b  >ndc restart</b>) on both servers.
+<span   class="emphasis"><em>Voil&agrave;!</em></span> You are now on the cutting edge
+of DNS security!</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2a580.0x1f30c68"></a>Conclusion</h2></div></div><p>The guidelines and techniques we've covered here should give
+you a good start on securing your DNS server(s). For a more
+in-depth understanding of these techniques, I strongly recommend
+BIND's on-line version of its Operators' Guide (included in most
+binary distributions, or available separately from
+<a href="http://www.isc.org" target="_self">http://www.isc.org/</a>). This
+is among the most useful documents provided in any OSS package.
+Another excellent source of BIND security information is Liu's
+&ldquo;DNS Security&rdquo; slide show (available from him in PDF format&mdash;see
+below).</p><p>Equally important, every BIND user should subscribe to at
+least one security-advisory e-mail list. CERT is my personal
+favorite, since it's timely enough to be useful but low-volume
+enough to not be a nuisance. And at your earliest convenience, you
+should look up and read the CERT advisories listed
+below&mdash;understanding the threats is an essential part of good
+security.</p><p><a href="4198s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="4198aa.jpg"></div>
+
+       email: <a href="mailto:mick@visi.com">mick@visi.com</a>
+       </p><p>Mick Bauer (mick@visi.com) is security practice
+      lead at the Minneapolis bureau of ENRGI, a network engineering and
+      consulting firm. He's been a Linux devotee since 1995 and an
+      OpenBSD zealot since 1997, taking particular pleasure in getting
+      these cutting-edge operating systems to run on obsolete junk. Mick
+      welcomes questions, comments and greetings.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../078/toc078.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

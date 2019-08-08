@@ -1,0 +1,103 @@
+
+--- tcp_scan.c.orig     Tue Apr  4 09:33:08 1995
++++ tcp_scan.c  Mon Jun  5 09:05:14 1995
+@@ -3,6 +3,7 @@
+   * and detect telnet options
+   * 
+   * Author: Wietse Venema.
++  * Linux modifications to use exceptfds in select() call: Larry Doolittle
+   */
+ 
+ #include <sys/types.h>
+@@ -62,6 +63,7 @@
+ struct timeval now;                    /* banner_info last update time */
+ fd_set  write_socket_mask;             /* sockets with connect() in progress */
+ fd_set  read_socket_mask;              /* sockets with connect() finished */
++fd_set  except_socket_mask;            /* sockets with either of above */
+ int     ports_busy;                    /* number of open sockets */
+ int     ports_done;                    /* number of finished sockets */
+ int     max_sock;                      /* max socket file descriptor */
+@@ -159,6 +161,7 @@
+ 
+     FD_ZERO(&write_socket_mask);
+     FD_ZERO(&read_socket_mask);
++    FD_ZERO(&except_socket_mask);
+     ports_busy = 0;
+ 
+     /*
+@@ -256,8 +259,9 @@
+ {
+     fd_set  read_mask;
+     fd_set  write_mask;
+-    static struct timeval waitsome = {1, 1,};
+-    static struct timeval waitnot = {0, 0,};
++    fd_set  except_mask;
++    struct timeval waitsome = {1, 1,};
++    struct timeval waitnot = {0, 0,};
+     int     sock;
+     char    ch;
+ 
+@@ -266,15 +270,16 @@
+        /*
+         * When a connect() completes, report the socket and get rid of it.
+         */
+-       write_mask = write_socket_mask;
+-       read_mask = read_socket_mask;
+-       if (select(max_sock + 1, &read_mask, &write_mask, (fd_set *) 0,
++       write_mask  = write_socket_mask;
++       read_mask   = read_socket_mask;
++       except_mask = except_socket_mask;
++       if (select(max_sock + 1, &read_mask, &write_mask, &except_mask,
+                   wait ? (struct timeval *) 0 : &waitnot) < 0)
+            error("select: %m");
+        if (FD_ISSET(icmp_sock, &read_mask))
+            receive_icmp(icmp_sock);
+        for (sock = 0; ports_busy > 0 && sock <= max_sock; sock++) {
+-           if (FD_ISSET(sock, &write_mask)) {
++           if (FD_ISSET(sock, &write_mask) || FD_ISSET(sock,&except_mask)) {
+                if (read(sock, &ch, 1) < 0 && errno != EWOULDBLOCK && errno != EAGAIN) {
+                    report_and_drop_socket(sock, errno);
+                } else {
+@@ -289,9 +294,10 @@
+         * banner_time seconds. Assume we have received all banner data when
+         * a socket stops sending for BANNER_IDLE seconds.
+         */
+-       write_mask = write_socket_mask;
+-       read_mask = read_socket_mask;
+-       if (select(max_sock + 1, &read_mask, &write_mask, (fd_set *) 0,
++       write_mask  = write_socket_mask;
++       read_mask   = read_socket_mask;
++       except_mask = except_socket_mask;
++       if (select(max_sock + 1, &read_mask, &write_mask, &except_mask,
+                   wait ? &waitsome : &waitnot) < 0)
+            error("select: %m");
+        if (FD_ISSET(icmp_sock, &read_mask))
+@@ -316,6 +322,12 @@
+                    report_and_drop_socket(sock, 0);
+                    break;
+                }
++           } else if (FD_ISSET(sock, &except_mask)) {
++               if (read(sock, &ch, 1) < 0 && errno != EWOULDBLOCK && errno != EAGAIN) {
++                   report_and_drop_socket(sock, errno);
++               } else {
++                   report_and_drop_socket(sock, 0);
++               }
+            } else if (FD_ISSET(sock, &read_socket_mask)) {
+                if (time_since_connect(sock) > banner_time
+                    || time_since_read(sock) > BANNER_IDLE)
+@@ -417,6 +429,7 @@
+        bp->flags = 0;
+     }
+     FD_SET(sock, &write_socket_mask);
++    FD_SET(sock, &except_socket_mask);
+     if (sock > max_sock)
+        max_sock = sock;
+     ports_busy++;
+@@ -434,6 +447,7 @@
+     close(sock);
+     FD_CLR(sock, &read_socket_mask);
+     FD_CLR(sock, &write_socket_mask);
++    FD_CLR(sock, &except_socket_mask);
+     ports_busy--;
+     ports_done++;
+ }

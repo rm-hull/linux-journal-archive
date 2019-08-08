@@ -1,0 +1,336 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Networking with the Printer Port</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    One of the strengths of Linux is its ability to serve both as&#10;    engine for powerful number-crunchers and as effective support for&#10;    minimal computer systems. The PLIP implementation is an outstanding&#10;    resource in the latter realm, and this article shows its&#10;    internals at the software level.&#10;    "><meta name="keywords" content="kernel, PLIP"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x278f580.0x2886ab0"></a>Networking with the Printer Port</h1></div><div><div class="author"><h3 class="author">Alessandro Rubini</h3></div><div class="issuemoyr">Issue #47, March 1998</div></div><div><p>
+    One of the strengths of Linux is its ability to serve both as
+    engine for powerful number-crunchers and as effective support for
+    minimal computer systems. The PLIP implementation is an outstanding
+    resource in the latter realm, and this article shows its
+    internals at the software level.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x278f580.0x2887450"></a></h2></div></div><p>PLIP means &ldquo;Parallel Line Internet
+Protocol&rdquo;. It is a protocol used to bring IP traffic over a
+parallel cable. It works with any parallel interface and is able to
+transfer about 40KB per second. With PLIP you can connect any two
+computers at virtually no cost. Although nowadays ISA network cards
+are readily found and installed, you will still enjoy PLIP as soon
+as you get a laptop, unless you can afford a PCMCIA network card.
+</p><p>PLIP allows you to connect your computer to the Internet
+wherever there is a networked Linux box with a parallel port
+available, as long as you have root access on both systems (only
+root can load a module or configure an interface).</p><p>I find the internal design of PLIP quite interesting on three
+levels:</p><div class="orderedlist"><ol type="1"><li><p>It shows how to use simple I/O instructions.</p></li><li><p>It lets you look at how network interfaces fit in
+the overall kernel.</p></li><li><p>It shows in practice how kernel software uses the
+task queues.</p></li></ol></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x278f580.0x2887870"></a>Hardware Handling</h2></div></div><p>Before showing any PLIP code, I'd like to describe the
+workings of the standard parallel port, so that you'll be able to
+understand how the actual data transfer takes place.</p><p>The parallel port is a simple device; its external connector
+exposes 12 output bits and 5 input bits. Software has direct access
+to the bits by means of three 8-bit ports: two ports for writing
+and one for reading. Moreover, one of the input signals can trigger
+an interrupt; this ability is enabled by setting a bit in one of
+the output ports. Figure 1 shows how the three ports are mapped to
+the 25-pin connector. The <b  >base_addr</b> of a
+parallel port (the address of its data port) is usually 0x378,
+0x278 or 0x3bc. The vast majority of the parallel ports uses
+0x378.</p><div       class="mediaobject"><img src="2662f1.jpg"><div class="caption"><p>
+Figure 1. Mapping of Three Ports to Connector
+</p></div></div><p>Physical access to the ports is achieved by calling two
+C-language functions defined in the kernel headers:</p><pre     class="programlisting">
+#include &lt;linux/io.h&gt;
+unsigned char inb(unsigned short port);
+void outb(unsigned char value, unsigned short port);
+</pre><p>The &ldquo;b&rdquo; in the function name means &ldquo;byte&rdquo;. Linux also
+offers <span   class="emphasis"><em>inw</em></span> (word, 16-bit),
+<span   class="emphasis"><em>inl</em></span> (long, 32-bit) and their output
+counterparts, but they are not needed to use the parallel port. The
+functions just shown are in fact macros, and they expand to a
+single machine instruction on most Linux platforms. Their
+definition relies on <span   class="emphasis"><em>extern inline</em></span> functions;
+this means you must turn optimization on when compiling any code
+using them. The reason behind this is somehow technical, and it is
+well explained in the gcc man page.
+</p><p>You don't need to be in kernel space to call
+<span   class="bold"><b>inb</b></span> and
+<span   class="bold"><b>outb</b></span>. If you want to access I/O
+ports from a shell script, you can compile inp.c and outp.c and
+play games with your devices (and even destroy the computer). For
+this reason, only root can access ports. The source code for inp.c
+and outp.c is available by anonymous download in the file
+ftp://ftp.linuxjournal.com/lj/listings/issue47/2662.tgz.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x278f580.0x2887ef8"></a>Communicating</h2></div></div><p>Based on the description of the parallel port I provided in
+the previous section, it should be clear that two parties that
+communicate using PLIP must exchange five bits at a time, at most.
+The PLIP cable must be specially wired in order to connect five of
+the outputs of one side to the five inputs at the other side, and
+vice-versa. The exact pin out of the PLIP cable is described in the
+source file drivers/net/plip.c and in several places elsewhere, so
+I won't repeat the information here.</p><p>One of the deficiencies of the parallel port is the
+unavailability of any timing resources in hardware. Compare this
+with the serial port which contains its own clock. The
+communication protocol can't exploit any advanced hardware
+functionality, and any handshake must be performed in software. The
+chosen protocol uses one of the bits as a strobe signal to signal
+the availability of four data bits; the receiver must acknowledge
+receipt of the data by toggling its own strobe line. This approach
+to data transmission is very CPU intensive. The processor must poll
+the strobe signal to send its data, and system performance degrades
+severely during PLIP data transfers.</p><p>The time line of a PLIP transmission is depicted in Figure 2,
+which details the steps involved in the transmission of a single
+byte of information.</p><div       class="mediaobject"><img src="2662f2.jpg"><div class="caption"><p>
+Figure 2. Time Line of PLIP Transmission
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x278f580.0x2888268"></a>Internet Datagrams</h2></div></div><p>As far as the kernel proper is concerned, the PLIP device is
+just like any other network device. More specifically, it is like
+any other Ethernet interface even though its name is
+<span   class="bold"><b>plip</b></span><span   class="emphasis"><em>x</em></span> instead
+of
+<span   class="bold"><b>eth</b></span><span   class="emphasis"><em>x</em></span>.</p><p>When a datagram must be transmitted through a network
+interface, it is passed to the transmission function of the device
+driver. The driver receives a socket-buffer argument
+(<b  >struct sk_buff</b>) and a pointer to itself
+(<b  >struct device</b>).</p><p>With PLIP, transmission occurs by encapsulating the IP
+datagram into a &ldquo;hardware header&rdquo; for delivery, not unlike what
+happens for any other transmission medium. The difference with PLIP
+is that although it receives a data packet that already includes an
+Ethernet header, the driver adds its own header. A packet
+encapsulated by PLIP, as it travels over the parallel cable, is
+made up of the following fields:</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>Packet length</b></span>:
+Transmission is headed by the length of the data packet in bytes,
+least significant byte first. The count is transmitted as a 16-bit
+number that doesn't include the count itself or the final checksum
+byte.</p></li><li><p><span   class="bold"><b>Ethernet header</b></span>:
+PLIP uses Ethernet encapsulation, so that programming the first
+implementation (in the PC world, when Linux didn't exist) was
+simplified. These fourteen bytes are almost useless, but they are
+still present for backward compatibility.</p></li><li><p><span   class="bold"><b>IP data</b></span>: IP data
+directly follow the header, just as with Ethernet
+interfaces.</p></li><li><p><span   class="bold"><b>Checksum byte</b></span>: The
+trailing byte of a PLIP transmission is a checksum byte, which must
+equal the sum modulo 256 of every data byte in the packet,
+excluding the leading two bytes (the length) and the checksum
+itself.</p></li></ul></div><p>Whenever a packet is transmitted, all of the bytes are sent
+through the cable using the 5-bit protocol described earlier. This
+is quite straightforward and works flawlessly, unless something
+goes haywire during transmission.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x278f580.0x2888b00"></a>Asynchronous Operation</h2></div></div><p>The interesting part of a PLIP communication channel is how
+asynchronous operations are handled. Transmission and reception of
+data packets must fit with other system operations and must be
+fault tolerant as much as possible. This involves several kernel
+resources and is quite interesting to anyone interested in kernel
+internals.</p><p>There are three problems to overcome to achieve reliable PLIP
+transmission. Outgoing packets must be transmitted asynchronously
+with respect to the rest of the system; even if transmission is CPU
+bound, it should happen outside of the normal computational flow.
+Incoming packets must also be received asynchronously, and they
+must be able to notify the PLIP device driver about their arrival.
+The last problem is fault tolerance; if one of the parties locks up
+transmission for any reason, we don't want the peer host to freeze
+while it waits for a strobe signal.</p><p>Asynchronous operation is achieved in PLIP by using the
+kernel task queues (which were introduced in the June 1996 issue of
+<i  >Linux Journal</i>). Fault tolerance and timeouts
+are implemented using a state-machine implementation that
+interleaves PLIP transmission/reception with other computational
+activities without losing track of the internal status of the
+transmitter.</p><p>Let's look at PLIP cable connecting machines called Tanino
+and Romeo (Tanino = Tx, Romeo = Rx). The following paragraphs
+explain what happens when Tanino sends a packet to Romeo.</p><p>Tanino sends the signal to interrupt Romeo, disables
+interrupt reporting for itself and initiates the transmission loop
+by registering <span   class="bold"><b>plip_bh</b></span> in the
+immediate task queue and returning. When plip_bh runs, it knows
+that the interface is sending data and calls
+<span   class="bold"><b>plip_send_packet</b></span>.</p><p>Romeo, when interrupted
+(<span   class="bold"><b>plip_interrupt</b></span>), registers
+plip_bh in the immediate task queue. The plip_bh function
+dispatches computation to
+<span   class="bold"><b>plip_receive_packet</b></span>, which
+disables interrupt reporting in the interface and starts receiving
+bytes.</p><p>Tanino's loop is built on
+<span   class="bold"><b>plip_send</b></span> (which transmits a
+single byte) while Romeo's loop is built on
+<span   class="bold"><b>plip_receive</b></span> (which receives a
+single byte). These two functions are ready to detect a timeout
+condition, and in this case, they return the TIMEOUT macro to the
+calling function, which returns TIMEOUT to plip_bh.</p><p>When the callee aborts the loop by returning TIMEOUT, the
+plip_bh function registers a function in the timer task queue, so
+that the loop will be entered again at the next clock tick. If
+timeout continues after a few clock ticks, transmission or
+reception of this packet is aborted, and an error is registered in
+the <span   class="bold"><b>enet_statistics</b></span> structure;
+these errors are shown by the
+<span   class="bold"><b>ifconfig</b></span> command.</p><p>If the timeout condition doesn't persist at the next clock
+tick, data exchange goes on flawlessly. The state machine
+implemented in the interface is responsible for restarting
+communication at exactly the place where the timeout
+occurred.</p><p>As you see, the PLIP interface is fairly symmetrical.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x278f580.0x2c81488"></a>Plugging the Driver in Linux</h2></div></div><p>As far as a network driver is concerned, being able to
+transmit and receive data is not the whole of its job. The driver
+needs to interface with the rest of the kernel in order to fit with
+the rest of the system. The PLIP device driver devotes more or less
+one quarter of its source code to interface issues, and I feel it
+worth introducing here.</p><p>Basically, a network interface needs to be able to send and
+receive packets. Network drivers are organized into a set of
+&ldquo;methods&rdquo;, as character drivers are (see <span   class="emphasis"><em>Dynamic
+Kernels: Discovery</em></span>, <i  >LJ</i> April 1996).
+Sending a packet is easy; one of the methods is dedicated to packet
+transmission, and the driver just implements the right method to
+transmit data to the network.</p><p>Receiving a packet is somehow more difficult, as the packet
+arrives through an interrupt, and the driver must actively manage
+received data. Packet reception for any network interface is
+managed by exploiting the so-called &ldquo;bottom halves&rdquo;.</p><p>In Linux, interrupt handling code is split into two halves.
+The top half is the hardware interrupt, which is triggered by a
+hardware event and is executed immediately. The bottom half is a
+software routine that gets scheduled by the kernel to run without
+interfering with normal system operation. Bottom halves are run
+whenever a process returns from a system call and when &ldquo;slow&rdquo;
+interrupt handlers return. When a slow handler runs, all of the
+processor registers are saved and hardware interrupts are not
+disabled; therefore, it's safe to run the pending bottom halves
+when such handlers return. It's interesting to note that new
+kernels in the 2.1 hierarchy no longer differentiate between fast
+and slow interrupt handlers.</p><p>A bottom-half handler must be &ldquo;marked&rdquo;; this consists of
+setting a bit in a bit-mask register, so that the kernel will check
+whether any bottom half is pending or not. The immediate task
+queue, used by the PLIP driver, is implemented as a bottom half.
+When a task is queued, the caller must call
+<b  >mark_bh(IMMEDIATE_BH)</b>, and the queue will be run
+as soon as a process is done with a system call or a slow handler
+returns.</p><p>Getting back to network interfaces, when a driver receives a
+network datagram, it must make the following call:</p><pre     class="programlisting">
+netif_rx(struct sk_buff *skb)
+</pre><p>where <b  >skb</b> is the buffer hosting the
+received packet; PLIP calls
+<span   class="bold"><b>netif_rx</b></span> from plip_receive_packet.
+The netif_rx function queues the packet for later processing and
+calls:
+<pre     class="programlisting">
+mark_bh(NET_BH)
+</pre>
+
+
+Then, when bottom halves are run, the packet is processed.
+</p><p>In practice, something more is needed to fit a network
+interface into the Linux kernel; the module must register its own
+interfaces and initialize them. Moreover, an interface must export
+a few house-keeping functions that the kernel will call. All of
+this is performed by a few short functions, listed below:</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>plip_init</b></span>: This
+function is in charge of initializing the network device; it is
+called when <span   class="bold"><b>init_module</b></span> registers
+its devices. The function checks to see if the hardware is
+installed in the system and assigns fields in the <b  >struct
+device</b> that describes the interface.</p></li><li><p><span   class="bold"><b>plip_open</b></span>:
+Whenever an interface is brought up, its
+<span   class="bold"><b>open</b></span> function is called by the
+kernel. The function must prepare to become operative (similar to
+the <span   class="bold"><b>open</b></span> method for character
+devices).</p></li><li><p><span   class="bold"><b>plip_close</b></span>: This
+function is the reverse of plip_open.</p></li><li><p><span   class="bold"><b>plip_get_stats</b></span>:
+This function is called whenever statistical information is needed.
+For example, the printout of
+<span   class="bold"><b>ifconfig</b></span> shows values returned by
+this function.</p></li><li><p><span   class="bold"><b>plip_config</b></span>: If a
+program changes the hardware configuration of the device, this
+function is called. PLIP allows you to specify the interrupt line
+at run time, because probing can't be safely performed when a
+module is loaded. Most of the parallel ports are configured to use
+the default interrupt line.</p></li><li><p><span   class="bold"><b>plip_ioctl</b></span>: Any
+interface that needs to implement device-specific
+<span   class="bold"><b>ioctl</b></span> commands must have an ioctl
+method. PLIP allows changing its timeout values, although I never
+needed to play with these numbers. The
+<span   class="bold"><b>plipconfig</b></span> program allows changing
+the timeouts.</p></li><li><p><span   class="bold"><b>plip_rebuild_header</b></span>:
+This function is used to build an Ethernet header in front of the
+IP data. Ethernet interfaces that use ARP don't need to implement
+this function, as the default one for the Ethernet interface does
+all of the work.</p></li><li><p><span   class="bold"><b>init_module</b></span>: As
+you probably already know, this is the entry point to the
+modularized driver. When a network interface is loaded to a running
+system, its <span   class="bold"><b>init_module</b></span> should
+call <span   class="bold"><b>register_netdev</b></span>, passing a
+pointer to <span   class="bold"><b>struct device</b></span>. Such a
+structure should be partly initialized and should include a pointer
+to an <span   class="bold"><b>init</b></span> function which
+completes initialization of the structure. For PLIP, such a
+function is plip_init.</p></li></ul></div><p>These functions, along with
+<span   class="bold"><b>hw_start_xmit</b></span>, the one function
+responsible for actual packet transmission, are all that's needed
+to run a network interface within Linux. Although I admit there's
+more to know in order to write a real driver, I hope the actual
+sources can prove interesting to fill the holes.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x278f580.0x2c82770"></a>More Information</h2></div></div><p>My choice to discuss PLIP is motivated by the easy
+availability of such a network connection, and the do-it-yourself
+approach that might convince someone to build their own infrared
+Ethernet link. If you really are going to peek in the sources to
+learn how a network interface works, I'd suggest starting with
+loopback.c, which implements the <span   class="bold"><b>o</b></span>
+interface, and skeleton.c, which is quite detailed about the
+problems you'll encounter when building a network driver.</p><p>If you are more keen to use PLIP than to write device
+drivers, you can refer to the PLIP-HOWTO in any LDP mirror, and to
+/usr/doc/HOWTO in most Linux installations.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="2662aa.jpg"></div>
+
+        <span   class="emphasis"><em>Alessandro is always wondering why
+      laptops have a floppy drive instead of a second parallel port. He
+      reads e-mail as rubini@linux.it, where you can bug him about Linux
+      in general and device drivers in particular. He has written a book
+      called</em></span> Linux Device Frivers for O'Reilly and
+      Associates.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../047/toc047.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

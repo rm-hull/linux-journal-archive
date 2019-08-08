@@ -1,0 +1,101 @@
+Listing 5: better-dbsearch.pl, which allows users to perform "or"
+and "and" searches.
+
+#!/usr/bin/perl -w
+# filename: better-dbsearch.pl
+
+use strict;
+use diagnostics;
+use File::Find;
+use HTML::Entities;
+use Fcntl;
+use MLDBM qw(DB_File);
+use CGI;
+use CGI::Carp qw(fatalsToBrowser);
+
+# Create an instance of CGI
+my $query = new CGI;
+
+# Send a MIME header to the user's browser
+print $query->header("text/html");
+
+# In what file should the index be stored?
+my $index_file = "/tmp/lj.db";
+
+# Create the word index hash, and tie it to the file
+my %data;
+tie %data, "MLDBM", $index_file, O_RDONLY
+    or die "Error tying %data: $! ";
+
+# Get the user's search term
+my $term = lc $query->param("term");
+
+# Our algorithm now depends on the boolean
+my $boolean = $query->param("boolean");
+
+my %full_results = ();
+my %match_counter = ();
+
+# Split the words across whitespace
+my @terms = split / /, $term;
+
+# Get the results hash for each word
+foreach my $word (@terms)
+{
+    # Get a hashref to the data (key is filename, value
+    # is the number of times the word appears)
+    my $frequency = $data{$word};
+
+    # Add each key-value pair in $frequency to %full_results
+    foreach my $filename (keys %$frequency)
+    {
+	$full_results{$filename} += $frequency->{$filename};
+
+	# Indicate that this file matched, for "and" searches
+	$match_counter{$filename}++ if ($boolean eq "and");
+    }
+}
+
+# For "and" searches, remove files that don't contain all terms
+if ($boolean eq "and")
+{
+    # Remove filenames from %full_results unless all
+    # terms were found
+    foreach my $filename (keys %full_results)
+    {
+	delete $full_results{$filename}
+	    unless ($match_counter{$filename} == @terms);
+    }
+}
+
+# Give a warning if there were no results
+unless (%full_results)
+{
+    print $query->start_html(-title => "No matches!");
+    print qq|<P>Sorry, but there were no matches to "$term".</P>\n|;
+    print $query->end_html;
+    exit;
+}
+# Display the search results
+print $query->start_html(-title => "Search results");
+
+my $query_string = join " <b>$boolean</b> ", @terms;
+
+print "<P>There were ", scalar keys %full_results;
+print qq| matches to "$query_string":</P>\n|;
+
+print "<ul>\n";
+
+# If there were results, sort them by frequency
+foreach my $url 
+    (sort {$full_results{$a} <=> $full_results{$b} } keys %full_results)
+{
+    print qq|<li> <a href="$url">$url</a>\n|;
+}
+
+print "</ul>\n";
+print $query->end_html;
+
+# Untie the data
+untie %data;
+

@@ -1,0 +1,260 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Lowering Latency in Linux: Introducing a Preemptible Kernel</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Whether you seek higher scores in Quake, are an audio&#10;    enthusiast or want a smoother desktop, lowering latency in&#10;    the kernel is an important goal.&#10;    "><meta name="keywords" content="latency, kernel, preemptible"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x13a8580.0x149fab0"></a>Lowering Latency in Linux: Introducing a Preemptible Kernel</h1></div><div><div class="author"><h3 class="author">Robert Love</h3></div><div class="issuemoyr">Issue #97, May 2002</div></div><div><p>
+    Whether you seek higher scores in Quake, are an audio
+    enthusiast or want a smoother desktop, lowering latency in
+    the kernel is an important goal.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13a8580.0x14a0500"></a></h2></div></div><p>Performance measurements come in two
+flavors, throughput and latency. The former is like the width of an
+expressway: the wider the expressway, the more cars that can travel
+on it. The latter is like the speed limit: the faster it is, the
+sooner cars get from point A to point B. Obviously, both quantities
+are important to any task. Many jobs, however, require more of one
+quality than of the other. Sticking to our roadway analogy,
+long-haul trucking may be more sensitive to throughput, while a
+courier service may be more demanding on latency. Lowering latency
+and increasing system response, through good old-fashioned kernel
+work, is the topic of this article.</p><p>Audio/video processing and playback are two common
+beneficiaries of lowered latency. Increasingly important to Linux,
+however, is its benefit to interactive performance. With high
+latency, user actions, such as mouse clicks, go unnoticed for too
+long&mdash;not the snappy responsive desktop users expect. The system
+cannot get to the important process fast enough.</p><p>The problem, at least as far as the kernel is concerned, is
+the nonpreemptibility of the kernel itself. Normally, if something
+sufficiently important happens, such as an interactive event, the
+receiving application will get a priority boost and subsequently
+find itself running. This is how a preemptively multitasked OS
+works. Applications run until they use up some default amount of
+time (called a timeslice) or until an important event occurs. The
+alternative is cooperative multitasking, where applications must
+explicitly say, &ldquo;I'm done!&rdquo;, before a new process can run. The
+problem, when running in the kernel, is that scheduling is
+effectively cooperative.</p><p>Applications operate in one of two modes: either in user
+space, executing their own code, or within the kernel, executing a
+system call or otherwise having the kernel work on their behalf.
+When operating in the kernel, the process continues running until
+it decides to stop, ignoring timeslices and important events. If a
+more important process becomes runnable, it cannot be run until the
+current process, if it is in the kernel, gets out. This process can
+take hundreds of milliseconds.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13a8580.0x14a0710"></a>Latency Solutions</h2></div></div><p>The first and simplest solution to latency problems is to
+rewrite kernel algorithms so that they take a minimal, bounded
+amount of time. The problem is that this is already the goal;
+system calls are written to return quickly to user space, yet we
+still have latency problems. Some algorithms simply do not scale
+nicely.</p><p>The second solution is to insert explicit scheduling points
+throughout the kernel. This approach, taken by the low-latency
+patches, finds problem areas in the kernel and inserts code to the
+effect of &ldquo;Anyone need to run? If so, run!&rdquo; The problem with this
+solution is that we cannot possibly hope to find and fix all
+problem areas. Nonetheless, testing shows that these patches do a
+good job. What we need, however, is not a quick fix but a solution
+to the problem itself.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13a8580.0x14a0870"></a>The Preemptible Kernel</h2></div></div><p>A proper solution is removing the problem altogether by
+making the kernel preemptible. Thus, if something more important
+needs to run, it will run, regardless of what the current process
+is doing. The obstacle here, and the reason Linux did not do this
+from the start, is that the kernel would need to be re-entrant.
+Thankfully, the issues of preemption are solved by existing SMP
+(symmetric multiprocessing) support. By taking advantage of the SMP
+code, in conjunction with some other simple modifications, the
+kernel can be made preemptible.</p><p>The programmers at MontaVista provided the initial
+implementation of kernel preemption. First, the definition of a
+spin lock was modified to include marking a &ldquo;nonpreemptible&rdquo;
+region. Therefore, we do not preempt while holding a spin lock,
+just as we do not enter a locked region concurrently under SMP. Of
+course, on uniprocessor systems we do not actually make the spin
+locks anything other than the preemption markers. Second, code was
+modified to ensure that we do not preempt inside a bottom half or
+inside the scheduler itself. Finally, the return from interrupt
+code path was modified to reschedule the current process if
+needed.</p><p>On UP, spin_lock is defined as preempt_disable, and
+spin_unlock is defined as preempt_enable. On SMP, they also perform
+the normal locking. So what do these new routines do?</p><p>The nestable preemption markers preempt_disable and
+preempt_enable operate on preempt_count, a new integer stored in
+each task_struct. <span   class="bold"><b>preempt_disable</b></span>
+effectively is:</p><pre     class="programlisting">
+++current-&gt;preempt_count;
+barrier();
+</pre><p>and preempt_enable is:
+<pre     class="programlisting">
+--current-&gt;preempt_count;
+barrier();
+if (unlikey(!current-&gt;preempt_count
+    &amp;&amp; current-&gt;need_resched))
+    preempt_schedule();
+</pre>
+
+
+The result is we do not preempt when the count is greater than
+zero. Because spin locks are already in place to protect critical
+regions for SMP machines, the preemptible kernel now has its
+protection too.
+</p><p><span   class="bold"><b>preempt_schedule</b></span> implements
+the entry to <span   class="bold"><b>schedule</b></span> itself. It
+sets a flag in the current process to signify it was preempted,
+calls schedule and, upon return, unsets the flag:</p><pre     class="programlisting">
+asmlinkage void preempt_schedule(void)
+{
+    do {
+        current-&gt;preempt_count += PREEMPT_ACTIVE;
+        schedule();
+        current-&gt;preempt_count -= PREEMPT_ACTIVE;
+    } while (current-&gt;need_resched);
+}
+</pre><p>The other entry to preempt_schedule is via the interrupt
+return path. When an interrupt handler returns, it checks the
+preempt_count and need_resched variables, just as preempt_enable
+does (although the interrupt return code in entry.S is in
+assembly). The ideal scenario is to cause a preemption here because
+it is an interrupt that typically sets need_resched due to a
+hardware event. It is not always possible, however, to preempt
+immediately off the interrupt, as a lock may be held. That is why
+we also check for preemption off preempt_enable.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13a8580.0x14a0d98"></a>The Results</h2></div></div><p>Thus, with the preemptive kernel patch, we can reschedule
+tasks as soon as they need to be run, not only when they are in
+user space. What are the results of this?</p><p>Process-level response is improved twentyfold in some cases.
+(See Figure 1, a standard kernel, vs. Figure 2, a preemptible
+kernel.) These graphs are the output of Benno Senoner's useful
+latencytest tool, which simulates the buffering of an audio sample
+under load. The red line in the graphs represents the amount of
+latency beyond which audio dropouts are perceptible to humans.
+Notice the multiple spikes in the graph in Figure 1 compared to the
+smooth low graph in Figure 2.</p><div       class="mediaobject"><a href="5600f1.large.jpg"><img src="5600f1.jpg"></a><div class="caption"><p>
+Figure 1. Result of a Latency Test Benchmark on a Standard Kernel
+</p></div></div><div       class="mediaobject"><a href="5600f2.large.jpg"><img src="5600f2.jpg"></a><div class="caption"><p>
+Figure 2. Result of a Latency Test Benchmark on a Preemptible
+Kernel
+</p></div></div><p>The improvement in latencytest corresponds to a reduction in
+both worst-case and average latency. Further tests show that the
+average system latency over a range of workloads is now in the
+1-2ms range.</p><p>A common complaint against the preemptible kernel centers on
+the added complexity. Complexity, opponents argue, decreases
+throughput. Fortunately, the preemptive kernel patch improves
+throughput in many cases (see Table 1). The theory is that when I/O
+data becomes available, a preemptive kernel can wake an I/O-bound
+process more quickly. The result is higher throughput, a nice
+bonus. The net result is a smoother desktop, less audio dropout
+under load, better application response and improved fairness to
+high-priority tasks.</p><p><a href="5600t1.html" target="_self">Table 1. Throughput Test: dbech
+Runs</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13a8580.0x14a13c8"></a>Changes to Programming Semantics</h2></div></div><p>Kernel hackers are probably thinking, &ldquo;How does this affect
+my code?&rdquo; As discussed above, the preemptible kernel leverages
+existing SMP support. This makes the preemptible kernel patch
+relatively simple and the impact to coding practices relatively
+minor. One change, however, is required. Currently, per-CPU data
+(data structures unique to each CPU) do not require locking.
+Because they are unique to each CPU, a task on another CPU cannot
+mangle the first CPU's data. With preemption, however, a process on
+the same CPU can find itself preempted, and a second process can
+then trample on the data of the first. While this normally is
+protected by the existing SMP locks, per-CPU data does not require
+locks. Data that does not have a lock, because it is protected by
+its nature, is considered to be &ldquo;implicitly locked&rdquo;. Implicitly
+locked data and preemption do not get along. The solution,
+thankfully, is simple: disable preemption around access to the
+data. For example:</p><pre     class="programlisting">
+int catface[NR_CPUS];
+preempt_disable();
+catface[smp_processor_id()] = 1;  /* index catface
+                                     by CPU number */
+/* operate on catface */
+preempt_enable();
+</pre><p>The current preemption patch provides protection for the
+existing implicitly locked data in the kernel. Thankfully, it is
+relatively infrequent. New kernel code, however, will require
+protection if used in a preemptible kernel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13a8580.0x14a1580"></a>Work for the Future</h2></div></div><p>We still have work to do. Once the kernel is preemptible,
+work can begin on reducing the duration of long-held locks. Because
+the kernel is nonpreemptible when a lock is held, the duration
+locks are held corresponding to the system's worst-case latency.
+The same work that benefits SMP scalability (finer-grained locking)
+will lower latency. We can rewrite algorithms and locking rules to
+minimize lock held time. Eradicating the BKL will help too.</p><p>Identifying the long-held locks can be as difficult as
+rewriting them. Fortunately, there is the preempt-stats patch that
+measures nonpreemptibility times and reports their cause. This tool
+is useful for pinpointing the cause of latency for a specific
+workload (e.g., a game of <span   class="emphasis"><em>Quake</em></span>).</p><p>What is needed is a goal. Kernel developers need to consider
+any lock duration that extends over a certain threshold, a bug for
+example, 5ms on a reasonably modern system. With that goal in mind,
+we can pinpoint and ultimately eliminate the areas of high latency
+and lock contention.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13a8580.0x14a1790"></a>Conclusion</h2></div></div><p>The Linux community is large and diverse, and Linux is used
+in embedded systems all the way through large servers. Preemptive
+kernel technology provides benefits beyond real-time applications.
+Desktop users, gamers and multimedia developers alike stand to
+benefit from reduced latency. A solution is needed for both the 2.4
+and 2.5 kernel trees; perhaps the same solution for each is not
+best. With 2.5 under development, however, now is the time to
+implement a feature that provides an immediate gain, as well as the
+framework for further improvement. The result will be a better
+kernel.</p><p><a href="5600s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="5600aa.jpg"></div>
+
+        <span   class="bold"><b>Robert Love</b></span>
+      (<a href="mailto:rml@tech9.net">rml@tech9.net</a>) is a
+      Mathematics and Computer Science student at the University of
+      Florida. When not hacking Linux, Robert enjoys auto racing, Thai
+      food and punk rock.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../097/toc097.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

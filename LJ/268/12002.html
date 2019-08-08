@@ -1,0 +1,885 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Coroutines and Channels in C Using libmill
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Want to try a different approach to writing concurrent&#10;applications in C? This article looks at libmill, a library that&#10;brings Go-style concurrency to C.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2416580.0x250dac0"></a>
+Coroutines and Channels in C Using libmill
+</h1></div><div><div class="author"><h3 class="author">
+Amit
+ 
+Saha
+</h3></div><div class="issuemoyr">Issue #268, August 2016</div></div><div><p>
+Want to try a different approach to writing concurrent
+applications in C? This article looks at libmill, a library that
+brings Go-style concurrency to C.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x250e300"></a></h2></div></div><p>
+libmill is a C library that brings Golang-style 
+concurrency to C. Using it, you can call a function like <tt  >f(arg1, arg2)</tt> using 
+<tt  >go(f(arg1, arg2))</tt>, and the function will be executed in a separate coroutine. 
+If you have multiple coroutines executing, libmill's scheduler takes care of 
+scheduling the coroutines. Data will be passed to and from coroutines using 
+channels. In this article, I introduce the key libmill features&mdash;creating
+coroutines and using channels to pass data to and from them. In addition, I
+take a look at some of libmill's other convenience functions that make it more 
+than a coroutine and channels library.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x250e568"></a>
+Installing libmill</h2></div></div><p>
+libmill currently is considered stable. Its latest release at the time of this writing
+is version 1.8 
+(released in March 2016). To install it, download the gzipped tarball from 
+<a href="http://libmill.org/download.html" target="_self">libmill.org/download.html</a>, extract it and do the following steps:
+
+<pre     class="programlisting">
+$ ./configure
+$ make
+$ sudo make install
+</pre>
+</p><p>
+Note that you likely will need to run <tt  >sudo ldconfig</tt> on Ubuntu/Debian, 
+and manually add /usr/local/lib to a file in /etc/ld.so.conf.d/, and then run 
+<tt  >sudo ldconfig</tt> on Fedora to be able to link to the libmill shared library when 
+compiling your programs.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x250e828"></a>
+Hello Coroutine</h2></div></div><p>
+Now that you've installed libmill, let's write a first example of using 
+coroutines in programs (Listing 1a).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x250e930"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 1a. listing1.c</b></p><pre     class="programlisting">
+
+# include &lt;stdio.h&gt;
+# include &lt;libmill.h&gt;
+
+coroutine void f(int index)
+{
+  printf("Worker %d\n", index);
+}
+
+int main(int argc, char **argv)
+{
+  for(int i=1;i&lt;=10; i++) {
+    go(f(i));
+  }
+  return 0;
+}
+
+</pre></div><p>
+Let's compile and run this program:
+
+<pre     class="programlisting">
+$ gcc -o listing1 listing1.c -lmill
+$ ./listing1
+Worker 1
+Worker 2
+Worker 3
+Worker 4
+Worker 5
+Worker 6
+Worker 7
+Worker 8
+Worker 9
+Worker 10
+</pre>
+</p><p>
+The function, <tt  >f()</tt> in Listing 1a is defined almost like an ordinary C 
+function. The only difference is the <tt  >coroutine</tt> specifier at the beginning:
+
+<pre     class="programlisting">
+coroutine void f(int index)
+</pre>
+</p><p>
+The <tt  >coroutine</tt> specifier tells libmill that you plan to call this function 
+in a coroutine using the <tt  >go()</tt> construct, as you saw in the
+<tt  >main()</tt>
+function in Listing 1a:
+
+<pre     class="programlisting">
+go(f(i));
+</pre>
+</p><p>
+Here, you call the function, <tt  >f()</tt>, in a coroutine ten times, one after the other. The
+reason you see the above output in the same order (as opposed to any
+other order) as starting the coroutines is that the program runs in a
+single process. Given that though, if libmill finds that a coroutine
+implicitly or explicitly can be scheduled out and another coroutine is
+ready to run, the latter will start running. 
+</p><p>
+libmill provides a function called <tt  >msleep()</tt> that can be used to tell 
+libmill's scheduler explicitly that it wants to sleep and let other runnable processes 
+run. This function will allow you to see libmill's scheduling in action 
+(Listing 1b).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x250f0c0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1b. listing1-msleep.c Coroutines with msleep()</b></p><pre     class="programlisting">
+
+# include &lt;stdio.h&gt;
+# include &lt;libmill.h&gt;
+# include &lt;string.h&gt;
+# include &lt;stdlib.h&gt;
+
+coroutine void f(int index)
+{
+  msleep(now() + rand() % 50 );
+  printf("Worker %d\n", index);
+}
+
+int main(int argc, char **argv)
+{
+  for(int i=1;i&lt;=10; i++) {
+    go(f(i));
+  }
+  msleep(now() + 60);
+  return 0;
+}
+
+</pre></div><p>
+When you compile and run this code, you'll see output where the coroutines 
+are no longer executed in the order they are started:
+
+<pre     class="programlisting">
+$ gcc -o listing1-msleep listing1-msleep.c -lmill
+$ ./listing1-msleep
+Worker 1
+Worker 4
+Worker 10
+Worker 6
+Worker 3
+Worker 9
+Worker 8
+Worker 5
+Worker 7
+Worker 2
+</pre>
+</p><p>
+The key statement in Listing 1b is <tt  >msleep(now() + rand() % 50 );</tt> in the 
+function <tt  >f()</tt>. When you use <tt  >go(f(i))</tt> to start the function
+<tt  >f()</tt> in a coroutine,
+it first goes to &ldquo;sleep&rdquo; using the <tt  >msleep()</tt> function. This tells the libmill 
+scheduler that it can schedule other coroutines in the meantime. 
+</p><p>
+Unlike the standard library's <tt  >sleep()</tt> function, the argument to the
+<tt  >msleep()</tt> function is a &ldquo;deadline&rdquo;&mdash;a libmill concept that means you
+give a function a deadline in time after which libmill will continue its
+execution. The <tt  >now()</tt> function returns the current time in milliseconds, so
+<tt  >msleep(now() + rand() % 50)</tt> sets the deadline to a random time between 0
+and 50 microseconds for each coroutine. You'll also want to wait for all the
+coroutines to finish in the <tt  >main()</tt> function, so insert the statement
+<tt  >msleep(now() + 60)</tt> in it.
+</p><p>
+One point to mention here is if you instead use the <tt  >sleep()</tt> function,
+the entire thread of execution will block, and no scheduling will be
+possible among the coroutines. This is the reason libmill comes with
+its own set of non-blocking alternatives for input/output operations,
+such as <tt  >tcprev()</tt>, <tt  >mfread()</tt> and others.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x250fa08"></a>
+Using Channels for Communication</h2></div></div><p>
+Channels are both a messaging as well as a synchronization mechanism when 
+working with coroutines. A channel is unidirectional and typed. When creating 
+a channel, you have to specify the type of data it will carry. Using a channel,
+you can send data to a coroutine, and then in the sending coroutine, wait to 
+receive data back on a different channel. 
+</p><p>
+Next, let's look at an example of using a channel to send work to a coroutine, wait 
+for it to process the work and send the result back over another channel. 
+The work here is simple. You pass the first command-line argument to 
+the program and send it to the coroutine, which returns the length of the 
+string (Listing 2).
+</p><p>
+In the <tt  >main()</tt> function, create two channels, one for input and another for 
+output, and call them input and output, respectively:
+
+<pre     class="programlisting">
+chan input = chmake(char*, 0);
+chan output = chmake(int, 0);
+</pre>
+</p><p>
+<tt  >chan</tt> is a type defined by libmill to represent channels. A channel is
+created using the <tt  >chmake()</tt> function. The first argument to <tt  >chmake()</tt> is
+the type of data it will carry, and the second argument is its size. The
+default behaviour of channels is that a sender will block until there
+is a receiver and vice versa. When the size of the channel is 0, it is
+called an unbuffered channel, and it will not allow any data to be written
+in either of the scenarios. When the size of the channel is a non-zero
+number, it allows as many messages to be sent to it before blocking.
+</p><p>
+The two channels created above are unbuffered channels. This suits the
+purpose here since you want the coroutine to wait until you send it some work 
+to do on the input channel, and then you want to wait for the coroutine to send 
+you the result back in the output channel.
+</p><p>
+The coroutine function <tt  >worker()</tt> accepts the two channels as
+parameters: <tt  >chan input</tt> and <tt  >chan output</tt>.
+When it starts, you use the <tt  >chr(input, char*)</tt>
+function (<tt  >chr</tt> stands for &ldquo;ch&rdquo;annel
+&ldquo;r&rdquo;eceive) to read a <tt  >char*</tt> data item from the input 
+channel. Until there is a data item available to be read,
+<tt  >worker()</tt> blocks. 
+Once there is a data item to read, it creates a copy of it in work, then 
+uses the <tt  >chs(output, int, strlen(work))</tt> function
+(<tt  >chs</tt> stands for &ldquo;ch&rdquo;annel &ldquo;s&rdquo;end) to write 
+the length of the string to the output channel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2506be0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 2. listing2.c Example of Using Channels</b></p><pre     class="programlisting">
+
+# include &lt;stdio.h&gt;
+# include &lt;libmill.h&gt;
+# include &lt;string.h&gt;
+# include &lt;stdlib.h&gt;
+
+coroutine void worker(chan input, chan output) {
+  /* Receive work*/
+  char *work = chr(input, char*);
+  printf("Processing: %s\n", work);
+  /* Send the result back by writing to the channel*/
+  chs(output, int, strlen(work));
+}
+
+int main(int argc, char **argv)
+{
+  if (argc != 2) {
+    printf("Please specify one command line argument\n");
+    exit(1);
+  }
+   /* Create an unbuffered channel to send work on*/
+  chan input = chmake(char*, 0);
+  if (input == NULL) {
+    printf("Failed to create channels for input\n");
+    exit(1);
+  }
+
+  /* Create an unbuffered channel to receive result on*/
+  chan output = chmake(int, 0);
+  if (output == NULL) {
+    printf("Failed to create channels for output\n");
+    exit(1);
+  }
+
+  /* Create a worker coroutine */
+  go(worker(input, output));
+  /* Send data to worker by writing to input channel*/
+  chs(input, char*, argv[1]);
+  /* Receive result from the coroutine and output*/
+  printf("Result: %d\n", chr(output, int));
+
+  /* Close channels */
+  chclose(input);
+  chclose(output);
+  return 0;
+}
+
+</pre></div><p>
+Let's compile and run the above program:
+
+<pre     class="programlisting">
+$ gcc -o listing2 listing2.c 
+$ ./listing2
+Please specify one command line argument
+$ ./listing2 hello
+Processing: hello
+Result: 5
+</pre>
+</p><p>
+In the main() function, you start the coroutine using <tt  >go(worker(input,
+output))</tt>. Next, you write the string <tt  >argv[1]</tt> to the input channel using
+the <tt  >chs()</tt> function. Next, you use the
+<tt  >chr()</tt> function to read the data on
+the output channel and print it. Note, how you don't have to worry about
+having to wait explicitly before you read from the output channel. It
+is all taken care of for you automatically. Finally, you close both the
+channels, which frees the resources:
+
+<pre     class="programlisting">
+chclose(input);
+chclose(output);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x25070b0"></a>
+Writing a Coroutine-Based TCP Server</h2></div></div><p>
+libmill comes with a number of helper functions that are customized for
+writing coroutine-based network server programs. Next, I describe how to write
+a simple TCP server that handles each client in a separate coroutine
+(Listing 3).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2507210"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. listing3.c Simple Coroutine-Based TCP Server</b></p><pre     class="programlisting">
+
+# include &lt;libmill.h&gt;
+# include &lt;stdio.h&gt;
+# include &lt;stdlib.h&gt;
+# include &lt;errno.h&gt;
+# include &lt;unistd.h&gt;
+
+/* Handler coroutine */
+coroutine void handler(tcpsock as) {
+  printf("New connection!\n");
+  tcpclose(as);
+}
+
+int main(int argc, char **argv)
+{
+  int port = 9090;
+  ipaddr addr = iplocal(NULL, port, 0);
+  tcpsock server = tcplisten(addr, 10);
+
+  if (!server) {
+    perror("Can't setup a listening server\n");
+    return 1;
+  } else {
+    printf("Server listening on %d\n", port);
+  }
+
+  /* Server loop*/
+  while(1) {
+    tcpsock as = tcpaccept(server, -1);
+    if (!as)
+      continue;
+    /* Dispatch this request */
+    go(handler(as));
+  }
+
+  return 0;
+}
+
+</pre></div><p>
+The function <tt  >handler()</tt> handles a new client connection. It accepts a
+parameter of type <tt  >tcpsock</tt> as an argument and will be used to represent a
+new client connection. It prints a string &ldquo;New connection!&rdquo; and closes
+the client connection using the <tt  >tcpclose()</tt> function.
+</p><p>
+Let's now look at the <tt  >main()</tt> function that creates the server. The following 
+two statements create a listening socket:
+
+<pre     class="programlisting">
+ipaddr addr = iplocal(NULL, port, 0);
+tcpsock server = tcplisten(addr, 10);
+</pre>
+</p><p>
+The <tt  >iplocal()</tt> function is used to convert a human-friendly IP address
+to listen on to an address of the <tt  >ipaddr</tt> type. The first argument to the
+function is the IP address or network interface to listen on; specifying
+<tt  >NULL</tt> will make the server listen on all local network interfaces. The
+second argument to the function is the port to listen on, and the third
+function specifies whether you want an IPv4 or an IPv6 address. Leaving
+it as 0 defaults to IPv4 for now.
+</p><p>
+Next, you call the <tt  >tcplisten()</tt> function to create the listening socket. The
+first argument to <tt  >tcplisten()</tt> is the address you obtained in the previous
+step. The second argument is the backlog&mdash;the maximum number of incoming
+connections that have not yet been accepted, but will not be refused. It
+returns a value of type <tt  >tcpsock</tt> representing the listening socket.
+</p><p>
+If for some reason the <tt  >tcplisten()</tt> function cannot set up the listening
+socket, it returns <tt  >NULL</tt> and sets <tt  >errno</tt> to an error code specifying
+the reason it failed. Hence, you check for that and use the
+<tt  >perror()</tt>
+function to report the error when there is one.
+</p><p>
+Once you have set up the listening socket correctly, you create an infinite loop 
+that will accept an incoming connection using <tt  >tcpaccept()</tt>. The first argument 
+to the <tt  >tcpaccept()</tt> function is <tt  >server</tt>, the
+listening socket you created earlier. 
+The second argument is a deadline for the function. The deadline is a time in 
+the future up to which <tt  >tcpaccept()</tt> will wait for a client connection to come in 
+before returning. A value of -1 indicates that <tt  >tcpaccept()</tt> will block 
+indefinitely for an incoming connection:
+
+<pre     class="programlisting">
+/* Server loop*/
+ while(1) {
+   tcpsock as = tcpaccept(server, -1);
+   if (!as)
+     continue;
+   /* Dispatch this request */
+   go(handler(as));
+ }
+</pre>
+</p><p>
+<tt  >tcpaccept()</tt> returns <tt  >NULL</tt> upon error, so
+you check for it and start waiting for 
+the next connection, if there was one. If the connection was accepted, you call 
+the <tt  >handler()</tt> function with the accepted connection socket in a coroutine.
+</p><p>
+Let's compile and run the program:
+
+<pre     class="programlisting">
+$ gcc -o listing3 listing3.c -lmill
+./listing3
+Server listening on 9090
+</pre>
+</p><p>
+In a different terminal session, you can try using telnet to 127.0.0.1 9090, 
+and you will see &ldquo;New connection!&rdquo; being printed for every new client connection.
+</p><p>
+The repository for this article's code
+(<a href="https://github.com/amitsaha/lj_libmill" target="_self">https://github.com/amitsaha/lj_libmill</a>) contains a more elaborate
+example of using libmill's functions to create an HTTP server in the
+directory named hashid_service. It handles each incoming connection in a
+new coroutine.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2508130"></a>
+Choosing among Multiple Channels</h2></div></div><p>
+When you have multiple channels and you want to perform an operation when a 
+channel is ready for reading or writing, the <tt  >choose</tt> construct allows you to do 
+that. Listing 4 is an fictional example of when this might be useful. 
+It downloads data from remote URLs specified as command-line arguments, 
+making the request to each URL in a separate coroutine. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x25082e8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. listing4.c Choosing Among Multiple Channels</b></p><pre     class="programlisting">
+
+# include &lt;libmill.h&gt;
+# include &lt;stdio.h&gt;
+# include &lt;stdlib.h&gt;
+# include &lt;time.h&gt;
+
+struct data {
+  char *url;
+  char *data;
+};
+
+coroutine void f(chan work, chan result, chan error) {
+  struct data d;
+  char *url = chr(work, char*);
+  d.url = url;
+  /* Simulate 70% success and 30% failure scenario*/
+  double r = (double) rand()/RAND_MAX;
+  if (r &lt; 0.71) {
+    // Successful scenario
+    d.data = "Data at the URL";
+    chs(result, struct data, d);
+  } else {
+    // Unsuccessful scenario
+    d.data = "Error retrieving data";
+    chs(error, struct data, d);
+  }
+}
+
+int main(int argc, char **argv) {
+  chan work = chmake(char*, 0);
+  chan result = chmake(struct data, 0);
+  chan error = chmake(struct data, 0);
+
+  for(int i=1; i&lt;argc; i++) {
+    go(f(work, result, error));
+    chs(work, char*, argv[i]);
+  }
+
+  for(int i=1; i&lt;argc; i++) {
+    choose {
+    in(result, struct data, value):
+      printf("Processed URL: %s, Result: %s\n", value.url, value.data);
+    in(error, struct data, value):
+      printf("Processed URL: %s, Error: %s\n", value.url, value.data);
+    end
+    }
+  }
+  // Close all channels
+  chclose(work);
+  chclose(result);
+  chclose(error);
+  return 0;
+}
+
+</pre></div><p>
+This program uses three channels: <tt  >work</tt>,
+<tt  >result</tt> and <tt  >error</tt>. The
+<tt  >work</tt> channel
+is used to send work from the main program to the coroutine, and the 
+coroutine uses the <tt  >result</tt> and <tt  >error</tt> channels to send back the result of a 
+successful request and error, respectively. The channels are created in the 
+<tt  >main()</tt> function with the following code:
+
+<pre     class="programlisting">
+chan work = chmake(char*, 0);
+chan result = chmake(struct data, 0);
+chan error = chmake(struct data, 0);
+</pre>
+</p><p>
+The first channel, <tt  >work</tt>, is of type <tt  >char*</tt>,
+and the second and third channels are of 
+type <tt  >struct data</tt>, which is defined earlier in the code as:
+
+<pre     class="programlisting">
+struct data {
+  char *url;
+  char *data;
+};
+</pre>
+</p><p>
+Since you can get the result of processing the URL in any order, you wrap the 
+result of processing in the above structure.
+</p><p>
+Next, in the <tt  >main()</tt> function, you start as many coroutines as the number of 
+URLs and then use the <tt  >chs()</tt> function to send it the URL to download from. 
+In the <tt  >f()</tt> function, you don't actually attempt to connect to a remote URL, 
+but simulate a scenario where there is some error in downloading 30% of the 
+time, due to a faulty network. If there was an error, you write to the
+<tt  >error</tt>
+channel; otherwise, you write to the <tt  >result</tt> channel.
+</p><p>
+Back in the <tt  >main()</tt> function, you have created all the coroutines,
+so now you want 
+to just wait and report back on the result of trying to download data from 
+each of the supplied URLs. You do this using the <tt  >choose</tt> construct as follows:
+
+<pre     class="programlisting">
+
+for(int i=1; i&lt;argc; i++) {
+    choose {
+    in(result, struct data, value):
+      printf("Processed URL: %s, Result: %s\n", value.url, value.data);
+    in(error, struct data, value):
+      printf("Processed URL: %s, Error: %s\n", value.url, value.data);
+    end
+    }
+ } 
+
+</pre>
+</p><p>
+The number of data items you expect to have on both channels,
+<tt  >result</tt> and <tt  >error</tt>,
+is equal to the number of URLs. Hence, you create a for loop that runs for as 
+many times. In the body of the loop, you create the <tt  >choose</tt> construct. 
+</p><p>
+The first <tt  >in</tt> clause is used to wait for data to be available for
+reading in the channel result of type <tt  >struct data</tt>. When there is a data
+item available to be read, a single data item is read and the variable
+specified, the value is declared by the <tt  >in</tt> clause itself and is used to refer
+to the data item read from the channel. Similarly, the second <tt  >in</tt> clause
+is used to wait for data on the error channel. Every <tt  >choose</tt> construct
+must have an <tt  >end</tt> clause at the end.
+</p><p>
+When either of the above two activities happens, you use <tt  >printf()</tt> to write the 
+URL processed and the result of the processing. When you compile and run the 
+program, you'll see a result similar to the following:
+
+<pre     class="programlisting">
+$ gcc -o listing4 listing4.c -lmill
+
+$ ./listing4  https://raw.githubusercontent.com/amitsaha/
+&#8618;lj_libmill/master/listing3/listing3.c 
+ &#8618;https://raw.githubusercontent.com/amitsaha/lj_libmill/
+&#8618;master/listing1/listing1-msleep.c
+
+Processed URL: https://raw.githubusercontent.com/amitsaha/
+&#8618;lj_libmill/master/listing3/listing3.c, Error: Error 
+ &#8618;retrieving data
+Processed URL: https://raw.githubusercontent.com/amitsaha/
+&#8618;lj_libmill/master/listing1/listing1-msleep.c, Result: 
+ &#8618;Data at the URL
+</pre>
+</p><p>
+In addition to the <tt  >in</tt> clause, <tt  >choose</tt> supports a number of other clauses. 
+The <tt  >out</tt> clause can be used to wait until you can write to a
+channel, <tt  >ch</tt>,
+and has the syntax <tt  >out(ch, &lt;data type&gt;, data)</tt>. The
+<tt  >deadline</tt> clause allows 
+you to set a deadline in the <tt  >choose</tt> construct&mdash;it will fire if no other clause 
+has fired in the time specified as deadline. The <tt  >otherwise</tt> clause will execute 
+if none of the other clauses match.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2a984b8"></a>
+Using Multiple Processors</h2></div></div><p>
+By default, a program written using libmill will use only one processor
+core, even if your computer has multiple processor cores. The approach
+to using multiple cores is to use libmill's <tt  >mfork()</tt> function to create a
+new process. Each process then becomes capable of doing the same work
+on a different processor core. Listing 5 shows an
+example of using <tt  >mfork()</tt> to create a version of the earlier TCP server
+that creates multiple processes listening for incoming connections. Each
+process continues to handle an incoming connection in a separate coroutine
+as earlier.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2a986c8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. listing5.c Using mfork() to Set Up a Multiprocess Network
+Server</b></p><pre     class="programlisting">
+
+# include &lt;libmill.h&gt;
+# include &lt;stdio.h&gt;
+# include &lt;stdlib.h&gt;
+# include &lt;errno.h&gt;
+# include &lt;unistd.h&gt;
+
+# define NUM_PROCESSES 3
+
+/* Handler coroutine */
+coroutine void handler(tcpsock as) {
+  printf("PID: %d, New connection!\n", getpid());
+  tcpclose(as);
+}
+
+int main(int argc, char **argv)
+{
+  int port = 9090;
+  ipaddr addr = iplocal(NULL, port, 0);
+  tcpsock server = tcplisten(addr, 10);
+
+  if (!server) {
+    perror("Can't setup a listening server\n");
+    return 1;
+  }
+  /* Set up the server processes - the main process is 
+     listening as well, so we fork NUM_PROCESSES-1 
+     child processes
+  */
+  for (int i = 1; i &lt; NUM_PROCESSES; i++ ) {
+    pid_t pid = mfork();
+    /* Child process?*/
+    if (pid == 0)
+      break;
+  }
+
+  printf("Listening on %d (PID: %d)\n", port, getpid());
+  /* Server loop*/
+  while(1) {
+    tcpsock as = tcpaccept(server, -1);
+    if (!as)
+      continue;
+    /* Dispatch this request */
+    go(handler(as));
+  }
+
+return 0;
+}
+
+</pre></div><p>
+When you compile and run the above program, you will see messages like the following, 
+which tells you that you have three processes listening on port 9090:
+
+<pre     class="programlisting">
+./listing5
+Listening on 9090 (PID: 3760)
+Listening on 9090 (PID: 3762)
+Listening on 9090 (PID: 3761)
+</pre>
+</p><p>
+The process tree looks like this:
+
+<pre     class="programlisting">
+$ pstree 3760
+-+= 03760 amit ./listing5
+ |--- 03761 amit ./listing5
+ \--- 03762 amit ./listing5
+</pre>
+</p><p>
+If you try connecting to port 9090 from multiple clients, you will see that 
+the connections will be handled by different processes, which is what you want.
+</p><p>
+The key change in this listing from the previous server is the following 
+section of code in the <tt  >main()</tt> function:
+
+<pre     class="programlisting">
+
+/* Set up the server processes - the main process is listening 
+  as well, so we fork NUM_PROCESSES-1 child processes
+*/
+for (int i = 1; i &lt; NUM_PROCESSES; i++ ) {
+    pid_t pid = mfork();
+    /* Child process?*/
+    if (pid == 0)
+      break;
+}
+
+</pre>
+</p><p>
+Similar to the <tt  >fork()</tt> function, <tt  >mfork()</tt> creates a new child process and returns 
+0 in the child process and the child process ID in the parent process. Hence,
+if the value of the pid you get is 0, you break from the loop; otherwise, you continue 
+until you have forked <tt  >NUM_PROCESSES-1</tt> number of processes.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2a98cf8"></a>
+Inspecting Coroutines</h2></div></div><p>
+libmill comes with a function called <tt  >goredump()</tt> that you can use to dump the 
+state of coroutines and channels. You can call it as a function from your 
+program or from the gdb prompt. Let's look at an example of the latter.
+</p><p>
+Consider the program in Listing 4 that uses multiple channels to send 
+work and receives the results from the coroutines. Let's say you forgot to 
+send any work to the coroutine, because you accidentally removed the statement:
+<tt  >chs(work, char*, argv[i]);</tt> (Listing 6). When you run the program, it 
+simply will hang, doing nothing. So, let's see what's going on. First, 
+find the process ID of the process and start gdb:
+
+<pre     class="programlisting">
+(gdb) attach 2132
+..
+</pre>
+</p><p>
+Now, call the <tt  >goredump()</tt> function and print its result:
+
+<pre     class="programlisting">
+
+(gdb) p goredump()
+
+(gdb) p goredump()
+
+COROUTINE  state                          current            created
+----------------------------------------------------------------------
+{0}        choose(&lt;2&gt;,&lt;3&gt;)                 ---              &lt;main&gt;
+{1}        chr(&lt;1&gt;)                       listing6.c:13     listing6.c:34
+
+CHANNEL  msgs/max    senders/receivers      refs  done  created
+---------------------------------------------------------------------
+&lt;1&gt;      0/0         r:{1}                  1     no    listing6.c:29
+&lt;2&gt;      0/0         r:{0}                  1     no    listing6.c:30
+&lt;3&gt;      0/0         r:{0}                  1     no    listing6.c:31
+
+</pre>
+</p><p>
+The output of <tt  >goredump()</tt> has two sections: one for coroutines and other for channels.
+</p><p>
+For each coroutine, it displays the current state&mdash;or what it is doing currently, 
+where it is currently executing and where it was created. You can see that the
+main coroutine (0) is waiting in the <tt  >choose</tt> construct to read
+from the <tt  >result</tt> and 
+<tt  >error</tt> channels (channel numbers 2 and 3, respectively).
+</p><p>
+The second coroutine (that is, the worker coroutine) is waiting at the function
+<tt  >chr()</tt> to read from channel 1 at line number 13. So, that tells
+you why the 
+program simply hangs&mdash;it should tell you that you haven't written anything to
+channel 1.
+</p><p>
+The section on channels displays for each channel the number of messages currently
+in the channel and the maximum number of messages, senders/receiver coroutines, number of references
+to the channel, whether the sender is done sending to the channel and where it was created.
+You can see that for channels 2 and 3, both the readers are in coroutine 0 along with
+the line numbers.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2a99380"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 6. listing6.c Buggy Version of Listing 4</b></p><pre     class="programlisting">
+
+# include &lt;libmill.h&gt;
+# include &lt;stdio.h&gt;
+# include &lt;stdlib.h&gt;
+# include &lt;time.h&gt;
+
+struct data {
+  char *url;
+  char *data;
+};
+
+coroutine void f(chan work, chan result, chan error) {
+  struct data d;
+  char *url = chr(work, char*);
+  d.url = url;
+  /* Simulate 70% success and 30% failure scenario*/
+  double r = (double) rand()/RAND_MAX;
+  if (r &lt; 0.71) {
+    // Successful scenario
+    d.data = "Data at the URL";
+    chs(result, struct data, d);
+  } else {
+    // Unsuccessful scenario
+    d.data = "Error retrieving data";
+    chs(error, struct data, d);
+  }
+}
+
+int main(int argc, char **argv) {
+  chan work = chmake(char*, 0);
+  chan result = chmake(struct data, 0);
+  chan error = chmake(struct data, 0);
+
+  for(int i=1; i&lt;argc; i++) {
+    go(f(work, result, error));
+  }
+
+  for(int i=1; i&lt;argc; i++) {
+    choose {
+    in(result, struct data, value):
+      printf("Processed URL: %s, Result: %s\n", value.url, value.data);
+    in(error, struct data, value):
+      printf("Processed URL: %s, Error: %s\n", value.url, value.data);
+    end
+    }
+  }
+  chclose(work);
+  chclose(result);
+  chclose(error);
+  return 0;
+}
+
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2a99590"></a>
+Conclusion</h2></div></div><p>
+This article looks at some of libmill's key features, including
+some convenient functions it makes available. A number of other libmill
+features provide building blocks to write efficient coroutine-driven network
+programs in C. See the Resources section for some important links to learn more 
+about libmill. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2a99698"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+The Code for This Article: <a href="https://github.com/amitsaha/lj_libmill" target="_self">https://github.com/amitsaha/lj_libmill</a>
+</p><p>
+libmill: <a href="http://libmill.org" target="_self">libmill.org</a>
+</p><p>
+libmill Source Code: <a href="https://github.com/sustrik/libmill" target="_self">https://github.com/sustrik/libmill</a>
+</p><p>
+libmill Tutorial: <a href="http://libmill.org/tutorial.html" target="_self">libmill.org/tutorial.html</a>
+</p><p>
+libmill Documentation: <a href="http://libmill.org/documentation.html" target="_self">libmill.org/documentation.html</a>
+</p><p>
+libmill 1.0 Release Announcement: <a href="http://www.freelists.org/post/libmill/libmill10-released" target="_self">www.freelists.org/post/libmill/libmill10-released</a>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2416580.0x2a9af50"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Amit Saha is a software engineer and the author of <span   class="emphasis"><em>Doing Math with
+Python</em></span> (No Starch Press). He blogs at <a href="http://echorand.me" target="_self">echorand.me</a>, and you can send him email at
+<a href="mailto:%0Aamitsaha.in@gmail.com">
+amitsaha.in@gmail.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../268/toc268.html">Issue Table of Contents</a>
+    <a class="link3" href="../268/12002.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

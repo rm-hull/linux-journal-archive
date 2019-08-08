@@ -1,0 +1,117 @@
+
+#include <stdio.h>
+#include <security/pam_appl.h>          /* PAM definitions for applications  */
+
+#include <security/pam_misc.h>          /* Linux-PAM specific application
+					   helper library contains sample
+					   text based conversation function. */
+
+/*
+ * static data for application
+ */
+
+static pam_handle_t *pamh=NULL;    /* PAM handle for continuity with library */
+static struct pam_conv login_conversation = {
+    misc_conv,               /* example conversation function in libpam_misc */
+    NULL                                /* trivial application specific data */
+};
+
+/* this function is used to terminate the application. */
+
+static void Failed(int pam_error)
+{
+    fprintf(stderr,"Sorry: %s\n", pam_strerror(pam_error)); /* textual error */
+    if (NULL != pamh)
+	pam_end(pamh, pam_error);                            /* shutdown PAM */
+    exit(1);                                              /* exit with error */
+}
+
+/*
+ * login-type application
+ */
+
+void main()
+{
+    int retval;                                  /* keep track of PAM errors */
+    const char *username=NULL;                    /* to refer to user's name */
+    const char * const *environment=NULL;   /* PAM environment variable list */
+
+    Login_Initialize();       /* login function to initialize terminal etc.. */
+
+    /*
+     * Initialize libpam; library silently consults /etc/pam.conf and
+     * loads the appropriate authentication modules
+     */
+
+    retval = pam_start("login", username, &login_conversation, &pamh);
+    if (NULL == pamh || PAM_SUCCESS != retval)
+	Failed(retval);                              /* something went wrong */
+
+    pam_set_item(pamh, PAM_USER_PROMPT, "login: ");        /* default prompt */
+
+    /*
+     * attempt authentication until the modules become exhausted or we
+     * succeed
+     */
+
+    do {
+	pam_fail_delay(pamh, 1000000 /* usec */);      /* delay for failures */
+	pam_set_item(pamh, PAM_USER, NULL);      /* require entered username */
+
+	retval = pam_authenticate(pamh, 0);  /* attempt to authenticate user */
+	if (PAM_MAXTRIES == retval)
+	    Failed(retval);        /* the modules do not want login to retry */
+
+    } while (PAM_SUCCESS != retval);
+
+    /*
+     * The user has been authenticated. Check if they are allowed to
+     * login at this time with the account management..
+     */
+
+    retval = pam_acct_mgmt(pamh, 0);
+    switch (retval) {
+    case PAM_AUTHTOKEN_REQD:             /* user's password(s) need renewing */
+	retval = pam_chauthtok(pamh, PAM_CHANGE_EXPIRED_AUTHTOK);
+	if (PAM_SUCCESS == retval)
+	    break;                                /* password safely updated */
+    default:
+	Failed(retval);
+    }
+
+    /*
+     * open a PAM session for the user
+     */
+    
+    retval = pam_open_session(pamh, 0);
+
+    /*
+     * Establish the user's credentials
+     */
+
+    pam_putenv(pamh, "SYSTEM=Linux");        /* build the user's environment */
+    pam_get_item(pamh, PAM_USER, &username);     /* obtain username from PAM */
+    Initialize_User(username);           /* set login specific user identity
+               					          (initgroups etc..) */
+
+    pam_setcred(pamh, PAM_CRED_ESTABLISH);       /* PAM specific credentials */
+
+    /*
+     * invoke user shell and wait for it to terminate
+     */
+
+    environment = pam_getenvlist(pamh);          /* get environment from PAM */
+    Do_User_Session(username, environment);    /* run interactive user shell */
+
+    /*
+     * The user has finished interacting with the system. Tidy up.
+     */
+
+    pam_setcred(pamh, PAM_CRED_DELETE);             /* drop user credentials */
+    pam_close_session(pamh, 0);                         /* close PAM session */
+
+    pam_end(pamh, PAM_SUCCESS);                         /* close the library */
+    pamh = NULL;                             /* to avoid potential confusion */
+
+    exit(0);                                            /* exit successfully */
+}

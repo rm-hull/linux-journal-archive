@@ -1,0 +1,109 @@
+4829l2
+
+Listing 2. Modifying the Behavior of Calls
+
+#define MODULE
+#define __KERNEL__
+int errno;
+#include <linux/sched.h>
+#include <linux/mm.h>
+#include <linux/malloc.h>
+#include <linux/errno.h>
+#include <linux/sched.h>
+#include <linux/kernel.h>
+#include <linux/times.h>
+#include <linux/utsname.h>
+#include <linux/param.h>
+#include <linux/resource.h>
+#include <linux/signal.h>
+#include <linux/string.h>
+#include <linux/ptrace.h>
+#include <linux/stat.h>
+#include <linux/mman.h>
+#include <linux/mm.h>
+#include <asm/segment.h>
+#include <asm/io.h>
+#include <linux/module.h>
+#include <linux/version.h>
+#include <errno.h>
+#include <linux/unistd.h>
+
+#include <asm/uaccess.h>
+#include <asm/string.h>
+#include <sys/syscall.h>
+#include <linux/types.h>
+#include <sys/sysmacros.h>
+
+extern void* sys_call_table[];
+
+pid_t unsafe_procs[256];
+unsigned num_unsafe_procs;
+
+ssize_t (*orig_execve)(const char *file,
+                     char *const argv[],
+                     char *const envp[]);
+
+int (*orig_kill)(pid_t pid, int sig);
+
+int
+wrapped_execve(const char* filename,
+               char *const argv[],
+               char *const envp[]) {
+
+  int i;
+  int is_unsafe = 0;
+  char* thefile;
+
+  for(i = 0; i < num_unsafe_procs ; i++) {
+    if (unsafe_procs[i] == current->pid) {
+      is_unsafe = 1;
+      break;
+    }
+  }
+
+  if(is_unsafe) {
+    thefile = kmalloc(1024, GFP_KERNEL);
+    strncpy_from_user(thefile, filename, 1023);
+
+    if(strstr(thefile, "sh") != NULL) {
+      printk("<1>pid %d tried to exec %s; "
+             "we're not allowing it!\n",
+             current->pid, thefile);
+      kfree(thefile);
+      return 0;
+    }
+
+    kfree(thefile);
+  }
+
+  return orig_execve(filename, argv, envp);
+}
+
+int
+wrapped_kill(pid_t pid, int sig) {
+  if (sig == 42) {
+    unsafe_procs[num_unsafe_procs++] = pid;
+  } else {
+    return orig_kill(pid, sig);
+  }
+}
+
+int init_module(void) {
+  int i;
+
+  num_unsafe_procs = 0;
+  for(i = 0; i < 256; i++)
+    unsafe_procs[i] = 0;
+
+  orig_execve = sys_call_table[SYS_execve];
+  sys_call_table[SYS_execve] = wrapped_execve;
+
+  orig_kill = sys_call_table[SYS_kill];
+  sys_call_table[SYS_kill] = wrapped_kill;
+  return 0;
+}
+
+void cleanup_module(void) {
+  sys_call_table[SYS_execve] = orig_execve;
+  sys_call_table[SYS_kill] = orig_kill;
+}

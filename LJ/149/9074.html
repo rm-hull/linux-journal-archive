@@ -1,0 +1,505 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+DRBD in a Heartbeat</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;How to build a redundant, high-availability system with DRBD and&#10;Heartbeat.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1343580.0x143aab0"></a>
+DRBD in a Heartbeat</h1></div><div><div class="author"><h3 class="author">
+Pedro
+ 
+Pla</h3></div><div class="issuemoyr">Issue #149, September 2006</div></div><div><p>
+How to build a redundant, high-availability system with DRBD and
+Heartbeat.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x143b2f0"></a></h2></div></div><p>
+About three years ago, I was planning a new server setup that would run
+our new portal as well as e-mail, databases, DNS and so forth.  One of the
+most important goals was to create a redundant solution, so that if one
+of the servers failed, it wouldn't affect company operation.
+</p><p>
+I looked through a lot of the redundant solutions available for Linux at
+the time, and with most of them, I had trouble getting all the
+services we needed to run redundantly.  After all, there is a very big
+difference in functionality between a Sendmail d&aelig;mon and a PostgreSQL
+d&aelig;mon.
+</p><p>
+In the end, though, I did find one solution that worked very well for our
+needs.  It involves setting up a disk mirror between machines using the
+software DRBD and a high-availability monitor on those machines using
+Heartbeat.
+</p><p>
+DRBD mirrors a partition between two machines allowing only
+one of them to mount it at a time.  Heartbeat then monitors the machines,
+and if it detects that one of the machines has died, it takes control by
+mounting the mirrored disk and starting all the services the other
+machine is running.
+</p><p>
+I've had this setup running for about three years now, and it has made
+the inevitable hardware failures unnoticeable to the company.
+</p><p>
+In this tutorial, I show you how to set up a redundant Sendmail system,
+because once you do that, you will be able to set up almost any service
+you need.  We assume that your master server is called server1 and has an
+IP address of 192.168.1.1, and your slave server is called server2 and
+has an IP address of 192.168.1.2.
+</p><p>
+And, because you don't want to have to access your mail server on any of
+these addresses in case they are down, we will give it a virtual address
+of 192.168.1.5.  You can, of course, change this to whatever address you
+want in the Heartbeat configuration that I discuss near the end of this
+article.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x143b608"></a>
+How It Works</h2></div></div><p>
+This high-availability solution works by replicating a disk partition in
+a master/slave mode.  The server that is running as a master has full
+read/write access to that partition; whereas the server running as slave
+has absolutely no access to the partition but silently replicates all
+changes made by the master server.
+</p><p>
+Because of this, all the processes that need to access the replicated
+partition must be running on the master server.  If the master server
+fails, the Heartbeat d&aelig;mon running on the slave server will tell DRBD
+that it is now the master, mount the replicated partition, and then start
+all the processes that have data stored on the replicated partition.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x143b768"></a>
+How to Get It Running</h2></div></div><p>
+The first step for running a redundant system is
+having two machines ready to try it out.  They don't need to have
+identical specs, but they should meet the following requirements:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Enough free space on both machines to create an equal-sized partition on
+each of them.
+</p></li><li><p>
+The same versions of the d&aelig;mons you want to run across both machines.
+</p></li><li><p>
+A network card with crossover cable or a hub/switch.
+</p></li><li><p>
+An optional serial port and serial port crossover cable for additional
+monitoring.
+</p></li></ul></div><p>
+You also should think carefully about which services you want running on
+both machines, as this will affect the amount of hard disk you will need
+to dedicate to replication across them and how you will store the
+configuration and data files of these services.
+</p><p>
+It's very important that you have enough space on this shared partition,
+because it will be the main data storage location for all of these
+services.  So, if you are going to be storing a large Sendmail spool or a
+database, you should make sure it has more than enough space to run for a
+long time before having to repartition and reconfigure DRBD for a larger
+disk size.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x143bc38"></a>
+Setting Up the Basics on Your Servers</h2></div></div><p>
+Once you've made sure your machines are ready, you can go ahead and
+create an equal-sized partition on both machines.  At this stage, you do
+not need to create a filesystem on that partition, because you will do
+that only once it is running mirrored over DRBD.
+</p><p>
+For my servers, I have one DRBD replicated drive that looks like this on
+my partition tables:
+
+<pre     class="programlisting">
+/dev/sda5      7916    8853   7534453+  83  Linux
+</pre>
+</p><p>
+Note: type <tt  >fdisk -l</tt> at your command prompt to view a listing of your
+partitions in a format similar to that shown here.  Also, in my case, the
+partition table is identical on both redundant machines.
+</p><p>
+The next step after partitioning is getting the packages for Heartbeat
+version 1.2+ and DRBD version 0.8+ installed and the DRBD kernel module
+compiled.  If you can get these prepackaged for your distribution, it will
+probably be easier, but if not, you can download them from <a href="http://www.linux-ha.org/DownloadSoftware" target="_self">www.linux-ha.org/DownloadSoftware</a> and <a href="http://www.drbd.org/download.html" target="_self">www.drbd.org/download.html</a>.
+</p><p>
+Now, go to your /etc/hosts file and add a couple lines, one for your
+primary and another for your secondary redundant server.  Call one
+server1, the other server2, and finally, call one mail, and set the IP
+addresses appropriately.  It should look something like this:
+
+<pre     class="programlisting">
+192.168.1.1    server1
+192.168.1.2    server2
+192.168.1.5    mail
+</pre>
+</p><p>
+Finally, on both your master and slave server, make a folder
+called /replicated, and add the following line to the /etc/fstab file:
+
+<pre     class="programlisting">
+/dev/drbd0    /replicated   ext3   noauto    0   0
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x143c108"></a>
+Configuring DRBD</h2></div></div><p>
+After you've done that, you have to set up DRBD before moving forward
+with Heartbeat.  In my setup, the configuration file is /etc/drbd.conf, but
+that can change depending on distribution and compile time options, so
+try to find the file and open it now so you can follow along.  If you
+can't find it, simply create one called /etc/drbd.conf.
+</p><p>
+Listing 1 is my configuration file.  I go over it line by line and add
+explanations as comments that begin with the # character.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x143c268"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. /etc/drbd.conf</b></p><pre     class="programlisting">
+# Each resource is a configuration section for a
+# mirrored disk.
+# The drbd0 is the name we will use to refer
+# to this disk when starting or stopping it.
+
+resource drbd0 {
+  protocol C;
+  handlers {
+    pri-on-incon-degr "echo 'DRBD: primary requested but inconsistent!'
+    &#8618;| wall; /etc/init.d/heartbeat stop"; #"halt -f";
+    pri-lost-after-sb "echo 'DRBD: primary requested but lost!'
+    &#8618;| wall; /etc/init.d/heartbeat stop"; #"halt -f";
+  }
+
+  startup {
+    degr-wfc-timeout 120;    # 2 minutes.
+  }
+
+  disk {
+    on-io-error   detach;
+  }
+# These are the network settings that worked best for me.
+# If you want to play around with them, go
+# ahead, but take a look in the man pages of drbd.conf
+# and drbdadm to see what each does.
+
+  net {
+    timeout 120;
+    connect-int 20;
+    ping-int 20;
+    max-buffers     2048;
+    max-epoch-size  2048;
+    ko-count 30;
+
+# Remember to change this shared-secret on both the master
+# and slave machines.
+
+    cram-hmac-alg "sha1";
+    shared-secret "FooFunFactory";
+  }
+
+  syncer {
+    rate 10M;
+    al-extents 257;
+  }
+
+# This next block defines the settings for the server
+# labeled as server1.  This label should be in your
+# /etc/hosts file and point to a valid host.
+
+  on server1 {
+
+# The following device will be created automatically by
+# the drbd kernel module when the DRBD
+# partition is in master mode and ready to write.
+# If you have more than one DRBD resource, name
+# this device drbd1, drbd2 and so forth.
+
+    device     /dev/drbd0
+
+# Put the partition device name you've prepared here.
+
+    disk	     /dev/sda5;
+
+# Now put the IP address of the primary server here.
+# Note: you will need to use a unique port number for
+# each resource.
+
+    address   192.168.1.3:7788;
+    meta-disk  internal;
+  }
+
+# This next block is identical to that of server1 but with
+# the appropriate settings of the server called
+# server2 in our /etc/hosts file.
+
+  on server2 {
+    device    /dev/drbd0;
+    disk      /dev/sda5;
+    address   192.168.1.2:7788;
+    meta-disk internal;
+  }
+}
+</pre></div><p>
+Now, let's test it by starting the DRBD driver to see if everything works
+as it should.  On your command line on both servers type:
+
+<pre     class="programlisting">
+drbdadm create-md drbd0; /etc/init.d/drbd restart; cat /proc/drbd
+</pre>
+</p><p>
+If all goes well, the output of the last command should look something
+like this:
+
+<pre     class="programlisting">
+0: cs:Connected st:Secondary/Secondary ds:Inconsistent/Inconsistent r---
+   ns:0 nr:0 dw:0 dr:0 al:0 bm:0 lo:0 pe:0 ua:0 ap:0
+       resync: used:0/7 hits:0 misses:0 starving:0 dirty:0 changed:0
+       act_log: used:0/257 hits:0 misses:0 starving:0 dirty:0 changed:0
+</pre>
+</p><p>
+Note: you always can find information about the DRBD status by typing:
+
+<pre     class="programlisting">
+cat /proc/drbd
+</pre>
+</p><p>
+Now, type the following command on the master system:
+
+<pre     class="programlisting">
+drbdadm -- --overwrite-data-of-peer primary drbd0; cat /proc/drbd
+</pre>
+</p><p>
+The output should look something like this:
+
+<pre     class="programlisting">
+0: cs:SyncSource st:Primary/Secondary ds:UpToDate/Inconsistent r---
+   ns:65216 nr:0 dw:0 dr:65408 al:0 bm:3 lo:0 pe:7 ua:6 ap:0
+       [&gt;...................] sync'ed:  2.3% (3083548/3148572)K
+       finish: 0:04:43 speed: 10,836 (10,836) K/sec
+       resync: used:1/7 hits:4072 misses:4 starving:0 dirty:0 changed:4
+       act_log: used:0/257 hits:0 misses:0 starving:0 dirty:0 changed:0
+</pre>
+</p><p>
+This means it is syncing your disks from the master computer that is set
+as the primary one to the slave computer that is set as secondary.
+</p><p>
+Next, create the filesystem by typing the following on the master system:
+
+<pre     class="programlisting">
+mkfs.ext3 /dev/drbd0
+</pre>
+</p><p>
+Once that is done, on the master computer, go ahead and mount the drive
+/dev/drbd0 on the /replicated directory we created for it.  We'll have to
+mount it manually for now until we set up Heartbeat.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x143c948"></a>
+Preparing Your Services</h2></div></div><p>
+An important part of any redundant solution is properly preparing your
+services so that when the master machine fails, the slave machine can
+take over and run those services seamlessly.  To do that, you have to move
+not only the data to the replicated DRBD disk, but also move the
+configuration files.
+</p><p>
+Let me show you how I've got Sendmail set up to handle the mail and store
+it on the replicated drives.  I use Sendmail for this example as it is one
+step more complicated than the other services, because even if the
+machine is running in slave mode, it may need to send e-mail
+notifications from internal applications, and if Sendmail can't access
+the configuration files, it won't be able to do this.
+</p><p>
+On the master machine, first make sure Sendmail is installed but stopped.
+Then create an etc directory on your /replicated drive.  After that, copy
+your /etc/mail directory into the /replicated/etc and create a symlink
+from /replicated/etc/mail to /etc/mail.
+</p><p>
+Next, make a var directory on the /replicated drive, and copy /var/mail,
+/var/spool/mqueue and any other mail data folders into that directory.
+Then, of course, create the appropriate symlinks so that the new folders
+are accessible from their previous locations.
+</p><p>
+Your /replicated directory structure should now look something like:
+
+<pre     class="programlisting">
+/replicated/etc/mail
+/replicated/var/mail
+/replicated/var/spool/mqueue
+/replicated/var/spool/mqueue-client
+/replicated/var/spool/mail
+</pre>
+</p><p>
+And, on your main drive, those folders should be symlinks and look
+something like:
+
+<pre     class="programlisting">
+/etc/mail -&gt; /replicated/etc/mail
+/var/mail -&gt; /replicated/var/mail
+/var/spool/mqueue -&gt; /replicated/var/spool/mqueue
+/var/spool/mqueue-client -&gt; /replicated/var/spool/mqueue-client
+/var/spool/mail -&gt; /replicated/var/spool/mail
+</pre>
+</p><p>
+Now, start Sendmail again and give it a try.  If all is working well,
+you've successfully finished the first part of the setup.
+</p><p>
+The next part is to make sure it runs, even on the slave.  The trick we
+use is copying the Sendmail binary onto the mounted /replicated drive and
+putting a symlink to the binary ssmtp on the unmounted /replicated
+folder.
+</p><p>
+First, make sure you have ssmtp installed and configured on your system.
+Next, make a directory /replicated/usr/sbin, and copy /usr/sbin/sendmail
+to that directory.  Then, symlink from /usr/sbin/sendmail back to
+/replicated/usr/sbin/sendmail.
+</p><p>
+Once that's done, shut down Sendmail and unmount the /replicated drive.
+Then, on both the master and slave computers, create a folder
+/replicated/usr/sbin and a symlink from /usr/sbin/ssmtp to
+/replicated/usr/sbin/sendmail.
+</p><p>
+After setting up Sendmail, setting up other services like Apache and
+PostgreSQL will seem like a breeze.  Just remember to put all their data
+and configuration files on the /replicated drive and to create the
+appropriate symlinks.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x1747c30"></a>
+Configuring Heartbeat</h2></div></div><p>
+Heartbeat is designed to monitor your servers, and if your master server
+fails, it will start up all the services on the slave server, turning it
+into the master.  To configure it, we need to specify which servers it
+should monitor and which services it should start when one fails.
+</p><p>
+Let's configure the services first.  We'll take a look at the Sendmail we
+configured previously, because the other services are configured the same
+way.  First, go to the directory /etc/heartbeat/resource.d.  This directory
+holds all the startup scripts for the services Heartbeat will start up.
+</p><p>
+Now add a symlink from /etc/init.d/sendmail to /etc/heartbeat/resource.d.
+</p><p>
+Note: keep in mind that these paths may vary depending on your Linux
+distribution.
+</p><p>
+With that done, set up Heartbeat to start up services automatically on
+the master computer, and turn the slave to the master if it fails.
+Listing 2 shows the file that does that, and in it, you can see we have
+only one line, which has different resources to be started on the given
+server, separated by spaces.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x1747e98"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. /etc/heartbeat/haresources</b></p><pre     class="programlisting">
+server1 IPaddr::192.168.1.5/24 datadisk::drbd0 sendmail
+</pre></div><p>
+The first command, <tt  >server1</tt>, defines which server should be the default
+master of these services; the second one,
+<tt  >IPaddr::192.168.1.5/24</tt>, tells
+Heartbeat to configure this as an additional IP address on the master
+server with the given netmask.  Next, with
+<tt  >datadisk::drbd0</tt> we tell
+Heartbeat to mount this drive automatically on the master, and after
+this, we can enter the names of all the services we want to start up&mdash;in
+this case, we put <tt  >sendmail</tt>.
+</p><p>
+Note: these names should be the same as the filename for their startup
+script in /etc/heartbeat/resource.d.
+</p><p>
+Next, let's configure the /etc/heartbeat/ha.cf file (Listing 3).  The main
+things you would want to change in it are the hostnames of the
+master/slave machine at the bottom, and the deadtime and initdead.  These
+specify how many seconds of silence should be allowed from the other
+machine before assuming it's dead and taking over.
+</p><p>
+If you set this too low, you might have false positives, and unless
+you've got a system called STONITH in place, which will kill the other
+machine if it thinks it's already dead, you can have all kinds of
+problems.  I set mine at two minutes; it's what has worked best for me,
+but feel free to experiment.
+</p><p>
+Also keep in mind the following two points: for the serial connection to
+work, you need to plug in a crossover serial cable between the machines, and
+if you don't use a crossover network cable between the machines but
+instead go through a hub where you have other Heartbeat nodes, you have
+to change the udpport for each master/slave node set, or your log file
+will get filled with warning messages.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1343580.0x17483c0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. /etc/heartbeat/ha.cf</b></p><pre     class="programlisting">
+debugfile /var/log/ha-debug
+logfile /var/log/ha-log
+logfacility     local0
+keepalive 2
+deadtime 120
+initdead 120
+serial  /dev/ttyS1
+baud 9600
+udpport 694
+udp     eth0
+nice_failback on
+node server1
+node server2
+</pre></div><p>
+Now, all that's left to do is start your Heartbeat on both the master and
+slave server by typing:
+
+<pre     class="programlisting">
+/etc/init.d/heartbeat start
+</pre>
+</p><p>
+Once you've got that up and running, it's time to test it.  You can do
+that by stopping Heartbeat on the master server and watching to see
+whether the slave server becomes the master.  Then, of course, you might
+want to try it by completely powering down the master server or any other
+disconnection tests.
+</p><p>
+Congratulations on setting up your redundant server system! And,
+remember, Heartbeat and DRBD are fairly flexible, and you can put
+together some complex solutions, including having one server being a
+master of one DRBD partition and a slave of another.  Take some time, play
+around with them and see what you can discover.
+</p></div></div>
+<div class="authorblurb"><p>
+Pedro Pla (<a href="mailto:pedropla@pedropla.com">pedropla@pedropla.com</a>) is CTO of the Holiday Marketing
+International group of companies, and he has more than ten years of Linux
+experience.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../149/toc149.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

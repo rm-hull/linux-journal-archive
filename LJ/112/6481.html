@@ -1,0 +1,409 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Implementing Encrypted Home Directories</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="Take advantage of loopback encrypted filesystems and pam_mount to&#10;secure your data.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1ff0580.0x20e7ab0"></a>
+Implementing Encrypted Home Directories</h1></div><div><div class="author"><h3 class="author">
+Mike Petullo</h3></div><div class="issuemoyr">Issue #112, August 2003</div></div><div><p>Take advantage of loopback encrypted filesystems and pam_mount to
+secure your data.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ff0580.0x20e81e8"></a></h2></div></div><p>
+When used correctly, encrypted filesystems
+can be an effective way to protect sensitive data stored on a
+computer. Standard encryption packages, such as the GNU Privacy Guard
+(GPG), are good for encrypting e-mail. They are not as convenient,
+however, for encrypting files one wishes to read or modify many times
+throughout the files' lifetimes.
+</p><p>
+Unlike GPG, an encrypted filesystem is transparent to users. There is
+no hassle of manually decrypting a file before reading it or encrypting
+it again after modifying it. Potential user forgetfulness also is
+mitigated. After introducing some encrypted filesystems available
+for Linux, this article explains how to create an encrypted home
+directory that is automatically mounted at login time and unmounted at
+logout. Finally, this article introduces some concepts that demonstrate
+the dangers of improperly implemented encryption techniques.
+</p><p>
+Why would one want to encrypt the data stored on a computer?
+Isn't protecting sensitive data what filesystem permissions
+are for? Although useful, filesystem permissions quickly lose their
+effectiveness when an attacker has complete control of the storage medium
+the permissions are used to protect. For example, if someone steals my
+Linux laptop, an Apple iBook, its filesystems permissions are of little use
+against the thief who can simply boot from a diabolical CD-ROM. The same
+is true if I send my laptop to Apple for repairs. A dishonest employee
+conceivably could read my files. Correctly encrypting the files on a
+computer is a safe form of protection, because the process does not depend
+on the integrity of the operating system after the encryption takes place.
+</p><p>
+I have chosen to encrypt only the home directories on my iBook.
+Encrypting the entire filesystem, starting with root, was not acceptable
+in my case due to performance penalties and other factors. Information on
+implementing this technique can be found on the Internet&mdash;it requires
+using Linux's initial ramdisk capability. In my experiences with an
+x86-based system, the encryption technique I chose is around 50% slower
+than a non-encrypted XFS filesystem when writing to disk using buffered
+I/O. Encrypting only home directories obviously leaves many files,
+such as system logs, as plain text, but these were not significantly
+sensitive in my case. Encrypting only home directories was a sensible
+compromise for me.
+</p><p>
+Linux supports a few options for encrypting filesystems. Systems
+such as the Transparent Cryptographic File System provide an encrypted
+extension to NFS-served ext2 volumes. Other filesystems contain integrated
+cryptography in their design for local use. For my application, the best
+solution seemed to be the concept of loopback encrypted filesystems.
+As you will see, loopback encryption can be used to encrypt any filesystem
+type supported by Linux, including the proven ext2, XFS and ReiserFS.
+</p><p>
+Linux loopback filesystem support simply allows a user to mount
+an ordinary file as if it were a device, such as /dev/hda1. This
+traditionally is useful for doing things like mounting a CD-ROM filesystem
+image to populate and test before burning it to CD-R media or distributing
+bootable floppy disk images. Herbert Valerio Riedel's GNU/Linux
+Cryptographic API (CryptoAPI) and util-linux patches add support for
+mounting encrypted filesystem images to the loopback driver.
+</p><p>
+Before delving into the details of loopback encrypted filesystems,
+let's take a look at how to create and mount a vanilla loopback
+filesystem. First, create a file to contain the filesystem. This example
+creates a file large enough to host a 20MB filesystem:
+</p><pre     class="screen">
+dd if=/dev/zero of=plaintext.img bs=1M count=20
+</pre><p>
+Second, associate the newly created file with a loopback device:
+</p><pre     class="screen">
+losetup /dev/loop0 plaintext.img
+</pre><p>
+Next, create a filesystem within the file, using the newly associated
+loop device:
+</p><pre     class="screen">
+mkfs -t ext2 /dev/loop0
+</pre><p>
+Finally, mount the filesystem and use it as if it were any other
+mounted volume:
+</p><pre     class="screen">
+mount /dev/loop0 <span   class="emphasis"><em>mount point</em></span>
+</pre><p>
+Now, let us move on to the encrypted case. In order to use loopback
+encrypted filesystems, the kernel must support them. Most distributions
+do not include this functionality, so a custom-built kernel probably
+is necessary. A cryptographic API package similar to the one I use is
+being merged into the mainstream 2.5 kernel. However, for the stable
+2.4 tree, the GNU/Linux CryptoAPI patches are necessary and available at
+<a href="http://www.kerneli.org" target="_self">www.kerneli.org</a>. Once you apply the patch-int and loop-hvr
+patches, Cryptographic options should be available when you configure
+your kernel. The following options must be enabled:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+cryptographic API support (CONFIG_CRYPTO)
+</p></li><li><p>
+generic loop cryptographic filter (CONFIG_CRYPTOLOOP)
+</p></li><li><p>
+cryptographic ciphers (CONFIG_CIPHERS)
+</p></li></ul></div><p>
+You have to enable at least one cipher as
+well. Remember which cipher you choose. I chose AES, originally called
+Rijndael, and use AES in my examples.
+</p><p>
+Build and install the newly configured kernel. All of the kernel's
+encryption code may be compiled as modules. If you choose to build kernel
+modules, don't forget to insert them before you try to use their
+functionality. It also is necessary to patch util-linux, compile the
+tools and install them. The relevant util-linux patch is available at
+<a href="http://www.kernel.org/pub/linux/kernel/people/hvr/util-linux-patch-int" target="_self">www.kernel.org/pub/linux/kernel/people/hvr/util-linux-patch-int</a>.
+You should find that you end up with modified mount and losetup commands.
+</p><p>
+Now we are ready to create a loopback encrypted filesystem using a
+process similar to that which we used to create a vanilla loopback
+filesystem. First, in order to make it difficult to differentiate between
+encrypted blocks and unused disk space, the file that will hold the
+loopback filesystem is created using /dev/urandom instead of /dev/zero:
+</p><pre     class="screen">
+dd if=/dev/urandom of=ciphertext.img bs=1M count=20
+</pre><p>
+After creating the host file, it must be temporarily associated with a
+loopback device, as before. This time, however, we must tell losetup that
+the loopback device is to be encrypted, in this case with the AES cipher:
+</p><pre     class="screen">
+losetup -e aes /dev/loop0 ciphertext.img
+</pre><p>
+Enter the password and possibly&mdash;depending on the cipher you
+decided to use&mdash;the key size you wish to use for the volume when
+prompted by losetup.
+</p><p>
+Creating the filesystem is done in a manner identical to that for
+creating a vanilla loopback device. The encryption was set up in the
+previous step and is now handled by the loopback driver:
+</p><pre     class="screen">
+mkfs -t ext2 /dev/loop0
+</pre><p>
+In addition to modifying losetup, the util-linux patch also makes
+the mount command crypto-aware. Mounting an encrypted loopback volume
+is a simple process, given the correct command parameters:
+</p><pre     class="screen">
+mount -o loop,encryption=aes ciphertext.img \
+<span   class="emphasis"><em>mount point</em></span>
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ff0580.0x20e8f50"></a></h2></div></div><p><b  >
+mount</b> prompts you for a password and possibly for a key size.
+</p><p>
+Now that you understand how to mount and unmount encrypted loopback
+filesystems manually, an introduction to pam_mount is appropriate.
+pam_mount is a PAM module that simplifies the management of volumes
+and should be mounted when a user logs in to a system. It can handle
+mounting things like Samba-hosted volumes, Novell-hosted volumes
+and encrypted filesystems. The original author of pam_mount is Elvis
+Pftzenreuter. Mukesh Agrawal wrote the patch that first added
+support for loopback encrypted volumes. The author of this article now
+maintains pam_mount, which is available at <a href="http://www.flyn.org" target="_self">www.flyn.org</a>.
+</p><p>
+Instead of having to mount encrypted volumes manually, a system
+administrator can configure pam_mount to mount and unmount the volumes
+automatically when users log on and off. This can be configured so the
+system password also unlocks the encrypted volume, essentially creating
+a completely transparent encrypted volume.
+</p><p>
+pam_mount can employ three different techniques to unlock an encrypted
+volume. The first technique is rather boring. When the encrypted
+volume's key is unrelated to the system's login password,
+pam_mount simply prompts users for the key to their encrypted volume. In
+order to use this technique on a system, pam_mount.so and pmhelper
+must be installed and configured. The standard ./configure, make and
+make install commands build and install pam_mount's binaries and
+configuration file.
+</p><p>
+You should find the stock pam_mount.conf in /etc/security. Inspect and
+tailor it to your own system. The stock pam_mount.conf file is well
+documented. The most important change necessary is to add definitions
+for the volumes that should be mounted to the end of the file. The
+following is the definition format for encrypted loopback filesystems,
+as documented in the stock file:
+</p><pre     class="screen">
+volume <span   class="emphasis"><em>user</em></span> local <span   class="emphasis"><em>ignored</em></span>
+<span   class="emphasis"><em>loopback file</em></span>
+<span   class="emphasis"><em>mount point</em></span> <span   class="emphasis"><em>mount options</em></span>
+<span   class="emphasis"><em>fs
+key cipher</em></span>
+<span   class="emphasis"><em>fs key path</em></span>
+</pre><p>
+Here is an example that mounts an AES-encrypted loopback filesystem
+hosted by /home/mike.img at /home/mike when Mike logs on:
+</p><pre     class="screen">
+volume mike local - /home/mike.img /home/mike
+loop,user,exec,encryption=aes,keybits=256 - -
+</pre><p>
+Next, add the lines <tt  >auth required pam_mount.so
+try_first_pass</tt> and <tt  >session required pam_mount.so
+try_first_pass</tt> to the configuration files of the PAM-supporting
+services you want to support loopback encrypted filesystems. As an
+example, here is the /etc/pam.d/login file from my laptop:
+</p><pre     class="screen">
+auth       requisite  pam_securetty.so
+auth       requisite  pam_nologin.so
+auth       required   pam_env.so
+auth       required   pam_unix.so nullok
+account    required   pam_access.so
+account    required   pam_unix.so
+session    required   pam_unix.so
+session    optional   pam_lastlog.so
+session    optional   pam_motd.so
+session    optional   pam_mail.so standard noenv
+password   required   pam_unix.so nullok obscure \
+                      min=4 max=8 md5
+auth       required   pam_mount.so try_first_pass
+session	   required   pam_mount.so try_first_pass
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ff0580.0x20e9738"></a></h2></div></div><p>
+Finally, create the user's loopback encrypted filesystem using
+the steps listed in the introduction to encrypted loopback filesystems.
+</p><p>
+The second technique for pam_mount to unlock a volume is more
+convenient for users. If, when creating the encrypted volume using the
+same method as the first technique, a user specifies his or her login
+password as the volume key, then pam_mount unlocks the volume using the
+same password the user enters to login.
+</p><p>
+The third technique is the most flexible and requires a more sophisticated
+description. Here are a few terms to help you understand how this
+technique works:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+sk: system key, the key or password used to log
+in to the system.
+</p></li><li><p>
+fsk: filesystem key, the key that allows you to
+use the filesystem you want pam_mount to mount for you.
+</p></li><li><p>
+E and D: an OpenSSL-supported synchronous
+encryption/decryption algorithm, bf-ecb, for example.
+</p></li><li><p>
+efsk: encrypted filesystem key, efsk = E_sk
+(fsk), stored somewhere on the local filesystem (that is, /home/user.key).
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ff0580.0x20e9c08"></a></h2></div></div><p>
+pam_mount reads efsk from the local filesystem, performs <tt  >fsk =
+D_sk (efsk)</tt> and uses <tt  >fsk</tt> to mount the filesystem. This technique has the
+advantage of allowing users to change their login passwords without having
+to re-encrypt their home directories using this new key. If the login
+password is changed, simply regenerate efsk (that is, /home/user.key)
+using <tt  >efsk = E_newsk (D_oldsk (efsk))</tt>. A script named passwdehd
+is included in pam_mount to do this for you.
+</p><p>
+To implement this third technique, begin by creating the file to host
+the encrypted filesystem (as before):
+</p><pre     class="screen">
+dd if=/dev/urandom of=/home/user.img \
+bs=1M count=<span   class="emphasis"><em>image size in MB</em></span>
+</pre><p>
+Then, create a file (efsk) containing the volume's password (fsk)
+using /dev/urandom, encrypted using the user's login password as
+the key:
+</p><pre     class="screen">
+dd if=/dev/urandom bs=1c count=<span   class="emphasis"><em>keysize / 8</em></span> | \
+openssl enc -bf-ecb &gt; /home/user.key
+</pre><p>
+Next, create an encrypted loopback filesystem. The filesystem's
+key should be fsk (generated using /dev/urandom, encrypted and stored
+as /home/user.key in step 2).
+</p><pre     class="screen">
+openssl enc -d -bf-ecb -in /home/user.key | \
+losetup  -e aes -k <span   class="emphasis"><em>keysize</em></span> -p0 /dev/loop0 \
+/home/user.img
+mkfs -t ext2 /dev/loop0
+umount /dev/loop0
+losetup -d /dev/loop0
+</pre><p>
+Finally, in pam_mount.conf, set the fs key cipher variable to the
+cipher used to encrypt fsk, in this case bf-ecb, and set the fs key path
+variable to efsk's path, in this case, /home/user.key.
+</p><p>
+In his definitive text, <span   class="emphasis"><em>Applied Cryptography</em></span>, Bruce Schneier
+states, &ldquo;Software encryption is scary.&rdquo; What he means
+is, it is difficult to design truly secure encryption software for
+computers running general-purpose operating systems such as Linux.
+For example, modern operating systems can swap memory to disk at any
+time, and this memory could contain plain text or encryption keys.
+An encrypted volume is useless if its key has been written to disk
+by the operating system. One way to reduce the effects of this is to
+encrypt one's swap volume. CryptoAPI still cannot do this safely,
+but it is in development. A similar project, LoopAES, already can encrypt
+a system's swap space.
+</p><p>
+Consider again the example where I sent my iBook to Apple for repairs.
+Though my home directory is encrypted, my data still may not be
+completely safe. A dishonest employee could boot his or her diabolical CD-ROM
+and replace, for example, the login binary on my system with the employee's
+own design. When my computer is returned and I log in, my encryption
+key could be shipped off to a remote computer by the newly
+installed login program. An intrusion detection system would make this
+scenario much less likely.
+</p><p>
+Another possible weak point in a system employing encrypted home
+directories using pam_mount is the system's login password.
+Because the login password is used, directly or indirectly, to unlock
+an encrypted filesystem, it must be strong. Countless studies have shown
+that most passwords chosen by users are quite weak. Rather than blindly
+increasing the required length of passwords, spend some time reading Bruce
+Schneier's <span   class="emphasis"><em>Secrets and Lies</em></span>. A strong passphrase, written down and
+stored in your wallet may be more secure than a memorized password.
+The addition of a physical authentication token might be even better.
+Remember, if your system login password is not secure, your encrypted
+filesystem is as good as read.
+</p><p>
+Finally, encrypted filesystems can be a double-edged sword. What if you
+forget your encryption key? What if you use the third technique described
+above and accidentally delete all records of your encrypted filesystem
+key? What if my or someone else's encryption-related software is
+buggy? All of these problems can result in you having to try
+2<sup  >128</sup>
+or so different encryption keys to get your filesystem back. Your data
+may be as good as gone. As with any system administration endeavor,
+make filesystem backups. Ideally, these backups are <span   class="emphasis"><em>not</em></span> encrypted
+and are physically locked up somewhere secure.
+</p><p>
+The bottom line is many subtle considerations and procedures are required
+to administer a reasonably secure system beyond the use of a modern
+encryption algorithm like AES. To quote Matt Blaze's contribution
+to <span   class="emphasis"><em>Applied Cryptography</em></span>:
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+High-quality ciphers and protocols are important tools, but
+by themselves poor substitutes for realistic, critical thinking about
+what is being protected and how various defenses might fail (attackers,
+after all, rarely restrict themselves to the clean, well-defined threat
+models of the academic world).
+</p></blockquote></div><p>
+After reading this article, you should be familiar with the concept
+of an encrypted loopback filesystem. In addition, you should be able to
+deploy encrypted filesystems on the systems you administer and manage
+them with the pam_mount PAM module. In the future, I would like to see the
+CryptoAPI patches and pam_mount supported by the major Linux distributors.
+I also would like to see the CryptoAPI patch rolled into the mainstream
+util-linux package. Properly administered encrypted home directories
+are a powerful security tool.
+</p></div></div>
+<div class="authorblurb"><p>
+Mike Petullo is a platoon leader in the US Army, stationed
+in Germany. He jumps out of airplanes by day, fights C code bugs by
+night and has been tinkering with Linux since early 1997. He welcomes
+your comments sent to <a href="mailto:lj@flyn.org">lj@flyn.org</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../112/toc112.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

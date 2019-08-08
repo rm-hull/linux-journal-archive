@@ -1,0 +1,114 @@
+Slapd startup script
+
+     1  #!/bin/sh
+     2  #
+     3  # Startup script LDAP stuff. 
+     4  #
+     5  #
+     6  # description: startup/shutdown script for slapd
+     7  # processname: slapd
+     8  #
+     9  # Licence: GPL
+    10  #our primary node
+    11  MASNODE='slave6'
+    12  # process information for kill 
+    13  PIDFILE=/usr/local/var/slapd.pid
+    14  APP=/usr/local/libexec/slapd
+    15  SLURP=/usr/local/libexec/slurpd
+    16  # we use two configuration files, depending on role
+    17  MASTER=/usr/local/etc/openldap/slapd.master.conf
+    18  SLAVE=/usr/local/etc/openldap/slapd.slave.conf
+       
+    19  # Source function library.
+    20  . /etc/ha.d/shellfuncs
+       
+    21  test_start () {
+       
+    22          # first we kill everything possible
+    23          ha_log "info: $0: Starting"
+    24          if [ -f $PIDFILE ]; then
+    25                  PID=`head -1 $PIDFILE`
+    26                  ha_log "info: $0: Appears to already be running, killing [$PID]"
+    27                  kill -9 $PID > /dev/null
+    28                  rm $PIDFILE
+    29          fi
+    30          # slurpd should die when the slapd process does, but just in case:
+    31          for i in `ps -ef | grep slurp | grep -v grep | awk '{print $2}' `
+    32          do
+    33                  kill -9 $i
+    34          done
+    35          
+    36          # slight delay to allow for stability
+    37          sleep 2
+    38          # now we will attempt to start as a master
+    39          $APP -f $MASTER
+    40          
+    41          if [ ! -f $PIDFILE ]; then
+    42          ha_log "warn: $0: Slapd did not start properly"
+    43          exit 1
+    44          fi
+    45          # Now we determine if this is the primary or secondary node
+    46          # first wait a bit for stability
+    47          sleep 10
+    48          # if we are secondary, do nothing: otherwise
+    49          if [ $HA_CURHOST == $MASNODE ]; then
+    50                  OTHER=`/etc/ha.d/resource.d/other_state`
+    51                  ha_log "info: $0 other node test returns $OTHER"
+    52                  if [[ $OTHER == 'active' || $OTHER == 'up' ]]; then
+    53                  /usr/bin/rsh slave5 '/etc/ha.d/resource.d/slapd.slave'
+    54                  $SLURP -f $MASTER
+    55                  else 
+    56                          ha_log "warn: $0: slave node is not responding"
+    57                  fi      
+    58          fi
+    59          
+       
+    60  }
+       
+    61  test_stop () {
+    62          ha_log "info: $0: Shutting down"
+    63          if [ -f $PIDFILE ]; then
+    64                  PID=`head -1 $PIDFILE`
+    65                  kill -9 $PID > /dev/null
+    66                  rm $PIDFILE
+    67          fi
+    68          # Let's be sure it's dead, Jim
+    69           for i in `ps -ef | grep slap | grep -v grep | awk '{print $2}' `
+    70           do
+    71                   kill -9 $i
+    72           done
+    73          for i in `ps -ef | grep slurp | grep -v grep | awk '{print $2}' `
+    74          do
+    75                  kill -9 $i
+    76          done
+    77          
+    78          
+    79  }
+       
+       
+    80  # See how we were called.
+    81  case "$1" in
+    82    start)
+    83          test_start
+    84          ;;
+    85    stop)
+    86          test_stop
+    87          ;;
+    88    restart)
+    89          $0 stop
+    90          $0 start
+    91          ;;
+    92    status)
+    93          if [ -f $PIDFILE ]; then
+    94                  echo running
+    95          else
+    96                  echo stopped
+    97          fi
+    98          ;;
+       
+    99    *)
+   100          echo "Usage: $0 {start|stop|restart|status}"
+   101          exit 1
+   102  esac
+       
+   103  exit 0

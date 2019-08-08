@@ -1,0 +1,373 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+The OpenSSH Protocol under the Hood</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The nitty-gritty details as to what OpenSSH is and why it is ubiquitous.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x21bc580.0x22b3ab0"></a>
+The OpenSSH Protocol under the Hood</h1></div><div><div class="author"><h3 class="author">
+Girish
+ 
+Venkatachalam
+</h3></div><div class="issuemoyr">Issue #156, April 2007</div></div><div><p>
+The nitty-gritty details as to what OpenSSH is and why it is ubiquitous.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x21bc580.0x22b4298"></a></h2></div></div><p>
+Is there a program more commonly used in day-to-day Linux computing than
+SSH? I doubt it. Not only is it rock-solid, secure and versatile,
+but it also is extremely simple to use and feature-rich. Because its algorithms
+and protocols are both state of the art and their implementation is open for
+peer review, we can rest assured on the cryptographic integrity of SSH.
+SSH does have weaknesses, however; although most of them stem from
+social engineering, and working around broken protocols, such as X11, pose a
+big challenge.
+</p><p>
+SSH can do wonders in only a few lines of C code&mdash;thanks to the UNIX
+philosophy of stringing together powerful tools in generic ways.
+</p><p>
+SSH acts as a secure channel, and it makes a remote system appear
+local, and a local one
+appear at the remote side. It can be used either for remote command
+execution, with or without a pty, and it can be used for multiplexing
+several TCP and X11 sessions. It also can be used for tunneling insecure
+protocols, such as POP3 or SMTP, through secure SSH tunnels. In addition, it can be
+used with some limitations to tunnel FTP securely.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x21bc580.0x22b44a8"></a>
+The OpenSSH Architecture</h2></div></div><p>
+Let's begin with the overall scheme of things.
+</p><div       class="mediaobject"><a href="9566f1.large.jpg"><img src="9566f1.jpg"></a><div class="caption"><p>
+Figure 1. OpenSSH Architecture
+</p></div></div><p>
+As shown in Figure 1, OpenSSH is composed of three key
+layers. The bottom layer, ssh-transport, is the most critical component
+involved in all the crypto operations, such as key exchange, re-keying at
+intervals, protecting against attacks in various ways and so on.
+</p><p>
+The layer on top of that, ssh-userauth, is responsible for authenticating
+end users to the sshd d&aelig;mon that runs at the server end. Remember that
+SSH authenticates both ways. The client SSH program authenticates the
+sshd server d&aelig;mon using the ssh-transport protocol. After
+authentication, key exchange is completed, and a secure connection is
+established. Subsequent to that, user authentication takes place in the
+ssh-userauth layer.
+</p><p>
+ssh-userauth provides a lot of flexibility, because users can authenticate to
+the server in various ways&mdash;from a private key on a smart card to simple
+user name/password authentication. Once it goes through, the
+ssh-connection layer establishes a secure channel, either for executing a
+remote command or to obtain an interactive login shell.
+</p><p>
+The ssh-connection layer is capable of multiplexing any number of
+simultaneous independent secure sessions over a single
+ssh-userauth layer with the transport stack layer below it, as shown in Figure
+1. All of SSH's magic&mdash;forwarding
+arbitrary TCP ports from local to remote and remote to local,
+acting as a SOCKS proxy, forwarding X11 connections, establishing
+VPN tunnels, executing remote commands with and without a pty&mdash;is done with the ssh-connection layer.
+</p><p>
+SSH has flow control built in to the protocol. Each secure
+channel has a separate window size allocated. Because SSH operates above a
+reliable TCP layer, this does not have much of a role. At least, it is
+not as critical as the TCP windowing mechanism. Most of the critical
+channel open/close messages and other termination messages don't consume
+any window space.
+</p><p>
+Because all messages are encrypted and integrity-protected, nobody can
+interpret the messages. There is a special SSH_MSG_IGNORE message type
+that can be used for defeating traffic analysis attacks. These are the
+kinds of attacks that figure out when data is going over the wire and how
+much data is being transferred.
+</p><p>
+SSH, of course, comes with many other niceties for sending secure
+KEEPALIVE messages, redirecting stdin to /dev/null for specialized X
+window applications and many more.
+</p><p>
+Now, let's take a look at a sample SSH session and
+typical message exchanges (Figure 2).
+</p><div       class="mediaobject"><a href="9566f2.large.jpg"><img src="9566f2.jpg"></a><div class="caption"><p>
+Figure 2. OpenSSH Protocol Flow Diagram
+</p></div></div><p>
+Here is a typical unencrypted SSH packet:</p><pre     class="programlisting">
+byte      SSH_MSG_CHANNEL_REQUEST
+uint32    recipient channel
+string    "pty-req"
+boolean   want_reply
+string    TERM environment variable value (e.g., vt100)
+uint32    terminal width, characters (e.g., 80)
+uint32    terminal height, rows (e.g., 24)
+uint32    terminal width, pixels (e.g., 640)
+uint32    terminal height, pixels (e.g., 480)
+string    encoded terminal modes
+</pre><p>
+Most fields are self-explanatory. The top two fields are always present
+in all messages. The payload packets (what the user types and the responses
+from the server) are all carried with the SSH_MSG_DATA message type.
+</p><p>
+Every packet has a header that describes the contents of the
+payload (message type) and the channel for which it is destined.
+</p><p>
+Some of the messages do not need a response from the other side, as the
+underlying layer is not only reliable but also tamper-resistant. But,
+most requests from the client have a corresponding response from the server.
+</p><p>
+Now, let's get to the gory details of the SSH key exchange protocol,
+because
+that is the most critical component that accounts for the security and
+popularity of SSH.
+</p><p>
+Figure 3 shows the data manipulations that are necessary
+to encrypt, compress and integrity-protect. Of course, we need to
+protect ourselves against replay attacks as well. For that, there is an
+implicit sequence number for each packet, and it starts at 0 and goes
+to 2<sup  >32</sup> before wrapping around. Because the sequence number is hashed,
+it can be sequential, and attackers never can guess what input will lead
+to what hash.
+</p><div       class="mediaobject"><a href="9566f3.large.jpg"><img src="9566f3.jpg"></a><div class="caption"><p>
+Figure 3. OpenSSH Packet Processing
+</p></div></div><p>
+The key components of OpenSSH keys are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Hash: H.
+</p></li><li><p>
+Shared secret: K.
+</p></li><li><p>
+Session ID: session_id.
+</p></li></ul></div><p>
+SSH uses the above components to derive the following encryption vectors
+and keys:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Client to server initialization vector.
+</p></li><li><p>
+Server to client initialization vector.
+</p></li><li><p>
+Client to server encryption key.
+</p></li><li><p>
+Server to client encryption key.
+</p></li><li><p>
+Client to server MAC key.
+</p></li><li><p>
+Server to client MAC key.
+</p></li></ul></div><p>
+The equations used for deriving the above vectors and keys are taken from
+RFC 4253. In the following, the || symbol stands for concatenation, K is
+encoded as mpint, &ldquo;A&rdquo; as byte and session_id as raw data.
+Any letter, such as the &ldquo;A&rdquo; (in quotation marks) means the
+single character A, or ASCII 65.
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Initial IV client to server: HASH(K || H || &ldquo;A&rdquo; || session_id).
+</p></li><li><p>
+Initial IV server to client: HASH(K || H || &ldquo;B&rdquo; || session_id).
+</p></li><li><p>
+Encryption key client to server: HASH(K || H || &ldquo;C&rdquo; || session_id).
+</p></li><li><p>
+Encryption key server to client: HASH(K || H || &ldquo;D&rdquo; || session_id).
+</p></li><li><p>
+Integrity key client to server: HASH(K || H || &ldquo;E&rdquo; || session_id).
+</p></li><li><p>
+Integrity key server to client: HASH(K || H || &ldquo;F&rdquo; || session_id).
+</p></li></ul></div><p>
+Simple, right?
+</p><p>
+What is not simple, however, is figuring out the K and H parameters.
+</p><p>
+HASH is usually an SHA1 hash mechanism, but it can be something else as
+well.
+</p><p>
+The typical cipher algorithm used is AES or DES3 in CBC mode. The MAC is
+a combination of MD5 or the SHA1 hash algorithm with a secret key. There are four
+choices here:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+hmac-sha1
+</p></li><li><p>
+hmac-md5
+</p></li><li><p>
+hmac-sha1-96
+</p></li><li><p>
+hmac-md5-96
+</p></li></ul></div><p>
+Actually, sha1 is a little weak in today's world, because collision attacks are
+possible. The zeitgeist in hashing today is sha512, but with proper
+re-keying and other smarts built in, it should not be a problem.
+</p><p>
+Remember that hashes are of a constant length, so hmac-sha1 is 20
+bytes long, hmac-md5 is 16 bytes, and the other two have a fixed
+length of 12 bytes each.
+</p><p>
+Okay, now for some mathematical and crypto gymnastics of the kex stage.
+</p><p>
+We know how to compute the individual encryption and MAC keys provided
+that we derive the basic parameters using the simple equation above.
+But, how do we get the parameters to begin with, in a secure,
+authenticated manner?
+</p><p>
+Now, we need to look at how OpenSSH uses diffie-hellman-group14
+and diffie-hellman-group1 fields to derive the DH generator and DH moduli
+for an anonymous key agreement.
+However, this leaves us open to several man-in-the-middle and other active
+attacks. To thwart this, we use a known and trusted server public key to
+authenticate key exchanges. Authentication of key exchange data is
+nothing more than signing with a private key.
+And, OpenSSH typically uses ssh-dsa or ssh-rsa keys for this purpose.
+</p><p>
+In other words, a combination of DH and RSA/DSS keys are used for
+authentication and to derive the secret parameters K, H and session_id.
+session_id is simply the hash of the first key exchange.
+A 16-byte random cookie also is used to protect against replay and
+other man-in-the-middle attacks.
+</p><p>
+Here is the equation for deriving H:
+</p><p>
+H = hash(V_C || V_S || I_C || I_S || K_S || e || f || K)
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+hash is usually the SHA1 hash algorithm.
+</p></li><li><p>
+V_C and V_S are the client and server identification strings.
+</p></li><li><p>
+I_C and I_S are the client and server SSH_MSG_KEXINIT messages just
+exchanged.
+</p></li></ul></div><p>
+Now, we are left with computing e, f and K;
+e and f are the DH parameters used for exponentiation:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+e = g<sup  >x</sup> modulo p
+</p></li><li><p>
+f = g<sup  >y</sup> modulo p
+</p></li><li><p>
+K = e<sup  >y</sup> modulo p
+</p></li></ul></div><p>
+Here, p is a prime number from the DH generator field. And, x and y are
+chosen arbitrarily by client and server. Remember that DH works using
+the simple mathematical principle that
+a<sup  >b<sup>c</sup></sup> =
+a<sup  >c<sup>b</sup></sup> =
+a<sup  >bc</sup>.
+</p><p>
+Now, we have everything required for computing the secret keys.
+</p><p>
+The nice thing about all of these cryptographic
+parameters is that they are thrown away after every session. The only reused parameter is
+the server RSA/DSA key, but because we add a random cookie in our
+calculations, it's difficult for attackers to break SSH
+cryptographically.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x21bc580.0x26aefe0"></a>
+Description of Each Component</h2></div></div><p>
+Let's take a look at the OpenSSH family before we proceed.
+</p><div       class="mediaobject"><a href="9566f4.large.jpg"><img src="9566f4.jpg"></a><div class="caption"><p>
+Figure 4. Stars in the OpenSSH Galaxy
+</p></div></div><p>
+As you can see in Figure 4, there are many executables and players in the grand
+scheme of things. However, the interplay is not a complex one. Everything
+I discussed above is actually implemented by SSH and sshd
+components (client and server, respectively).
+The other components are used rarely for key generation, agent forwarding and so
+on.
+</p><p>
+sftp-server is the subsystem for SSH. This is an FTP-like protocol,
+but it is highly secure and efficient, unlike the broken FTP protocol.
+</p><p>
+scp is a marvelously popular and convenient file transfer mechanism
+built on top of the SSH infrastructure. Because integrity protection is
+built in to the SSH wire protocol, file integrity is guaranteed.
+However, it does not have a resume feature for broken transfers, so you
+have to use it with rsync to get that facility.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x21bc580.0x26af3a8"></a>
+Security Analysis and Attacks</h2></div></div><p>
+Now, let's look at the kind of attacks and threat models SSH
+helps us guard against.
+</p><p>
+One of the most critical components of any cryptographic protocol is the
+quality of the random number generator. Because computers are
+deterministic devices, obtaining truly random data is a challenge.
+Common sources of entropy include disk access, keyboard and mouse input,
+process lifetimes and so forth. An incredibly large number of traditional UNIX
+programs have relied on the gettimeofday(2) system call. SSH also uses sound
+mechanisms to check the randomness of the pool of data.
+</p><p>
+One interesting attack specific to SSH is using control character
+sequences to terminate sessions and interfere with pty interactions, so
+we have to filter out suspicious character sequences.
+</p><p>
+The most critical and, unfortunately, the weakest point of SSH is server/host authentication. Reality and typical user negligence proves that we
+just say yes whenever a new host key is added to our trusted list.
+Efforts are underway to make this more secure and easier. If this is not
+ensured, different types of man-in-the-middle attacks are possible.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x21bc580.0x26af610"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+OpenSSH: <a href="http://www.openssh.org" target="_self">www.openssh.org</a>
+</p><p>
+SSH Protocol Architecture: <a href="http://www.ietf.org/rfc4251.txt" target="_self">www.ietf.org/rfc4251.txt</a>
+</p><p>
+ssh-userauth: <a href="http://www.ietf.org/rfc4252.txt" target="_self">www.ietf.org/rfc4252.txt</a>
+</p><p>
+ssh-transport: <a href="http://www.ietf.org/rfc4253.txt" target="_self">www.ietf.org/rfc4253.txt</a>
+</p><p>
+ssh-connect: <a href="http://www.ietf.org/rfc4254.txt" target="_self">www.ietf.org/rfc4254.txt</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Girish Venkatachalam is a cryptographer with nearly a decade of
+experience working on various modern UNIX systems. He has developed IPSec
+from scratch on the Nucleus OS for a router and worked with the guts of
+Apache, OpenSSL and SSH. He can be reached at
+<a href="mailto:girish1729@gmail.com">girish1729@gmail.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../156/toc156.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

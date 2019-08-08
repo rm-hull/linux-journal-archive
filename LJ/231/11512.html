@@ -1,0 +1,444 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Hack and /
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Before you deploy DNSSEC for your zones, it helps to understand some of&#10;the concepts and reasoning behind DNSSEC.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1c8d580.0x1d84ac0"></a>
+Hack and /
+</h1></div><div><h3 class="subtitle"><i>
+DNSSEC Part I: the Concepts
+</i></h3></div><div><div class="author"><h3 class="author">Kyle Rankin</h3></div><div class="issuemoyr">Issue #231, July 2013</div></div><div><p>
+Before you deploy DNSSEC for your zones, it helps to understand some of
+the concepts and reasoning behind DNSSEC.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x1d853b0"></a></h2></div></div><p>
+Like IPv6, DNSSEC is one of those great forward-looking protocols that
+unfortunately hasn't seen wide adoption yet. Before I implemented it myself, I
+could see why. Although some people think BIND itself is difficult to set up, DNSSEC
+adds an extra layer of keys, key management and a slew of additional DNS
+records. One day I decided to set up DNSSEC on a personal zone to familiarize
+myself with the concepts and process, and it turns out that the implementation isn't all
+that bad once you grasp a few concepts. In this article, I cover some of the
+general concepts, and in my next article, I'll describe the steps for using
+DNSSEC on your own zone.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x1d85568"></a>
+How DNS Works</h2></div></div><p>
+It can be difficult to understand how DNSSEC works if you don't completely grasp
+how DNS itself works. Really, I could spend a whole article just talking about how
+DNS works, but for the purposes of this article, here's a very
+high-level trace of a typical uncached DNS query that resolves a domain of mine:
+www.greenfly.org. When you type a URL in a Web browser and press Enter, behind the
+scenes, the OS starts a process to convert that hostname into an IP address.
+Although
+some people run DNS caching services on their personal computers, for the most
+part, you rely on an external DNS server you've either configured by hand or via
+DHCP. When your OS needs to convert a hostname into an IP, it sends a DNS query
+to a name server defined in /etc/resolv.conf (these days, if this file is managed
+by resolvconf, the real name servers can be trickier to track down). This starts
+what's known as a recursive query, as this remote DNS server acts on your behalf
+to talk to any other DNS servers it needs to contact to resolve your hostname to
+an IP.
+</p><p>
+In the case of resolving www.greenfly.org, the recursive DNS server starts by
+sending a query to one of the 13 root DNS servers on the Internet
+(192.33.4.12), asking for the IP for www.greenfly.org. The root name servers reply
+that they don't know that information, but the name servers for .org might know,
+and here are their names and IP addresses. Next, the recursive DNS server sends a
+query to one of the .org name servers (199.19.54.1), asking the same question. The
+.org name server replies that it also doesn't know the answer, but the name
+servers for greenfly.org might know, and here are their names and IP addresses.
+Finally, the recursive DNS server asks one of the greenfly.org name servers
+(75.101.46.232) and gets back the answer that www.greenfly.org is at
+64.142.56.172.
+</p><p>
+If you are curious how this might work for a domain you own, just use the
+<tt  >dig</tt>
+command with the <tt  >+trace</tt> option. Here's example output for www.greenfly.org:
+
+
+<pre     class="programlisting">
+
+$ dig www.greenfly.org +trace
+
+; &lt;&lt;&gt;&gt; DiG 9.8.1-P1 &lt;&lt;&gt;&gt; www.greenfly.org +trace
+;; global options: +cmd
+.                    498369  IN   NS    j.root-servers.net.
+.                    498369  IN   NS    k.root-servers.net.
+.                    498369  IN   NS    e.root-servers.net.
+.                    498369  IN   NS    m.root-servers.net.
+.                    498369  IN   NS    c.root-servers.net.
+.                    498369  IN   NS    d.root-servers.net.
+.                    498369  IN   NS    l.root-servers.net.
+.                    498369  IN   NS    a.root-servers.net.
+.                    498369  IN   NS    h.root-servers.net.
+.                    498369  IN   NS    i.root-servers.net.
+.                    498369  IN   NS    g.root-servers.net.
+.                    498369  IN   NS    b.root-servers.net.
+.                    498369  IN   NS    f.root-servers.net.
+;; Received 436 bytes from 127.0.0.1#53(127.0.0.1) in 60 ms
+
+org.                 172800  IN   NS    b2.org.afilias-nst.org.
+org.                 172800  IN   NS    b0.org.afilias-nst.org.
+org.                 172800  IN   NS    c0.org.afilias-nst.info.
+org.                 172800  IN   NS    a0.org.afilias-nst.info.
+org.                 172800  IN   NS    d0.org.afilias-nst.org.
+org.                 172800  IN   NS    a2.org.afilias-nst.info.
+;; Received 436 bytes from 192.33.4.12#53(192.33.4.12) in 129 ms
+
+greenfly.org.        86400   IN   NS    ns2.greenfly.org.
+greenfly.org.        86400   IN   NS    ns1.greenfly.org.
+;; Received 102 bytes from 199.19.54.1#53(199.19.54.1) in 195 ms
+
+www.greenfly.org.    900     IN   A     64.142.56.172
+greenfly.org.        900     IN   NS    ns1.greenfly.org.
+greenfly.org.        900     IN   NS    ns2.greenfly.org.
+;; Received 118 bytes from 75.101.46.232#53(75.101.46.232) in 2 ms
+
+</pre>
+</p><p>
+Although this may seem like a lot of steps, in practice, name servers cache answers
+for a period of time known as the TTL, or Time To Live, that's assigned to every
+record. That way, a DNS resolver has to look up only any records that have
+expired.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x1d85930"></a>
+DNS Security Issues</h2></div></div><p>
+DNS has been around for quite a while, and it has had its share of security issues
+over time. DNS is designed to be an open, friendly service. Although some
+administrators might treat DNS records as secrets, generally speaking, a DNS
+record's purpose is to be looked up by anyone who requests it, so DNS records are
+not encrypted, and DNS queries generally occur over plain text. Here are a few DNS
+security issues facing us today:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Domain names sometimes look alike (google.com vs. googIe.com), which an attacker
+can take advantage of to encourage you to click on a legitimate-looking link.
+</p></li><li><p>
+Companies can't always register their name on all TLDs (.com vs. .biz vs. .net),
+so an attacker might register mybank.biz, which a victim may think is
+legitimate.
+</p></li><li><p>
+Many DNS servers (known as open resolvers) will perform recursive queries for
+anyone who asks.
+</p></li><li><p>
+Open resolvers commonly are used in modern DNS amplification DDOS attacks (an
+attack where a relatively small DNS query results in an orders of magnitude
+larger response that, due to DNS queries occurring over UDP, can be redirected
+to a different target than the host who initiated the request). With a DNS
+amplification attack, it takes much less bandwidth from an attacking machine to
+generate large amounts of traffic for a target.
+</p></li><li><p>
+DNS is subject to MitM (Man in the Middle) attacks where DNS records can be
+rewritten before they get back to the victim. This lets an attacker, for
+instance, change the IP of yourbank.com in a DNS request to point to the
+Web site the attacker controls instead.
+</p></li><li><p>
+DNS spoofing/cache poisoning attacks (this class of attacks was covered by a
+series of Paranoid Penguin columns in 2011) essentially allow an
+attacker to inject fake DNS records into a DNS resolver's cache to point
+victims, again, at an attacker's site instead of the site they intend to visit.
+</p></li></ul></div><p>
+Of all of these different DNS security issues, DNSSEC attempts to address the
+last two, MitM attacks and DNS cache poisoning, by signing every DNS reply with a
+signature, much like a PGP signature in an e-mail. The DNSSEC signature verifies
+that the DNS result you see came from the authoritative DNS server for that
+domain and that it wasn't tampered with in any way in transit.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x1d85f60"></a>
+How DNSSEC Works</h2></div></div><p>
+If you are somewhat familiar with the CA (Certificate Authority) system or with
+how public-key cryptography works with PGP-signed e-mails, understanding 
+DNSSEC will be a bit simpler, as it has some similarities. With DNSSEC, a domain
+creates a set of public and private keys that it uses to sign every record set in its
+zone. The domain then publishes the public keys in the zone as a record of its
+own along with the signatures. With these public keys and signatures, anyone
+performing a DNS query against that domain can use the public key to validate the
+signature for a particular record. Because only someone with the private key could
+sign the record, you can be assured the result was signed by someone who controls
+the domain. If someone tampered with the record along the way, the signature
+no longer would match.
+</p><p>
+Like with PGP-signed e-mail, having cryptographic signatures attached to a
+document isn't a sufficient reason to trust the document. After all,
+attackers 
+simply could generate a different key pair, change the record and attach
+their public
+key and updated signature instead. With DNSSEC, you need an outside mechanism to
+know you can trust that the public key you are getting truly came from the
+domain. With PGP-signed e-mail, you validate the public key with outside
+mechanisms, such as key-signing parties, with the hope that if you receive an e-mail
+from someone for which you don't immediately have a public key signature, someone you
+already trust does, and you can use that chain of trust to validate the
+signature. I don't know of any DNSSEC key-signing parties; instead,
+the chain of trust is built much like how it is with the CA system.
+</p><p>
+When you visit a site that's protected by HTTPS, the site will present you with a
+copy of its public key (here called a certificate), so you can establish
+a secure, encrypted communication channel with the site, but equally important,
+you also can validate that you are in fact communicating with, for instance,
+mail.google.com and not some attacker. Because you probably didn't go to a Google
+key-signing party either, how can you trust that certificate? It turns out that
+each certificate is signed by a CA like Verisign, Thawte
+or a large number of others. This signature is attached to the certificate you
+receive, and your browser itself has public keys for each of the CAs built in to
+it. The browser implicitly trusts these CA certificates, so if you receive a
+certificate from a site that has been signed by any of these CAs, you will trust
+it as valid. This trust, by the way, is why it is such a problem when a CA gets
+hacked. Attackers then can use the private keys from that CA to generate new
+certificates for any site they want to impersonate and browsers 
+will trust them automatically.
+</p><p>
+DNSSEC signatures follow a similar chain of trust to PGP keys and CAs. In this
+case, the root DNS servers act as the trust anchor, and DNSSEC resolvers implicitly
+trust what the root DNS servers sign, much like browsers trust CAs. When a TLD
+(Top Level Domain) wants to implement DNSSEC, it submits a special DS record to
+the root DNS servers to sign. Those DS records contain a signature for the
+subdomain generated by the private key. The root DNS server hosts that DS record
+and signs it with its private key. In that way, because you trust root, you can
+trust that the signature for org has not been modified; therefore, you can
+trust it as well in the same way you would trust a certificate signed by a CA.
+Then if you want to enable DNSSEC for a .org domain, for instance, you would
+submit a DS record for each key through your registrar if it supports DNSSEC.
+Each DS record contains a key's signature for your domain that the org name
+servers then would sign and host.
+</p><p>
+In this model, the chain of trust basically follows the same order that a
+recursive DNS query like I outlined above would follow. A DNSSEC query adds an
+extra validation step to each part of the process. For instance, a query for
+www.isc.org starts at the root, uses the DS record for org to validate com
+signatures, then uses the DS record for isc.org to validate the isc.org signature
+attached to www.isc.org. You can add the <tt  >+dnssec</tt> option to
+<tt  >dig +trace</tt> to see the
+full transaction:
+
+
+<pre     class="programlisting">
+
+$ dig +trace +dnssec www.isc.org
+
+; &lt;&lt;&gt;&gt; DiG 9.8.1-P1 &lt;&lt;&gt;&gt; +trace +dnssec www.isc.org
+;; global options: +cmd
+.                 492727  IN      NS      g.root-servers.net.
+.                 492727  IN      NS      m.root-servers.net.
+.                 492727  IN      NS      i.root-servers.net.
+.                 492727  IN      NS      b.root-servers.net.
+.                 492727  IN      NS      f.root-servers.net.
+.                 492727  IN      NS      a.root-servers.net.
+.                 492727  IN      NS      k.root-servers.net.
+.                 492727  IN      NS      h.root-servers.net.
+.                 492727  IN      NS      l.root-servers.net.
+.                 492727  IN      NS      e.root-servers.net.
+.                 492727  IN      NS      c.root-servers.net.
+.                 492727  IN      NS      d.root-servers.net.
+.                 492727  IN      NS      j.root-servers.net.
+.                 518346  IN      RRSIG   NS 8 0 518400 20130517000000
+20130509230000 20580 . M8pQTohc9iGqDHWfnACnBGDwPhFs7G/nqqOcZ4OobVxW8l
+KIWa1Z3vho56IwomeVgYdj+LNX4Znp1hpb3up9Hif1bCASk+z3pUC4xMt7No179Ied
+DsNz5iKfdNLJsMbG2PsKxv/C2fQTC5lRn6QwO4Ml09PAvktQ9F9z7IqS kUs=
+;; Received 589 bytes from 127.0.0.1#53(127.0.0.1) in 31 ms
+
+org.              172800  IN      NS      d0.org.afilias-nst.org.
+org.              172800  IN      NS      b0.org.afilias-nst.org.
+org.              172800  IN      NS      a2.org.afilias-nst.info.
+org.              172800  IN      NS      b2.org.afilias-nst.org.
+org.              172800  IN      NS      c0.org.afilias-nst.info.
+org.              172800  IN      NS      a0.org.afilias-nst.info.
+org.              86400   IN      DS      21366 7 1
+E6C1716CFB6BDC84E84CE1AB5510DAC69173B5B2
+org.              86400   IN      DS      21366 7 2
+96EEB2FFD9B00CD4694E78278B5EFDAB0A80446567B69F634DA078F0 D90F01BA
+org.              86400   IN      RRSIG   DS 8 1 86400 20130517000000
+20130509230000 20580 . kirNDFgQeTmi0o5mxG4bduPm0y8LNo0YG9NgNgZIbYdz8
+gdMK8tvSneJUGtJca5bIJyVGcOKxV3aqg/r5VThvz8its50tiF4l5lt+22n/AGnNRxv
+onMl/NA5rt0K2vXtdskMbIRBLVUBoa5MprPDwEzwGg2xRSvJryxQEYcT 80Y=
+;; Received 685 bytes from 192.203.230.10#53(192.203.230.10) in 362 ms
+isc.org.          86400   IN      NS      ns.isc.afilias-nst.info.
+isc.org.          86400   IN      NS      ams.sns-pb.isc.org.
+isc.org.          86400   IN      NS      sfba.sns-pb.isc.org.
+isc.org.          86400   IN      NS      ord.sns-pb.isc.org.
+isc.org.          86400   IN      DS      12892 5 2
+F1E184C0E1D615D20EB3C223ACED3B03C773DD952D5F0EB5C777586D E18DA6B5
+isc.org.          86400   IN      DS      12892 5 1
+982113D08B4C6A1D9F6AEE1E2237AEF69F3F9759
+isc.org.          86400   IN      RRSIG   DS 7 2 86400 20130530155458
+20130509145458 42353 org.
+Qp7TVCt8qH74RyddE21a+OIBUhd6zyzAgSB1Qykl2NSkkebtJ1QeE5C5
+R8eblh8XvmQXjqN7zwcj7sDaaHXBFXGZ2EeVT5nwJ1Iu4EGH2WK3L7To
+BDjR+8wNofZqbd7kX/LOSvNu9jdikb4Brw9/qjkLk1XaOPgl/23WkIfp zn8=
+;; Received 518 bytes from 199.19.56.1#53(199.19.56.1) in 400 ms
+
+www.isc.org.      600     IN      A       149.20.64.42
+www.isc.org.      600     IN      RRSIG   A 5 3 600 20130609211557
+20130510211557 50012 isc.org.
+tNE0KPAh/PUDWYumJ353BV6KmHl1nDdTEEDS7KuW8MVVMxJ6ZB+UTnUn
+bzWC+kNZ/IbhYSD1mDhPeWvy5OGC5TNGpiaaKZ0/+OhFCSABmA3+Od3S
+fTLSGt3p7HpdUZaC9qlwkTlKckDZ7OQPw5s0G7nFInfT0S+nKFUkZyuB OYA=
+isc.org.          7200    IN      NS      ord.sns-pb.isc.org.
+isc.org.          7200    IN      NS      sfba.sns-pb.isc.org.
+isc.org.          7200    IN      NS      ns.isc.afilias-nst.info.
+isc.org.          7200    IN      NS      ams.sns-pb.isc.org.
+isc.org.          7200    IN      RRSIG   NS 5 2 7200 20130609211557
+20130510211557 50012 isc.org.
+SdMCLPfLXiyl8zrfbFpFDz22OiYQSPNXK18gsGRzTT2JgZkLZYZW9gyB
+vPTzm8L+aunkMDInQwFmRPqvHcbO+5yS98IlW6FbQXZF0/D3Y9J2i0Hp
+ylHzm306QNtquxM9vop1GOWvgLcc239Y2G5SaH6ojvx5ajKmr7QYHLrA 8l8=
+;; Received 1623 bytes from 199.6.0.30#53(199.6.0.30) in 60 ms
+
+</pre>
+</p><p>
+You'll see a number of new record types in this response, but don't
+worry, I go over all of the new DNSSEC record types next.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x1d86430"></a>
+DNSSEC Terminology</h2></div></div><p>
+A lot of different acronyms and new terminology comes up when you
+read DNSSEC documentation, so here are a few common terms you'll want to be
+acquainted with as you use DNSSEC:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+RR (Resource Record): this is the smallest unit of data in a zone, such as a
+single A record, NS record or MX record.
+</p></li><li><p>
+RRSET: a complete set of Resource Records. For instance, an RRSET might be all
+NS records or A records for a particular name.
+</p></li><li><p>
+KSK (Key-Signing Key): signs DNSKEY records in a zone.
+</p></li><li><p>
+ZSK (Zone-Signing Key): signs all of the other records in a zone.
+</p></li><li><p>
+SEP (Secure Entry Point): a flag set in a key to denote it as a KSK.
+</p></li></ul></div><p>
+While best practice dictates a separate KSK and ZSK, it isn't an actual
+requirement. In my next article on DNSSEC implementation, I will discuss the main
+differences between the two key types and why separate keys is considered a best
+practice. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x1d86958"></a>
+New DNSSEC Record Types</h2></div></div><p>
+DNSSEC also has introduced a number of new DNS record types into the mix. These
+records are published with the zone along with the rest of your DNS records and
+are pulled down as needed by any DNSSEC-enabled query:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+DNSKEY: this is a public key for the zone and can either be a KSK or ZSK.
+</p></li><li><p>
+RRSIG (Resource Record Signature): this record contains a signature for an RRSET
+created with a particular ZSK.
+</p></li><li><p>
+NSEC (Next Secure record): these records are used in &ldquo;negative
+answers&rdquo; to
+prove whether a name exists.
+</p></li><li><p>
+NSEC3 (Next Secure version 3): these records are like NSEC, but protect
+against &ldquo;zone walking&rdquo; where an outside user could use NSEC records to walk
+down the zone and discover all of the records in the zone (much like being able
+to perform a zone transfer).
+</p></li><li><p>
+DS (Delegation Signer): this record contains a KSK signature and is submitted
+to the zone's parent where it is signed and is used as part of a chain of trust.
+</p></li><li><p>
+DLV (DNSSEC Look-aside Validation): much like DS records, but are used when DS
+records are not supported by a zone, or as an alternate trust anchor if your
+registrar doesn't support DNSSEC.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x2312718"></a>
+DNSSEC Look-Aside Validation</h2></div></div><p>
+DNSSEC has a sort of chicken-and-egg problem. If your TLD does not support
+DNSSEC, any outside resolvers won't have a complete chain of trust from root,
+through the TLD, to your zone. There also may be a case where your TLD does
+support DNSSEC, but your registrar doesn't provide a mechanism to upload a DS
+record to the TLD (most registrars sadly don't). In either case, DNSSEC
+Look-aside Validation (DLV) has been created to provide an alternate trust
+anchor.
+</p><p>
+You can find more
+details on DLV at <a href="http://dlv.isc.org" target="_self">dlv.isc.org</a> (one of the main DLV
+providers), but essentially, instead of generating a DS record to submit to a TLD,
+you generate a special DLV record and submit it to a DLV server. As long as a DNS
+resolver is configured to trust, for instance, dlv.isc.org, it can use that to
+anchor the chain of trust and then trust your signed records.
+</p><p>
+It turns out DNSSEC has a lot of new concepts to understand before you even get
+to implementing it; however, the implementation isn't all that
+bad once you see the steps laid out, so be sure to follow up with my article next month
+when I talk about how to implement DNSSEC for a zone using BIND. I'll even cover
+how to set up DLV for the zone.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x2312928"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+A Collection of Links to DNSSEC Information: <a href="http://dnssec.net" target="_self">dnssec.net</a>
+</p><p>
+ISC's DLV Documentation:
+<a href="https://dlv.isc.org" target="_self">https://dlv.isc.org</a>
+</p><p>
+DNSSEC Chain of Trust Visualizer:
+<a href="http://dnsviz.net" target="_self">dnsviz.net</a>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c8d580.0x2312cf0"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Kyle Rankin is a Sr. Systems Administrator in the San Francisco Bay Area
+and
+the
+author of a number of books, including <span   class="emphasis"><em>The Official Ubuntu Server
+Book</em></span>,
+<span   class="emphasis"><em>Knoppix Hacks</em></span> and <span   class="emphasis"><em>Ubuntu Hacks</em></span>.
+He is currently the president of the North
+Bay Linux Users' Group.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../231/toc231.html">Issue Table of Contents</a>
+    <a class="link3" href="../231/11512.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

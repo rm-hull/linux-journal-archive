@@ -1,0 +1,819 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+GCC Inline Assembly and Its Usage in the Linux Kernel
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Learning GCC inline assembly just got one more benefit. Now let's dive in to the&#10;kernel to see how a few things actually work.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2140580.0x2237ac0"></a>
+GCC Inline Assembly and Its Usage in the Linux Kernel
+</h1></div><div><div class="author"><h3 class="author">
+Dibyendu
+ 
+Roy
+</h3></div><div class="issuemoyr">Issue #271, November 2016</div></div><div><p>
+Learning GCC inline assembly just got one more benefit. Now let's dive in to the
+kernel to see how a few things actually work.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x2238250"></a></h2></div></div><p>
+The GNU C compiler allows you to embed assembly language code into C programs.
+This tutorial explains how you can do that on the ARM architecture. As GNU
+assembler is similar for different architectures, including assembler syntax
+and most assembler directives, the general concepts of inline assembly remain
+same for other architectures as well.
+</p><p>
+Why should you embed assembly code into C? There are at least two reasons:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<span   class="bold"><b>Optimization:</b></span> the compiler tends to optimize unless specified otherwise. For
+some applications, however, hand-written assembly replaces the most
+performance-sensitive parts. Because the inline assembler does not require
+separate assembling and linking, it is more convenient than a separately
+written assembly module. Inline assembly code can use any C variable or
+function name that is in scope, so it is easy to integrate it with your C code.
+</p></li><li><p>
+<span   class="bold"><b>Access to processor-specific instructions:</b></span> C does not support saturated math
+operations, co-processor instructions or accessing the Current Program Status
+Registers (CPSR). C code also does not support ARM LDREX/STREX instructions.
+ARM implements its atomic operations and locking primitives with LDREX/STREX.
+Inline assembly is the easiest way to access instructions not supported by the
+C compiler.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x2238720"></a>
+Getting Started</h2></div></div><p>
+Let's start with the simple example shown in Listing 1.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x2238828"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Example Program</b></p><pre     class="programlisting">
+
+#include&lt;stdio.h&gt;
+
+int add(int x, int y)
+{
+    int result;
+    asm volatile("add %[Rd], %[Rm], %[Rn]"
+                 : [Rd] "=r" (result)
+                 : [Rm] "r" (x), [Rn] "r" (y)
+                 );
+    return result;
+}
+
+int main(void)
+{
+    int ret;
+    ret = add(5, 7);
+    printf("the result is = %d\n", ret);
+    return 0;
+}
+
+</pre></div><p>
+The part from the example program in Listing 1 that needs explanation is
+this:
+
+<pre     class="programlisting">
+asm volatile("add %[Rd], %[Rm], %[Rn]"
+             : [Rd] "=r" (result)
+             : [Rm] "r" (x), [Rn] "r" (y)
+             );
+</pre>
+</p><p>
+Before explaining the code, let's start with the basics. The
+<tt  >asm</tt>
+keyword enables you to embed assembler instructions within C code. GCC has two
+forms of inline <tt  >asm</tt> statements: basic
+<tt  >asm</tt> and extended <tt  >asm</tt>. A basic asm is
+one with no operands, while an extended asm includes one or more operands.
+Basic asm enables you to include assembly language outside any function. The
+extended form is preferred for mixing C and assembly languages within a
+function.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x2238ca0"></a>
+Basic asm and Extended asm</h2></div></div><p>
+A basic asm statement has the following format:
+
+<pre     class="programlisting">
+asm [volatile] (Assembly code)
+</pre>
+</p><p>
+The <tt  >volatile</tt> qualifier is optional here. All basic
+<tt  >asm</tt> statements are implicitly volatile.
+</p><p>
+Assembly code is a string that can contain any assembly instruction(s)
+recognized by the GNU assembler, including directives. A C compiler does not
+parse or check the validity of the assembly instructions. Assembly code
+parsing and syntax checking is done at the assembling stage. A single
+<tt  >asm</tt> string
+may contain multiple assembler instructions. You can use a newline followed by
+a tab (<tt  >\n\t</tt>) to break and indent the code in the next line.
+</p><p>
+Below is an example of basic asm in the kernel
+(arch/arm/include/asm/barrier.h):
+
+<pre     class="programlisting">
+#define nop() __asm__ __volatile__("mov\tr0,r0\t@ nop\n\t");
+</pre>
+</p><p>
+This is simply:
+
+<pre     class="programlisting">
+asm volatile("mov r0,r0");
+</pre>
+</p><p>
+The above inline assembly copies the <tt  >r0</tt> register
+content to itself. <tt  >nop()</tt> ends up
+only introducing some delay. 
+</p><p>
+Note that the <tt  >asm</tt> keyword is a GNU extension. Use
+<tt  >__asm__</tt> instead of <tt  >asm</tt> when
+your code is compiled with <tt  >-ansi</tt> and the various
+<tt  >-std</tt> options. The Linux kernel uses both
+<tt  >__asm__</tt> and <tt  >asm</tt> for compatibility.
+</p><p>
+An extended <tt  >asm</tt> statement has the following syntax:
+
+<pre     class="programlisting">
+asm [volatile] (Assembly code
+                : OutputOperands /* optional */
+                : InputOperands  /* optional */
+                : Clobbers       /* optional */
+                )
+</pre>
+</p><p>
+The <tt  >volatile</tt> qualifier is optional here. However,
+<tt  >asm</tt> statements may produce side
+effects while operating on inputs and generating outputs. You may need to use
+the <tt  >volatile</tt> qualifier to disable certain
+optimizations in that case.
+</p><p>
+Assembly code is a string literal that is a combination of fixed text and
+tokens that refer to the input and output parameters.
+<tt  >OutputOperands</tt> and
+<tt  >InputOperands</tt> are optional comma-separated lists of C variables. Clobbers are
+also an optional comma-separated list of registers or other special values.
+Read on for more about these.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x2239900"></a>
+Coming Back to the Example</h2></div></div><p>
+The example program from Listing 1 includes an extended
+<tt  >asm</tt> statement. Colons delimit each
+operand parameter after the assembly code:
+
+<pre     class="programlisting">
+"add %[Rd], %[Rm], %[Rn]"
+</pre>
+</p><p>
+This is the string literal containing the assembly code:
+
+<pre     class="programlisting">
+[Rd] "=r" (result)
+</pre>
+</p><p>
+Output operands consist of a symbolic name enclosed in a square bracket,
+followed by a constraint string and a C variable name enclosed in
+parentheses:
+
+<pre     class="programlisting">
+[Rm] "r" (x), [Rn] "r" (y)
+</pre>
+</p><p>
+The list of input operands uses similar syntax as output operands.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x2239c70"></a>
+More on Output, Input and Clobbers</h2></div></div><p>
+<span   class="bold"><b>Output Operands</b></span>
+</p><p>
+<tt  >OutputOperands</tt> has the following format:
+
+<pre     class="programlisting">
+[asmSymbolicName] constraint (cvariablename)
+</pre>
+</p><p>
+An <tt  >asm</tt> statement has zero or more output operands indicating the names of C
+variables modified by the assembler code.
+<tt  >asmSymbolicName</tt> specifies a symbolic
+name for the operand. Square brackets are used to reference this inside the
+<tt  >asm</tt>
+statement. The scope of the name is the <tt  >asm</tt> statement that contains the
+definition.
+</p><p>
+You also can use the position of the operands in the assembler template (for
+example, if there are three operands, <tt  >%0</tt> to the
+first, <tt  >%1</tt> for the second
+and <tt  >%2</tt> for the third). You can re-write the example code as: 
+
+<pre     class="programlisting">
+asm volatile("add %0, %1, %2"
+             : "=r" (result)
+             : "r" (x), "r" (y)
+             );
+</pre>
+</p><p>
+A constraint is a string constant specifying restrictions on the placement of the
+operand. Refer to the GCC documentation for a full list of supported
+constraints for ARM and other architectures. The most commonly used
+constraints are &ldquo;r&rdquo;, used as general-purpose registers (r0 to
+r15); &ldquo;m&rdquo;, which refers to any valid
+memory location, and &ldquo;I&rdquo; for immediate integer. Constraint
+character may be prefixed 
+with constraint modifiers:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >=</tt> &mdash; write-only operand, used for output
+operands.
+</p></li><li><p>
+<tt  >+</tt> &mdash; read-write operand, must be listed as an
+output operand.
+</p></li><li><p>
+<tt  >&amp;</tt> &mdash; register used for output only.
+</p></li></ul></div><p>
+Output operators must be write-only, and input operands are read-only.
+Constraints without any modifiers are read-only. So, it should be clear why
+the output
+operand in the example program has <tt  >"=r"</tt> and input
+operands <tt  >"r"</tt>.
+</p><p>
+But, what if your input and output operands are the same?
+<tt  >"+r"</tt> can be used as
+a constraint and must be listed as output operands:
+
+<pre     class="programlisting">
+asm volatile("mov %[Rd], %[Rd], lsl #2"
+             : [Rd] "+r" (x)
+             );
+</pre>
+</p><p>
+The assembly code goes here:
+
+<pre     class="programlisting">
+#APP
+@ 5 "inline_shift.c" 1
+    mov r3, r3, lsl #2
+@ 0 "" 2
+</pre>
+</p><p>
+Sometimes a compiler may choose the same register for input and output, even if
+you do not instruct it to do so. If your code explicitly requires different
+registers for input and output operands, use the
+<tt  >"=&amp;"</tt> constraint modifier.
+</p><p>
+Constraints in an output operand should follow a
+<tt  >cvariablename</tt> that must be an
+<tt  >lvalue</tt> expression for output operands.
+</p><p><span   class="bold"><b>
+Input Operands</b></span>
+</p><p>
+Input operands have a similar syntax as output operands. But, constraints
+should not start with &ldquo;=&rdquo; or &ldquo;+&rdquo;. Input operands' constraints for registers do
+not have any modifiers, as they are read-only operands. You should never try to
+modify the contents of input-only operands. Use <tt  >"+r"</tt> when input and output
+operands are the same, as explained above.
+</p><p><span   class="bold"><b>
+Clobbers</b></span>
+</p><p>
+Sometimes inline assembly may modify additional registers, as side effects, apart
+from those listed in the output operands. In order to make the compiler aware of this
+additional change, you need to list them in a clobber list. Clobber list items
+are either register names or the special clobbers. Each clobber list item is a
+string constant and is separated by commas. When the compiler allocates registers
+for input and output operands, it does not use any of the clobbered registers.
+Clobbered registers are available for any use in the assembler code. Let's
+take a closer look at an inline add program that does not have a clobber list. The
+inline assembly code may look like this:
+
+<pre     class="programlisting">
+#APP
+@ 6 "inline_add.c" 1
+    add r3, r3, r2
+@ 0 "" 2
+</pre>
+</p><p>
+Here the code uses register <tt  >r3</tt> and
+<tt  >r2</tt>. Now let's modify it and list
+the <tt  >r2</tt> and <tt  >r3</tt>
+registers in a clobber list:
+
+<pre     class="programlisting">
+asm volatile("add %[Rd], %[Rm], %[Rn]"
+             : [Rd] "=r" (result)
+             : [Rm] "r" (x), [Rn] "r" (y)
+             : "r2", "r3"
+             );
+</pre>
+</p><p>
+The assembly code:
+
+<pre     class="programlisting">
+#APP
+@ 6 "inline_add2.c" 1
+    add r4, r1, r0
+@ 0 "" 2
+</pre>
+</p><p>
+Notice that the compiler did not use the <tt  >r2</tt> and
+<tt  >r3</tt> registers as they were mentioned 
+in the clobber list. The processor can use <tt  >r2</tt> and
+<tt  >r3</tt> for any other work in the assembly
+code.
+</p><p>
+There are also two special clobbers available apart from registers:
+&ldquo;cc&rdquo; and
+&ldquo;memory&rdquo;. The &ldquo;cc&rdquo; clobber indicates that the assembler code modifies the CPSR
+(Current Program Status Register) flag register. The &ldquo;memory&rdquo; clobber tells
+the compiler that the inline assembly code performs memory reads or writes on
+items apart from input and output operands. The compiler flushes the register
+contents to memory so that memory contains the correct value before executing the
+inline asm. Moreover, the compiler reloads all memory access after the inline asm
+statement so that it gets a fresh value. This way, the &ldquo;memory&rdquo; clobbers form
+a read-write compiler barrier across the inline <tt  >asm</tt> statement.
+</p><p>
+In Linux, a compiler barrier is defined as a macro
+<tt  >barrier()</tt> that is nothing but
+a memory clobber:
+
+<pre     class="programlisting">
+#define barrier() __asm__ __volatile__("": : :"memory")
+</pre>
+</p><p>
+<span   class="emphasis"><em>Important:</em></span>
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Use <tt  >__asm__</tt> instead of <tt  >asm</tt>
+when your code is compiled with <tt  >-ansi</tt>
+and the various <tt  >-std</tt> options.
+</p></li><li><p>
+The difference between basic and extended <tt  >asm</tt> is the latter has optional output,
+input and clobber lists separated by colons (:).
+</p></li><li><p>
+Extended <tt  >asm</tt> statements must be inside a function.
+Only basic <tt  >asm</tt> statements may be
+outside functions.
+</p></li><li><p>
+Inside a function, extended <tt  >asm</tt> statements typically produce more efficient and robust
+code.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x2634018"></a>
+Inline Assembly in the Linux Kernel</h2></div></div><p>
+Now that I've gone through the basics of GCC inline assembly, let's move on
+to a more interesting topic&mdash;its usage in the Linux kernel. The rest
+of this
+article is architecture-dependent and is discussed with respect to ARMv7-A. Basic
+knowledge of ARM and assembly language will be helpful in understanding the rest of
+the material covered here.
+</p><p><span   class="bold"><b>
+A Little Background</b></span>
+</p><p>
+In multitasking computers, shared resource accesses must be restricted to only
+one modifier at a time. This shared resource can be a shared memory location or
+a peripheral device. Mutual exclusion, a property of concurrency control,
+protects such shared resources. In a single processor system, disabling
+interrupts could be a way of achieving mutual exclusion inside critical
+sections (although user mode cannot disable interrupts), but this solution
+fails in SMP systems as disabling interrupts on one processor will not prevent
+others from entering the critical section. Atomic operations and locks are used
+to enforce mutual exclusion.
+</p><p>
+Mutual exclusion enforces atomicity. Let's consider the definition of atomicity
+first. Any operation is atomic if the operation is entirely successful and its
+result is visible to all CPUs in the system instantaneously, or it's not successful
+at all. Atomicity is the basis of all mutual exclusion methods.
+</p><p>
+All modern computer architectures, including ARM, provide hardware
+mechanisms
+for atomically modifying the memory locations.
+</p><p>
+The ARMv6 architecture introduced the concept of exclusive accesses to memory
+locations for atomically updating memory. The ARM architecture provides
+instructions to support exclusive access.
+</p><p>
+LDREX (Load Exclusive) loads the value of a given memory location into a
+register and tags that memory location as reserved.
+</p><p>
+STREX (Store Exclusive) stores an updated value from a register back to a given
+memory location, provided that no other processor has modified the physical
+address since its last load. It returns 0 for success, and 1 otherwise, to a
+register indicating whether the store operation completed successfully.
+By checking this return value, you can confirm whether any other processor has
+updated the same location in between.
+</p><p>
+These instructions need hardware support to tag a physical address as
+&ldquo;exclusive&rdquo; by that specific processor.
+</p><p>
+<span   class="emphasis"><em>Note:</em></span>
+ARM says:
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+If a context switch schedules out a process after the process has
+performed a Load-Exclusive but before it performs the Store-Exclusive, the
+Store-Exclusive returns a false negative result when the process resumes, and
+memory is not updated. This does not affect program functionality, because the
+process can retry the operation immediately.
+</p></blockquote></div><p>
+The concept of exclusive accesses also is related to the concepts of local and global
+monitors, memory types, memory access ordering rules and barrier instructions.
+See the Resources section of this article for more information.
+</p><p><span   class="bold"><b>
+Implementation of Atomic Operations</b></span>
+</p><p>
+Atomic integer operations are generally required to implement counters. As
+protecting a counter with a complex locking scheme is overkill,
+<tt  >atomic_inc()</tt>
+and <tt  >atomic_dec()</tt> are preferable. All the atomic
+functions in the Linux kernel
+are implemented using LDREX and STREX.
+</p><p>
+Take a look at <tt  >atomic_t</tt> defined in
+include/linux/types.h as the following:
+
+<pre     class="programlisting">
+typedef struct {
+        int counter;
+} atomic_t;
+</pre>
+</p><p>
+After simplifying the macro definitions, the
+<tt  >atomic_add()</tt> function definition in
+kernel-4.6.2 (arch/arm/include/asm/atomic.h) looks like Listing 2.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x25465f0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. atomic_add() Implementation</b></p><pre     class="programlisting">
+
+static inline void atomic_add(int i, atomic_t *v)                      
+{                                                                       
+        unsigned long tmp;                                              
+        int result;                                                     
+                                                                        
+        prefetchw(&amp;v-&gt;counter);                                         
+        __asm__ __volatile__("@ atomic_add\n"                       
+"1:     ldrex   %0, [%3]\n"                                             
+"       add     %0, %0, %4\n"                                   
+"       strex   %1, %0, [%3]\n"                                         
+"       teq     %1, #0\n"                                               
+"       bne     1b"                                                     
+        : "=&amp;r" (result), "=&amp;r" (tmp), "+Qo" (v-&gt;counter)               
+        : "r" (&amp;v-&gt;counter), "Ir" (i)                                   
+        : "cc");                                                        
+}
+
+</pre></div><p>
+Let's take a closer look at the code shown in Listing 2.
+</p><p>
+The function below uses PLD (Preload Data), PLDW (Preload Data with intent to write)
+instructions that are typically memory system hints to bring the data into
+caches for faster access:
+
+<pre     class="programlisting">
+
+prefetchw(&amp;v-&gt;counter);
+
+</pre>
+</p><p>
+<tt  >ldrex</tt> loads the &ldquo;counter&rdquo; value to
+&ldquo;result&rdquo; and tags that memory location
+as reserved:
+
+<pre     class="programlisting">
+ldrex   %0, [%3]
+</pre>
+</p><p>
+The following adds i to the &ldquo;result&rdquo; and stores that to
+&ldquo;result&rdquo;:
+
+<pre     class="programlisting">
+add     %0, %0, %4
+</pre>
+</p><p>Two scenarios are possible here:
+
+<pre     class="programlisting">
+strex   %1, %0, [%3]
+</pre>
+</p><p>
+In first scenario, strex successfully stores
+the value of &ldquo;result&rdquo; into the memory location and returns 0
+at &ldquo;tmp&rdquo;. This
+happens only when no other processor has modified the location in between the
+last load and store by the current processor. However, if any other processor
+has modified the same physical memory in between, the current processor's store
+fails. In this case, it returns 1 at &ldquo;tmp&rdquo;. 
+</p><p>
+This instruction tests equivalence and sets the Z (zero) flag of CPSR if
+&ldquo;tmp&rdquo;
+is 0 or clears it if &ldquo;tmp&rdquo; is 1:
+
+<pre     class="programlisting">
+teq     %1, #0
+</pre>
+</p><p>
+For a successful store scenario, the Z flag is set. So, the branch condition
+does not satisfy. However, if store fails, the branch takes place and
+execution
+starts again from the <tt  >ldrex</tt> instruction. The loop continues until store is
+successful:
+
+<pre     class="programlisting">
+bne     1b
+</pre>
+</p><p>
+All other atomic operations are similar and use LDREX and STREX.
+</p><p><span   class="bold"><b>
+Barriers</b></span>
+</p><p>
+If a sequence of memory operations is independent, the compiler or CPU performs it
+in a random fashion to achieve optimization&mdash;for example:
+
+<pre     class="programlisting">
+a = 1;
+b = 5;
+</pre>
+</p><p>
+However, to synchronize with other CPUs or with hardware devices, it is
+sometimes a requirement that memory-reads (loads) and memory-writes (stores)
+issue in the order specified in your program code. To enforce this
+ordering, you
+need barriers. Barriers are commonly included in kernel locking, scheduling
+primitives and device driver implementations.
+</p><p><span   class="bold"><b>
+Compiler Barrier</b></span>
+</p><p>
+The compiler barrier does not allow the compiler to re-order any memory access
+across the instruction. As discussed before, the
+<tt  >barrier()</tt> macro is used as
+a compiler barrier in Linux:
+
+<pre     class="programlisting">
+#define barrier() __asm__ __volatile__("": : :"memory")
+</pre>
+</p><p>
+<span   class="bold"><b>Processor Barriers</b></span>
+</p><p>
+Processor optimizations, such as caches, write buffers and out-of-order
+execution, can result in memory operations occurring in a different
+sequence from the
+program order. A processor barrier is an implied compiler barrier as well. ARM
+has three hardware barrier instructions:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Data Memory Barrier (DMB) ensures that all memory accesses (in program order)
+before the barrier are visible in the system before any explicit memory
+accesses after the barrier. It does not affect instruction prefetch or
+execution of the next non-memory data access.
+</p></li><li><p>
+Data Synchronization Barrier (DSB) ensures that all pending explicit data accesses
+complete before any additional instructions execute after the barrier. It does
+not affect prefetching of instructions.
+</p></li><li><p>
+Instruction Synchronization Barrier (ISB) flushes the pipeline and prefetch
+buffer(s) so that once ISB has completed, the processor can fetch the next instructions
+from cache or memory.
+</p></li></ol></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x25477d0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. Implementation of the Memory Barrier</b></p><pre     class="programlisting">
+#define dmb(option) __asm__ __volatile__ ("dmb " #option : : : "memory"
+#define dsb(option) __asm__ __volatile__ ("dsb " #option : : : "memory")
+#define isb(option) __asm__ __volatile__ ("isb " #option : : : "memory")
+</pre></div><p>
+<tt  >SY</tt> is the default. It applies to the full system, including all processors and
+peripherals. Refer to the ARM manual for other options. Linux provides various
+memory barrier macros that are mapped to the ARM hardware barrier
+instructions:
+read memory barrier, <tt  >rmb()</tt>; write memory barrier,
+<tt  >wmb()</tt>; and full memory barrier,
+<tt  >mb()</tt>. There also are corresponding SMP versions:
+<tt  >smp_rmb()</tt>, <tt  >smp_wmb()</tt> and
+<tt  >smp_mb()</tt>. When the kernel is compiled without
+<tt  >CONFIG_SMP</tt>, <tt  >smp_*</tt> are simply
+barrier() macros.
+</p><p><span   class="bold"><b>
+Spinlock</b></span>
+</p><p>
+To execute any critical section code atomically, you need to ensure that no two
+threads of execution should execute critical sections
+concurrently. As described
+in Robert Love's <span   class="emphasis"><em>Linux Kernel Development</em></span>, &ldquo;The term threads of execution implies any
+instance of executing code. This includes, for example, a task in the kernel,
+an interrupt handler, a bottom half, or a kernel thread.&rdquo;
+</p><p>
+For uniprocessor systems, spinlock implementation boils down to disabling
+preemption or local interrupts. <tt  >spin_lock()</tt> disables preemption.
+<tt  >spin_lock_irq()</tt> and
+<tt  >spin_lock_irqsave()</tt> disable local interrupts. But, this is
+not sufficient for SMP, as other processors are free to execute the critical
+section code simultaneously.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x27c4eb0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. Spinlock Implementation</b></p><pre     class="programlisting">
+
+static inline void arch_spin_lock(arch_spinlock_t *lock)
+{
+    unsigned long tmp;
+    u32 newval;
+    arch_spinlock_t lockval;
+
+    prefetchw(&amp;lock-&gt;slock);
+    __asm__ __volatile__(
+"1: ldrex   %0, [%3]\n"
+"   add %1, %0, %4\n"
+"   strex   %2, %1, [%3]\n"
+"   teq %2, #0\n"
+"   bne 1b"
+    : "=&amp;r" (lockval), "=&amp;r" (newval), "=&amp;r" (tmp)
+    : "r" (&amp;lock-&gt;slock), "I" (1 &lt;&lt; TICKET_SHIFT)
+    : "cc");
+
+    while (lockval.tickets.next != lockval.tickets.owner) {
+        wfe();
+        lockval.tickets.owner = ACCESS_ONCE(lock-&gt;tickets.owner);
+    }
+
+    smp_mb();
+}
+
+static inline void arch_spin_unlock(arch_spinlock_t *lock)
+{
+    smp_mb();
+    lock-&gt;tickets.owner++;
+    dsb_sev();
+}
+
+#define wfe()   __asm__ __volatile__ ("wfe" : : : "memory")
+
+#define sev()   __asm__ __volatile__ ("sev" : : : "memory")
+
+</pre></div><p>
+Linux uses an improved version of the ticket lock algorithm to implement spinlock.
+Like atomic instructions, the spinlock implementation uses LDREX/STREX.
+</p><p>
+The <tt  >wfe</tt> (Wait
+For Event) and <tt  >sev</tt> (Send EVent) ARM instructions need some introduction here.
+<tt  >wfe</tt> puts the ARM processor into a lower power state until a wake-up event
+occurs. The wake-up events for <tt  >wfe</tt> include the
+execution of an <tt  >sev</tt> instruction
+on any processor on an SMP system, an interrupt, an asynchronous abort or a debug
+event. While contending for a spinlock, the processor goes to a low power state
+instead of being busy waiting, hence saving power. The
+<tt  >ACCESS_ONCE</tt> macro prevents
+the compiler from an optimization that forces it to fetch the
+<tt  >lock-&gt;tickets.owner</tt> value each
+time through the loop. A memory barrier <tt  >smp_mb()</tt> is
+required after you get a
+lock and before you release it, so that other processors can be updated on
+time with whatever is happening on the current processor.
+</p><p>
+<span   class="emphasis"><em>Note:</em></span>
+acquiring and releasing a lock should be atomic. Otherwise, more than one
+thread of execution may acquire the same lock in parallel causing a race
+condition.
+</p><p><span   class="bold"><b>
+Semaphore</b></span>
+</p><p>
+Semaphores and mutexes can sleep, unlike a spinlock. When a task is holding
+a
+semaphore and another task attempts to acquire it, the semaphore places the
+contended task onto a wait queue and puts it to sleep. When the semaphore
+becomes available, the scheduler wakes one of the tasks on the wait queue
+to
+acquire the semaphore. As you can see in Listing 5, the semaphore
+implementation uses
+<tt  >raw_spin_lock_irqsave()</tt> and
+<tt  >raw_spin_unlock_irqrestore()</tt> to acquire the lock.
+If another task is holding the semaphore, the current task releases the
+spinlock
+and goes to sleep (as sleeping is not an option while holding the
+spinlock), and
+after waking up, it re-acquires the spinlock. <tt  >up()</tt>
+is used to release the
+semaphore that also uses the spinlock. <tt  >up()</tt> may be
+called from any context and
+even by tasks that have never called <tt  >down()</tt>, unlike
+mutexes.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x27c57a0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. Semaphore Implementation</b></p><pre     class="programlisting">
+
+int down_interruptable(struct semaphore *sem)
+{
+    unsigned long flags;
+    int result = 0;
+
+    raw_spin_lock_irqsave(&amp;sem-&gt;lock, flags);
+    if (likely(sem-&gt;count &gt; 0))
+        sem-&gt;count--;
+    else
+        result = __down_interruptable(sem);
+    raw_spin_unlock_irqrestore(&amp;sem-&gt;lock, flags);
+
+    return result;
+}
+
+</pre></div><p><span   class="bold"><b>
+Mutex</b></span>
+</p><p>
+A call to a mutex may take two different paths. First, it calls
+<tt  >__mutex_fastpath_lock()</tt> to acquire the mutex. Then
+it falls back to
+<tt  >__mutex_lock_slowpath()</tt> if it fails to acquire the
+lock. In the latter case, the
+task is added to the wait queue and sleeps until woken up by the unlock path.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x27c5b68"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 6. Mutex Implementation</b></p><pre     class="programlisting">
+
+void __sched mutex_lock(struct mutex *lock)
+{   
+    might_sleep();
+    /*
+     * The locking fastpath is the 1-&gt;0 transition from
+     * 'unlocked' into 'locked' state.
+     */
+    __mutex_fastpath_lock(&amp;lock-&gt;count, __mutex_lock_slowpath);
+    mutex_set_owner(lock);
+}
+
+</pre></div><p>
+<tt  >__mutex_fastpath_lock</tt> is a call to
+<tt  >atomic_sub_return_relaxed()</tt> that is an
+atomic operation&mdash;atomically subtract i from v and return the result.
+Similarly, <tt  >mutex_unlock()</tt> uses
+<tt  >atomic_add_return_relaxed</tt> for incrementing the
+counter atomically.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x27c5f30"></a>
+Wrapping It All Up</h2></div></div><p>
+This article neither aims to provide algorithmic details of kernel
+implementation of locks and barriers nor does it provide ARM architecture details.
+The goal is to provide the basics of GCC inline assembly and show how it can help you
+better understand the Linux kernel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x27c6038"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Using the GNU Compiler Collection: <a href="https://gcc.gnu.org" target="_self">https://gcc.gnu.org</a>
+</p><p>
+ARM Architecture Reference Manual ARMv7-A and ARMv7-R Edition:
+<a href="http://infocenter.arm.com" target="_self">infocenter.arm.com</a>
+</p><p>
+ARM Synchronization Primitives Development Article:
+<a href="https://developer.arm.com" target="_self">https://developer.arm.com</a>
+</p><p>
+Cortex-A Series Programmer's Guide: <a href="http://infocenter.arm.com" target="_self">infocenter.arm.com</a>
+</p><p>
+<span   class="emphasis"><em>Linux Kernel Development</em></span> 3rd Edition by Robert Love:
+<a href="https://www.amazon.com/Linux-Kernel-Development-Robert-Love/dp/0672329468" target="_self">https://www.amazon.com/Linux-Kernel-Development-Robert-Love/dp/0672329468</a>
+</p><p>
+Inline assembler (Wikipedia): <a href="https://en.wikipedia.org/wiki/Inline_assembler" target="_self">https://en.wikipedia.org/wiki/Inline_assembler</a>
+</p><p>
+ARM GCC Inline Assembler Cookbook:
+<a href="http://www.ethernut.de/en/documents/arm-inline-asm.html" target="_self">www.ethernut.de/en/documents/arm-inline-asm.html</a>
+</p><p>
+See also the kernel documentation on memory barriers, spinlock and mutex design.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2140580.0x27c6770"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p> 
+Dibyendu Roy is a Linux fundamentalist and works as an embedded Linux
+developer
+in Hyderabad, India. Being an open-source activist, he uses Linux for every
+silly little thing. You can reach him at <a href="mailto:diby.roy@gmail.com">diby.roy@gmail.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../271/toc271.html">Issue Table of Contents</a>
+    <a class="link3" href="../271/12065.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

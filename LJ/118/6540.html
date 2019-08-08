@@ -1,0 +1,406 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Improving Perl Application Performance</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The four basic performance-tuning steps to improve an existing&#10;application's performance.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xbad580.0xca4ab0"></a>
+Improving Perl Application Performance</h1></div><div><div class="author"><h3 class="author">Bruce W. Lowther</h3></div><div class="issuemoyr">Issue #118, February 2004</div></div><div><p>
+The four basic performance-tuning steps to improve an existing
+application's performance.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca5298"></a></h2></div></div><p>
+A fellow developer and I have been working
+on a data collection application primarily written in Perl.
+The application retrieves measurement files from a directory, parses the
+files, performs some statistical calculations and writes the results to
+a database. We needed to improve the application's performance so
+that it would handle a considerable load while being used in production.
+</p><p>
+This paper introduces four performance-tuning steps: identification,
+benchmarking, refactoring and verification. These steps are applied to
+an existing application to improve its performance. A function
+is identified as being a possible performance problem, and a baseline
+benchmark of that function is established. Several optimizations are
+applied iteratively to the function, and the performance improvements
+are compared against the baseline.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca53f8"></a>
+Identifying Performance Problems</h2></div></div><p>
+The first task at hand in improving the performance of an application
+is to determine what parts of the application are not performing as
+well as they should. In this case I used two techniques to identify
+potential performance problems, code review and profiling.
+</p><p>
+A performance code review is the process of reading through the code
+looking for suspicious operations. The advantage of code review is
+the reviewer can observe the flow of data through the application.
+Understanding the flow of data through the application helps identify any control loops that can be eliminated. It also helps
+identify sections of code that should be further scrutinized
+with application profiling. I do not advise combining a performance
+code review with other types of code review, such as a code review for
+standards compliance.
+</p><p>
+Application profiling is the process of monitoring the execution of an
+application to determine where the most time is spent and how frequently
+operations are performed. In this case, I used a Perl package called
+Benchmark::Timer. This package provides functions that I use to mark
+the beginning and end of interesting sections of code. Each of these marked
+sections of code are identified by a label. When the program is run and
+a marked section is entered, the time taken within that marked section
+is recorded.
+</p><p>
+Adding profiling sections to an application is an intrusive
+technique; it changes the behavior of the code.
+In other words, it is possible for the profiling code to overshadow
+or obscure a performance problem. In the early stages of performance
+tuning, this may not be a problem because the magnitude of the performance
+problem will be significantly larger than the performance impact of the
+profiling code. However, as performance issues are eliminated, it is more
+likely that a subsequent performance issue will be harder to distinguish.
+Like many things, performance improvement is an iterative process.
+</p><p>
+In our case, profiling some sections of the code indicated that a
+considerable amount of time was being spent calculating statistics of
+data collected off the machine. I reviewed the code related to these
+statistics calculations and noticed that a function to calculate standard
+deviation, std_dev, was used frequently. The std_dev calculation caught
+my eye for two reasons. First, because calculating the standard deviation
+requires calculating the mean and the mean of the sum of squares for
+the entire measurement set, the na&iuml;&iquest;&frac12;e calculation for std_dev uses two
+loops when it could be done with one loop. Secondly, I noticed that the
+entire data array was being passed into the std_dev function on the
+stack rather than being passed as a reference. I thought these
+two items together might indicate a performance issue worth examining.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca56b8"></a>
+Benchmarking</h2></div></div><p>
+After identifying a function that could be improved, I proceeded to
+the next step, benchmarking the function. Benchmarking is the process
+of establishing a baseline measurement for comparison.
+Creating a benchmark is the only way to know whether a modification
+actually has improved the performance of something. All the benchmarks
+presented here are time-based. Fortunately, a Perl package
+called Benchmark was developed specifically for generating time-based benchmarks.
+</p><p>
+I copied the std_dev function (Listing 1) out of the application
+and into a test script. By moving the function to a test script, I
+could benchmark it without affecting the data collection application.
+In order to get a representative benchmark, I needed to duplicate the
+load that existed in the data collection application. After examining
+the data processed by the data collection application, I determined that
+a shuffled set of all the numbers between 0 and 999,999 would be adequate.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca5870"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. The Baseline Implementation of std_dev</b></p><pre     class="programlisting">
+sub mean {
+  my $result;
+  foreach (@_) { $result += $_ }
+  return $result / @_;
+}
+
+
+sub std_dev {
+  my $mean = mean(@_);
+  my @elem_squared;
+  foreach (@_) {
+    push (@elem_squared, ($_ **2));
+  }
+  return sqrt( mean(@elem_squared) - ($mean ** 2));
+}
+</pre></div><p>
+In order to yield a reliable benchmark, the std_dev function must
+be repeated several times. The more times the function is run,
+the more reliable or consistent the benchmark will be. The number
+of times to repeat the benchmark can be set specifically with the
+Perl Benchmark package. For example, run this benchmark 10,000 times.
+Alternatively, the package accepts a time duration, in which case the
+benchmark is repeated as many times as possible within the allotted
+time. All benchmarks shown in this article use an iteration parameter of 10
+seconds. Calculating the standard deviation of 1,000,000 data elements
+for at least 10 seconds produced the result:
+
+<pre     class="programlisting">
+12 wallclock secs (10.57 usr + 0.02 sys
+    = 10.59 CPU) @ 0.28/s (n = 3)
+</pre>
+</p><p>
+This information indicates that the benchmark measurement took 12
+seconds to run. The benchmark tool was able to execute the function 0.28
+times per second or, taking the inverse, 3.5 seconds per iteration. The
+benchmark utility was able to execute the function only three times (n = 3)
+in the allotted 10 CPU seconds. Throughout this paper, results are
+measured using seconds per iteration (s/iter). The lower the number,
+the better the performance. For example, an instantaneous function call
+would take 0 s/iter, and a really bad function call would take 60 s/iter.
+Now that I have a baseline measurement of the std_dev performance, I can
+measure the effects of refactoring the function.
+</p><p>
+Although three samples are enough to identify issues with the std_dev
+calculation, a more in-depth performance analysis should have more
+samples.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca5be0"></a>
+Refactoring and Verification</h2></div></div><p>
+After establishing the benchmark shown in Listing 1, I refined
+the std_dev algorithm in two iterations. The first refinement, called
+std_dev_ref, was to change the parameter passing from &ldquo;pass by
+value&rdquo; to &ldquo;pass by reference&rdquo; in both the std_dev
+function and the mean function that is called by std_dev. The resulting
+functions are shown in Listing 2. Theoretically, this will increase the
+performance of both functions by avoiding copying the entire contents
+of the data array onto the stack before the call to std_dev and the
+subsequent call to mean.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca5d98"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. Replacing Call by Value with Call by Reference</b></p><pre     class="programlisting">
+sub mean_ref {
+  my $result;
+  my $ar = shift;
+  foreach (@$ar) { $result += $_ }
+  return $result / scalar(@$ar);
+}
+
+sub std_dev_ref {
+  my $ar = shift;
+  my $mean = mean_ref($ar);
+  my @elem_squared;
+  foreach (@$ar) {
+    push (@elem_squared, ($_ **2));
+  }
+  return sqrt( mean_ref(\@elem_squared) -
+               ($mean ** 2));
+}
+</pre></div><p>
+The second refinement, called std_dev_ref_sum, was to remove the mean
+function altogether. The mean and the mean of the sum of squares are
+combined into one loop through the entire data set. This refinement,
+shown in Listing 3, removes at least two iterations over
+the data. Table 1 contains a summary of the benchmark times.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca6000"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. After Elimination of the Mean Function</b></p><pre     class="programlisting">
+sub std_dev_ref_sum {
+  my $ar = shift;
+  my $elements = scalar @$ar;
+  my $sum = 0;
+  my $sumsq = 0;
+
+  foreach (@$ar) {
+    $sum += $_;
+    $sumsq += ($_ **2);
+  }
+  return sqrt( $sumsq/$elements -
+               (($sum/$elements) ** 2));
+}
+
+</pre></div><div class="table"><a name="N0xbad580.0xca6210"></a><p class="title"><b>
+Table 1. Baseline and Two Refinements</b></p><table     summary="&#10;Table 1. Baseline and Two Refinements6540t1.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>&nbsp;</th><th>s/iter</th></tr></thead><tbody><tr><td>std_dev</td><td>3.53</td></tr><tr><td>std_dev_ref</td><td>2.93</td></tr><tr><td>std_dev_ref_sum</td><td>1.37</td></tr></tbody></table></div><p>
+As hoped, an incremental improvement between each of the
+refinements is shown in Table 1. Between the std_dev and std_dev_ref
+functions there is a 20% improvement, and between std_dev and
+std_dev_ref_sum functions there is a 158% improvement. This seems to
+confirm my expectation that pass by reference is faster than pass by
+value in Perl. Also, as expected, removing two loops through the data
+improved the performance of the std_dev_ref_sum function.
+After both of these refinements, the function can calculate the standard
+deviation of 1,000,000 items in 1.37 seconds. Although this is
+considerably better than the original, I still think there is room
+for improvement.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca6898"></a>
+Hasn't Someone Already Done This?</h2></div></div><p>
+A number of open-source Perl packages are
+available. Hopefully, I could find a standard deviation calculation
+that was faster than my best attempt so far. I found and downloaded a
+statistics package from CPAN called Statistics::Descriptive. I created
+a function called std_dev_pm that used the Statistics::Descriptive
+package. The code for this function is shown in Listing 4.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca69a0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. The std_dev_pm Function</b></p><pre     class="programlisting">
+sub std_dev_pm {
+  my $stat = new Statistics::Descriptive::Sparse();
+  $stat-&gt;add_data(@_);
+  return $stat-&gt;standard_deviation();
+}
+</pre></div><p>
+Using this function, however, produced a result of 6.80 s/iter;
+48% worse than the baseline std_dev function. This is not altogether
+unexpected considering that the Statistics::Descriptive package uses an
+object interface. Each calculation includes the overhead of constructing
+and destructing a Statistics::Descriptive::Sparse object. This is not
+to say that Statistics::Descriptive is a bad package. It contains
+a considerable number of statistical calculations written in Perl
+and is easy to use for calculations that don't have to be fast.
+However, for our specific case, speed is more important.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xca6c08"></a>
+An Out-of-Language Experience</h2></div></div><p>
+All languages have good and bad qualities. Perl, for example,
+is a good general-purpose language but is not the best for number-crunching calculations. With this in mind, I decided to rewrite
+the standard deviation function in C to see if it improved
+performance.
+</p><p>
+In the case of the data collection application, it would be
+counter-productive to rewrite the entire project in C. Quite
+a few specific Perl utilities make it the best language for most of
+the application. An alternative to rewriting the application is to
+rewrite only the functions that specifically need performance improvement. This
+is done by wrapping a standard deviation function written in C into a
+Perl module. Wrapping the C function allows us to keep the majority of
+the program in Perl but allows us to mix in C and C++ where appropriate.
+</p><p>
+Writing a Perl wrapper over an existing C or C++ interface requires
+using XS. XS is a tool that is distributed with the Perl package, and it
+is documented in the perlxs Perl document. You also need some of
+the information located in the perlguts document. Using XS, I created a
+Perl package called OAFastStats containing a standard deviation function
+implemented in C. This function, shown in Listing 5, can then
+be called directly from Perl. For comparison purposes, this standard
+deviation function will be called std_dev_OAFast.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xc9d650"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. The XS Implementation</b></p><pre     class="programlisting">
+
+
+double
+std_dev(sv)
+    INPUT:
+        SV *            sv
+    CODE:
+        double sum = 0;
+        double sumsq = 0;
+        double mean = 0;
+
+        /* Dereference a scalar to retrieve
+           an array value */
+        AV* data = (AV*)SvRV(sv);
+
+        /* Determine the length of the array */
+        I32 arrayLen = av_len(data);
+
+        if(arrayLen &gt; 0)
+        {
+          for(I32 i = 0; i &lt;= arrayLen; i++)
+            {
+              /* Fetch the scalar located at i
+                 from the array.*/
+              SV** pvalue = av_fetch(data,i,0);
+
+              /* Dereference the scalar into
+                 a numeric value. */
+              double value = SvNV(*pvalue);
+
+              /* collect the sum and the
+                 sum of squares. */
+              sum += value;
+              sumsq += value * value;
+
+            }
+          mean = (sum/(arrayLen+1));
+          RETVAL = sqrt((sumsq/(arrayLen+1)) -
+                        (mean * mean));
+        }
+        else
+        {
+          RETVAL = 0;
+        }
+
+    OUTPUT:
+        RETVAL
+
+</pre></div><p>
+The comparison between the baseline standard deviation function and
+the C function wrapped with XS is presented in Table 2, showing
+a significant speedup. The C function (std_dev_ref_OAFast) is 1,175%
+faster than the baseline function (std_dev), and it is 395% faster
+than the best Perl implementation (std_dev_ref_sum).
+</p><div class="table"><a name="N0xbad580.0xc9d8b8"></a><p class="title"><b>
+Table 2. Baseline and Fastest Perl Implementations Compared
+with C</b></p><table     summary="&#10;Table 2. Baseline and Fastest Perl Implementations Compared&#10;with C6540t2.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>&nbsp;</th><th>s/iter</th></tr></thead><tbody><tr><td>std_dev</td><td>3.53</td></tr><tr><td>std_dev_ref_sum</td><td>1.37</td></tr><tr><td>std_dev_OAFast</td><td>0.277</td></tr></tbody></table></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbad580.0xc9dee8"></a>
+Conclusions</h2></div></div><p>
+During this process I identified a function that probably wasn't
+performing as well as it could. I was able to achieve several modest
+performance gains by refining the logic of the calculation in Perl.
+I also tried using an open-source package, only to find that it was 48%
+worse than my original function. Finally, I implemented the standard
+deviation function in C and exposed it to Perl through an XS layer. The
+C version showed a 1,175% speedup compared to the original Perl version.
+Improvements are summarized in Figure 1.
+</p><div       class="mediaobject"><img src="6540f1.jpg"><div class="caption"><p>
+Figure 1. Comparison of All Implementations
+</p></div></div><p>
+In most cases, I have seen Perl performance that rivals C;
+however, this obviously isn't one of those cases. Perl is a good
+general-purpose language, and one of its benefits is the ability
+to step out of the language and implement code in a lower-level
+language. Don't be afraid of language mix-ins when you really
+need to improve performance, as long as you understand that there is a
+maintenance cost. The disadvantage
+of introducing additional languages is that it will increase the burden
+for those that must maintain the application in the future. They will
+need to know C and understand XS functions. However, in our case, the
+improved performance significantly outweighed the impact of supporting
+XS.
+</p></div></div>
+<div class="authorblurb"><p>
+Bruce W. Lowther (<a href="mailto:blowther@micron.com">blowther@micron.com</a>) is a software engineer
+for Micron Technology, Inc., in Boise, Idaho. He has worked at Micron for
+nine years and has spent the past five years there working on tools to
+help integrate semiconductor equipment into the Micron manufacturing
+process. He received his undergraduate and Master's degrees in
+Computer Science from the University of Idaho.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../118/toc118.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

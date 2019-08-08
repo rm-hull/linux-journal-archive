@@ -1,0 +1,254 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The Linux Scheduler</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    A look at how the kernel schedules tasks for both&#10;    uni-processor and multi-processor machines.&#10;    "><meta name="keywords" content="kernel, scheduler, process"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x10a1580.0x1198ab0"></a>The Linux Scheduler</h1></div><div><div class="author"><h3 class="author">Moshe Bar</h3></div><div class="issuemoyr">Issue #72, April 2000</div></div><div><p>
+    A look at how the kernel schedules tasks for both
+    uni-processor and multi-processor machines.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10a1580.0x11993a0"></a></h2></div></div><p>Last month, we started a new series on
+Linux kernel internals. In that first part, we looked at how Linux
+manages processes and why in many ways Linux is better at creating
+and maintaining processes than many commercial UNIX systems.
+</p><p>This time, we dwell a bit on the subject of scheduling. Much
+to my surprise, here again, Linux goes the unorthodox way and
+disregards conventional wisdom in kernel theory. The results are
+excellent. Let's see how.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10a1580.0x1199500"></a>Scheduling Classes</h2></div></div><p>In Linux 2.2.<span   class="emphasis"><em>x</em></span> there are three classes
+of processes, as can be seen from the data definition for the
+scheduler (from linux/include/linux/sched.h):</p><pre     class="programlisting">
+/* Scheduling Policies
+*/
+#define SCHED_OTHER  0
+#define SCHED_FIFO   1
+#define SCHED_RR     2
+</pre><p>SCHED_OTHER tasks are the normal user tasks (default).
+</p><p>Tasks running in <b  >SCHED_FIFO</b> will
+<span   class="emphasis"><em>never</em></span> be preempted. They will leave the CPU
+<span   class="emphasis"><em>only</em></span> for waiting sync kernel events or if an
+explicit sleep or reschedule has been requested from user
+space.</p><p>Tasks running in SCHED_RR are real time (RT), but they will
+leave the CPU if there is another real-time task in the run queue.
+So the CPU power will be distributed between all
+<b  >SCHED_RR</b> tasks. If at least one RT task is
+running, no other <b  >SCHED_OTHER</b> task will be
+allowed to run in any CPU. Each RT task has an
+<b  >rt_priority</b> so the <b  >SCHED_RR</b>
+class will be allowed to distribute the CPU power between all the
+SCHED_RR tasks at will. The <b  >rt_priority</b> of the
+<b  >SCHED_RR</b> class works exactly as the normal
+priority field for of the <b  >SCHED_OTHER</b> (default)
+class.</p><p>Only the root user can change the class of the current task
+via the <span   class="bold"><b>sched_setscheduler</b></span>
+syscall.</p><p>One of the tasks of a kernel is to make sure the system
+remains firmly under its control even in situations of misbehaving
+programs. One such misbehaving program might
+<span   class="bold"><b>fork</b></span> too many processes too
+quickly. Thus, the kernel becomes so busy with itself that it
+cannot cater to its other responsibilities. I found out that Linux
+has no limit to how fast user-land programs can spawn children.
+HP-UX, Solaris and AIX have a limit of one fork per processor tick
+(called a jiffie under Linux). The patch in Listing 1 (see
+Resources) will allow a maximum of one fork per jiffie (one jiffie
+is usually 1/100 second, except on the Alpha architecture where it
+is 1/1024).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10a1580.0x1199c90"></a>Tangled in the Threads</h2></div></div><p>Threads are necessary to allow your process to make use of
+multiple processors. Linux doesn't really make any distinction
+between a process and a thread from a memory management and
+scheduling point of view. Some operating systems, like Solaris,
+manage threads within the user process by means of a thread
+scheduling library. The kernel sees only the process and doesn't
+know which thread, if any, is actually executing inside the user
+process. This saves the kernel from managing lists with thousands
+of entries for each thread for each process.</p><p>Obviously, the threads emulated on the top of one single user
+process won't be allowed to run concurrently on SMP, so the
+user-space approach won't scale very well on an SMP machine.
+Threading is strictly necessary only when all threads will be
+CPU-bound and not mainly I/O-oriented. If all the threads are
+CPU-bound, you definitely want to be able to scale for SMP.</p><p>Using threads only to wait for events is overkill. On the
+other hand, having threads sleeping is a waste of resources and
+performance. Almost all subsystems in Linux (such as TCP/IP) offer
+async event registration. Using async event via the
+<b  >SIGIO</b> signal is similar to IRQ-driven
+handling.</p><p>With the user-space approach, you will at least avoid the TLB
+(translation lookaside buffer) flushing, as all the threads will
+share the same address space.</p><p>The advantage of having threads managed in user space through
+the threads library is the kernel will spend the scheduling CPU
+cost in user space. It is true that in user space, you may choose
+to implement a very fast round-robin scheduler that may cut down
+the scheduling cost, compared to the clever (but more expensive, in
+terms of execution path) Linux scheduler.</p><p>Speaking of SMP, as of Linux 2.4 I found there is no way to
+declare the processor affinity of any given user-space
+process.</p><p>The scheduler could keep track of the CPU affinity
+declaration of a process, or it could just determine a preferred
+CPU for a process by itself. The other day, together with Andrea
+Arcangeli of Italy, I designed the simple kernel patch in Listing 2
+(see Resources) that implements processor affinity. Notice that
+processor affinity makes the most sense when other processes are
+excluded from running on this CPU. A better way to implement this
+patch would be to have the system administrator set affinity with
+an external call like <span   class="bold"><b>nice</b></span>.</p><p>The 2.2.<span   class="emphasis"><em>x</em></span> SMP kernel scheduler has some
+bugs that sometimes make it less effective than the UP
+(UniProcessor) scheduler. Nevertheless, Andrea fixed all such bugs
+and rewrote the heuristics from scratch and the SMP scheduler gives
+an impressive SMP improvement under load. The SMP changes are just
+in the 2.3.<span   class="emphasis"><em>x</em></span> kernels, and I plan to integrate
+it in 2.2.<span   class="emphasis"><em>x</em></span> also. You can get Andrea's patch
+at
+<a href="ftp://ftp.suse.com/pub/people/andrea/kernel-patches/my-2.2.12/SMP-scheduler-2_2_11-E" target="_self">ftp.suse.com/pub/people/andrea/kernel-patches/my-2.2.12/SMP-scheduler-2_2_11-E</a>.
+That patch can be used against 2.2.11 and 2.2.12 and speeds up both
+kernels on SMP systems. The patch was merged into 2.3.15, but not
+yet in 2.2.<span   class="emphasis"><em>x</em></span> because it's a performance issue
+only and not a true bug fix.</p><p>The SMP scheduler heuristic mechanism works as a function of
+(not in any particular order):</p><div class="itemizedlist"><ul type="disc"><li><p>the idle CPUs</p></li><li><p>the last CPU where the
+<span   class="bold"><b>wakenup</b></span> task was running</p></li><li><p>the memory management of the task (for optimising
+kernel-threads reschedule)</p></li><li><p>the &ldquo;goodness&rdquo; of the tasks running on the busy
+CPUs</p></li><li><p>the time necessary to invalidate the L2 cache on
+the running CPU (<b  >cacheflush_time</b>)</p></li><li><p>the average time slice
+(<b  >avg_slice</b>) of the wakenup task (how much time
+the task runs before returning to sleep)</p></li></ul></div><p>The algorithm collects the above data and chooses the best
+CPU on which to reschedule the wakenup task.
+</p><p>There are two paths involved in the Linux scheduler
+behavior:</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>schedule</b></span>: the
+running/current task is a SCHED_OTHER task that expired its time
+slice (so the kernel runs a schedule while returning from the timer
+IRQ for switching to the next running task).</p></li><li><p><span   class="bold"><b>reschedule_idle</b></span>: a
+task got a wakeup (usually from an IRQ), and so we try to
+reschedule such wakenup task in the best CPU by invoking a schedule
+on it (it's a kind of controlled schedule).</p></li></ul></div><p>Both paths share the
+<span   class="bold"><b>goodness</b></span> function. The goodness
+function can be considered the core of the SMP scheduler. It
+calculates the &ldquo;goodness&rdquo; of a task as a function of the
+following:
+<div class="itemizedlist"><ul type="disc"><li><p>the task currently running</p></li><li><p>the task that wants to run</p></li><li><p>the current CPU</p></li></ul></div>
+
+The source for the goodness function can be found in Listing 3 (see
+Resources).
+</p><p><a href="3910l3.html" target="_self">Listing 3</a></p><p>A plain schedule only works based on goodness. As you can see
+in Listing 3, a plain schedule is SMP-aware. The goodness of the
+potential next task increases if its last CPU is the current
+CPU.</p><p>Nevertheless, reschedule_idle is far more critical for CPU
+affinity and scheduler latencies; for example, if you comment out
+reschedule_idle, the scheduler latency will become infinite. Also,
+reschedule_idle takes care of the cache-flush time and the task
+average time slice, and this is the truly interesting part of the
+SMP scheduler. In UP, reschedule_idle is not as interesting as the
+SMP version. Listing 4 (see Resources) is the reschedule_idle
+implementation taken from 2.3.26 (soon 2.4).</p><p>The final objective of reschedule_idle is to call a schedule
+on a CPU in order to reschedule the wakenup task in it. We use
+goodness in reschedule_idle because we want to predict the effect
+of the future schedule that we'll send to that CPU. By predicting
+the effect of the future schedule, we can choose the best CPU to
+reschedule at wakeup time. This, of course, saves us the trouble of
+executing on a CPU without the proper TLB settings. If the CPU to
+reschedule is not the current one, we send a reschedule event via
+inter-CPU message passing (SMP-IPI interrupt on i386).</p><p>To make it very clear: the goodness function is the core of
+the Linux scheduler and is SMP aware, while reschedule_idle is the
+core of the clever SMP heuristics.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10a1580.0x15932d0"></a>Kernel Preemption and User Preemption</h2></div></div><p>Linux can only do user preemption. Linus Torvalds, it seems,
+doesn't believe in kernel preemption. That's not as bad as it may
+seem; all is fine for semaphores. Critical sections protected by
+semaphores can be preempted at any time, as every contention will
+end in a schedule and there can't be any deadlock. However,
+critical sections protected by fast spin locks or by hand locks
+cannot be preempted unless we block the timer IRQ. So all spin
+locks should be IRQ-safe. Also, by avoiding kernel preemption, the
+kernel becomes more robust and simpler, since a lot of complicated
+code can be saved this way.</p><p>By the way, there are tools to monitor the scheduler latency
+in order to allow the interested hacker to catch potential code
+sections that need conditional schedules.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10a1580.0x1593430"></a>Implications for Linux</h2></div></div><p>Linux, due to its GPL nature, allows us to do things faster
+than others, because you can adapt and recompile your own kernel
+instead of using a standard fit-all kernel. For example, in some
+popular proprietary operating systems such as Solaris 7, many code
+sections have been packaged within
+<span   class="bold"><b>spin_lock</b></span> and
+<span   class="bold"><b>spin_unlock</b></span> to make the same code
+work well in both UP and SMP systems. While vendors of these
+commercial operating systems tout this as a clear advantage for
+heavy SMP systems, these locks actually bog down UP systems and
+simple SMP machines, because the same binary driver must work on
+both SMP and UP kernels. A
+<span   class="bold"><b>spin_unlock</b></span> is one locked ASM
+instruction:</p><pre     class="programlisting">
+#define spin_unlock_string \
+        "lock ; btrl $0,%0"
+</pre><p>and calling such clear-bit instruction through a function
+pointer is complete <span   class="emphasis"><em>overkill</em></span>.
+</p><p>Linux, on the other hand, has in-line code sections for UP
+and SMP systems, adapting to the machine it is running on.
+Therefore, if only a UniProcessor system is hosting the kernel, no
+time is lost locking a code section that doesn't need it.</p><p>Last but not least, as we saw above, the goodness function
+makes the SMP scheduler in Linux very clever. Having a clever SMP
+scheduler is critical for performance. If the scheduler is not
+SMP-aware, OS theory teaches us that the performance on an SMP
+machine can be even worse than on a UP machine. (This was happening
+in 2.2.x <span   class="emphasis"><em>without the new heuristics, but has now been
+fixed.)</em></span></p><p>That's it for this month. I hope you gained some deeper
+understanding of how Linux schedules tasks on UP and SMP
+systems.</p><p><a href="3910s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Moshe Bar</b></span>
+      (moshe@moelabs.com) is an Israeli
+      system administrator and OS researcher, who started learning UNIX
+      on a PDP-11 with AT&amp;T UNIX Release 6 back in 1981. He holds an
+      M.Sc. in computer science. He has written a book, Linux Kernel
+      Internals, to be published by McGraw-Hill this year.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../072/toc072.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

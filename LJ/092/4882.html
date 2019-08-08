@@ -1,0 +1,477 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Building an E-mail Virus Detection System for Your Network</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    The best way to stop the spread of e-mail-based viruses is not to let them into your system.&#10;    "><meta name="keywords" content="virus, e-mail, smtpd"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x13c0580.0x14b7ab0"></a>Building an E-mail Virus Detection System for Your Network</h1></div><div><div class="author"><h3 class="author">Dave Jones</h3></div><div class="issuemoyr">Issue #92, December 2001</div></div><div><p>
+    The best way to stop the spread of e-mail-based viruses is not to let them into your system.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13c0580.0x14b8558"></a></h2></div></div><p>One of the most threatening and
+irritating problems I deal with as a network administrator is
+viruses. It seems that the virus threat has increased tenfold over
+the last couple of years. I have found it increasingly unnerving to
+see what the newer viruses are capable of doing. It's not even
+their ability that is most disturbing, it's the ease with which
+they get into our systems. Recently I spent two hours cleaning the
+MTX and Navidad viruses off of a user's machine.
+</p><p>The usual first approach that administrators take in virus
+prevention is to install a desktop virus protection program. That
+is wise, but it seems to me the most fail-safe way to protect a
+corporate network from viruses is to prevent their entrance into
+the system in the first place. By far the most common entry point
+for viruses, especially macro viruses, is corporate e-mail systems.
+However, this is usually the most neglected piece in any virus
+detection solution. The e-mail virus software on the market today
+is often application-specific, expensive or both (not to mention
+unreliable). Being a mid-sized business, we did not have it in our
+budget this year to buy an antivirus suite off the shelf, so I
+turned to Linux and open source. I did find a couple of interesting
+projects on the Internet that might meet our needs, but I decided
+to write my own instead. I wanted our system to be extremely easy
+to follow and easy to extend without a user having to know C or be
+a Perl guru. Also, I wanted the system to take advantage of the
+power of the utilities that every base Linux installation usually
+has. All of this would ensure that another could administer the
+system in my absence and that it would be portable.</p><p>The basic outline of the system consists of using Bash
+scripts, metamail, grep, the Obtuse Systems' smtpd product, Samba
+and a command-line virus scanner. A flowchart-style diagram can be
+found in Figure 1. The Obtuse Systems' SMTP store and forward
+package is freely available at
+<a href="http://www.obtuse.com/smtpd.html" target="_self">www.obtuse.com/smtpd.html</a>.
+The current version as of this writing is version 2.0. The virus
+scanner I chose was McAfee Virus Scan for UNIX/Linux, but there are
+quite a few others to choose from. Some are free and some are not.
+Do make sure you choose one that sets exit status codes based on
+what it finds and that is well supported with frequent signature
+updates.</p><p>The system can be set up on an existing Linux firewall or a
+separate machine, if you do not already have a Linux firewall in
+place. If you choose to set up a separate machine as the e-mail
+firewall, it doesn't have to be very powerful. A 200MHz 586 with
+32MB of RAM would be plenty. Our network is attached to the
+Internet via SDSL and is protected by a Mandrake Linux machine
+running IP masquerade. This design made it easy to set up the
+system on our current firewall machine. The internal e-mail system
+used is not important as long as it speaks SMTP or ESMTP. In our
+case, we use Novell's Groupwise product. All SMTP traffic (port 25)
+should be redirected from the SMTP port on the firewall to the
+machine you have set up as your e-mail firewall on the inside (or
+to the firewall itself in our case). Now let's move on to the
+actual setup.</p><p>
+<div       class="mediaobject"><a href="4882f1.large.jpg"><img src="4882f1.jpg"></a><div class="caption"><p>Figure 1. Setup of Network Traffic and
+Firewall</p></div></div>
+</p><p>Our first step is to set up the filesystem hierarchy. A
+diagram of this can be found in Figure 2. We will set up our system
+in a directory named /var/spool/smtpd. If you have an average
+e-mail volume of over 25,000 e-mails a day, I suggest partitioning
+a separate hard drive dedicated to the e-mail firewall and mounting
+it in this directory. The base directory will be /var/spool/smtpd.
+In this directory we will make five subdirectories named incoming,
+outgoing, etc, bin and quarantine. To start, become root and issue
+this command:</p><pre     class="programlisting">
+mkdir -p /var/spool/smtpd/ {etc,bin,incoming,outgoing,quarantine}
+</pre><p>
+<div       class="mediaobject"><a href="4882f2.large.jpg"><img src="4882f2.jpg"></a><div class="caption"><p>Figure 2. Filesystem Hierarchy</p></div></div>
+</p><p>Next, change the permissions on the whole hierarchy to be
+accessible only by the uucp user, since all the programs will be
+run as this user. These commands will do the trick:</p><pre     class="programlisting">
+chown -R uucp.uucp /var/spool/smtpd
+chmod -R 700 /var/spool/smtpd
+</pre><p>Now we will set up the first component of the system. You
+will need to grab the smtpd package from the Obtuse Systems' web
+site mentioned earlier. Switch to the download directory and unpack
+the tarball by issuing the command:
+<pre     class="programlisting">
+tar -zxvf smtpd-2.0.tar.gz
+</pre>
+
+
+Now change to the smtpd-2.0 directory and edit the Makefile to
+reflect the following changes:
+<pre     class="programlisting">
+SPOOLDIR = /var/spool/smtpd
+SPOOLSUBDIR = incoming
+POLL_TIME = 300
+PARANOID_SMTP = 1
+JUNIPER_SUPPORT = 0
+CHECK_IDENT = 0
+</pre>
+
+
+What we want is for smtpd to store mail in the incoming
+subdirectory and smtpfwdd to read mail from the outgoing directory.
+To make this possible we have to insert a line into the file
+smtpfwdd.c. Insert the following two lines at line number 75:
+<pre     class="programlisting">
+// Pull mail from the outgoing subdir.
+#define SPOOLSUBDIR "outgoing"
+</pre>
+
+
+Finish up by compiling and installing the package with these
+commands:
+<pre     class="programlisting">
+make
+make install
+</pre>
+
+
+Next, we need to populate the /var/spool/smtpd/etc directory with
+some files to allow smtpd to operate correctly. Copy the
+resolv.conf file from /etc to the /var/spool/smtpd/etc directory,
+and then copy the file localtime from /etc to here. You also should
+copy the antirelay_check_rules_example file from the smtpd-2.0
+distribution directory to /var/spool/smtpd/etc and rename it
+smtpd_check_rules. You can look on the Obtuse Systems' web site for
+instructions on how to create check rules if you need this. I would
+at least put in an antirelay rule to start. To have the smtpd
+program start automatically, place an entry in your /etc/inetd.conf
+file similar to this:
+<pre     class="programlisting">
+smtp    stream tcp nowait root /usr/local/sbin/smtpd    smptd
+</pre>
+
+
+This line should replace any other SMTP entries that may be there.
+We will need to start smtpfwdd manually from /etc/rc.d/rc.local (or
+whatever your local rc file is). So go ahead and add an entry like
+this to your startup file:
+<pre     class="programlisting">
+### Start the smtpfwdd forwarding daemon
+/usr/local/sbin/smtpfwdd
+</pre>
+
+
+Finally, you will need to shut down any other mail transfer agent
+(MTA) that might be running. These would include Postfix, sendmail,
+qmail and the like. On Red Hat systems you can do this simply by
+running the setup utility, unchecking any MTAs from the system
+services menu and rebooting. Be aware that some MTAs run as
+children of other processes, such as Postfix, and simply can't be
+killed directly. If you can reboot the machine, then go ahead and
+do that now. If not, then you can issue these commands to get smtpd
+and smtpfwdd up and running:
+<pre     class="programlisting">
+kill -HUP <span   class="emphasis"><em>inetdpid</em></span>
+/usr/local/sbin/smtpfwdd
+</pre>
+
+
+where <span   class="emphasis"><em>inetdpid</em></span> is the Process ID for inetd.
+</p><p>Once the smtpd and smtpfwdd d&aelig;mons are running, you can
+test the setup by launching a Telnet session on port 25 (the smtp
+port) of the e-mail firewall, like so:</p><pre     class="programlisting">
+telnet <span   class="emphasis"><em>email.firewall.com</em></span> 25
+</pre><p>where <span   class="emphasis"><em>email.firewall.com</em></span> is the hostname
+of your e-mail firewall.
+</p><p>You should get a prompt that says</p><pre     class="programlisting">
+220 email.firewall.com SMTP ready,
+Who are you gonna pretend to be today?
+</pre><p>If you get any other prompt, then you probably forgot to shut
+down a running MTA on the server. A <b  >ps -e</b> should
+bear this out.
+</p><p>Let's look at what we have so far. At this point you should
+have a machine with the smtpd d&aelig;mon running and accepting
+e-mail. All received e-mail is being stored in the
+/var/spool/smtpd/incoming directory as simple ASCII text files. To
+test this out, try issuing these commands:</p><pre     class="programlisting">
+telnet email.firewall.com 25
+helo firewall.com
+mail from: joe@firewall.com
+rcpt to:
+data
+This is a test.
+.
+quit
+</pre><p>where <span   class="emphasis"><em>you@domain.com</em></span> is your e-mail
+address. Be sure to end your message body with a period on a line
+all by itself. This tells the server you are through sending text.
+</p><p>If all went well, you should now see a text file in the
+/var/spool/smtpd/incoming directory containing the contents of our
+SMTP session. Now move the file into the /var/spool/smtpd/outgoing
+directory. In a few minutes the file should disappear, and you
+should receive the e-mail in your main mailbox.
+<span   class="bold"><b>smtpd</b></span> saves e-mails as text files
+named smtpd<span   class="emphasis"><em>??????</em></span>, where
+<span   class="emphasis"><em>??????</em></span> is a randomly generated message ID.
+<span   class="bold"><b>smtpfwdd</b></span> reads these text files
+and forwards them to the destination server. After a file is
+successfully forwarded, it is deleted.</p><p>So how does the mail get from incoming to outgoing? Here is
+where our e-mail scanning script will come into play. The script
+will search through each e-mail file in the incoming directory one
+by one and look for viral content. If the file doesn't contain a
+virus, it is moved to the outgoing directory. If it does, then it
+gets moved to the quarantine directory. It's as simple as that. But
+before the mail scanning script will work, we need to have a
+functional piece of virus detection software installed. Let's focus
+on that now.</p><p>What we need is a command-line based virus scanner. I chose
+McAfee Virus Scan for UNIX/Linux, so that is what I describe here.
+The McAfee product has a intuitive list of exit status codes, so it
+is easy to integrate into shell scripts. You can get this product
+by going to <a href="http://www.nai.com" target="_self">www.nai.com</a> and
+using the e-store. After you install the product you will need to
+make sure it is executable by uucp. To do this, go to the
+/usr/local/uvscan directory and execute this command:</p><pre     class="programlisting">
+chmod -R 755 *
+</pre><p>Now test it out and make sure it works. Become uucp and issue
+this command:
+<pre     class="programlisting">
+/usr/local/uvscan/uvscan --version
+</pre>
+
+
+If the test is successful, then we can move on to updating the
+virus signature files. The signature files (or definition files as
+they are sometimes called) are the lifeblood of any virus scanner.
+Therefore, we will want to automate the process of updating them on
+a frequent basis. It is important to check for these updates at
+least biweekly, since new versions usually are put out at least
+three times a month. To do this we must first create a Bash script
+called sigupdate and place it in the /var/spool/smtpd/bin
+directory. As always, make sure the script is owned and executable
+by the uucp user. The contents of the script are shown in Listing 1
+and should be easy to follow. The sigupdate file should be set to
+run once a week, preferably at a low-volume time of day. We will do
+this later by inserting a crontab entry for it. You also will need
+to create a file in the uucp user's home directory called .netrc.
+Edit this file to look as follows:
+<pre     class="programlisting">
+machine ftp.nai.com
+login anonymous
+password admin@domain.com
+macdef init
+cd pub/antivirus/datfiles/4.x
+bin
+prompt
+mget dat-*.tar
+close
+bye
+</pre>
+
+
+<a href="4882l1.html" target="_self">Listing 1. sigupdate Script</a>
+</p><p>The .netrc file controls sessions for predefined FTP hosts.
+This is the best way to make our FTP session automatic. You can
+reference the FTP man page for help with the netrc syntax. Go ahead
+and run sigupdate as soon as it, and .netrc, are ready. After the
+update finishes, execute this command:</p><pre     class="programlisting">
+/usr/local/uvscan/uvscan --version
+</pre><p>Look at the virus data file creation date; it should be
+recent, usually no more than a month old. If it is not, you will
+need to check that sigupdate is running properly from the command
+line.
+</p><p>Now let's move on to the main mail scanning script. We will
+name it scanmail, and it will be stored in the /var/spool/smtpd/bin
+directory. This script will do all of the direct manipulation of
+the e-mail text files created by smtpd. Create the file and make it
+owned and executable by uucp. You will find the complete script in
+Listing 2 [available at
+<a href="../listings/092/4882.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue92/4882.tgz</a>].
+It is heavily commented so I will just give you an overview
+here.</p><p>Starting on line 19, scanmail first switches to the incoming
+directory and stores the e-mail filenames in an array variable. It
+then loops through each filename and uses grep to search for
+specific patterns within the files. Two passes are made through
+each e-mail. The first pass greps for attachments that are
+obviously bad. The patterns for this pass are stored in a file
+named matches.bad, which we will create later. If grep hits a
+match, that file is quarantined and an e-mail is sent to the
+administrator containing a timestamp, the name of the file, who it
+came from and who was to receive it.</p><p>If no match was made, a second pass is made on the e-mail.
+This time grep uses a file named matches.doc to search for
+attachments that could contain macro viruses or embedded viruses.
+If a match is made this time, the attachment is decoded into a
+dynamically generated temporary directory using the metamail
+program. The temporary directory is created by using the name of
+the e-mail with a &ldquo;_d&rdquo; concatenated onto the end. The contents of
+the temp directory are then scanned with our command-line virus
+scanner. If a virus is detected here (by checking the exit status
+of the scanner), scanmail quarantines the e-mail and the
+attachment(s) and sends the administrator an e-mail alert. A
+courteous e-mail also is sent to the sender saying that they may
+need to check their system for viruses and giving the name of the
+virus detected.</p><p>At this point, if no viruses have been found, the e-mail is
+moved over to the outgoing directory where it is delivered to the
+internal e-mail server by smtpfwdd.
+<span   class="bold"><b>smtpfwdd</b></span> scans the outgoing
+directory for mail to deliver every five minutes.</p><p>The next thing to do is set up our filename lists that
+scanmail will use to search for suspicious attachments.
+<span   class="bold"><b>scanmail</b></span> uses the grep tool to
+search through files. We will take advantage of the -f switch to
+make grep pull a list of patterns from a specific text file. The
+layout of the text file is simple, only one pattern per line.
+<span   class="bold"><b>grep</b></span> will then match any pattern
+listed in the file. Switch to the /var/spool/smtpd/etc directory
+and create two files called matches.bad and matches.doc. In the
+matches.bad file we list all the filename patterns that we
+definitely don't want to come into our network without being
+inspected by the administrator.</p><p>The matches.doc file, on the other hand, should contain
+filename patterns for documents that may contain embedded viruses,
+such as Word documents or spreadsheets. When creating these files,
+use the form <b  >filename=.*\.exe</b> for each line.
+This is so you will not get false alarms because of random strings
+in the mime encoding that happen to match what grep is scouting.
+Also, be sure not to have any blank lines in the file because grep
+will interpret a blank line as a pattern to be searched for and
+will match all e-mails. Vim is a good editor to use for creating
+these files since you easily can see any blank lines. You can find
+the contents of the files I use in Listing 3.</p><p><a href="4882l3.html" target="_self">Listing 3. grep Pattern
+Files</a></p><p>The other script we will use is called daysumm and resides in
+/var/spool/smtpd/bin. Create this file as shown in Listing 4.
+<span   class="bold"><b>daysumm</b></span> sends a report of the
+day's e-mail activity to the administrator. It shows how many
+e-mails were received that day, how many viruses were detected and
+which viruses they were. This file should be set up in cron to run
+at 11:59 <b  >P.M.</b> each evening. The daysumm script
+relies on the virus.$date and email.$date files in
+/var/spool/smtpd/etc. These are text files that are created
+dynamically, updated by scanmail and are date-dependent. For this
+reason, daysumm must be run before midnight or the timestamp will
+change and the wrong files will be read.</p><p><a href="4882l4.html" target="_self">Listing 4. daysumm
+Script</a></p><p>If you will notice, each time we send an e-mail from the
+firewall itself, such as from a script, we follow it up with the
+command <b  >sendmail -q</b>. The -q switch tells
+sendmail to start up, check for any outgoing mail, send it and then
+exit. It effectively flushes all local outbound sendmail queues.
+This is necessary since there is no MTA running on the machine
+anymore. The smtpd package is not an MTA but a store-and-forward
+agent only. It can be thought of as a dedicated mail relay program.
+Without this command, you would never get any mail that originated
+on the e-mail firewall itself.</p><p>We should now automate the whole process via the cron
+d&aelig;mon. We will do this by way of the uucp user's personal
+crontab file. Make sure you are logged on as uucp and issue the
+command <b  >crontab -e</b>. This will open up uucp's
+cron table for editing. Make the following entries for the
+scanmail, daysumm and sigupdate scripts:</p><pre     class="programlisting">
+MAILTO=""
+# Run the scanmail script every two minutes
+*/2 * * * * /var/spool/smtpd/bin/scanmail
+# Run the daysumm script every night at 11:59PM
+59 23 * * * /var/spool/smtpd/bin/daysumm
+# Run sigupdate every Thursday at 4:00PM
+0 16 * * 4 /var/spool/smtpd/bin/sigupdate
+</pre><p>You can adjust the runtimes as necessary to suit your needs.
+The main consideration as to how often to run scanmail is your
+average daily e-mail volume. If you have a daily volume of over
+10,000, I would set the interval to every two minutes and set
+smtpfwdd to run every five minutes. This is so you don't send huge
+batches of e-mail to your internal server all at once. If you have
+a volume of around 1,000 a day or less, then scanmail could be run
+every ten minutes and smtpfwdd could scan every 20 minutes. Also,
+don't leave out the <b  >MAILTO=""</b> entry at the top
+of the crontab. This is so crond will not send the uucp user any
+mail about completed cron jobs. E-mail every two minutes will add
+up quickly, and uucp never checks its own mail.
+</p><p>I also have a Samba share set up to allow me access to the
+/var/spool/smtpd hierarchy from my Windows machine. This is helpful
+to administrators that mainly use Windows. It keeps me from having
+to open up an ssh session each time I need to check a virus warning
+message. You can do that by adding an entry such as this to your
+/etc/smb.conf file:</p><pre     class="programlisting">
+[mail-gate]
+   Comment = Email firewall directories
+   Path = /var/spool/smtpd
+   Valid users =
+   Admin users =
+   Browseable = No
+   Read Only = No
+</pre><p>where <span   class="emphasis"><em>you</em></span> is your Samba user name.
+</p><p>The final step is to divert all incoming SMTP connections
+from your firewall to your new scanning server. If your firewall
+uses IP masquerade, this is an easy task. Simply execute the
+command:</p><pre     class="programlisting">
+ipmasqadm portfw -a -P tcp -L <span   class="emphasis"><em>firewall</em></span> 25 -R <span   class="emphasis"><em>destination</em></span> 25
+</pre><p>where <span   class="emphasis"><em>firewall</em></span> is the address of the
+firewall and <span   class="emphasis"><em>destination</em></span> is the address of
+your new scanning server.
+</p><p>If you have decided to run the e-mail firewall directly on
+your existing firewall, then you don't need to make any changes. If
+you have another firewall product, you will need to read the
+documentation to figure out how to do port redirection. It should
+not be too much trouble, but you may need to contact the maker of
+your product to find out. Be sure to put this redirection command
+in your startup scripts so that they will persist through
+rebooting.</p><p>If everything went well, you should now have an operational
+e-mail-virus firewall. Try sending yourself some test messages from
+a free web e-mail account to make sure everything is in working
+order. I periodically send myself macro-virus infected documents to
+make sure the system is still functioning correctly. I can think of
+many ways to expand this basic system to do other things.
+Especially promising is the daysumm script, which could be enhanced
+greatly. I currently am working on a CGI script that will report
+current statistics, such as average daily volume, in an intranet
+page. That is only one of a hundred ways this system could help you
+manage and safeguard your e-mail system with little or no impact on
+the company budget. If anyone comes up with some cool ways to
+expand the system, please let me know. I'd love to hear about
+it.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="4882aa.jpg"></div>
+
+       email: <a href="mailto:davejones@pearcebevill.com">davejones@pearcebevill.com</a>
+       </p><p><span   class="bold"><b>Dave
+      Jones</b></span> has been a network administrator in Birmingham,
+      Alabama for three years. When he is not in front of the computer,
+      he can be found enjoying a pipe of tobacco or watching X-Files with
+      his wife and daughter. He can be reached at
+      davidashleyjones@hotmail.com.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../092/toc092.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

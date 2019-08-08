@@ -1,0 +1,690 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Networking in NSA Security-Enhanced Linux</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Break through the complexity of SELinux with a working&#10;example that shows how to add SELinux protection to a simple&#10;network server.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2084580.0x217bab0"></a>
+Networking in NSA Security-Enhanced Linux</h1></div><div><div class="author"><h3 class="author">
+James
+ 
+Morris
+</h3></div><div class="issuemoyr">Issue #129, January 2005</div></div><div><p>
+Break through the complexity of SELinux with a working
+example that shows how to add SELinux protection to a simple
+network server.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217c2f0"></a></h2></div></div><p>
+In this article, we take a look at how SELinux can help increase the
+security of networked systems, as well as the design and implementation
+of its network-specific security controls. We then walk through an
+example of using SELinux policy to lock down a simple network application.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217c3f8"></a>
+Overview: SELinux Roles, Types and Domains</h2></div></div><p>
+SELinux provides strong general security for networked systems. It allows
+systems to be locked down tightly so that services have only the minimum set
+of rights required to operate. This implementation of the principle of
+least privilege helps contain security breaches arising from buggy code,
+malicious code, user error and malicious users.
+</p><p>
+For example, an externally facing Web server
+normally might be hardened in a variety of ways, including:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Disabling unnecessary services.
+</p></li><li><p>
+Running server software in
+chroot jails.
+</p></li><li><p>
+Local packet filtering with iptables.
+</p></li><li><p>
+Privilege management with sudo.
+</p></li><li><p>
+Locking down configuration files.
+</p></li></ul></div><p>
+This is a good, multilayered approach to security,
+implementing the principle of defense in depth.
+</p><p>
+SELinux adds another security layer, mandatory
+access control (MAC). Standard SELinux implements
+MAC via type enforcement (TE) combined with role-based access control (RBAC), under the control of a
+centrally managed security policy, enforced by the
+kernel. Unlike traditional UNIX security, normal users
+do not have any control over SELinux security policy
+(hence the term mandatory), while the superuser,
+root, can be split into isolated administrative roles
+for authorized users, called separation of duty.
+</p><p>
+Traditional discretionary access control (DAC) is further restricted
+by the TE model, which assigns types to operating system objects
+such as processes, files and network resources, then defines rules
+for interactions between them. (The type of a process usually
+is referred to as a domain.) This allows for fine-grained access control,
+extending the principle of least privilege well beyond the scope of
+typical OS hardening.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217ca28"></a>
+SELinux Network Access-Control Architecture</h2></div></div><p>
+SELinux is built upon the LSM (Linux Security
+Modules) and Netfilter APIs in the 2.6 kernel. LSM
+and Netfilter are both access-control frameworks
+consisting of strategically located hook points within
+the kernel. Kernel flow is redirected from these hooks
+to security modules such as SELinux, which perform
+access-control calculations and return a verdict to
+the hook. A hook uses the verdict returned from the
+security module either to allow normal kernel flow
+to continue or prevent it.
+</p><p>
+One of the core design principles of SELinux is that it mediates access at
+the OS object level. Rather than a naive approach where a security
+monitor decides whether a program can execute a particular system call
+with certain arguments, SELinux looks at the full security context of
+the program during execution, the security label attached
+to the object being accessed and the action being taken.
+For example, <tt  >ls</tt> run by the system administrator
+is different from <tt  >ls</tt> run by a normal user.
+</p><p>
+The general form of an SELinux permission is:
+
+<pre     class="programlisting">
+action (source context)
+(target context):(target object classes)
+permissions
+</pre>
+</p><p>
+Here's an example from SELinux policy:
+
+<pre     class="programlisting">
+allow bluetooth_t self:socket listen;
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217cd98"></a></h2></div></div><p>
+This provides the bluetooth_t domain with the listen permission for
+sockets labeled with its own security context. So, a process running in
+the bluetooth_t domain is allowed to invoke listen() on a socket
+that it owns.
+</p><p>
+The self designator is simply a shorthand way of
+making the target context the same as the source
+context. This commonly is used in policy relating to
+sockets as they typically are labeled with the same
+security context as the creating process.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217cef8"></a>
+Network Object Labeling</h2></div></div><p>
+Under SELinux, objects are labeled with a security context of the
+following form:
+
+<pre     class="programlisting">
+user:role:type
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217d058"></a></h2></div></div><p>
+For example:
+
+<pre     class="programlisting">
+root:staff_r:staff_t
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217d1b8"></a></h2></div></div><p>
+is the context of a process being run by root via the staff_r role in
+the staff_t domain. The label associated with port 80 is:
+
+<pre     class="programlisting">
+system_u:object_r:http_port_t
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217d318"></a></h2></div></div><p>
+The system_u
+user and object_r role are default values for system
+objects. It wouldn't make any sense for a port to
+have a real user or role; it's not owned by anyone
+and it doesn't initiate any actions that require a verdict
+from SELinux.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217d420"></a>
+Sockets</h2></div></div><p>
+A socket is labeled by its associated inode and is categorized as
+either a generic socket or one of the following socket subclasses:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+UNIX stream.
+</p></li><li><p>
+UNIX datagram.
+</p></li><li><p>
+TCP.
+</p></li><li><p>
+UDP.
+</p></li><li><p>
+Raw (includes ICMP and other non-TCP/UDP).
+</p></li><li><p>
+Netlink families.
+</p></li><li><p>
+Packet.
+</p></li><li><p>
+Key (pfkeyv2).
+</p></li></ul></div><p>
+Subclasses of sockets can be distinguished in security policy, providing
+for fine-grained control and flexibility over different network
+protocols:
+
+<pre     class="programlisting">
+allow lpd_t printer_port_t:tcp_socket name_bind;
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217dbb0"></a></h2></div></div><p>
+This rule allows only a TCP socket created in the lpd_t domain to bind to a
+port of type printer_port_t.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x217dcb8"></a>
+Ports</h2></div></div><p>
+IPv4 and IPv6 ports are labeled implicitly within the kernel, as specified by
+policy. The format for labeling port types is:
+
+<pre     class="programlisting">
+portcon protocol { port number | port range }
+        context
+</pre>
+</p><p>
+The following defines a security context for labeling the standard printer port:
+
+<pre     class="programlisting">
+portcon tcp 515 system_u:object_r:printer_port_t
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x2174758"></a>
+Network Interfaces</h2></div></div><p>
+Each network interface (netif) is labeled with a security context, as
+specified in policy. Network interfaces are labeled as follows:
+
+<pre     class="programlisting">
+netifcon interface context default_msg_context
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x21748b8"></a></h2></div></div><p>
+The default_msg_context parameter is intended to be used for labeling
+messages arriving on the interface, but is not currently used.
+</p><p>
+Here are some examples of netif labeling in policy:
+
+<pre     class="programlisting">
+netifcon eth0 system_u:object_r:netif_intranet_t [...]
+netifcon eth1 system_u:object_r:netif_extranet_t [...]
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x2174a70"></a>
+Nodes</h2></div></div><p>
+Under SELinux, a node refers to an IPv4 or IPv6 address and netmask.
+It allows host and network addresses to be labeled with security contexts
+via policy.
+</p><p>
+The format for labeling nodes is:
+
+<pre     class="programlisting">
+nodecon address mask context
+</pre>
+</p><p>
+Here are examples of labeling localhost addresses:
+
+<pre     class="programlisting">
+nodecon 127.0.0.1 255.255.255.255
+        system_u:object_r:node_lo_t
+nodecon ::1   ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+        system_u:object_r:node_lo_t
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x2174cd8"></a>
+Network Hooks and Permissions</h2></div></div><p>
+Access-control hooks are implemented for every socket system call,
+allowing all socket-based network protocols to be mediated by
+SELinux policy. A few hooks are used only for housekeeping, but
+otherwise, hooks generally are used to check one or more access-control permissions.
+</p><p>
+As there are a large number of generic socket controls, see
+Table 1 for the relationships between the hooks,
+socket system calls and permissions.
+</p><div class="table"><a name="N0x2084580.0x2174e38"></a><p class="title"><b>Table 1. The Relationships between Hooks, Socket System Calls and
+Permissions
+</b></p><table     summary="Table 1. The Relationships between Hooks, Socket System Calls and&#10;Permissions&#10;" border="1"><colgroup><col><col><col></colgroup><thead><tr><th>
+Hook</th><th>System Call</th><th>SELinux Permission</th></tr></thead><tbody><tr><td>
+selinux_socket_create</td><td>socket</td><td>create</td></tr><tr><td>
+selinux_socket_post_create</td><td>socket</td><td>n/a</td></tr><tr><td>selinux_socket_bind</td><td>bind</td><td>bind</td></tr><tr><td>selinux_socket_connect</td><td>connect</td><td>connect</td></tr><tr><td>selinux_socket_listen</td><td>listen</td><td>listen</td></tr><tr><td>selinux_socket_accept</td><td>accept</td><td>accept</td></tr><tr><td>selinux_socket_sendmsg</td><td>sendmsg, send, sendto</td><td>write</td></tr><tr><td>selinux_socket_recvmsg</td><td>recvmsg, recv, recvfrom</td><td>read</td></tr><tr><td>
+selinux_socket_getsockname</td><td>getsockname</td><td>getattr</td></tr><tr><td>
+selinux_socket_getpeername</td><td>getpeername</td><td>getattr</td></tr><tr><td>selinux_socket_setsockopt</td><td>setsockopt</td><td>setopt</td></tr><tr><td>
+selinux_socket_getsockopt</td><td>getsockopt</td><td>getopt</td></tr><tr><td>selinux_socket_shutdown</td><td>shutdown</td><td>shutdown</td></tr></tbody></table></div><p>
+Internally, the socket() system call is decomposed into two hooks.
+The selinux_socket_create hook is used to check whether the process can
+create a socket of the type requested.
+The selinux_socket_post_create management hook is used to assign a
+security label and socket class to the newly allocated inode associated
+with the socket.
+</p><p>
+The SELinux permissions also abstract the way system calls and other
+operations are viewed from a security point of view. Note, for example,
+that the getattr permission is used for the getsockname() and
+getpeername() system calls. They are seen to be equivalent
+security-wise by SELinux. Similarly, all of the sendmsg()- and
+recvmsg()-based system calls are reduced for security management
+purposes into simply read and write.
+For the curious, the code behind these hooks can be found in the
+2.6 kernel, in security/selinux/hooks.c.
+</p><p>
+As sockets are also files, they inherit some of the access controls
+associated with files. Table 2 lists the file-specific
+hooks and permissions inherited by sockets.
+</p><div class="table"><a name="N0x2084580.0x2176438"></a><p class="title"><b>Table 2. File-Specific Hooks and Permissions
+</b></p><table     summary="Table 2. File-Specific Hooks and Permissions&#10;" border="1"><colgroup><col><col><col></colgroup><thead><tr><th>
+Hook</th><th>System Call</th><th>SELinux Permission</th></tr></thead><tbody><tr><td>selinux_file_ioctl</td><td>ioctl</td><td>ioctl</td></tr><tr><td>selinux_inode_getattr</td><td>fstat</td><td>getattr</td></tr><tr><td>selinux_inode_setattr</td><td>fchmod, fchown</td><td>setattr</td></tr><tr><td>selinux_file_fcntl</td><td>fcntl</td><td>lock</td></tr><tr><td>selinux_file_lock</td><td>fcntl, flock</td><td>lock</td></tr><tr><td>selinux_file_permission</td><td>write, write, read</td><td>append, write, read</td></tr></tbody></table></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248a530"></a>
+UNIX Domain Controls</h2></div></div><p>
+Under Linux, UNIX domain sockets can be created in an abstract
+namespace independent of the filesystem. Additional hooks have
+been implemented to allow mediation of communication between UNIX
+domain sockets in the abstract namespace, as well as to
+provide control over the directionality of UNIX domain communications.
+The selinux_socket_unix_stream_connect hook checks the connectto
+permission when one UNIX domain socket attempts to establish a
+stream connection to another.
+The selinux_socket_unix_may_send hook checks the sendto permission
+when one UNIX domain socket transmits a datagram to another.
+</p><p>
+Another feature of UNIX domain sockets under Linux is the ability
+to authenticate a peer with the SO_PEERCRED socket option. This
+obtains the user ID, group ID and process ID of the peer. Under
+SELinux, we also can obtain the security context of a peer via
+a new socket option SO_PEERSEC. Calling getsockopt(2) with this
+option invokes the selinux_socket_getpeersec hook, which copies
+the security context to a buffer passed in by the user. This
+is used for local IPC, such as Security-Enhanced DBUS.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248a690"></a>
+Netlink Controls</h2></div></div><p>
+Netlink sockets provide message-based user/kernel communication.
+They are used, for example, to configure the kernel routing tables
+and IPSec machinery.
+</p><p>
+Netlink communication is asynchronous; messages can be sent in
+one context and received in another. When a Netlink packet is
+transmitted, the sender's security credentials in the form of
+a capability set are stored with the packet and checked on
+reception. This allows, for example, the kernel routing code
+to determine whether the user who sent a routing table update
+is really permitted to do so.
+</p><p>
+As part of the LSM Project, capabilities logic was moved out of
+the core kernel code and into a security module, so that LSMs
+could implement different security models if needed.
+</p><p>
+The SELinux module uses the selinux_netlink_send hook to copy
+only the NET_ADMIN capability to a Netlink packet being sent
+to the kernel.
+</p><p>
+The selinux_netlink_recv hook is invoked when
+security-critical messages are received. SELinux uses this hook
+to verify that the NET_ADMIN capability was copied to the packet
+during transmission and, thus, whether the sending process had
+the capability.
+</p><p>
+An increasing number of Netlink families are being implemented,
+and SELinux defines subclasses of Netlink sockets for those that
+are security-critical. This allows the socket controls to be
+configured on a per-Netlink family basis (for example, to differentiate
+routing messages from kernel audit messages).
+</p><p>
+SELinux also is able to determine, by using the selinux_netlink_send
+hook, whether messages on certain types of Netlink sockets are read
+or write operations and then apply the nlmsg_read or nlmsg_write
+permissions, respectively. This allows fine-grained policy to
+specify, for example, that a domain can read the routing table but
+not update it.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248a9a8"></a>
+IPv4 and IPv6 Controls</h2></div></div><p>
+SELinux adds several controls for TCP, UDP and Raw socket subclasses.
+The node_bind permission determines whether a socket can be bound
+to a specific type of node. This obviously is useful only for local
+IP addresses and can be used to restrict a d&aelig;mon to binding to a
+specific IP address.
+</p><p>
+The name_bind permission controls whether a socket can bind to
+a specific type of port. This permission is invoked only when
+the port number falls outside of the local port range. The local
+port range is where the kernel automatically allocates port numbers
+from (for example, when choosing the source port for an outgoing TCP connection)
+and can be configured through the sysctl net.ipv4.ip_local_port_range.
+On a typical system, this range is:
+
+<pre     class="programlisting">
+$ sysctl net.ipv4.ip_local_port_range
+net.ipv4.ip_local_port_range = 32768    61000
+</pre>
+</p><p>
+Thus, name_bind is invoked only when a socket binds to a port
+outside this range. SELinux always invokes the permission
+for ports below 1024, regardless of the sysctl setting.
+Both of these bind-related controls are called from the
+selinux_socket_bind hook, which is invoked through the bind(2) system call.
+</p><p>
+The send_msg and recv_msg permissions are used to control
+whether a socket can send or receive messages through a specific
+type or port.
+</p><p>
+A set of permissions is implemented that controls whether packets can
+be received or sent over TCP, UDP or Raw sockets for specific types
+of netif and node objects. These are tcp_send, tcp_recv,
+udp_send, udp_recv, rawip_send and rawip_recv.
+</p><p>
+These message-based controls are invoked for incoming packets at the
+selinux_sock_rcv_skb hook, the first point in the networking stack where
+we reliably can associate a packet with a recipient socket. For outgoing
+packets, SELinux registers a Netfilter hook and catches them at the IP layer;
+outgoing packets still have socket ownership information attached at this
+stage.
+</p><p>
+All of the above controls are protocol-independent in that they operate
+on both IPv4 and IPv6 protocols.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248ad18"></a>
+Network Policy</h2></div></div><p>
+We've covered enough theory now to look at a real
+example of SELinux policy for a simple network
+application. Due to space limitations and the
+complexity of real-world networking, we develop
+a policy for a simple TCP echo client.
+</p><p>
+The source code for the client is available at the
+Web site listed in the on-line Resources for this article. Briefly,
+it creates a TCP socket, connects to a remote host's
+echo port, writes some text and then reads it back.
+</p><p>
+My workstation has two Ethernet interfaces, and in this example,
+eth0 is on an intranet, and the server I am connecting to has the IP
+address 10.3.1.2.
+</p><p>
+Here are the goals of the security policy:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Grant the client only the OS access it absolutely needs.
+</p></li><li><p>
+Allow the client to communicate only with inetd servers on
+the 10.3.1.0/24 subnet via eth0.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248b0e0"></a>
+Policy</h2></div></div><p>
+The following is an annotated security policy that meets these goals.
+To use it, install the SELinux policy sources package for your
+distribution, and <tt  >cd</tt> to the top-level directory
+(/etc/selinux/strict/src/policy on my workstation).
+</p><p>
+Create a file called domains/program/echoclient.te, and add these
+policy entries as shown in Listing 1.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248b298"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. echoclient.te
+</b></p><pre     class="programlisting">
+# Simple echoclient policy for <i  >Linux Journal</i> article
+# File: domains/program/echoclient.te
+
+# Define the echoclient_t type as a domain.
+type echoclient_t, domain;
+
+# Define echoclient_exec_t as a type of executable
+# file.
+type echoclient_exec_t, file_type, exec_type;
+
+# This is a macro which will allow a correctly
+# labeled executable to transition into the
+# echoclient_t domain from the staff_t domain.
+domain_auto_trans(staff_t, echoclient_exec_t,
+                  echoclient_t)
+
+# Designate which roles may enter the echoclient_t
+# domain.
+role staff_r types echoclient_t;
+
+# This is a macro which allows the domain to use
+# shared libraries.
+uses_shlib(echoclient_t);
+
+# Provide the permissions required to run the
+# program when logged in via SSH as staff_t,
+# allowing diagnostic and error messages to be
+# written to the user's tty.
+allow echoclient_t sshd_t:fd use;
+allow echoclient_t staff_devpts_t:chr_file {
+                               getattr read write };
+
+# Network configuration
+
+# These are the socket permissions required by the
+# domain. Note that they are locked down to TCP
+# sockets.
+allow echoclient_t echoclient_t:tcp_socket {
+               connect create read shutdown write };
+
+# Allow the program to send and receive TCP messages
+# to the echo port. In standard policy, the port is
+# labeled as an inetd_port_t as it is one of a group
+# of ports managed by inetd. You could modify the
+# policy in net_contexts to lock this down to one
+# port if needed.
+allow echoclient_t inetd_port_t:tcp_socket {
+                                recv_msg send_msg };
+
+# Allow only TCP traffic over the intranet interface.
+allow echoclient_t netif_intranet_t:netif {
+                                tcp_recv tcp_send };
+
+# Allow only TCP communication with internal IP
+# addresses.
+allow echoclient_t node_internal_t:node {
+                                 tcp_recvtcp_send };
+</pre></div><p>
+Add the following labeling definitions to the net_contexts file:
+
+
+<pre     class="programlisting">
+# Label eth0
+netifcon eth0 system_u:object_r:netif_intranet_t
+         system_u:object_r:unlabeled_t
+
+  # Label the internal network.
+nodecon 10.3.1.0 255.255.255.0
+        system_u:object_r:node_internal_t
+</pre>
+</p><p>
+Update the types/network.te file:
+
+<pre     class="programlisting">
+# Define netif_intranet_t as a type of network
+# interface.
+type netif_intranet_t, netif_type;
+</pre>
+</p><p>
+Define a file context for the executable in a new file called
+file_contexts/program/echoclient.fc:
+
+<pre     class="programlisting">
+# Default file context for labeling
+/tmp/echoclient -- system_u:object_r:echoclient_exec_t
+</pre>
+</p><p>
+Compile and load the policy:
+
+<pre     class="programlisting">
+$ make load
+</pre>
+</p><p>
+That's all&mdash;the policy is done. It seems like a lot to do, but it gets
+easier once you're familiar with the various policy files and types
+of policy entries needed. It also helps to use tools like audit2allow,
+which takes audit log denial messages and turns them into allow rules.
+It would be better to use a high-level GUI policy tool for day-to-day
+policy development; we've taken it step by step here to show how
+things work.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248b7c0"></a>
+Testing</h2></div></div><p>
+Now, build and label the client executable:
+
+<pre     class="programlisting">
+$ make echoclient
+cc     echoclient.c   -o echoclient
+
+$ restorecon /tmp/echoclient
+</pre>
+</p><p>
+Verify that it is labeled correctly:
+
+<pre     class="programlisting">
+$ getfilecon /tmp/echoclient
+/tmp/echoclient system_u:object_r:echoclient_exec_t
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248b9d0"></a></h2></div></div><p>
+You could have used <tt  >ls -Z</tt> instead.
+</p><p>
+Let's see if it works&mdash;logged in as root in the staff_r role,
+using SSH:
+
+<pre     class="programlisting">
+$ id -Z
+root:staff_r:staff_t
+
+$ /tmp/echoclient 10.3.1.2
+Sending message: 'Hello, cliche'
+Received message: 'Hello, cliche'
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248bbe0"></a></h2></div></div><p>
+It worked!
+</p><p>
+You can add auditallow rules to the policy to watch each
+permission being granted, if you want.
+</p><p>
+Let's verify that some of the policy rules are actually working.
+</p><p>
+1) Try to communicate with an IP address outside the intranet.
+Route the address locally, so you don't accidentally send a packet
+onto the Internet:
+
+<pre     class="programlisting">
+$ ip ro add 196.40.74.92 via 10.3.1.2 dev eth0
+
+$ /tmp/echoclient 196.40.74.92
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248be48"></a></h2></div></div><p>
+The program gets a TCP timeout, and the following audit
+denial message is generated when a packet is sent:
+
+<pre     class="programlisting">
+avc:  denied  { tcp_send } for  pid=10831
+  exe=/tmp/echoclient saddr=10.3.1.1 src=32822
+  daddr=196.40.74.92 dest=7 netif=eth0
+  scontext=root:staff_r:echoclient_t
+  tcontext=system_u:object_r:node_t
+  tclass=node
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x248bfa8"></a></h2></div></div><p>
+As expected, the echoclient_t domain was denied access
+to transmit a TCP packet to a /node_t/ node, the default
+generic node context.
+</p><p>
+2) Try to communicate over the wrong interface.
+Route the echo server IP via the loopback interface, so
+packets will be sent there:
+
+<pre     class="programlisting">
+  $ ip ro add 10.3.1.2 via 127.0.0.2 dev lo
+
+  $ /tmp/echoclient 10.3.1.2
+
+avc:  denied  { tcp_send } for pid=10828
+  exe=/tmp/echoclient saddr=10.3.1.1 src=32821
+  daddr=10.3.1.2 dest=7 netif=lo
+  scontext=root:staff_r:echoclient_t
+  tcontext=system_u:object_r:netif_lo_t
+  tclass=netif
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x2709d60"></a></h2></div></div><p>
+This also is working correctly. The echoclient_t domain was denied access
+to transmit a packet over a netif_lo_t netif.
+</p><p>
+The echoclient program runs with a very minimal set of rights as
+defined in the policy. Anything not explicitly allowed is denied.
+The potential damage arising from a flaw in the program, user error
+or malicious user would be greatly confined by this policy.
+</p><p>
+This is a simple demonstration of how to meet network security goals
+with SELinux policy. A real-world policy would require several extra
+features, omitted for space and clarity, such as the ability to use
+ICMP messaging and DNS lookups. See the policy sources package of your
+distribution for some detailed examples, and also try some of the
+GUI policy tools.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x2709f18"></a>
+Future Developments</h2></div></div><p>
+It is likely that some form of labeled networking will be implemented
+for SELinux. This is where network traffic itself is labeled and
+typically is used in military and government environments dealing with
+classified information. An earlier version of SELinux used IP options
+to label packets, although it was dropped before merging with the upstream
+kernel as the hooks it needed were too invasive. A possible alternative is
+to integrate SELinux with IPSec and label the Security Associations (SAs)
+instead of the packets. A packet arriving on a specific SA would be
+labeled implicitly with the context of the SA. A prototype of this scheme
+was implemented for the preceding Flask Project, and it should be useful
+as a guideline.
+</p><p>
+More general integration of SELinux with network security components,
+such as cryptography and firewalling, also are areas for future
+exploration.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2084580.0x270a078"></a>
+Acknowledgement</h2></div></div><p>
+Thanks to Russell Coker for reviewing this article and providing valuable
+feedback.
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../129/7864.html" target="_self">/article/7864</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+James Morris (<a href="mailto:jmorris@redhat.com">jmorris@redhat.com</a>) is a kernel hacker from Sydney,
+Australia, currently working for Red Hat in Boston. He is a kernel
+maintainer of SELinux, Networking and the Crypto API; an LSM developer,
+and an Emeritus Netfilter Core Team member.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../129/toc129.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

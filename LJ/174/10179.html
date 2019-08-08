@@ -1,0 +1,290 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Work the Shell
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Use the shell to generate movie trivia from a movie database.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x154d580.0x1644ac0"></a>
+Work the Shell
+</h1></div><div><h3 class="subtitle"><i>
+Movie Trivia&mdash;Finally!
+</i></h3></div><div><div class="author"><h3 class="author">
+Dave
+ 
+Taylor
+</h3></div><div class="issuemoyr">Issue #174, October 2008</div></div><div><p>
+Use the shell to generate movie trivia from a movie database.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x154d580.0x16454b8"></a></h2></div></div><p>
+It's been one of those proverbial journeys of a thousand steps, but
+I think we're finally ready to start generating some movie trivia
+after spending the past few months doing all the underlying tool
+development. You'll recall that we're grabbing the top 250 movies
+list from Amazon's IMDb site, then getting the release year of each
+movie and storing it in a database.
+</p><p>
+Separately, we chewed on the interesting problem of coming up with
+adjacent years for a given year in time, recognizing that the older the
+movie, the more of a spread we want between years, because precious few people will 
+guess incorrectly that a movie released in 2007 was released in 1983, but a movie
+released in 1947 could stymie people who might think it came out in 1931.
+</p><p>
+Now, it's time to put the pieces together. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x154d580.0x1645720"></a>
+Two Random Years</h2></div></div><p>
+The last column dug in to the year spread, ending with a script
+that produced a likely adjacent year for a given year. We need to refine
+this script, because what we want to produce are three different year possibilities,
+two that are likely but wrong and one that's the correct year, without
+duplicates.
+</p><p>
+First, let's make the code that generates a reasonable adjacent year
+a script function:
+
+<pre     class="programlisting">
+get_random()
+
+{
+
+  delta="$(( $RANDOM % $factor + 1))"
+
+  add="$(( $RANDOM % 2 ))"
+
+  if [ $add -eq 1 ] ; then
+
+    closeyear="$(( $releasedate + $delta ))"
+
+  else
+
+    closeyear="$(( $releasedate - $delta ))"
+
+  fi
+
+  if [ $closeyear -gt $thisyear ] ; then
+
+    closeyear="$(( $releasedate - $delta ))"
+
+  fi
+
+}
+</pre>
+</p><p>
+Next, given that we can't gracefully return a value short of using
+a global variable, here's how we can leverage the function:
+
+<pre     class="programlisting">
+get_random 
+
+match1=$closeyear
+</pre>
+</p><p>
+That gets us the first year guess, easily enough. But, the next guess needs
+to be different from the first. How to do that? In a while loop:
+
+<pre     class="programlisting">
+match2=$match1        # needs an initial value
+
+while [ $match2 -eq $match1 ] ; do
+
+  get_random 
+
+  match2=$closeyear
+
+done
+</pre>
+</p><p>
+This is slightly risky, because there is the possibility of an infinite
+loop if the code never finds a random year value that differs, but I'll
+ignore that for now.
+</p><p>
+Now we have three year values: two incorrect ones, $match1 and $match2, and the correct value, $releasedate. How to give them back to the calling
+routine sorted? Easy:
+
+<pre     class="programlisting">
+echo "$match1 $match2 $releasedate" | sort -n
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x154d580.0x1645bf0"></a></h2></div></div><p>
+And, that's the function. Give it a year, and it'll return three:
+two that are close but wrong, and one that's correct. For example:
+
+<pre     class="programlisting">
+$ ./year-delta.sh 1975
+
+1981 1971 1975
+
+$ ./year-delta.sh 1999
+
+2000 1998 1999
+
+$ ./year-delta.sh 1938
+
+1948 1935 1938
+</pre>
+</p><p>
+That's exactly what we want. Now, how to integrate this into the bigger
+script that grabs a random line from the IMDb database and then presents
+it in a workable fashion?
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x154d580.0x1645da8"></a>
+Extracting Data and Displaying It</h2></div></div><p>
+Once you remember the trick of
+<tt  >$(( $RANDOM % some-value))</tt>,
+it should be straightforward to get a random line from a data file:
+
+<pre     class="programlisting">
+
+lines="$(wc -l &lt; $filmdb | sed 's/ //g')"
+
+randline=$(( $RANDOM % $lines + 1 ))
+
+match="$(sed -n "${randline}p" &lt; $filmdb)"
+
+</pre>
+</p><p>
+As I've written about before, wc is one of your best friends
+in script writing, because it's easy. But, it's also frustrating
+that there's no way to turn off the superfluous white space it
+generates. That's why the first line includes a call to sed to axe
+any spaces that are added. Somewhere, in a parallel universe to our own,
+there's an -n flag to wc that says &ldquo;no padding&rdquo; and
+makes this forevermore unnecessary. Sadly, we aren't in that universe,
+so just about every time you use wc, you have to strip out the
+white space at the same time.
+</p><p>
+The result of these three lines is that match has a value similar to:
+
+<pre     class="programlisting">
+The Lord of the Rings: The Two Towers|2002
+</pre>
+</p><p>
+Now we need to split it into two fields, which is easily, if tediously, done:
+
+<pre     class="programlisting">
+title="$(echo $match | cut -d\| -f1)"
+
+relyear="$(echo $match | cut -d\| -f2)"
+</pre>
+</p><p>
+And, finally, it's time to invoke the random years function that will,
+if you recall, generate one correct and two incorrect years:
+
+<pre     class="programlisting">
+years=$($randomyears $relyear)
+</pre>
+</p><p>
+Finally, let's pull the three years into separate variables and then
+output an attractive trivia query:
+
+<pre     class="programlisting">
+year1="$(echo $years | cut -d\  -f1)"
+
+year2="$(echo $years | cut -d\  -f2)"
+
+year3="$(echo $years | cut -d\  -f3)"
+
+echo "IMDb Top 250 Movie #$randline: Was $title 
+released in $year1, $year2 or $year3?"
+</pre>
+</p><p>
+Not too shabby! Let's see how it works:
+
+<pre     class="programlisting">
+$ ./generate-trivia-question.sh 
+
+IMDb Top 250 Movie #82: Was "Some Like It Hot" 
+released in 1950, 1959 or 1963?
+
+$ ./generate-trivia-question.sh 
+
+IMDb Top 250 Movie #118: Was "Mononoke-hime" 
+released in 1994, 1995 or 1997?
+
+$ ./generate-trivia-question.sh 
+
+IMDb Top 250 Movie #250: Was "Planet of the Apes" 
+released in 1967, 1968 or 1969?
+</pre>
+</p><p>
+Perfect, perfect!
+</p><p>
+That's about all we have space for in this column, but we've come a long,
+long way from the URL for a Web page that lists some top movies to a nice
+little trivia engine that's fast and fun!
+</p><p>
+Next month, we'll look at how to inject the trivia into the Twitterstream.
+Want to see it in action? By the time you read this column, it'll be live
+at <a href="http://twitter.com/FilmBuzz" target="_self">twitter.com/FilmBuzz</a> (along with movie commentary and much more).
+</p></div></div>
+<div class="authorblurb"><p>
+Dave Taylor is a 26-year veteran of UNIX, creator of The Elm Mail System,
+and most recently author of both the best-selling <span   class="emphasis"><em>Wicked Cool
+Shell
+Scripts</em></span> and <span   class="emphasis"><em>Teach Yourself Unix in 24
+Hours</em></span>, among his 16 technical
+books. His main Web site is at <a href="http://www.intuitive.com" target="_self">www.intuitive.com</a>,
+and he also offers up tech support at <a href="http://AskDaveTaylor.com" target="_self">AskDaveTaylor.com</a>. Follow him on Twitter if you'd like:
+<a href="http://twitter.com/DaveTaylor" target="_self">twitter.com/DaveTaylor</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../174/toc174.html">Issue Table of Contents</a>
+    <a class="link3" href="../174/10179.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,484 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The Linux Telephony Kernel API</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Herlein explains the integration of the telephony device driver&#10;    into the Linux kernel.&#10;    "><meta name="keywords" content="telephony, kernel, API, phone"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1e30580.0x1f27ab0"></a>The Linux Telephony Kernel API</h1></div><div><div class="author"><h3 class="author">Greg Herlein</h3></div><div class="issuemoyr">Issue #82, February 2001</div></div><div><p>
+    Herlein explains the integration of the telephony device driver
+    into the Linux kernel.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f283f8"></a></h2></div></div><p>A year ago, Internet Telephony was a
+curiosity, and many people thought it would never work for real
+phone calls. Now, with services like Net2Phone, Deltathree.com and
+DialPad providing free or extremely low-priced phone calls
+delivered via the Internet, Voice over IP (VoIP) has reached
+near-mainstream status. While Linux clients for those services are
+not yet available, Linux is not being left behind. With the 2.2.14
+kernel, Linux has taken a bold lead in the area of computer
+telephony integration: we have the first modern operating system
+with a defined kernel-layer application programming interface (API)
+for telephony support. To sweeten the pot, excellent quality
+open-source telephony software is already using this API. You can
+call around the world using Linux and the Internet&mdash;and the call is
+free!
+</p><p>This article will explain the basics of how the telephony
+device drivers are integrated into the kernel in a way suitable for
+creating a common API across vendors. Then we'll discuss the basic
+ideas behind the design and function of the API, and how data and
+event information are dealt with separately. Finally, we'll discuss
+how telephony events (like ringing or picking up a handset) are
+handled in a process called &ldquo;asynchronous event
+notification&rdquo;.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f28558"></a>New Kernel Option: Telephony Support</h2></div></div><p>There are many people who've asked why we needed a new
+telephony support API for the kernel. Even Alan Cox had to be
+convinced! After all, most of the Internet Telephony software out
+there can use a sound card, and if that card supports full-duplex
+(simultaneous playing and recording) and the user has a decent
+microphone-speaker headset, the quality of the call can be
+adequate. Why add complexity and a new API?</p><p>The answer is quite simple: sound cards are not telephone
+devices! Sound cards can't generate dial tone, rings, wink,
+flash-hook or caller-ID&mdash;all of which are needed to operate a
+normal phone device properly. Yes, sound cards are functional for
+limited telephony use with a headset and microphone, but real
+telephony cards let you plug that nice cordless phone in and be
+free from the short cord to your computer...or plug into a
+sophisticated business phone system. Sound cards also have no
+chance of providing the ability to plug into the phone line
+provided by your local telephone company, therefore, losing the
+ability to do inbound and outbound call control, hop-on and hop-off
+toll bypass applications or use any of the other new generation
+telephony software applications being written today.</p><p>Also, for any real VoIP use over the Internet, it is
+necessary to compress the audio data. To be compatible with other
+VoIP applications and equipment you must support the commonly
+accepted compression codecs like G.723.1 or G.729a. Unfortunately,
+if you want to do this in software you have to license the codecs,
+and this can cost in the six-figure range (easily!) these libraries
+are most certainly <span   class="emphasis"><em>not</em></span> open source. Telephony
+cards (like the Quicknet cards mentioned below) have pre-licensed
+these codecs and provide them built into the hardware. This avoids
+the mess of paying per-copy royalties for the codecs (it's part of
+the hardware cost) and lets you develop code with your own choice
+of license, not one imposed on you by the codec developer. In other
+words, you can do open-source VoIP software and still use the
+advanced codecs! These codecs are most definitely not something you
+would find on a sound card.</p><p>Additionally, sound cards can't interface with phones or the
+phone system, and they can't support hardware-based audio
+compression codecs. Sound cards are simply different from phone
+cards.</p><p>To be fair, telephony cards are not sound cards either. Sound
+cards have audio capabilities that far exceed what telephones can
+do. For example, sound cards are stereo; phones are mono. Sound
+cards can sample and playback sounds at music frequencies
+(20Hz-20kHz); phones are limited to voice frequencies (300Hz-4kHz
+typically). Sound cards have advanced music capabilites and often
+support MIDI and extensive sound effects. Phone cards cannot do any
+of that. The hardware and functionality are very different. The
+device drivers and the API need to be different, too.</p><p>But wait, you say, &ldquo;what about all the great software out
+there that can work with sound cards, like voice recognition and
+text-to-speech processing?&rdquo; Wouldn't it be nice to be able to use
+that software on phone devices with a minimum of effort? You can.
+The API for Linux telephony was designed to work in a way that does
+not preclude the use of software originally intended for a sound
+card with a telephony device. Yes, some minor code changes will be
+needed, but it's not all that hard. I'll explain more about that
+towards the end of the article.</p><p>The push for this new API was spearheaded by Quicknet
+Technologies, Inc., which manufactures a line of phone cards. In
+November of 1999, Ed Okerson of Quicknet and myself (I was an
+employee of Quicknet at the time) proposed the precursor to today's
+API to Alan Cox. After several weeks of intense e-mail and a pile
+of code by Ed and Alan, the Linux telephony API was born.</p><p>So, how does it work? Let's get started.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f28920"></a>The Basics: Phone Devices</h2></div></div><p>At the operating system level, all devices are referred to by
+numbers. We look in <b  >/dev</b> and see a collection of
+file names, but down deep Linux looks at devices based on a major
+and a minor number. Devices of a particular type all share a single
+major number; individual devices of that type must each have their
+own minor number. For example, if you do <b  >ls -al
+/dev/ttyS0</b> you'll see:</p><pre     class="programlisting">
+gherlein@tux:~/lj &gt; ls -al /dev/ttyS0
+crwxrwxr-x   1 root     uucp       4,  64 Oct 27 06:23 /dev/ttyS0
+</pre><p>Note that that the file permissions mask has the first
+character as a &ldquo;c&rdquo;, indicating that it's a character device. It's
+owned by root and is in the uucp group. The next two numbers are
+not file sizes, like you'd see on a normal file; they are the major
+and minor number. In this case ttyS0 has a major number of 4 and a
+minor number of 64.
+</p><p>The Linux Telephony API assigns the major device number of
+100 to phone-type devices. Your distribution of Linux has probably
+not created the devices for you, like it has for
+<b  >/dev/ttyS*</b>, <b  >/dev/audio</b> and
+other older, commonly accepted device mappings. If
+<b  >/dev/phone*</b> devices are not present on your
+system, you'll need to make them before using the Linux Telephony
+API. You can fix this yourself quickly with the following command
+(as root):</p><pre     class="programlisting">
+mknod /dev/phone0 c 100 0
+</pre><p>This creates a new device file called
+<b  >/dev/phone0</b>. It's a character device with a
+major number of 100 and a minor number of 0. Refer to the
+<span   class="bold"><b>mknod</b></span> man page for more details on
+this command. You only actually need enough device files for your
+hardware, but most folks create devices 0 15 by default.
+</p><p>Note that there is presently an error in the file
+<b  >/usr/src/linux/Documentation/devices.txt</b>. This
+file, which provides official assignments for all major numbers it
+currently states that Linux telephony is to use major number 159
+and that 100 is deprecated. This is an acknowledged error and will
+be fixed in future documentation. The correct major number for
+Linux telephony (and the number used in the kernel) is 100.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f28ef8"></a>The Phonedev Module&mdash;Device Brokering</h2></div></div><p>Alan Cox developed the phonedev module based on a similar
+approach that he took for the Video4Linux Project. There will be
+many vendors who create products capable of being a phone device.
+Rather than having multiple telephony product vendors, each
+requiring their own major number, they can all use major number 100
+and the commonly defined <b  >/dev/phoneN</b> (where N is
+the device number).</p><p>All of these must present a common basic interface to
+user-space software, that is, they must all follow the same common
+API.al, though they may provide extensions particular to their
+product. Vendors will create their own device driver module that
+will implement this common API as an external interface by dealing
+with the inner details of their particular hardware.</p><p>The phonedev module solved the problem of mapping the minor
+device number to a specific vendor-type module at runtime. The
+source code is in the
+<b  >files/usr/src/linux/drivers/telephony/phonedev.c</b>
+and the header files, phonedev.h and telephony.h, are located in
+<b  >/usr/include/linux</b>. Here's how it works.</p><p><a href="4468l1.html" target="_self">Listing 1. phone_device
+Structure</a></p><p>Every phone device must use a phone_device structure (see
+Listing 1). Likewise, every phone device must call two functions to
+interact with the phonedev module in order to register and
+unregister itself. These are defined as:</p><pre     class="programlisting">
+extern int phone_register_device
+    (struct phone_device *, int unit);
+extern void phone_unregister_device
+    (struct phone_device *);
+</pre><p>At load time, the phonedev module sets itself up and waits to
+service other telephony devices. When a telephony driver is loaded
+(by <span   class="bold"><b>modprobe</b></span> or
+<span   class="bold"><b>insmod</b></span>, as discussed later) it
+calls the phone_register_device function. A simple explanation of
+this function is that it keeps a pointer within the phonedev module
+to the phone_device structure, searches for the first open minor
+number and assigns that to the phone device, and then increments a
+counter to track the fact that something is using the phonedev
+module (to prevent it being unloaded while in use).
+</p><p>The practical implications of this are simple: the first
+telephony modules loaded will be assigned the first available
+(lowest numbered) minor numbers. This is crucial to understand in
+cases where modules from different vendors need to coexist on the
+same system, and specific assignment of a particular card is
+desired to match a particular minor number (a specific
+<b  >/dev/phoneN</b> device). In other words, if you have
+a device from XYZ company and a device from ABC company, and you
+want ABC's card to be <b  >/dev/phone0</b>, you'll have
+to make sure that the driver for ABC gets loaded first.</p><p>All devices must provide at least the basic functions to
+interact with the device: open, read, write, close, etc. These are
+all part of the &ldquo;file operations structure&rdquo; (see linux/fs.h for
+details). Each device defines the functions appropriate for
+itself.</p><p>Anytime a program opens a <b  >/dev/phoneN</b>
+device, it's actually calling the
+<span   class="bold"><b>fopen</b></span> function defined in the
+phonedev module's file operations structure. This function performs
+the following operations:</p><div class="itemizedlist"><ul type="disc"><li><p>It grabs the minor device number from
+<b  >/dev/phoneN</b> inode.</p></li><li><p>It builds a string of the form
+<b  >char-major-%d-%d</b> using the major and minor
+numbers. In the case of minor number 0 (corresponding to
+<b  >/dev/phone0</b>), this string would be
+<b  >char-major-100-0</b>.</p></li><li><p>It uses this string in a call to
+<b  >request_module</b> to ask that the module be loaded.
+This has the same effect as if the program
+<span   class="bold"><b>modprobe</b></span> was called (in fact, it
+actually starts a separate kernel thread and executes
+<span   class="bold"><b>modprobe</b></span> in it). This ensures
+that, if the device is a module instead of a part of the kernel,
+<span   class="bold"><b>kmod</b></span> has a chance to load the
+module before phonedev tries to use it.</p></li><li><p>It then calls the
+<span   class="bold"><b>fopen</b></span> function in the phone device
+module to perform the actual act of opening the individual
+device.</p></li></ul></div><p>As you can see, the phonedev module has two basic purposes:
+to assign minor numbers to phone devices dynamically at load time
+and provide a clean way to autoload needed phone device modules at
+run time. It's clear, though, that a good understanding of modprobe
+and module dependency is needed to fully understand the telephony
+modules and their interactions.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f205a0"></a>Modprobe and Phone Devices</h2></div></div><p>If you are using kmod to automatically load kernel modules as
+you need them, then you will need to make sure that several aliases
+are defined in the <b  >/etc/modules.conf</b>
+file.</p><p>First of all, the system needs to know that char-major-100 is
+the phonedev module. Add this line to define:</p><pre     class="programlisting">
+alias char-major-100   phonedev
+</pre><p>Now the system will need to know what actual phone device
+modules to associate with specific minor numbers. As we learned
+above, this may not guarantee that the phonedev module actually
+assigned that minor number to the phone device at module load time,
+but we'll cover that in more detail below. In the following
+examples we'll use the telephony cards from Quicknet Technologies
+Inc. (www.quicknet.net). These cards have Linux drivers in the
+kernel and are relatively inexpensive compared to most telephony
+cards. Quicknet's device driver is
+<span   class="bold"><b>ixj.o</b></span> and the module name is
+<span   class="bold"><b>ixj</b></span>. This driver is used for all
+of their telephony card products (it's smart enough to handle the
+ISA, PCI or PCMCIA flavors as well as knowing which cards have
+which kinds of phone interface circuits). To define that Quicknet's
+driver is associated with <b  >/dev/phone0</b>, add this
+line to <b  >/etc/modules.conf</b>:
+<pre     class="programlisting">
+alias char-major-100-0  ixj
+</pre>
+
+
+As you'll recall from the discussion of phonedev's fopen function
+above, phonedev will build a string of the form
+<b  >char-major-%d-%d</b> and fill in the parameters with
+100 (major number) and the requested minor number. In our example,
+attempting to open <b  >/dev/phone0</b> would result in
+phonedev attempting to load <b  >char-major-100-0.</b>
+That device is unknown to the kernel module loader. The alias
+command above <span   class="bold"><b>maps</b></span> that string to
+the module name ixj. When we try to open
+<b  >/dev/phone0</b> the phondev module will autoload the
+ixj module for us, and then call the fopen function defined in the
+ixj module to open the device (assuming your kernel was built to
+support the kernel module loader with CONFIG_KMOD=y).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f20b78"></a>The Basic Phone Device API</h2></div></div><p>A fundamental premise of the Linux telephony API is that the
+only thing read-from and written-to phone devices using
+<span   class="bold"><b>read</b></span> and
+<span   class="bold"><b>write</b></span> is actual audio data. This
+is separate from&mdash;and handled quite differently from&mdash;event type
+information.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f20d30"></a>Audio Data</h2></div></div><p>What, specifically, is audio data, and how is it different
+from event data? Audio data is the result of the analog-to-digital
+(A/D) conversion (and possibly data compression) on the audio
+signal present at the microphone of the telephony device. The
+<span   class="bold"><b>offhook</b></span> signal resulting from
+picking up the phone handset is an
+<span   class="bold"><b>event</b></span>. The tone that results from
+the user pressing a digit on the phone handset is an event even
+though that action may also generate audio. An incoming ringing
+signal is called an event. In short, all non-microphone inputs are
+events. All microphone input (and the corresponding speaker output)
+is audio data. This audio data is read and written from the phone
+device using the standard read and write system calls.</p><p>Most phone devices will provide audio data compression in the
+device. In fact, for successful Internet telephony applications,
+some form of audio data compression is required. These compression
+techniques are called &ldquo;audio codecs&rdquo; (or codecs for short), and
+there are a set of commonly implemented and interoperable codecs.
+The Linux telephony API includes defined constants for most of
+these common codecs; however, a particular phone device may or may
+not support them all. Control of what codec is in use is handled by
+an <span   class="bold"><b>ioctl</b></span> system call.</p><p>One large difference in how Linux telephony API differs from
+what used to work with sound cards is that Linux telephony API is
+&ldquo;frame-oriented&rdquo; while sound cards are &ldquo;byte oriented&rdquo;. A
+device that is frame-oriented reads a discrete frame of data
+corresponding to a unit of time. This is done because all audio
+codecs operate on a period of audio data at a time (usually 10, 20
+or 30 milliseconds' worth of data). Because use of a compressed
+codec is the norm for network telephony applications, this is the
+normal and expected mode of operation for phone devices. Sound
+cards do not have this restriction and are free to read and write a
+variable number of data bytes on any give call. The API defines
+&ldquo;frame sizes&rdquo; for each codec, and raw uncompressed audio data
+from the device is one of the codec choices. For example, the
+LINEAR16 codec (uncompressed 16-bit sound samples) has a default
+frame size of 240 bytes&mdash;corresponding to 30 milliseconds of data
+at the default 8000Hz sample rate. Every read operation from the
+device will result in 240 bytes of data or nothing. Of course, you
+can change this behavior with ioctl calls to adjust the size of a
+frame for uncompressed codecs.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f20ff0"></a>Controlling Phone Devices&mdash;the ioctl System
+Call</h2></div></div><p>Commands for the phone device to perform certain actions are
+not written to the phone device using a write call&mdash;only audio data
+is written to the device. To control the phone device, a set of
+ioctl functions are defined to handle the basic phone activities.
+This basic set of ioctl functions are defined in
+<b  >/usr/include/linux/telephony.h</b>. Vendors who wish
+to extend that basic set of capabilities may do so, but those
+functions are limited to their own device driver and are outside
+the scope of the common Linux telephony API.</p><p>An example will best illustrate this potential. Using the
+telephony API with a Quicknet Internet PhoneJACK card and a phone
+plugged into the card (called an FXS port or POTS port by telephony
+folks), Listing 2 shows a brief program to ring the phone.</p><p><a href="4468l2.html" target="_self">Listing 2. Ringing the
+Phone</a></p><p>You'll notice that the device is opened, defaulting to
+/dev/phone0 if the user does not provide a specific device name on
+the command line. The maximum number of rings is set with an ioctl
+call using the PHONE_MAXRINGS constant. The phone is then
+instructed to ring using the PHONE_RING ioctl. This example program
+is a simplified version of the LGPL module
+<span   class="bold"><b>ring.c</b></span> found in Quicknet's
+Software Developer Kit (SDK). It's too simple to do anything more
+than illustrate the technique and demonstrate the use of ioctls to
+control a phone device, but real-world programs need not be much
+more complicated, the API is fairly simple. All the Linux telephony
+API ioctl constants are defined in the header file
+<b  >/etc/include/linux/telephony.h</b>.</p><p>It's this basic fact that allows software written for sound
+cards to be adapted easily for use with phone devices; like sound
+cards, the only data written using the read and write system calls
+is audio data. In addition, the low-level constants used in the
+defined telephony ioctl calls were designed to avoid conflict with
+existing sound card ioctls. Porting an application that expects a
+sound card to use a phone card instead will primarily involve
+handling the errors returned from the sound card ioctl calls your
+code makes. It should be possible (though perhaps not easy) to
+write a wrapper that opens the telephony device and spawns a child
+process (inheriting the open file descriptor to the phone device)
+that runs software expecting a sound card interface. While it's not
+totally transparent, it's possible and should not actually be that
+difficult.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f213b8"></a>Asynchronous Event Notification</h2></div></div><p>Events that occur on the telephony side of the device need to
+be communicated to the user-space software running the phone. Old
+and crude methods for this required the software to poll the device
+continuously for status and changes. The Linux telephony API avoids
+that, of course, and provides two different techniques, both
+generically called &ldquo;asynchronous event notification&rdquo;. The first
+method uses signals for indication, and the second uses the
+&ldquo;exception bit&rdquo; in the file descriptor set for exceptions. I'll
+cover both techniques in order.</p><p>The use of signals for event notification requires three
+steps: first, prepare and declare a signal handler function for the
+SIGIO signal; second, set the process ID (PID) for the running
+process to receive the signal; third, enable the generation of the
+signal on the open files descriptor using the fcntl system call. An
+excellent description of these steps can be found in Chapter 12 of
+<span   class="emphasis"><em>Advanced Programming in the UNIX Environment</em></span>
+by W. Richard Stevens (a worthwhile book to have in any case).
+Again, a short example will probably clear this up. Assuming you
+have an open file descriptor ixj1 that is an open phone device, you
+can enable asynchronous event notification with signals with the
+following code snip:</p><pre     class="programlisting">
+signal(SIGIO, &amp;getdata);
+fcntl(ixj1, F_SETOWN, getpid());
+oflags1 = fcntl(ixj1, F_GETFL);
+fcntl(ixj1, F_SETFL, oflags1 | FASYNC);
+</pre><p>and a related signal handling function
+(<b  >getdata</b> in the code above) to process the data.
+When you get the signal, you still do not know what kind of event
+occurred&mdash;only that an event did occur. Your program would then
+have to make an ioctl call to the phone device to ask what kind of
+event was detected (more on this below). In addition, if your
+program has more than one open phone device file descriptor, you
+will not know which one generated the signal. And, signals can be
+complicated to deal with and can be unreliable in a multi-threaded
+program and, so, are avoided by some developers. These factors
+limit the effectiveness of this method, leading to the more useful
+case of using the &ldquo;exception bit&rdquo; in the file descriptor set for
+exceptions.
+</p><p>It's common for programs to set read and write exception sets
+and then use the <span   class="bold"><b>select( )</b></span> system
+call to wait for a file descriptor to be readable or writable. A
+less well-known aspect of the select( ) call is the &ldquo;exception
+set&rdquo;. The Linux telephony API uses this exception set to signal a
+process that a telephony event has occurred. Listing 3 presents a
+simple example using the file descriptor ixj1.</p><p><a href="4468l3.html" target="_self">Listing 3. Using an Exception
+Set</a></p><p>This extremely simple (and not really useful) example is
+purely to illustrate the technique of using the exception set and
+select( ) to detect events. The phone device driver will set the
+appropriate bit in the exception set if an event has occurred,
+causing select( ) to return. The user can screen the read, write
+and exception descriptor sets to determine if its own file
+descriptor was marked by the device driver as ready for that kind
+of operation. If data is ready to be read, the statement
+<b  >FD_ISSET(ixj1,&amp;rfds)</b> will return
+<b  >TRUE</b>;
+<b  >FD_ISSET(ixj1,&amp;wfds)</b> statement returns
+<b  >TRUE</b> if the device is ready to be written to.
+And, if a telephony event has occurred, the
+<b  >FD_ISSET(ixj1,&amp;efds)</b> will return
+<b  >TRUE</b>. So, how do you detect what specific event
+occurred?</p><p>The API provides a special PHONE_EXCEPTION ioctl call and an
+associated telephony_exception structure to decode the return
+value. This call will set bits in the structure that indicate which
+of the telephony events occurred (there may have been several). In
+the above example &ldquo;hookstate&rdquo; bit is examined in the statement
+<b  >if(ixje.bits.hookstate)</b>, and if that bit is set
+it indicates a change of status. An ioctl call is then made to
+determine if the phone is on or off hook. Real-world code would
+have used a large select or an extended if-else-if ladder to
+examine the contents of ixje.bits after the PHONE_EXCEPTION ioctl
+call. A detailed explanation of how to use this technique is beyond
+the scope of this article, but please refer to the
+<b  >/usr/include/linux/telephony.h</b> file for details
+of what kinds of events can be detected.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f21b48"></a>Open-Source Programs Available Now</h2></div></div><p>There are many open-source programs available now that use
+this API. However, the most well-known and widely used program is
+<span   class="bold"><b>ohphone,</b></span> a console application
+using the open-source OpenH323 library. Ohphone is part of the
+OpenH323 Project
+(<a href="http://www.openh323.org" target="_self">www.openh323.org</a>)
+and is in daily use by thousands of people to make free,
+high-quality phone calls over the Internet. Ohphone not only fully
+supports the Linux telephony API, but it is also compatible with
+other H.323-based products like Microsoft
+NetMeeting&lt;+H&gt;tm&lt;+H&gt; and Cisco voice-enabled routers. A
+more detailed discussion of this fine software is too much for this
+article, but you're encouraged to look at its web site to catch the
+latest news. The company that developed the OpenH323 library was
+recently acquired by Quicknet Technologies, Inc. as part of
+Quicknet's efforts to ensure continued major development effort of
+this open-source project. With such full commercial backing and a
+commitment to open source, I expect the OpenH323 Project software
+to become even better in the near future.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e30580.0x1f21d00"></a>Conclusion</h2></div></div><p>The Linux telephony API provides a common and consistent
+interface for developing telephony software on Linux. While there
+is currently only one vendor (Quicknet Technologies, Inc.) with
+fully compliant drivers for this API, several others are working
+toward compliant drivers. The API is lean, well designed, will not
+conflict with the existing API for sound cards and provides the
+ability to support multiple vendors behind the same interface.
+There's sure to be some exciting new telephony software developed
+for Linux in the coming year.</p><p><a href="4468s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p><span   class="bold"><b>Greg Herlein</b></span> has
+      been an avid Linux developer since 1994. His company, Herlein
+      Engineering, currently offers Linux/UNIX consulting, especially in
+      the areas of telephony software development. He lives and works in
+      San Francisco, California. He can be reached at
+      greg@herlein.com.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../082/toc082.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

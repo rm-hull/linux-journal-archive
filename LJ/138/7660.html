@@ -1,0 +1,692 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel Korner</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Take a tour of the kernel's networking functionality&#10;by writing a network client that runs in kernel space.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x146f580.0x1566ab0"></a>Kernel Korner</h1></div><div><h3 class="subtitle"><i>
+Network Programming in the Kernel</i></h3></div><div><div class="authorgroup"><div class="author"><h3 class="author">
+Pradeep
+ 
+Padala
+</h3></div><div class="author"><h3 class="author">
+Ravi
+ 
+Parimi
+</h3></div><div class="issuemoyr">Issue #138, October 2005</div></div></div><div><p>
+Take a tour of the kernel's networking functionality
+by writing a network client that runs in kernel space.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x15674a8"></a></h2></div></div><p>
+All Linux distributions provide a wide range of
+network applications&mdash;from d&aelig;mons that provide a
+variety of services such as WWW, mail and SSH to
+client programs that access one or more of these
+services. These programs are written in user mode
+and use the system calls provided by the kernel
+to perform various operations like network read
+and write. Although this is the traditional method of
+writing programs, there is another interesting way
+to develop these applications by implementing them
+in the kernel. The TUX Web server is a good example of
+an application that runs inside the kernel and serves
+static content. In this article, we explain the basics
+of writing network applications within the kernel and
+their advantages and disadvantages. As an example, we
+explain the implementation of an in-kernel FTP client.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x15675b0"></a>
+Advantages and Disadvantages of In-Kernel Implementations</h2></div></div><p>
+Why would one want to implement applications within the kernel?
+Here are a few advantages:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+When a user-space program makes a system call, there is some
+overhead associated in the user-space/kernel-space transition. By
+programming all functionality in the kernel, we can make gains in performance.
+</p></li><li><p>
+The data corresponding to any application that sends or receives
+packets is copied from user mode to kernel mode and
+vice versa. By implementing network applications within the
+kernel, it is possible to reduce such overhead and increase
+efficiency by not copying data to user mode.
+</p></li><li><p>
+In specific research and high-performance computing
+environments, there is a need for achieving data transfers at
+great speeds. Kernel applications find use in such situations.
+</p></li></ul></div><p>
+On the other hand, in-kernel
+implementations have certain disadvantages:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Security is a primary concern within the kernel, and a large class
+of user-mode applications are not suitable to be run directly in
+the kernel. Consequently, special care needs to be taken while
+designing in-kernel applications. For example, reading and writing
+to files within the kernel is usually a bad idea, but most
+applications require some kind of file I/O.
+</p></li><li><p>
+Large applications cannot be implemented in the kernel due to
+memory constraints.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1567b30"></a>
+Network Programming Basics</h2></div></div><p>
+Network programming is usually done with sockets. A socket serves as a
+communication end point between two processes. In this article, we
+describe network programming with TCP/IP sockets.
+</p><p>
+Server programs create sockets, bind to well-known ports, listen and
+accept connections from clients. Servers are usually designed to accept
+multiple connections from clients&mdash;they either fork a new process to
+serve each client request (concurrent servers) or completely serve one
+request before accepting more connections (iterative servers). Client
+programs, on the other hand, create sockets to connect to servers and
+exchange information.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1567c90"></a>
+FTP Client-Server Interaction</h2></div></div><p>
+Let's take a quick look at how an FTP client and
+server are implemented in user mode. We discuss
+only active FTP in this article. The differences between
+active and passive FTP are not relevant to our
+discussion of network programming here.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1567d98"></a>Socket Programming Basics</h2></div></div><p>
+Here is a brief explanation of the design of an FTP client and server.
+The server program creates a socket using the
+<tt  >socket()</tt> system call.
+It then binds on a well-known port using <tt  >bind()</tt> and waits for
+connections from clients using the <tt  >listen()</tt> system call. The server
+then accepts incoming requests from clients using
+<tt  >accept()</tt> and forks a
+new process (or thread) to serve each incoming client request.
+</p><p>
+The client program creates a control socket using
+<tt  >socket()</tt> and next
+calls <tt  >connect()</tt> to establish a connection with the server. It then
+creates a separate socket for data transfer using
+<tt  >socket()</tt> and binds
+to an unprivileged port (&gt;1024) using <tt  >bind()</tt>. The
+client now <tt  >listen()</tt>s
+on this port for data transfer from the server. The server now has
+enough knowledge to honor a data transfer request from the client.
+Finally, the client uses <tt  >accept()</tt> to accept connections from the
+server to send and receive data. For sending and receiving data, the client
+and server use the <tt  >write()</tt> and
+<tt  >read()</tt> or <tt  >sendmsg()</tt> and
+<tt  >recvmsg()</tt>
+system calls. The client issues <tt  >close()</tt> on all open sockets to tear
+down its connection to the server. Figure 1 sums it up.
+</p><div       class="mediaobject"><img src="7660f1.jpg"><div class="caption"><p>
+Figure 1. The FTP protocol uses two sockets: one for control messages and
+one for data.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x15685d8"></a>
+FTP Commands</h2></div></div><p>
+Here is a list of a few the FTP commands we used.
+Because our program provides only a basic implementation
+of the protocol, we discuss only the relevant
+commands:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The client sends a <tt  >USER &lt;username&gt;\r\n</tt> command to the server to
+begin the authentication process.
+</p></li><li><p>
+To send the password, the client uses <tt  >PASS
+password\r\n'</tt>.
+</p></li><li><p>
+In some cases, the client sends a PORT command to inform the
+server of its preferred port for data transfer. In such cases, the
+client sends <tt  >PORT &lt;a1,a2,a3,a4,p1,p2&gt;\r\n</tt>. The RFC for FTP
+requires that the a1&ndash;a4 constitute the 32-bit IP address of the
+client, and p1&ndash;p2 constitute the 16-bit port number. For example, if
+the client's IP address is 10.10.1.2 and it chooses port 12001 for
+data transfer, the client sends <tt  >PORT
+10,10,1,2,46,225</tt>.
+</p></li><li><p>
+Some FTP clients request, by default, that data be transferred in
+binary format, while others explicitly ask the server to enable
+data transfer in binary mode. Such clients send a <tt  >TYPE
+I\r\n</tt>
+command to the server to request this.
+</p></li></ul></div><p>
+Figure 2 is a diagram that shows a few FTP commands and their
+responses from the server.
+</p><div       class="mediaobject"><img src="7660f2.jpg"><div class="caption"><p>
+Figure 2. The client issues FTP commands over the
+control connection to set up the file transfer.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1961010"></a>
+Socket Programming in the Kernel</h2></div></div><p>
+Writing programs in the kernel is different from doing the same in
+user space.
+</p><p>
+We explain a few issues concerned with writing a network application in
+the kernel. Refer to Greg Kroah-Hartman's article &ldquo;Things You Never
+Should Do in the Kernel&rdquo; (see the on-line Resources). First, let's examine how a
+system call in user space completes its task. For example, look at the
+<tt  >socket()</tt> system call:
+
+<pre     class="programlisting">
+sockfd = socket(AF_INET,SOCK_STREAM,0);
+</pre>
+</p><p>
+When a program executes a system call, it traps into
+the kernel via an interrupt and hands over control
+to the kernel. Among other things, the kernel
+performs various tasks, such as saving contents
+of registers, making changes to address space
+boundaries and checking for errors with system call
+parameters. Eventually, the <tt  >sys_socket()</tt> function in
+the kernel is responsible for creating the socket of
+specified address and family type, finding an unused
+file descriptor and returning this number back to
+user space. Browsing through the kernel's code
+we can trace the path followed by this function (Figure 3).
+</p><div       class="mediaobject"><a href="7660f3.large.jpg"><img src="7660f3.jpg"></a><div class="caption"><p>
+Figure 3. Behind the scenes of a system call: when
+user space executes socket(), the kernel does necessary
+housekeeping and then returns a new file descriptor.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x19614e0"></a>
+Design of an FTP Client</h2></div></div><p>
+We now explain the design and implementation of
+a kernel FTP client. Please follow through the code
+available at the <i  >Linux Journal</i> FTP site (see
+Resources) as you read through
+the article. The main functionality of this client
+is written in the form of a kernel module that adds a
+system call dynamically that user-space programs can
+invoke to start the FTP client process. The module
+allows only the root user to read a file using FTP.
+The user-space program that calls the system call in
+this module should be used with extreme caution. For
+example, it is easy to imagine the catastrophic
+results when root runs:
+
+<pre     class="programlisting">
+./a.out 10.0.0.1 10.0.0.2 foo_file /dev/hda1/*
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1961698"></a></h2></div></div><p>
+and overwrites /dev/hda1 with a downloaded file
+from 10.0.0.1.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x19617a0"></a>
+Exporting sys_call_table</h2></div></div><p>
+We first need to configure the Linux kernel to allow us to add new system
+calls via a kernel module dynamically. Starting with version 2.6, the symbol
+<tt  >sys_call_table</tt> is no longer exported by the kernel. For our module to
+be able to add a system call dynamically, we need to add the following
+lines to arch/i386/kernel/i386_ksyms.c in the kernel source (assuming
+you are using a Pentium-class machine):
+
+<pre     class="programlisting">
+extern void *sys_call_table;
+EXPORT_SYMBOL(sys_call_table);
+</pre>
+</p><p>
+After recompiling the kernel and
+booting the machine into it, we are all set to run the FTP client. Refer
+to the Kernel Rebuild HOWTO (see Resources) for details on compiling a kernel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x19619b0"></a>
+Module Basics</h2></div></div><p>
+Let's examine the code for the module first. In the code
+snippets in the article, we omit error-checking and other irrelevant
+details for clarity. The complete code is available from the
+<i  >LJ</i> FTP site (see Resources):
+
+<pre     class="programlisting">
+
+#include &lt;linux/init.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/kernel.h&gt;
+
+/* For socket etc */
+#include &lt;linux/net.h&gt;
+#include &lt;net/sock.h&gt;
+#include &lt;linux/tcp.h&gt;
+#include &lt;linux/in.h&gt;
+#include &lt;asm/uaccess.h&gt;
+#include &lt;linux/file.h&gt;
+#include &lt;linux/socket.h&gt;
+#include &lt;linux/smp_lock.h&gt;
+#include &lt;linux/slab.h&gt;
+
+...
+
+int ftp_init(void)
+{
+
+    printk(KERN_INFO FTP_STRING
+    "Starting ftp client module\n");
+    sys_call_table[SYSCALL_NUM] = my_sys_call;
+    return 0;
+}
+
+void ftp_exit(void)
+{
+    printk(KERN_INFO FTP_STRING
+    "Cleaning up ftp client module, bye !\n");
+    sys_call_table[SYSCALL_NUM] = sys_ni_syscall;
+}
+
+...
+
+</pre>
+</p><p>
+The program begins with the customary include directives. Notable among
+the header files are linux/kernel.h for KERN_ALERT and linux/slab.h, which
+contains definitions for kmalloc() and linux/smp_lock.h that define
+kernel-locking routines. System calls are handled in the
+kernel by functions with the same names in user space but are prefixed with
+<tt  >sys_</tt>. For example, the
+<tt  >sys_socket</tt> function in the kernel handles the
+task of the <tt  >socket()</tt> system call. In this module, we are using system
+call number 223 for our new system call. This method is
+not foolproof and will not work on SMP machines. Upon unloading the
+module, we unregister our system call.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1961cc8"></a>
+The System Call</h2></div></div><p>
+The workhorse of the module is the new system call that performs an FTP
+read. The system call takes a structure as a parameter. The structure is
+self-explanatory and is given below:
+
+<pre     class="programlisting">
+struct params {
+    /* Destination IP address */
+    unsigned char destip[4];
+    /* Source IP address */
+    unsigned char srcip[4];
+    /* Source file - file to be downloaded from
+       the server */
+    char src[64];
+    /* Destination file - local file where the
+       downloaded file is copied */
+    char dst[64];
+    char user[16]; /* Username */
+    char pass[64]; /* Password */
+};
+</pre>
+</p><p>
+The system call is given below. We explain the relevant details in next
+few paragraphs:
+
+<pre     class="programlisting">
+
+asmlinkage int my_sys_call
+(struct params __user *pm)
+{
+    struct sockaddr_in saddr, daddr;
+    struct socket *control= NULL;
+    struct socket *data = NULL;
+    struct socket *new_sock = NULL;
+
+    int r = -1;
+    char *response = kmalloc(SNDBUF, GFP_KERNEL);
+    char *reply = kmalloc(RCVBUF, GFP_KERNEL);
+
+    struct params pmk;
+
+    if(unlikely(!access_ok(VERIFY_READ,
+                 pm, sizeof(pm))))
+        return -EFAULT;
+    if(copy_from_user(&amp;pmk, pm,
+       sizeof(struct params)))
+        return -EFAULT;
+    if(current-&gt;uid != 0)
+        return r;
+
+    r = sock_create(PF_INET, SOCK_STREAM,
+                    IPPROTO_TCP, &amp;control);
+
+    memset(&amp;servaddr,0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(PORT);
+    servaddr.sin_addr.s_addr =
+        htonl(create_address(128, 196, 40, 225));
+
+    r = control-&gt;ops-&gt;connect(control,
+             (struct sockaddr *) &amp;servaddr,
+             sizeof(servaddr), O_RDWR);
+    read_response(control, response);
+    sprintf(temp, "USER %s\r\n", pmk.user);
+    send_reply(control, temp);
+    read_response(control, response);
+    sprintf(temp, "PASS %s\r\n", pmk.pass);
+    send_reply(control, temp);
+    read_response(control, response);
+
+</pre>
+</p><p>
+We start out by declaring pointers to a few <tt  >socket</tt> structures.
+<tt  >kmalloc()</tt> is the kernel equivalent of
+<tt  >malloc()</tt> and is used to
+allocate memory for our character array. The array's response and reply
+will contain the responses to and replies from the server.
+</p><p>
+The first step is to read the parameters from user mode to kernel
+mode. This is customarily done with <tt  >access_ok</tt> and
+<tt  >verify_read/verify_write</tt> calls.
+<tt  >access_ok</tt> checks whether the user-space pointer is valid to be referenced.
+<tt  >verify_read</tt> is used to read
+data from user mode. For reading simple variables like
+<tt  >char</tt> and
+<tt  >int</tt>, use <tt  >__get_user</tt>.
+</p><p>
+Now that we have the user-specified parameters, the next
+step is to create a control socket and establish
+a connection with the FTP server. <tt  >sock_create()</tt>
+does this for us&mdash;its arguments are similar to
+those we pass to the user-level <tt  >socket()</tt> system
+call. The <tt  >struct sockaddr_in</tt> variable
+<tt  >servaddr</tt>
+is now filled in with all the necessary information&mdash;address family, destination port and IP address of
+the server. Each <tt  >socket</tt> structure has a member
+that is a pointer to a structure of type <tt  >struct
+proto_ops</tt>. This structure contains a list of
+function pointers to all the operations that can
+be performed on a socket. We use the <tt  >connect()</tt>
+function of this structure to establish a connection
+to the server. Our functions <tt  >read_response()</tt> and
+<tt  >send_reply()</tt> transfer data between the client and
+server (these functions are explained later):
+
+<pre     class="programlisting">
+
+r = sock_create(PF_INET, SOCK_STREAM,
+                IPPROTO_TCP, &amp;data);
+memset(&amp;claddr,0, sizeof(claddr));
+claddr.sin_family = AF_INET;
+claddr.sin_port = htons(EPH_PORT);
+clddr.sin_addr.s_addr= htonl(
+                       create_address(srcip));
+r = data-&gt;ops-&gt;bind(data,
+         (struct sockaddr *)&amp;claddr,
+         sizeof (claddr));
+r = data-&gt;ops-&gt;listen(data, 1);
+
+</pre>
+</p><p>
+Now, a data socket is created to transfer data between the client and
+server. We fill in another <tt  >struct sockaddr_in</tt>
+variable <tt  >claddr</tt> with
+information about the client&mdash;protocol family, local unprivileged port
+that our client would bind to and, of course, the IP address. Next, the
+socket is bound to the ephemeral port EPH_PORT. The function
+<tt  >listen()</tt>
+lets the kernel know that this socket can accept incoming connections:
+
+<pre     class="programlisting">
+
+a = (char *)&amp;claddr.sin_addr;
+p = (char *)&amp;claddr.sin_port;
+
+send_reply(control, reply);
+read_response(control, response);
+
+strcpy(reply, "RETR ");
+strcat(reply, src);
+strcat(reply, "\r\n");
+
+send_reply(control, reply);
+read_response(control, response);
+
+</pre>
+</p><p>
+As explained previously, a PORT command is issued to the FTP server to let it
+know the port for data transfer. This command is sent over
+the control socket and not over the data socket:
+
+<pre     class="programlisting">
+
+new_sock = sock_alloc();
+new_sock-&gt;type = data-&gt;type;
+new_sock-&gt;ops = data-&gt;ops;
+
+r = data-&gt;ops-&gt;accept(data, new_sock, 0);
+new_sock-&gt;ops-&gt;getname(new_sock,
+    (struct sockaddr *)address, &amp;len, 2);
+
+</pre>
+</p><p>
+Now, the client is ready to accept data from the server. We create a new
+socket and assign it the same <tt  >type</tt> and
+<tt  >ops</tt> as our data socket. The
+<tt  >accept()</tt> function pulls the first pending connection in the listen
+queue and creates a new socket with the same connection properties as
+<tt  >data</tt>. The new socket thus created handles all data transfer between
+the client and server. The <tt  >getname()</tt> function gets the address at the
+other end of the socket. The last three lines in the above segment of
+code are useful only for printing information about the server:
+
+<pre     class="programlisting">
+
+if((total_written = write_to_file(pmk.dst,
+            new_sock, response)) &lt; 0)
+    goto err3;
+
+</pre>
+</p><p>
+The function <tt  >write_to_file</tt> deals with opening a file
+in the kernel and writing data from the socket back
+into the file. Writing to sockets works like this:
+
+<pre     class="programlisting">
+
+void send_reply(struct socket *sock, char *str)
+{
+    send_sync_buf(sock, str, strlen(str),
+                  MSG_DONTWAIT);
+}
+
+
+int send_sync_buf
+(struct socket *sock, const char *buf,
+ const size_t length, unsigned long flags)
+{
+    struct msghdr msg;
+    struct iovec iov;
+    int len, written = 0, left = length;
+    mm_segment_t oldmm;
+
+    msg.msg_name     = 0;
+    msg.msg_namelen  = 0;
+    msg.msg_iov      = &amp;iov;
+    msg.msg_iovlen   = 1;
+    msg.msg_control  = NULL;
+    msg.msg_controllen = 0;
+    msg.msg_flags    = flags;
+
+    oldmm = get_fs(); set_fs(KERNEL_DS);
+
+repeat_send:
+    msg.msg_iov-&gt;iov_len = left;
+    msg.msg_iov-&gt;iov_base = (char *) buf +
+                                written;
+
+    len = sock_sendmsg(sock, &amp;msg, left);
+    ...
+    return written ? written : len;
+}
+
+</pre>
+</p><p>
+The <tt  >send_reply()</tt> function calls
+<tt  >send_sync_buf()</tt>, which does the real
+job of sending the message by calling
+<tt  >sock_sendmsg()</tt>. The function
+<tt  >sock_sendmsg()</tt> takes a pointer to
+<tt  >struct socket</tt>, the message to be sent
+and the message length. The message is represented by the struture
+<tt  >msghdr</tt>. One of the important members of this
+structure is <tt  >iov</tt> (io
+vector). The iovector has two members, <tt  >iov_base</tt>
+and <tt  >iov_len</tt>:
+
+<pre     class="programlisting">
+struct iovec
+{
+    /* Should point to message buffer */
+    void *iov_base;
+    /* Message length */
+    __kernel_size_t iov_len;
+};
+</pre>
+</p><p>
+These members are filled with appropriate values, and
+<tt  >sock_sendmsg()</tt> is
+called to send the message.
+</p><p>
+The macro <tt  >set_fs</tt> is used to set the FS register to point to the
+kernel data segment. This allows <tt  >sock_sendmsg()</tt> to find the data in the
+kernel data segment instead of the user-space data segment. The macro
+<tt  >get_fs</tt> saves the old value of FS. After a call to
+<tt  >sock_sendmsg()</tt>, the saved value of FS is restored.
+</p><p>
+Reading from the socket works similarly:
+
+<pre     class="programlisting">
+
+int read_response(struct socket *sock, char *str)
+{
+        ...
+        len = sock_recvmsg(sock, &amp;msg,
+                max_size, 0);
+        ...
+        return len;
+}
+
+</pre>
+</p><p>
+The <tt  >read_response()</tt> function is similar to
+<tt  >send_reply()</tt>. After
+filling the <tt  >msghdr</tt> structure appropriately, it uses
+<tt  >sock_recvmsg()</tt>
+to read data from a socket and returns the number of bytes read.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1af0ab0"></a>
+A User-Space Program</h2></div></div><p>
+Now, let's take a look at a user-space program that
+invokes our system call to transfer a file. We explain
+the relevant details for calling a new system call:
+
+<pre     class="programlisting">
+
+...
+#define __NR_my_sys_call 223
+_syscall1(long long int, my_sys_call,
+          struct params *, p);
+
+int main(int argc, char **argv)
+{
+  struct params pm;
+  /* fill pm with appropriate values */
+  ...
+  r =  my_sys_call(&amp;pm);
+  ...
+}
+
+</pre>
+</p><p>
+<tt  >#define __NR_my_sys_call 223</tt> assigns a number to our system call.
+<tt  >_syscall1()</tt> is a macro that creates a stub for the system call. It
+shows the type and number of arguments that our system call expects.
+With this in place, <tt  >my_sys_call</tt> can be invoked
+just like any other
+system call. Upon running the program, with correct values for the
+source and destination files, a file from a remote FTP server is
+downloaded onto the client machine. Here is a transcript of a sample run:
+
+<pre     class="programlisting">
+
+# make
+make -C /lib/modules/2.6.9/build SUBDIRS=/home/ppadala/ftp modules
+make[1]: Entering directory `/home/ppadala/linux-2.6.9'
+  CC [M]  /home/ppadala/ftp/ftp.o
+  Building modules, stage 2.
+  MODPOST
+  CC      /home/ppadala/ftp/ftp.mod.o
+  LD [M]  /home/ppadala/ftp/ftp.ko
+make[1]: Leaving directory `/home/ppadala/linux-2.6.9'
+# gcc do_ftp.c
+# ./a.out &lt;local host's IP address&gt; 152.2.210.80 /README /tmp/README anonymous anon@cs.edu
+Connection from 152.2.210.80
+return = 215 (length of file copied)
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x146f580.0x1af0dc8"></a>
+Conclusions</h2></div></div><p>
+We have seen a basic implementation of an FTP client within the kernel.
+This article explains various issues of socket programming in the
+kernel. Interested readers can follow these ideas to write various
+network applications, such as an HTTP client or even a Web
+server in the kernel. Kernel applications, such as the TUX Web server are
+used for high-performance content serving and are well suited for
+environments that demand data transfer at high rates. Careful attention
+has to be paid to the design, implementation and security issues of such
+applications.
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../138/8453.html" target="_self">/article/8453</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Pradeep Padala is a PhD student at the University of Michigan. His
+general
+interests are in distributed systems with specific emphasis on scheduling
+and fault tolerance. He is the author of the NCurses Programming HOWTO
+and contributes to various open-source projects. More about him can be
+found on his Web site at <a href="http://www.eecs.umich.edu/~ppadala" target="_self">www.eecs.umich.edu/~ppadala</a>.
+</p><p>
+Ravi Parimi has a Master's degree in Computer Engineering and currently
+works in Silicon Valley, California. His main interests are in
+operating systems, networking and Internet security. He has been using
+Linux since 1998 and aspires to be a kernel hacker. In his free time,
+he pursues Vedic studies and Chess.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../138/toc138.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

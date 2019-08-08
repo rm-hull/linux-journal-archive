@@ -1,0 +1,87 @@
+<title>Listing 1. safe.sh<remark
+role="output-file">11801l1.qrk</remark></title>
+
+<programlisting>
+<![CDATA[
+#!/bin/bash
+#
+# safe.sh - wrapper to interact with my encrypted file archive
+
+CONF=${HOME}/.saferc
+[ -f $CONF ] && . $CONF
+[ -z "$SOURCE_DIR" ] && SOURCE_DIR=${HOME}/safe
+SOURCE_BASE=$(basename $SOURCE_DIR)
+TAR_ENC=$HOME/${SOURCE_BASE}.tar.gz.asc
+TAR="tar -C $(dirname $SOURCE_DIR)"
+
+usage() {
+cat <<EOF
+Usage: $(basename $0) OPTION
+Options:
+-c        create the safe
+-x        extract contents
+-l        list contents
+-b HOST   backup (scp) to HOST. Multiple -b options are supported
+EOF
+}
+
+is_or_die() {
+  if [ ! -d ${1:-$TAR_ENC} -a ! -f ${1:-$TAR_ENC} ]; then
+    echo "Unknown or missing: ${1:-$TAR_ENC}"
+    exit 1
+  fi
+}
+
+shred_source_dir() {
+  find $SOURCE_DIR -type f | xargs shred -u
+  rm -fr $SOURCE_DIR
+}
+
+list_safe() {
+  is_or_die
+  gpg --batch -q -d $TAR_ENC | tar -zt
+}
+
+extract_safe() {
+  is_or_die
+  OPTS=" -zx"
+  [ $# -eq 1 ] && OPTS+=" $SOURCE_BASE/$1 -O"
+  gpg --batch -q -d $TAR_ENC | $TAR $OPTS
+}
+
+create_safe() {
+  is_or_die $SOURCE_DIR
+  $TAR -cz $SOURCE_BASE | gpg -ear $(whoami) --yes -o $TAR_ENC
+  shred_source_dir
+}
+
+[ $# -ge 1 ] || { usage; exit 1; }
+
+while getopts "lxcb:" opt; do
+  case $opt in
+    l)
+      list_safe
+      ;;
+    x)
+      extract_safe
+      ;;
+    c)
+      create_safe
+      ;;
+    b)
+      BACKUP_HOSTS+=("$OPTARG")
+      is_or_die
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+for BACKUP_HOST in ${BACKUP_HOSTS[@]}; do
+  echo -en "Copying to $BACKUP_HOST... "
+  scp $TAR_ENC ${BACKUP_HOST}: &> /dev/null
+  [ $? -eq 0 ] && echo OK || echo Failed
+done
+

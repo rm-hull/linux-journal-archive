@@ -1,0 +1,423 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+At the Forge
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Think it's complex to connect your Python program to the UNIX shell? Think&#10;again!&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2032580.0x2129ac0"></a>
+At the Forge
+</h1></div><div><h3 class="subtitle"><i>
+Launching External Processes in Python
+</i></h3></div><div><div class="author"><h3 class="author">
+Reuven 
+ M. 
+Lerner
+</h3></div><div class="issuemoyr">Issue #283, November 2017</div></div><div><p>
+Think it's complex to connect your Python program to the UNIX shell? Think
+again!
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2032580.0x212a408"></a></h2></div></div><p>
+In my past few articles, I've been looking into concurrency in Python
+via threads. The good news with threads is that they are relatively
+easy to work with and let you share data among threads without too
+much trouble. The bad news is that if you're not careful, you can end
+up with serious problems&mdash;because data isn't shared, and Python data
+structures aren't thread-safe. But perhaps a bigger problem is that
+Python's global interpreter lock (GIL) guarantees that only one thread
+runs at a time.
+</p><p>
+In many cases, this isn't really a problem. In particular, if you're
+writing programs that work with the filesystem or network, you
+probably won't feel the pain of Python threads too badly. That's
+because while only one thread runs at a time, a thread gives up
+control of the CPU whenever it uses I/O. This is because disks and
+networks are many times slower than CPUs; while you're waiting for the
+filesystem to give you the data you've requested, another thread can be
+running.
+</p><p>
+That said, there definitely are times when Python's threads show their
+limitations. In particular, if you're writing code that is CPU-bound&mdash;that is,
+in which the CPU is the bottleneck&mdash;you'll find
+that threads are limited. After all, if you have a nice 48-core
+machine with which to play, doesn't it seem silly to have only
+one of those cores actually doing something?
+</p><p>
+There is, of course, a solution to these problems&mdash;one that many
+traditional UNIX users consider to be superior under many
+circumstances: <span   class="emphasis"><em>processes</em></span>. Rather than run a function in a new thread,
+run it in a new process!
+</p><p>
+So in this article, I take an initial look at working with processes in
+Python to do a very common task: invoking external commands. In so
+doing, I also cover how working with processes is structured, leading to
+my next article's topic: the &ldquo;multiprocessing&rdquo; module.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2032580.0x212a7d0"></a>
+Process Basics</h2></div></div><p>
+For Linux users, nothing is more basic and everyday than a
+process. When I fire up Emacs, I start a process. When I start the
+Apache HTTP server, I start a process, which then starts multiple,
+additional processes. When I invoke <tt  >ls</tt> on the command line, I'm
+starting a process. And when I tell my computer to shut down, it does
+so by killing each of those processes.
+</p><p>
+Think of a process as a data structure that represents a
+computer at a particular moment in time. A process has code that is
+running (including code that has yet to run); it has data on which the
+program works; it has access to memory to store and retrieve
+additional data, and it can talk to external devices, from filesystems
+and networks to keyboards and screens.
+</p><p>
+A single Linux machine can run many, many processes at once. For the
+split second during which a process runs, it has the illusion of
+having complete control over the computer. It's thanks to the fact
+that modern computers are so fast that you can run so many processes
+and yet have them all appear to be running concurrently. True, modern
+computers have multiple CPUs (aka &ldquo;cores&rdquo;), which lets you divide the
+work among those cores.
+</p><p>
+There are all sorts of ways to start processes in Python. In modern
+versions of the language, you can use the &ldquo;subprocess&rdquo; module to start
+up a process and even retrieve the result. For example, you can invoke
+the <tt  >ls</tt> program in a new process and then view the results:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; subprocess.check_output('ls')
+</pre>
+</p><p>
+From this function, you get a string containing the output from the
+<tt  >ls</tt> command. It's a big ugly one to see, especially if you're used to
+seeing things printed nicely. In such a case, you don't want to view
+the string that was returned, but rather to print it. The thing is,
+that doesn't seem to work, at least not in Python 3:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; print(subprocess.check_output('ls'))
+</pre>
+</p><p>
+The problem is that, by default, <tt  >subprocess.check_output</tt> returns a
+&ldquo;bytestring&rdquo;, similar to a Python 2 string, in that it contains a
+sequence of bytes, rather than a sequence of Unicode characters. The
+issue here is that when you print a bytestring, Python doesn't actually
+go to a new line when it sees <tt  >\n</tt>.
+</p><p>
+You can get around this problem by telling Python to interpret newline
+characters liberally and to return a string instead of a bytestring:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; print(subprocess.check_output('ls', universal_newlines=True))
+</pre>
+</p><p>
+This seems to work quite nicely. But what if you want to print only a
+subset of the files in the current directory? It seems natural to
+want to say, for example, <tt  >ls -l</tt>. Let's try that:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; print(subprocess.check_output('ls -l', universal_newlines=True))
+</pre>
+</p><p>
+When you do that, you get:
+
+<pre     class="programlisting">
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+  File "/usr/local/Cellar/python3/3.6.2/Frameworks/
+&#8618;Python.framework/Versions/3.6/lib/python3.6/subprocess.py",
+ &#8618;line 336, in check_output
+    **kwargs).stdout
+  File "/usr/local/Cellar/python3/3.6.2/Frameworks/
+&#8618;Python.framework/Versions/3.6/lib/python3.6/subprocess.py",
+ &#8618;line 403, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/usr/local/Cellar/python3/3.6.2/Frameworks/
+&#8618;Python.framework/Versions/3.6/lib/python3.6/subprocess.py",
+ &#8618;line 707, in __init__
+    restore_signals, start_new_session)
+  File "/usr/local/Cellar/python3/3.6.2/Frameworks/
+&#8618;Python.framework/Versions/3.6/lib/python3.6/subprocess.py",
+ &#8618;line 1333, in _execute_child
+    raise child_exception_type(errno_num, err_msg)
+FileNotFoundError: [Errno 2] No such file or directory: 'ls -l'
+</pre>
+</p><p>
+What's wrong here? Very simply, Python is trying to run an external
+process, giving it the Linux command <tt  >ls -l</tt>. You might think that
+this is normal and reasonable, since running <tt  >ls -l</tt> is
+something you likely do all the time in
+your day-to-day lives. But remember that <tt  >ls</tt> is the command,
+and <tt  >-l</tt>
+is a flag to that command. You can understand the difference, and the
+shell typically separates them for you. But if you simply hand that
+command name to Linux, it's going to get confused and complain.
+</p><p>
+So instead of passing a single string, you'll need to pass a list of
+strings, in which each represents a &ldquo;word&rdquo; of the command. For
+example:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; print(subprocess.check_output(['ls', '-l'], universal_newlines=True))
+</pre>
+</p><p>
+This works just fine. You can add other arguments, including the names
+of files:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; print(subprocess.check_output(['ls', '-l', 'urls.txt'],
+&gt;&gt;&gt; universal_newlines=True))
+</pre>
+</p><p>
+What if you want to get a long listing of all &ldquo;.txt&rdquo; files? 
+Just try this:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; print(subprocess.check_output(['ls', '-l', *.txt'], 
+ &#8618;universal_newlines=True))
+
+&gt;&gt;&gt; print(subprocess.check_output(['ls', '-l', '*.txt'],
+&gt;&gt;&gt; universal_newlines=True))
+ls: cannot access '*.txt': No such file or directory
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+  File "/usr/local/Cellar/python3/3.6.2/Frameworks/
+&#8618;Python.framework/Versions/3.6/lib/python3.6/subprocess.py",
+ &#8618;line 336, in check_output
+    **kwargs).stdout
+  File "/usr/local/Cellar/python3/3.6.2/Frameworks/
+&#8618;Python.framework/Versions/3.6/lib/python3.6/subprocess.py",
+ &#8618;line 418, in run
+    output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['ls', '-l', '*.txt']' 
+ &#8618;returned non-zero exit status 2.
+</pre>
+</p><p>
+It complains that &ldquo;*.txt&rdquo; isn't a legitimate file. That's because
+while you might think that Linux always knows that * represents all
+of the files in a directory, that's not the case&mdash;it is the shell
+that performs the interpretation of such characters as &ldquo;*&rdquo;, dividing
+things up and then passing them along to the underlying operating
+system.
+</p><p>
+So, how can you list all of the files with a &ldquo;*.txt&rdquo; suffix? You can
+invoke the same call once again, but tell Python to pass the
+parameters through the UNIX shell:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; print(subprocess.check_output(['ls', '-l', '*.txt'],
+                                  shell=True,
+                                  universal_newlines=True))
+</pre>
+</p><p>
+Aha! It now seems to work just fine.
+</p><p>
+So, what happened here? This started a new process (a &ldquo;subprocess&rdquo;, if
+you will), and in that process, executed a UNIX program. The
+program returned some text, that Python captured, and then printed it
+out.
+</p><p>
+The Python documentation makes it clear that having <tt  >shell=True</tt> in your
+call to <tt  >subprocess.check_output</tt> (and other functions) is a potential
+security risk. If you're getting input from an unknown or untrusted
+user, that person can insert arbitrary commands into the system
+on which <tt  >check_output</tt> is running. Be sure to consider the security
+implications of <tt  >shell=True</tt> before using it.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2032580.0x212ba60"></a>
+More Generally</h2></div></div><p>
+<tt  >subprocess.check_output</tt> is a specific function, one that's designed
+to run a program and retrieve its output. If you want a bit more
+flexibility, you can run other functions from &ldquo;subprocess&rdquo;.
+</p><p>
+For example, let's say you want to take the output from <tt  >ls</tt> and
+put it into a file. On the UNIX command line, you could say:
+
+<pre     class="programlisting">
+ls -l &gt; file-list.txt
+</pre>
+</p><p>
+In Python, this is a bit more complex, but not terribly so if you use
+<tt  >subprocess.run</tt> This function is new (as of Python 3.5), but it makes
+life a bit easier.
+</p><p>
+You can try this:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; subprocess.run(['/bin/ls', '-l'], universal_newlines=True)
+</pre>
+</p><p>
+As you can see, <tt  >subprocess.run</tt> takes many similar arguments to
+<tt  >subprocess.check_output</tt>. But what's different is that
+it doesn't return a string, even when <tt  >universal_newlines</tt> is set to
+<tt  >True</tt>. Instead, it returns an instance of
+<tt  >subprocess.CompletedProcess</tt>,
+which contains all sorts of information about the process that ran.
+</p><p>
+You can grab this, and then see what the <tt  >CompletedProcess</tt> contains:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; cp = subprocess.run(['/bin/ls', '-l'], universal_newlines=True)
+&gt;&gt;&gt; vars(cp)
+</pre>
+</p><p>
+You'll get back:
+
+<pre     class="programlisting">
+{'args': ['/bin/ls', '-l'], 'returncode': 0, 'stderr': None,
+'stdout': None}
+</pre>
+</p><p>
+Hmm, that's likely not quite what you wanted. The <tt  >args</tt> is fine, and
+<tt  >returncode</tt> is accurately showing 0, meaning that everything ended
+just fine. But what happened to the output? The answer is that when
+it comes to <tt  >subprocess.run</tt>, you need to indicate where the output
+should go.
+</p><p>
+The way to indicate that you want to get something back is to pass
+<tt  >subprocess.PIPE</tt> as the value of the
+<tt  >stdout</tt> keyword argument:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; cp = subprocess.run(['/bin/ls', '-l'], stdout=subprocess.PIPE,
+&gt;&gt;&gt; universal_newlines=True)
+&gt;&gt;&gt; vars(cp)
+</pre>
+</p><p>
+You'll now get the following:
+
+<pre     class="programlisting">
+{'args': ['/bin/ls', '-l'],
+ 'returncode': 0,
+ 'stderr': None,
+ 'stdout': 'total 344\ndrwxr-xr-x  1454 reuven  staff  49436 
+   &#8618;Sep 17 09:29 Archive\ndrwxr-xr-x    37 reuven  staff   1
+</pre>
+</p><p>
+I'm not even going to show you the rest, because it's so long, but
+the <tt  >stdout</tt> value is precisely right.
+</p><p>
+You also can assign <tt  >stderr</tt> to
+<tt  >subprocess.PIPE</tt> in order to receive
+it. Note that in the case of both stdout and stderr, you can
+assign not just <tt  >subprocess.PIPE</tt>, which lets you grab and work with the
+program's output, but also an open (writable) file object. This means
+you can invoke an external process and put its output into an
+arbitrary file. I'd argue that most of the time, the reason you would be 
+executing an external process in Python is that you want to do
+something to the text, but this will work.
+</p><p>
+You might be wondering whether you can not only write to stderr and
+stdout, but also read from stdin. And the answer is definitely. Just
+provide a file object, and <tt  >subprocess.run</tt> will do the rest. For
+example:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; cp = subprocess.run(['/bin/cat', '-n'], stdin=open('/etc/passwd'),
+                    stdout=subprocess.PIPE, universal_newlines=True)
+</pre>
+</p><p>
+In this case, you run <tt  >/bin/cat</tt> with the
+<tt  >-n</tt> option, numbering the lines
+of a file. What's the input file? /etc/passwd. And where does the
+output go? To your <tt  >subprocess.PIPE</tt> object, which is a kind of
+communication channel to external processes.
+</p><p>
+For me, the most interesting thing is the <tt  >CompletedProcess</tt> object
+(<tt  >cp</tt>), from which you can grab different pieces of information about
+the completed process. Note that <tt  >subprocess.run</tt> will return
+only after the external program has finished running, at which point
+the <tt  >cp</tt> variable will be set. And from there, you can grab
+<tt  >stdout</tt>,
+which is normally a bytestring, but which is an actual (Unicode)
+string if you set <tt  >universal_newlines</tt> to
+<tt  >True</tt>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2032580.0x21235d8"></a>
+Conclusion</h2></div></div><p>
+You've now seen how you can use the &ldquo;subprocess&rdquo; module to communicate
+with external processes. But let's face it. This doesn't exactly
+solve the initial problem: breaking a
+problem up and using different processes to handle it. Rather, this
+shows, at some level, how Python works with processes and the basic
+ways in which it communicates with them, using bytestrings and
+pipes. That's because processes are separate and cannot simply share
+variables with the main thread, which is what you're doing when
+using threads.
+</p><p>
+In my next article, I'll discuss how you can break problems apart in a thread-like
+fashion using the &ldquo;multiprocessing&rdquo; module. That has the advantage of
+opening new processes for each task you want to accomplish while
+giving you a thread-like interface to do so.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2032580.0x21237e8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Reuven M. Lerner, a longtime web developer, offers training and consulting
+services in Python, Git, PostgreSQL and data science. He has written
+two programming ebooks (<span   class="emphasis"><em>Practice Makes Python</em></span> and
+<span   class="emphasis"><em>Practice Makes
+Regexp</em></span>) and publishes a free weekly newsletter for programmers,
+at
+<a href="http://lerner.co.il/newsletter" target="_self">lerner.co.il/newsletter</a>. Reuven tweets at
+@reuvenmlerner and
+lives in Modi'in, Israel, with his wife and three children.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../283/toc283.html">Issue Table of Contents</a>
+    <a class="link3" href="../283/12246.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

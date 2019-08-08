@@ -1,0 +1,269 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Detecting Suspect Traffic</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Use psad with ipchains/iptables rulesets to find TCP and UDPadvanced port scans and other such network baddies.&#10;    "><meta name="keywords" content="port, scans, firewall, psad, Nmap, netfilter, iptables"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xe01580.0xef8ab0"></a>Detecting Suspect Traffic</h1></div><div><div class="author"><h3 class="author">Michael Rash</h3></div><div class="issuemoyr">Issue #91, November 2001</div></div><div><p>
+    Use psad with ipchains/iptables rulesets to find TCP and UDPadvanced port scans and other such network baddies.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xef96b8"></a></h2></div></div><p>With the release of the much-awaited
+Linux 2.4.0 kernel early this year, GNU/Linux received a major
+boost toward entering the realm of enterprise-class operating
+systems. Several areas of the kernel have been improved since the
+2.2.x series, not the least of which is the firewall code.
+Netfilter in the 2.4.x kernel series replaces the old ipchains
+firewall code in the 2.2.x series and incorporates many features
+that are required in an enterprise-class firewall, such as
+statefullness, DoS protection/rate limiting, network address
+translation (NAT), MAC address filtering and, last but not least,
+TCP packet filtering and logging based on arbitrary combinations of
+TCP flags. By contrast, ipchains (in addition to not being
+stateful, etc.) have the lamentable limitation of being able to
+distinguish between only two types of TCP packets: those that set
+and those that do not set the SYN flag. Netfilter's ability to
+distinguish arbitrary TCP flag combinations allows advanced port
+scans, such as those that are easily leveraged against a machine
+via nmap, to be detected. First we need a bit of background on nmap
+so that we can illustrate both how advanced port scans work and how
+to detect them.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xef97c0"></a>nmap</h2></div></div><p><span   class="bold"><b>nmap</b></span> is the world's
+best-known port scanner and incorporates many advanced port
+scanning techniques that can be used to detect open ports on a
+target machine and/or network. In addition, nmap incorporates
+operating system fingerprinting and TCP sequence number prediction
+(among other things) to give better reconnaissance information than
+can be gleaned by determining which ports are open on a target
+machine. Three particularly interesting types of TCP scanning modes
+that nmap supports are FIN, NULL and XMAS scans. In normal TCP
+traffic, a FIN packet (or packet that has the FIN flag set) can be
+sent by either end of a TCP connection indicating that the session
+is finished or, more precisely, that there is no more data to be
+sent. A FIN scan works on the principle that an orphaned FIN packet
+(i.e., one that is not already part of an existing TCP session)
+sent to an open TCP port should not be acknowledged. If such a
+packet is sent to a closed port, however, a normal unfiltered TCP
+stack is supposed to respond with an RST packet. Hence, to scan a
+host with FIN packets, nmap simply sends a single FIN packet to
+each of the target ports and waits for RST packets to trickle back.
+Ports that do not respond with an RST are open (or filtered by a
+firewall). Both the NULL and XMAS scans function similarly, but
+instead of setting only the FIN flag, the XMAS scan also sets the
+URG and PSH flags, whereas the NULL scan utilizes TCP packets that
+have no flag set whatsoever.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xef9920"></a>Setting up Netfilter</h2></div></div><p>The basic principle in setting up a secure firewall is to
+have a default deny stance in which all traffic not explicitly
+allowed by the firewall is denied or rejected. In addition, the
+firewall should be configured to log any unauthorized packets to a
+log file for analysis by the system administrator or by automated
+logfile watchers such as psad.</p><p>For more information on getting iptables to run on your
+system, I highly recommend Rusty Russell's &ldquo;Netfilter HOWTO&rdquo;,
+available at
+<a href="http://netfilter.samba.org" target="_self">netfilter.samba.org</a>.</p><pre     class="programlisting">
+# iptables -L
+Chain INPUT (policy ACCEPT)
+target  prot source   destination
+ACCEPT  all  anywhere anywhere state RELATED,ESTABLISHED
+ACCEPT  TCP  anywhere anywhere TCP dpt:ssh flags:FIN, SYN,RST,PSH,ACK,URG/SYN
+ACCEPT  TCP  anywhere anywhere TCP dpt:www flags:FIN, SYN,RST,PSH,ACK,URG/SYN
+LOG     TCP  anywhere anywhere LOG level warning prefix `DENY '
+DROP    TCP  anywhere anywhere
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xef9b30"></a>Stopping Port Scans</h2></div></div><p>Does such an iptables policy stops port scans? First, any TCP
+packet (regardless of TCP flags) sent to a destination port other
+than 80 or 22 will be logged by rule number four and then dropped
+by rule number five. This takes care of any noisy scans of any type
+against any of the 65535 TCP ports other than 80 and 20. What about
+scans that test whether 80 and 22 are open? The answer is that it
+depends upon the type of scan. Rules three and four accept packets
+that have the SYN flag set and all other flags cleared, so any scan
+that makes use of just SYN packets will succeed. Also, any scans
+that make use of normal TCP connect() system calls, as a normal web
+browser or SSH client would use, will succeed since rule number one
+allows three-way TCP handshakes to complete.</p><p><span   class="bold"><b>nmap</b></span> supports both of these
+scanning techniques with the -sS (half-open or SYN scan) and -sT
+(TCP connect() scan) command-line switches. Any other scanning
+technique that is not based on legitimate TCP traffic to these
+ports will be blocked and logged. Such scans include the FIN, XMAS
+and NULL scans mentioned in the nmap section, as well as SYN/FIN
+and ACK scans.</p><p>Now that we are reasonably confident that our iptables
+firewall will block port scans, we should not become complacent
+with our success. It is not enough just to block scans; we should
+also do our level best to detect them, as a port scan could be a
+precursor to a more advanced attack.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xef9d40"></a>Introducing psad</h2></div></div><p>The Port Scan Attack Detector (psad) is a program written
+entirely in Perl and designed to work with restrictive
+ipchains/iptables rulesets in order to detect both TCP and UDP port
+scans. It features a set of highly configurable danger thresholds
+(with sensible defaults provided), e-mail alerting, optional
+automatic blocking of offending IP addresses via dynamic
+reconfiguration of ipchains/iptables firewall rulesets, and verbose
+alert messages that include the source, destination, scanned port
+range, begin and end times, dns and whois lookups. For iptables
+firewalls, psad makes use of the extended logging capability to
+detect highly suspect scans, such as FIN, XMAS and NULL, that are
+easily leveraged against a target machine via nmap. In addition,
+psad incorporates many of the TCP and UDP signatures included with
+the Snort intrusion detection system to detect scans and/or traffic
+to various backdoor programs (e.g., EvilFTP, GirlFriend, SubSeven)
+and DDoS tools (mstream, shaft).
+<span   class="bold"><b>psad</b></span> is free software released
+under the GNU Public License and is available from
+<a href="http://www.cipherdyne.com" target="_self">www.cipherdyne.com</a>.</p><p>The basic task of psad is to make use of firewall log
+messages generated by either ipchains or iptables to detect suspect
+network traffic. To accomplish this task, psad needs a way of
+efficiently getting the data it needs from the log messages the
+firewall writes to syslog. Hence, upon installation psad creates a
+named pipe called psadfifo in the /var/log/ directory and
+reconfigures syslogd to write all kern.info messages to the pipe.
+In syslog parlance both ipchains and iptables log messages are
+reported via the kern facility at a log level of info. The bulk of
+the work done by psad is accomplished by two separate d&aelig;mons:
+kmsgsd and psad.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xef9f50"></a>kmsgsd</h2></div></div><p>The kmsgsd d&aelig;mon is relatively simple and its sole
+responsibilities are to open the psadfifo pipe, read any kern.info
+messages that indicate ipchains/iptables has denied or rejected a
+packet and write all such messages to the psad data file
+/var/log/psad/fwdata. Since the regex included within kmsgsd looks
+only for packets that have been denied or rejected, the fwdata file
+provides psad with a distilled data stream that contains
+information that may be significant exclusively from a security
+perspective. However, this information is only as complete and
+verbose as the firewall is able to generate, hence the need for the
+most restrictive possible firewall ruleset.</p><p><span   class="bold"><b>iptables</b></span> does not support a
+logging option for any rule that drops or rejects packets. An easy
+solution to this, though, is to precede any drop rule with a
+logging rule that uses the --log-prefix option. See rule number
+four of simplefirewall.sh. The kmsgsd code snippet in Listing 1
+illustrates reading firewall messages from the psadfifo named pipe
+and using the regex to match any dropped packet messages generated
+by either ipchains or iptables.</p><p><a href="4876l1.html" target="_self">Listing 1. Reading Firewall Messages
+with kmsgsd</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xefa1b8"></a>psad</h2></div></div><p>Once the fwdata file is populated with packets that have been
+denied, it is the responsibility of the psad d&aelig;mon to analyze
+and make judgments about whether or not the packets constitute a
+port scan or other suspect network traffic.
+<span   class="bold"><b>psad</b></span> accomplishes this by
+periodically checking fwdata for new lines indicating that packets
+have been denied recently by the firewall. Port scans are assigned
+a danger level from one to five based on how many packets are
+denied within a fixed period of time. However, a scan may also be
+assigned a danger level depending on whether it matches any of the
+set of nasty signatures contained within the psad_signatures file.
+Examples of such signatures include &ldquo;NMAP Fingerprint attempt&rdquo;
+(for any packet that sets the URG, PSH, SYN and FIN flags) and
+&ldquo;DDoS - mstream client to handler&rdquo; (for a SYN packet destined for
+port 15104).</p><p>After a port scan reaches a predetermined danger threshold,
+an e-mail is sent that contains several pieces of information: the
+source IP from which the scan originated, the destination IP, the
+range of newly scanned ports (TCP or UDP) within the last scan
+interval, the complete range of scanned ports since the beginning
+of the scan (TCP and UDP), the start and end times, the danger
+level assigned by psad, reverse dns information, the TCP flags that
+were used in the scan (along with the corresponding nmap
+command-line options that would generate such as scan) and whois
+information.</p><p>Instead of appealing to the whois client installed by default
+on any Linux distribution, psad makes use of an excellent whois
+client written by Marco d'Itri. This client has the advantage of
+accurately querying the correct whois database for almost any
+scanning source IP address. <span   class="bold"><b>psad</b></span>
+also features the ability to reconfigure an ipchains/iptables
+ruleset to block any IP address that has reached a sufficiently
+high danger threshold. This feature is disabled by default, since
+many administrators do not want volunteer administrators across the
+Net having the ability to force the firewall to block access to any
+web site they choose by spoofing nasty packets from the web site's
+IP address.</p><p>Some administrators, however, like the ability to set a high
+threshold for a port scan or other nasty traffic and have psad
+block it automatically. Note that any traffic analyzed by psad has
+already been blocked by the firewall. But if a scan reaches a
+sufficiently high threshold, the auto-blocking feature will block
+all traffic from the offending source IP, since the administrator
+would probably not want such an IP sending any packets to the local
+network, legitimate or not.</p><p><span   class="bold"><b>psad</b></span> also includes a signal
+handler such that if a USR1 signal is sent to the psad process,
+psad calls Data::Dumper to dump the contents of the %Scan hash to
+the /var/log/psad/scan_hash.$$ file, where the $$ represents the
+pid of the psad process. The %Scan hash is the main psad data
+structure and contains all scan information, and hence dumping its
+contents is useful both as a way to capture a record of scan data
+and as a debugging tool for extending psad's feature set.
+<span   class="bold"><b>psad</b></span> is a work-in-progress with
+much on the to-do list, but it is being developed actively and also
+has a relatively short version-release cycle.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xefa580"></a>ipchains vs. iptables Logs</h2></div></div><p>To illustrate the differences in the output of ipchains and
+iptables firewalls, we first compare log entries generated by an
+nmap XMAS scan.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xefa688"></a>ipchains</h2></div></div><p>The ipchains messages in Listing 2 were generated by an nmap
+XMAS scan of TCP ports 79 through 81. Recall that an XMAS scan sets
+the FIN, URG and PSH flags. First the nmap command and output is
+listed followed by the corresponding ipchains output. Note that
+ipchains makes no mention of which TCP flags were set.</p><p><a href="4876l2.html" target="_self">Listing 2. nmap Command and Output
+with ipchains Output</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe01580.0xefa840"></a>iptables</h2></div></div><p><a href="4876l3.html" target="_self">Listing 3. iptables Messages from
+TCP Session with Web Server</a></p><p>Now we perform the same nmap scan (the nmap command line and
+output is identical to the above ipchains example, so it is not
+repeated) and display the corresponding iptables output (see
+Listing 3). This time we can plainly see the FIN, URG and PSH flags
+set in the packets used in the scan.</p><p><a href="4876s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="4876aa.jpg"></div>
+
+       email: <a href="mailto:mbr@cipherdyne.com">mbr@cipherdyne.com</a>
+       </p><p><span   class="bold"><b>Michael Rash</b></span>
+      works as a senior security engineer for an ASP in Annapolis,
+      Maryland. He holds a Master's in Applied Mathematics from the
+      University of Maryland and has been tinkering with Linux since
+      1998. He can be reached at mbr@cipherdyne.com.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../091/toc091.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

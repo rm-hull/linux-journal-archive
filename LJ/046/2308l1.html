@@ -1,0 +1,369 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>Web Counting with mSQL and Apache</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h4>Source for cntr_module</h4>
+  <pre>
+  1-86  /* Comments */
+ 87 #include "httpd.h"
+ 88 #include "http_config.h"
+ 89 #include "http_core.h"
+ 90 #include "http_log.h"
+ 91 #include "http_protocol.h"
+ 92 #include &lt;ndbm.h&gt;
+ 93 #include &lt;msql.h&gt;
+ 94
+ 95 module cntr_module;
+ 96
+ 97 /*  Data structures  */
+100 typedef enum { CntrMsql } CounterType;
+101 typedef struct {
+102   unsigned long  count;
+103   char*    date;
+104 } cntr_results;
+106 typedef struct {
+107   int   cntr_default;
+108   CounterType cntr_type;
+109   int   cntr_auto_add;
+110   char* cntr_db;
+111   char* cntr_table;
+112 } cntr_config_rec;
+113
+114 #define DEF_CNTRTYPE   01
+115 #define DEF_CNTRAA  02
+116 #define DEF_CNTRDB  04
+117 #define DEF_ALL (DEF_CNTRTYPE|DEF_CNTRAA|DEF_CNTRDB)
+118
+119 /*  Set defaults  */
+122 #define DEFAULT_CNTR_TYPE CntrMsql
+123 #define DEFAULT_TIME_FORMAT "%A, %d-%b-%y %T %Z"
+124 #define DEFAULT_DIRCNTR_DB   ""
+125 #define DEFAULT_DIRCNTR_TABLE   ""
+126 #define DEFAULT_SVRCNTR_DB   ""
+127 #define DEFAULT_SVRCNTR_TABLE   ""
+128
+129 /* Create config data structure */
+132 void* create_cntr_dir_config_rec(pool* p, char* d)
+133 {
+134   /* Set the defaults */
+137   cntr_config_rec * rec =
+138      (cntr_config_rec*)pcalloc(p, sizeof(cntr_config_rec));
+139   rec-&gt;cntr_type = DEFAULT_CNTR_TYPE;
+140   rec-&gt;cntr_auto_add = 0;
+141   rec-&gt;cntr_db = DEFAULT_DIRCNTR_DB  ? pstrdup(p, DEFAULT_DIRCNTR_DB) : NULL;
+142   rec-&gt;cntr_table = DEFAULT_DIRCNTR_TABLE ? pstrdup(p, DEFAULT_DIRCNTR_TABLE) : NULL;
+143   rec-&gt;cntr_default = DEF_ALL;
+145   return(rec);
+146 }
+148 void* create_cntr_srv_config_rec(pool* p, server_rec* d )
+149 {
+150   /* Set the defaults */
+153   cntr_config_rec * rec =
+154     (cntr_config_rec*)pcalloc(p, sizeof(cntr_config_rec));
+155   rec-&gt;cntr_type = DEFAULT_CNTR_TYPE;
+156   rec-&gt;cntr_auto_add = 0;
+157   rec-&gt;cntr_file = DEFAULT_SVRCNTR_DB ? pstrdup(p, DEFAULT_SVRCNTR_DB) : NULL;
+158   rec-&gt;cntr_file=DEFAULT_SVRCNTR_TABLE ? pstrdup(p, DEFAULT_SVRCNTR_TABLE) : NULL;
+159   rec-&gt;cntr_default = DEF_ALL;
+161   return(rec);
+162 }
+164 void*   merge_config_rec( pool* p, void* parent, void* sub )
+165 {
+166   cntr_config_rec * par = (cntr_config_rec *)parent;
+167   cntr_config_rec * chld = (cntr_config_rec *)sub;
+168   cntr_config_rec * mrg = (cntr_config_rec *)palloc(p, sizeof(*mrg));
+169   if (chld-&gt;cntr_default &amp; DEF_CNTRTYPE)
+170      mrg-&gt;cntr_type =  par-&gt;cntr_type;
+171   else
+172      mrg-&gt;cntr_type =  chld-&gt;cntr_type;
+173   if (chld-&gt;cntr_default &amp; DEF_CNTRAA)
+174      mrg-&gt;cntr_auto_add =  par-&gt;cntr_auto_add;
+175   else
+176      mrg-&gt;cntr_auto_add =  chld-&gt;cntr_auto_add;
+177   if (chld-&gt;cntr_default &amp; DEF_CNTRDB) {
+178      mrg-&gt;cntr_db =  par-&gt;cntr_db;
+179      mrg-&gt;cntr_table = par-&gt;cntr_table;
+180   } else {
+181      mrg-&gt;cntr_db = chld-&gt;cntr_db;
+182      mrg-&gt;cntr_table = chld-&gt;cntr_table;
+183   }
+184   mrg-&gt;cntr_default = 0;
+185   return(mrg);
+186 }
+188 const char* set_cntr_type(cmd_parms* cmd, void* ct, char* arg )
+189 {
+190   void* ret = NULL;
+191   cntr_config_rec* conf = (cntr_config_rec*)ct;
+193   if (!strcasecmp(arg, "msql"))
+194      conf-&gt;cntr_type = CntrMsql;
+195   else
+196      ret = "CounterType must be Msql";
+197   conf-&gt;cntr_default &amp;= ~DEF_CNTRTYPE;
+199   return(ret);
+200 }
+202 const char* set_cntr_autoadd(cmd_parms* cmd, void* ct, int arg )
+203 {
+204   cntr_config_rec* conf = (cntr_config_rec*)ct;
+205   conf-&gt;cntr_auto_add = arg;
+206   conf-&gt;cntr_default &amp;= ~DEF_CNTRAA;
+207   return(NULL);
+208 }
+210 const char* set_cntr_db( cmd_parms* cmd, void* ct, char* arg1, char* arg2 )
+211 {
+212   void* ret = NULL;
+213   cntr_config_rec* conf = (cntr_config_rec*)ct;
+215   conf-&gt;cntr_db = arg1;
+216   conf-&gt;cntr_table = arg2;
+217   conf-&gt;cntr_default &amp;= ~DEF_CNTRFILE;
+219   return(ret);
+220 }
+222 const char* set_svr_cntr_type(cmd_parms* cmd, void* ct, char* arg )
+223 {
+224   return(set_cntr_type(cmd, get_module_config(cmd-&gt;server-&gt;module_config, &amp;cntr_module), arg));
+225 }
+226
+227 const char* set_svr_cntr_autoadd(cmd_parms* cmd, void* ct, int arg )
+228 {
+229   return(set_cntr_autoadd(cmd,
+230      get_module_config(cmd-&gt;server-&gt;module_config, &amp;cntr_module), arg));
+231 }
+233 const char* set_svr_cntr_db(cmd_parms* cmd, void* ct, char* arg1, char* arg2 )
+234 {
+235   return(set_cntr_db(cmd,
+236      get_module_config(cmd-&gt;server-&gt;module_config, &amp;cntr_module), arg1, arg2));
+237 }
+239 command_rec cntr_cmds[] = {
+240 { "CounterType", set_cntr_type, NULL, ACCESS_CONF, TAKE1, NULL },
+241 { "CounterAutoAdd", set_cntr_autoadd, NULL, ACCESS_CONF, FLAG, NULL },
+242 { "CounterDB", set_cntr_db, NULL, ACCESS_CONF, TAKE2,
+243     "Name of counter Msql database followed by the name of the table" },
+245 { "ServerCounterType", set_svr_cntr_type, NULL, RSRC_CONF, TAKE1, NULL },
+246 { "ServerCounterAutoAdd", set_svr_cntr_autoadd, NULL, RSRC_CONF, FLAG, NULL },
+247 { "ServerCounterDB", set_svr_cntr_db, NULL, RSRC_CONF, TAKE2,
+248   "Name of counter Msql database followed by the name of the table" },
+250 { NULL }
+251 };
+253 char*   cntr_incmsql( pool* p, cntr_results* results,
+254  cntr_config_rec* r, char* uri )
+255 {
+256   int dbh = 0;
+257   int msql_result = 0;
+258   char in_query[HUGE_STRING_LEN];
+259   char out_query[HUGE_STRING_LEN];
+260   m_result *msql_out;
+261   m_row msql_data;
+262
+263   /* Connect to local Msql server */
+264   dbh = msqlConnect(NULL);
+265   if (dbh == -1)
+266      return(pstrcat(p,"Failed to connect to local Msql server: ",  msqlErrMsg, NULL));
+267
+268   /* Select database given to us */
+269   msql_result = msqlSelectDB(dbh, r-&gt;cntr_db);
+270   if (msql_result == -1) {
+271      msqlClose(dbh);
+272      return(pstrcat(p, "Failed to connect to database ", r-&gt;cntr_db, ": ", msqlErrMsg, NULL));
+273   }
+274   sprintf(in_query, "SELECT cntr_count, cntr_date FROM %s WHERE uri='%s'", r-&gt;cntr_table, uri);
+275   msql_result = msqlQuery(dbh, in_query);
+276   if (msql_result == -1) {
+277      msqlClose(dbh);
+278      return(pstrcat(p, "SELECT Query Failed: ", msqlErrMsg, NULL));
+279   }
+280   msql_out = msqlStoreResult();
+281   msql_result = msqlNumRows(msql_out);
+282   if (msql_result) {
+283      msql_data = msqlFetchRow(msql_out);
+284      results-&gt;count = atoi(       msql_data[0]) + 1;
+285      results-&gt;date = msql_data[1];
+286      sprintf(out_query, "UPDATE %s SET cntr_count=%lu WHERE uri='%s'", r-&gt;cntr_table, results-&gt;count, uri);
+287      msql_result =       msqlQuery(dbh,out_query);
+288      if (msql_result == -1) {
+289         msqlFreeResult(msql_out);
+290         msqlClose(dbh);
+291         return(pstrcat(p, "UPDATE Query Failed: ", msqlErrMsg, NULL));
+292      }
+293   } else if (r-&gt;cntr_auto_add) {
+294      results-&gt;count = 1;
+295      results-&gt;date = ht_time(p, time(0L), DEFAULT_TIME_FORMAT, 0);
+296      sprintf(out_query, "INSERT INTO %s (uri, cntr_count, cntr_date) VALUES ('%s', %lu, '%s')",
+297 r-&gt;cntr_table, uri, results-&gt;count, results-&gt;date);
+298      msql_result = msqlQuery(        dbh,out_query);
+299      if (msql_result = -1) {
+300         msqlFreeResult(msql_out);
+301         msqlClose(dbh);
+302         return(pstrcat(p, "INSERT Query Failed: ", msqlErrMsg, " : ", out_query, NULL));
+303      }
+304   }
+305   msqlFreeResult(msql_out);
+306   msqlClose(dbh);
+307   return(OK);
+308       }
+310 char*   cntr_inc( pool* p, cntr_results*  results,
+311 cntr_config_rec* r, char* uri )
+312 {
+313   /* Normalize the URI stripping out double "//" */
+314   char* puri = pstrdup(p, uri);
+315   char* ptr = puri;
+316   while (ptr &amp;&amp; *ptr) {
+317     if (*ptr == '/' &amp;&amp; *(ptr+1) == '/') {
+318       char* q = ptr + 1;
+319       while (*q = *(q+1))
+320   q++;
+321     } else
+322       ptr++;
+323   }
+325   if (r-&gt;cntr_type == CntrMsql)
+326     return cntr_incmsql(p, results, r, puri);
+327   else
+328     return NULL;
+329 }
+331 int  cntr_update( request_rec* r )
+332 {
+333   char* buf;
+334   char* dbfile;
+335   int ret = OK;
+336   cntr_results * res;
+337   cntr_config_rec *svr, *dir;
+338   cntr_results *sres, *dres;
+339
+340   /* Get actual file, if locally redirected */
+343   while (r-&gt;next)
+344     r = r-&gt;next;
+346   / * Skip if missing URI or this is an * included request */
+348   if (!r-&gt;uri || !strcmp(r-&gt;protocol, "INCLUDED"))
+349     return(DECLINED);
+350   if (!S_ISREG(r-&gt;finfo.st_mode))
+351     return(DECLINED);
+352
+353   /* Get each of the counter files */
+356   svr = get_module_config( r-&gt;server-&gt;module_config, &amp;cntr_module);
+357   dir = get_module_config( r-&gt;per_dir_config, &amp;cntr_module);
+358
+359   /* Return if no counter database */
+362   if (!*svr-&gt;cntr_db &amp;&amp; !*dir-&gt;cntr_db)
+363     return(DECLINED);
+364
+365   /* Allocate result structures */
+368   sres = (cntr_results*)pcalloc(r-&gt;pool, sizeof(cntr_results));
+369   dres = (cntr_results*)pcalloc(r-&gt;pool, sizeof(cntr_results));
+370
+371   /* Bump up server configured counter */
+374   if (*svr-&gt;cntr_db)
+375     if (buf = cntr_inc(r-&gt;pool, sres, svr,     r-&gt;uri))
+376       log_error(buf, r-&gt;server);
+377
+378 /* Increment the directory counter file using
+380  * the full file name instead of the URL */
+382   if (*dir-&gt;cntr_db)
+383     if (buf = cntr_inc(r-&gt;pool, dres, dir, r-&gt;filename))
+384       log_error(buf, r-&gt;server);
+386
+388/* Now set the environment variables, take the
+389 * server config as preference over the directory  * directory config. */
+391   res = (sres-&gt;count) ? sres : dres;
+392   dbfile = "Msql";
+393   buf = pcalloc(r-&gt;pool, 16);
+394   sprintf(buf, "%lu", res-&gt;count);
+395   table_set(r-&gt;subprocess_env, "URL_COUNT", buf);
+396   table_set(r-&gt;subprocess_env, "URL_COUNT_RESET", res-&gt;date);
+397   table_set(r-&gt;subprocess_env, "URL_COUNT_DB", dbfile);
+399   return ret;
+400 }
+402
+403 module cntr_module = {
+404   STANDARD_MODULE_STUFF,
+405   NULL,  /* initializer */
+406   create_cntr_dir_config_rec, /* dir config creater */
+407   NULL, /* dir merger --- default is to override */
+408   create_cntr_srv_config_rec, /* server config */
+409   NULL,     /* merge server config */
+410   cntr_cmds, /* command table */
+411   NULL,  /* handlers */
+412   NULL,     /* filename translation */
+413   NULL,  /* check_user_id */
+414   NULL,  /* check auth */
+415   NULL,  /* check access */
+416   NULL,  /* type_checker */
+417   cntr_update,  /* fixups */
+418   NULL   /* logger */
+419 };
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../046/toc046.html">Issue Table of Contents</a>
+    <a class="link3" href="../046/2308.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

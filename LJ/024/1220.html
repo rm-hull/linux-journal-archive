@@ -1,0 +1,394 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Dynamic Kernels: Discovery</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    This article, the second of five, introduces part of the&#10;    actual code to create custom module implementing a character&#10;    device driver. It describes the code for module&#10;    initialization and cleanup, as well as the open and close&#10;    system calls.&#10;    "><meta name="keywords" content="driver, kernel, programming, system, admin, programming, module"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1597580.0x168eab0"></a>Dynamic Kernels: Discovery</h1></div><div><div class="author"><h3 class="author">Alessandro Rubini</h3></div><div class="issuemoyr">Issue #24, April 1996</div></div><div><p>
+    This article, the second of five, introduces part of the
+    actual code to create custom module implementing a character
+    device driver. It describes the code for module
+    initialization and cleanup, as well as the open and close
+    system calls.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x168f558"></a></h2></div></div><p>The last issues <span   class="emphasis"><em>Kernel
+Korner</em></span> introduced problems related to loading and
+unloading a custom module, but didn't uncover the code to actually
+perform these tasks. This time, we are going to look at some finer
+details of module-writing, in order to begin showing the actual
+code for our character device driver.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x168f6b8"></a>Load-time Configuration</h2></div></div><p>Although a smart driver should be able to autodetect the
+hardware it looks for, autodetection is not always the most
+sensible implementation, because it may be tricky to design. It is
+wise to provide a way to specify as many details as possible at
+load time, in order to test your driver before scratching your head
+and deciding to implement autodetection. Moreover, autodetection
+may fail if &ldquo;similar&rdquo; hardware is installed in the computer. A
+minor project can simply avoid autodetection altogether.</p><p>To configure the driver at load time, we'll exploit insmod's
+capability to assign integer values to arbitrary variables in the
+driver. We'll thus declare a (public) integer variable for each
+configurable item, and we'll make sure that the default value will
+trigger autodetection.</p><p>Configuring multiple boards at load time is left as an
+exercise to the reader (after reading the manpage for
+<b  >insmod</b>); this implementation allows
+specification of a single board: for the sake of simplicity
+additional boards are only reachable through autodetection.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x168f8c8"></a>Choosing Names</h2></div></div><p>The kernel is a complex application, and it is vital to keep
+its namespace as tidy as possible. This means both to use private
+symbols wherever it is possible, and to use a common prefix for all
+the symbols you define.</p><p>A production environment will only declare
+<b  >init_module()</b> and
+<b  >cleanup_module()</b>, which are used to load and
+unload the driver, and any load-time configuration variables.
+Nothing else needs to be public, because the module is accessed
+through pointers, not by name.</p><p>However, when you are developing and testing your code,
+you'll need your functions and data structures in the public symbol
+table in order to access them with your favorite debugging
+tool.</p><p>The easiest way to accomplish this dual need is to always use
+your own prefix in names, declare all of your symbols
+<b  >Static</b> (note the capital `S'), and include the
+following five lines at the top of your driver:</p><pre     class="programlisting">
+#ifdef DEBUG_<span   class="emphasis"><em>modulename</em></span>
+# define Static /* nothing */
+#else
+# define Static static
+#endif
+</pre><p>Real static symbols (such as persistent local variables) may
+thus be declared <b  >static</b>, while debuggable
+symbols are declared <b  >Static</b></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x168fd98"></a>The <b  >init_module()</b>
+Function</h2></div></div><p>In this page, the whole code for the initialization function
+is uncovered. This is skeletal code, as the <b  >skel</b>
+name suggests: a real-world device usually has slightly more than
+two I/O ports.</p><p>The most important thing to remember here is to release all
+the resources you already asked for whenever you find an error
+condition. This kind of task is well handled by the (otherwise
+unloved) <b  >goto</b> statement: code duplication is
+avoided by jumping to the resource-release part of the function in
+case of error.</p><p>The fragment of code shown accepts load-time configuration
+for the major number, for the base address of the board's I/O
+ports, and for the IRQ number. For each &ldquo;possible&rdquo; board (in the
+I/O space), the autodetection function is called. If no boards are
+detected, <b  >init_module()</b> returns
+<b  >-ENODEV</b> to tell insmod that no devices are
+there.</p><p>Sometimes it is wise to allow the driver to be loaded even if
+its hardware is not installed in the computer. I implement such
+code in order to develop most of my driver at home. The trick is to
+have a configuration variable (<b  >skel_fake</b>) which
+allows you to fake a nonexistent board. You can look at the
+implementation in my own drivers. &ldquo;Faking boards&rdquo; is a powerful
+way to start writing code before you get the hardware, or to test
+support for two boards even if you only own one of them.</p><p>The role of <b  >cleanup_module()</b> is to shut
+down the device and release any resources allocated by
+<b  >init_module()</b>. Our sample code cycles through
+the array of boards and releases I/O ports and the IRQ, if any.
+Finally, the major number is released. The initial check for
+<b  >MOD_IN_USE</b> is redundant if you're running a
+recent kernel, but a wise thing to put in production code, because
+your customers or users may be running old Linux kernels.</p><p>The sample code for <b  >init_module()</b> and
+<b  >cleanup_module()</b> is shown in
+<a href="1220l1.html" target="_self">Listing 1</a>. The prefix
+<b  >skel_</b> is used for all non-local names. The code
+here is quite simplified, in that it lacks some error-checking,
+which is vital in production-quality source code.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x16904d0"></a>Autodetecting the Device</h2></div></div><p><b  >init_module()</b> calls the function
+<b  >skel_find()</b> to perform the dirty task of
+detecting if a board is there. The function is very device
+specific, because each device must be probed for its peculiar
+features; thus, I won't try to show code to perform the actual
+probing, but only IRQ autodetection.</p><p>Unfortunately, some peripherals can't tell which IRQ line
+they're configured to use, thus forcing the user to write the IRQ
+number on the command line of insmod, or to hardcode the number in
+the software itself. Both these approaches are bad practice,
+because you just can't plug the board (after setting the jumpers)
+and load the driver. The only way to autodetect the IRQ line for
+these devices is a trial-and-error technique, which is, of course,
+only viable if the hardware can be instructed to generate
+interrupts.</p><p>The code in <a href="1220l2.html" target="_self">Listing 2</a> shows
+<b  >skel_find()</b>, complete with IRQ autodetection.
+Some details of IRQ handling may appear obscure to some readers,
+but they will be clarified in the next article. To summarize, this
+code cycles through each of the possible IRQ lines, asking to
+install a handler, and looks to see if interrupts are actually
+generated by the board.</p><p>The field <b  >hwirq</b> in the hardware structure
+represents the <span   class="emphasis"><em>useable</em></span> interrupt line, while
+the field <b  >irq</b> is only valid when the line is
+active (after <b  >request_irq()</b>). As explained in
+the last issue, it makes no sense to keep hold of an IRQ line when
+the device is not in use; that's why two fields are used.</p><p>Please note that I wrote this code as a work-around for the
+limitations of one of my hardware boards; if your hardware is able
+to report the IRQ line it's going to use, it's much better to use
+<span   class="emphasis"><em>that</em></span> information instead. The code is quite
+stable, anyway, if you are able to tailor it to your actual
+hardware. Fortunately, most good hardware is able to report its own
+configuration.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x1690a50"></a><b  >fops</b> and
+<b  >filp</b></h2></div></div><p>After the module has been loaded and the hardware has been
+detected, we must see <span   class="emphasis"><em>how</em></span> the device is acted
+upon. This means introducing the role of <b  >fops</b>
+and <b  >filp</b>: these little beasts are the most
+important data structures&mdash;actually, variable names&mdash;used in
+interfacing the device driver with the kernel.</p><p><b  >fops</b> is the name usually devoted to a
+<b  >struct file_operations</b>. The structure is a
+<span   class="bold"><b>jump table</b></span> (structure of pointers
+to functions), and each field refers to one of the different
+operations performed on a filesystem node
+(<b  >open()</b>, <b  >read()</b>,
+<b  >ioctl()</b>, etc.).</p><p>A pointer to your own <b  >fops</b> is passed to
+the kernel by means of <b  >register_chrdev()</b>, so
+that your functions will be called whenever one of your nodes is
+acted upon. We already wrote that line of code, but didn't show the
+actual <b  >fops</b>. Here it is:</p><pre     class="programlisting">
+struct file_operations skel_fops {
+  skel_lseek,
+  skel_read,
+  skel_write,
+  NULL,       /* skel_readdir */
+  skel_select,
+  skel_ioctl,
+  skel_mmap,
+  skel_open,
+  skel_close
+};
+</pre><p>Each <b  >NULL</b> entry in your fops means that
+you're not going to offer that functionality for your device
+(<b  >select</b> is special, in this respect, but I won't
+expand on it), each non-<b  >NULL</b> entry must be a
+pointer to a function implementing the operation for your device.
+Actually, there exist a few more fields in the structure, but our
+example will live with the default <b  >NULL</b> value
+(the C compiler fills up an incomplete structure with zero bytes
+without issuing any warning). If you are really interested in them,
+you can look at the structure's definition in
+<b  >&lt;linux/fs.h&gt;</b>. <b  >filp</b> is
+the name usually devoted to one of the arguments passed by the
+kernel to any function in your fops, namely a <b  >struct file
+*</b>. The <b  >file</b> structure is used to keep
+all the available status information about an &ldquo;open file&rdquo;,
+beginning with a call to <b  >open()</b> and up to a call
+to <b  >close()</b>. If the device is opened multiple
+times, different <b  >filp</b>s will be used for each
+instance: this means that you'll need to use your own data
+structure to keep hardware information about your devices. The code
+fragments within this installment already use an array of
+<b  >Skel_Hw</b>, to hold information about several
+boards installed on the same computer. What is missing, then, is a
+way to embed hardware information in the <b  >file</b>
+structure, in order to instruct the driver to operate on the right
+device. The field <b  >private_data</b> exists in
+<b  >struct file</b> just for that task, and is a pointer
+to <b  >void</b>. You'll make
+<b  >private_data</b> point to your hardware information
+structure when <b  >skel_open()</b> gets invoked. If you
+need to keep some extra information private to each filp (for
+example, if two device nodes access the same hardware in two
+different ways), then you'll need a specific structure for
+<b  >private_data</b>, which must be
+<b  >kmalloc()</b>ed on open and
+<b  >kfree()</b>ed on close. The implementations of
+open() and close() that we'll see later, work in this way.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x1688150"></a>Using Minor Numbers</h2></div></div><p>In the last article I introduced the idea of minor device
+numbers, and it is now high time to expand on the topic.</p><p>If your driver manages multiple devices, or a single device
+but in different ways, you'll create several nodes in the
+<b  >/dev</b> directory, each with a different minor
+number. When your open function gets invoked, then, you can examine
+the minor number of the node being opened, and take appropriate
+actions.</p><p>The prototypes of your open and close functions are</p><pre     class="programlisting">
+int skel_open (struct inode *inode,
+               struct file *filp);
+void skel_close (struct inode *inode,
+                 struct file *filp);
+</pre><p>and the minor number (an unsigned value, currently 8 bits) is
+available as <b  >MINOR(inode-&gt;i_rdev)</b>. The
+<b  >MINOR</b> macro and the relevant structures are
+defined within <b  >&lt;linux/fs.h&gt;</b>, which in turn
+is included in <b  >&lt;linux/sched.h&gt;</b>.</p><p>Our skel code (<a href="1220l3.html" target="_self">Listing 3</a>)
+will split the minor number in order to manage both multiple boards
+(using four bits of the minor), and multiple modes (using the
+remaining four bits). To keep things simple we'll only write code
+for two boards and two modes. The following macros are used:</p><pre     class="programlisting">
+#define SKEL_BOARD(dev) (MINOR(dev)&amp;0x0F)
+#define SKEL_MODE(dev)  ((MINOR(dev)&gt;&gt;4)&amp;0x0F)
+</pre><p>The nodes will be created with the following commands (within
+the <b  >skel_load</b> script, see last month's
+article):</p><pre     class="programlisting">
+mknod skel0    c $major  0
+mknod skel0raw c $major  1
+mknod skel1    c $major 16
+mknod skel1raw c $major 17
+</pre><p>But let's turn back to the code. This
+<b  >skel_open()</b> sorts out the minor number and folds
+any relevant information inside the filp, in order to avoid further
+overhead when read() or write() will be invoked. This goal is
+achieved by using a <b  >Skel_Clientdata</b> structure
+embedding any filp-specific information, and by changing the
+pointer to your <b  >fops</b> within the
+<b  >filp</b>; namely,
+<b  >filp-&gt;f_op</b>.</p><p>Changing values within <b  >filp</b> may appear a
+bad practice, and it often is; it is, however, a smart idea when
+the file operations are concerned. The <b  >f_op</b>
+field points to a static object anyways, so you can modify it
+lightheartedly, as long as it points to a valid structure; any
+subsequent operation on the file will be dispatched using the new
+jump table, thus avoiding a lot of conditionals. This technique is
+used within the kernel proper to implement the different
+memory-oriented devices using a single major device number.</p><p>The complete skeletal code for <b  >open()</b> and
+<b  >close()</b> is shown in
+<a href="1220l3.html" target="_self">Listing 3</a>; the
+<b  >flags</b> field in the clientdata will be used when
+<b  >ioctl()</b> is introduced.</p><p>Note that the <b  >close()</b> function shown here
+should be referred to by both <b  >fops</b>s. If
+different <b  >close()</b> implementations are needed,
+this code must be duplicated.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1597580.0x1688e08"></a>Multiple- or Single-open?</h2></div></div><p>A device driver should be a policy-free program, because
+policy choices are best suited to the application. Actually, the
+habit of separating policy and mechanism is one of the strong
+points of Unix. Unfortunately, the implementation of
+<b  >skel_open()</b> leads itself to policy issues: is it
+correct to allow multiple concurrent opens? If yes, how can I
+handle concurrent access in the driver?</p><p>Both single-open and multiple-open have sound advantages. The
+code shown for <b  >skel_open()</b> implements a third
+solution, somewhat in-between.</p><p>If you choose to implement a single-open device, you'll
+greatly simplify your code. There's no need for dynamic structures
+because a static one will suffice; thus, there's no risk to have
+memory leakage because of your driver. In addition, you can
+simplify your <b  >select()</b> and data-gathering
+implementation because you're always sure that a single process is
+collecting your data. A single-open device uses a boolean variable
+to know if it is busy, and returns <b  >-EBUSY</b> when
+open is called the second time. You can see this simplified code in
+the busmouse drivers and lp driver within the kernel proper.</p><p>A multiple-open device, on the other hand, is slightly more
+difficult to implement, but much more powerful to use for the
+application writer. For example, debugging your applications is
+simplified by the possibility of keeping a monitor constantly
+running on the device, without the need to fold it in the
+application proper. Similarly, you can modify the behaviour of your
+device while the application is running, and use several simple
+scripts as your development tools, instead of a complex catch-all
+program. Since distributed computation is common nowadays, if you
+allow your device to be opened several times, you are ready to
+support a cluster of cooperating processes using your device as an
+input or output peripheral.</p><p>The disadvantages of using a conventional multiple-open
+implementation are mainly in the increased complexity of the code.
+In addition to the need for dynamic structures (like the
+<b  >private_data</b> already shown), you'll face the
+tricky points of a true stream-like implementation, together with
+buffer management and blocking and non-blocking read and write; but
+those topics will be delayed until next month's column.</p><p>At the user level, a disadvantage of multiple-open is the
+possibility of interference between two non-cooperating processes:
+this is similar to cat-ing a tty from another tty&mdash;input may be
+delivered to the shell or to cat, and you can't tell in advance.
+[For a demonstration of this, try this: start two xterms or log
+into two virtual consoles. On one (A), run the
+<span   class="bold"><b>tty</b></span> command, which tells you which
+tty is in use. On the other (B), type <b  >cat
+/dev/<i><tt>tty_of_A</tt></i></b>. Now go to A and
+type normally. Depending on several things, including which shell
+you use, it may work fine. However, if you run
+<span   class="bold"><b>vi</b></span>, you will probably see what you
+type coming out on B, and you will have to type
+<b  >^C</b> on B to be able to recover your session on
+A&mdash;ED]</p><p>A multiple-open device can be accessed by several different
+users, but often you won't want to allow different users to access
+the device concurrently. A solution to this problem is to look at
+the <b  >uid</b> of the first process opening the device,
+and allow further opens only to the same user or to root. This is
+not implemented in the skel code, but it's as simple as checking
+<b  >current-&gt;euid</b>, and returning
+<b  >-EBUSY</b> in case of mismatch. As you see, this
+policy is similar to the one used for ttys: login changes the owner
+of ttys to the user that has just logged in.</p><p>The <b  >skel</b> implementation shown here is a
+multiple-open one, with a minor addition: it assures that the
+device is &ldquo;brand new&rdquo; when it is first opened, and it shuts the
+device down when it is last closed.</p><p>This implementation is particularly useful for those devices
+which are accessed quite rarely: if the frame grabber is used once
+a day, I don't want to inherit strange setting from the last time
+it was used. Similarly, I don't want to wear it out by continuously
+grabbing frames that nobody is going to use. On the other hand,
+startup and shutdown are lengthy tasks, especially if the IRQ has
+to be detected, so you might not choose this policy for your own
+driver. The field <b  >usecount</b> within the hardware
+structure is used to turn on the device at the first open, and to
+turn it off on the last close. The same policy is devoted to the
+IRQ line: when the device is not being used, the interrupt is
+available to other devices (if they share this friendly
+behaviour).</p><p>The disadvantages of this implementation are the overhead of
+the power cycles on the device (which may be lengthy) and the
+inability to configure the device with one program in order to use
+it with another program. If you need a persistent state in the
+device, or want to avoid the power cycles, you can simply keep the
+device open by means of a command as silly as this:</p><pre     class="programlisting">
+sleep 1000000 &lt; /dev/skel0 &amp;
+</pre><p>As it should be clear from the above discussion, each
+possible implementation of the <b  >open()</b> and
+<b  >close()</b> semantics has its own peculiarities, and
+the choice of the optimum one depends on your particular device and
+the main use it is devoted to. Development time may be considered
+as well, unless the project is a major one. The
+<b  >skel</b> implementation here may not be the best for
+your driver: it is only meant as a sample case, one amongst several
+different possibilities. <a href="1220s1.html" target="_self">Additional
+Information</a>
+</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Alessandro Rubini</b></span>
+      (<a href="mailto:rubini@ipvvis.unipv.it">rubini@ipvvis.unipv.it</a>)
+      Programmer by chance and Linuxer by choice, Alessandro is
+      taking his PhD course in computer science and is breeding two small
+      Linux boxes at home. Wild by his very nature, he loves trekking,
+      canoeing, and riding his bike.
+    </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../024/toc024.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

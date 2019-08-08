@@ -1,0 +1,452 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel Korner</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Interrupt latency is a key factor in the performance of a system.&#10;Work queues are one of several tools available to the driver writer&#10;to avoid doing time-consuming work when interrupts are disabled.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xd1c580.0xe13ab0"></a>Kernel Korner</h1></div><div><h3 class="subtitle"><i>
+The New Work Queue Interface in the 2.6 Kernel
+</i></h3></div><div><div class="author"><h3 class="author">Robert Love</h3></div><div class="issuemoyr">Issue #115, November 2003</div></div><div><p>
+Interrupt latency is a key factor in the performance of a system.
+Work queues are one of several tools available to the driver writer
+to avoid doing time-consuming work when interrupts are disabled.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe14298"></a></h2></div></div><p>
+For most UNIX systems, Linux included, device drivers typically divide
+the work of processing interrupts into two parts or halves. The
+first part, the top half, is the familiar interrupt handler, which the
+kernel invokes in response to an interrupt signal from the hardware
+device. Unfortunately, the interrupt handler is true to its name:
+it interrupts whatever code is executing when the hardware device
+issues the interrupt. That is, interrupt handlers (top halves) run
+<span   class="emphasis"><em>asynchronously</em></span> with respect to the currently executing code. Because
+interrupt handlers interrupt already executing code (whether it is other
+kernel code, a user-space process or even another interrupt handler),
+it is important that they run as quickly as possible.
+</p><p>
+Worse, some interrupt handlers (known in Linux as fast interrupt handlers)
+run with all interrupts on the local processor disabled. This is done to
+ensure that the interrupt handler runs without interruption, as quickly
+as possible. More so, <span   class="emphasis"><em>all</em></span> interrupt handlers run with their current
+interrupt line disabled on all processors. This ensures that two interrupt
+handlers for the same interrupt line do not run concurrently. It also prevents
+device driver writers from having to handle recursive interrupts,
+which complicate programming. If interrupts are disabled, however,
+other interrupt handlers cannot run. Interrupt latency (how long
+it takes the kernel to respond to a hardware device's interrupt request)
+is a key factor in the performance of the system. Again, the speed of
+interrupt handlers is crucial.
+</p><p>
+To facilitate small and fast interrupt handlers, the second part or bottom
+half of
+interrupt handling is used to defer as much of the work
+as possible away from the top half and until a later time. The bottom
+half runs with all interrupts enabled. Therefore, a running bottom half
+does not prevent other interrupts from running and does not
+contribute adversely to interrupt latency.
+</p><p>
+Nearly every device driver employs bottom halves in one form or
+another. The device driver uses the top half (the interrupt handler)
+to respond to the hardware and perform any requisite time-sensitive
+operations, such as resetting a device register or copying data from the
+device into main memory. The interrupt handler then marks the bottom half,
+instructing the kernel to run it as soon as possible, and exits.
+</p><p>
+In most cases, then, the real work takes place in the bottom half. At a
+later point&mdash;often as soon as the interrupt handler returns&mdash;the kernel
+executes the bottom half. Then the bottom half runs, performing all of
+the remaining work not carried out by the interrupt handler. The actual
+division of work between the top and bottom halves is a decision made
+by the device driver's author. Generally, device driver authors attempt
+to defer as much work as possible to the
+bottom half.
+</p><p>
+Confusingly, Linux offers many mechanisms for implementing bottom halves.
+Currently, the 2.6 kernel provides softirqs, tasklets and work queues
+as available types of bottom halves. In previous kernels, other forms of
+bottom halves were available; they included BHs and task queues. This
+article deals with the new work queue interface only, which was introduced
+during the 2.5 development series to replace the ailing keventd
+part of the task queue interface.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe14660"></a>
+Introducing Work Queues</h2></div></div><p>
+Work queues are interesting for two main reasons. First, they are the
+simplest to use of all the bottom-half mechanisms. Second, they are the
+only bottom-half mechanism that runs in process context; thus,
+work queues often are the only option device driver writers have when
+their bottom half must sleep. In addition, the work queue mechanism is
+brand new, and new is cool.
+</p><p>
+Let's discuss the fact that work queues run in process context. This
+is in contrast to the other bottom-half mechanisms, which all run in
+interrupt context. Code running in interrupt context is unable to
+sleep, or block, because interrupt context does not have a backing
+process with which to reschedule. Therefore, because interrupt handlers
+are not associated with a process, there is nothing for the scheduler
+to put to sleep and, more importantly, nothing for the scheduler to
+wake up. Consequently, interrupt context cannot perform certain actions
+that can result in the kernel putting the current context to sleep,
+such as downing a semaphore, copying to or from user-space memory or
+non-atomically allocating memory. Because work queues run in process
+context (they are executed by kernel threads, as we shall see), they are
+fully capable of sleeping. The kernel schedules bottom halves running in
+work queues, in fact, the same as any other process on the system. As with
+any other kernel thread, work queues can sleep, invoke the scheduler and so on.
+</p><p>
+Normally, a default set of kernel threads handles work queues. One of these
+default kernel threads runs per processor, and these threads are
+named events/<span   class="emphasis"><em>n</em></span> where <span   class="emphasis"><em>n</em></span> is the
+processor number to which the thread
+is bound. For example, a uniprocessor machine would have only an
+events/0 kernel thread, whereas a dual-processor machine would
+have an events/1 thread as well.
+</p><p>
+It is possible, however, to run your work queues in your own kernel
+thread. Whenever your bottom half is activated, your
+unique kernel thread, instead of one of the
+default threads, wakes up and handles it. Having a unique work queue thread
+is useful only in
+certain performance-critical situations. For most bottom halves, using
+the default thread is the preferred solution. Nonetheless, we
+look at how to create new work queue threads later on.
+</p><p>
+The work queue threads execute your bottom half as a specific function,
+called a work queue handler. The work queue handler is where you implement
+your bottom half. Using the work queue interface is easy; the only
+hard part is writing the bottom half (that is, the work queue
+handler).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe14978"></a>
+The Work Queue Interface</h2></div></div><p>
+The first step in using work queues is creating a work queue structure. The
+work queue structure is represented by struct work_struct and
+defined in linux/workqueue.h. Thankfully, one of two different
+macros makes the job of creating a work queue structure easy. If you want
+to create your work queue structure statically (say, as a global variable),
+you can declare it directly with:
+
+<pre     class="programlisting">
+DECLARE_WORK(name, function, data)
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe14ad8"></a></h2></div></div><p>
+This macro creates a struct work_struct and initializes it with
+the given work queue handler, <b  >function</b>. Your work queue handler
+must match the following prototype:
+
+<pre     class="programlisting">
+void my_workqueue_handler(void *arg)
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe14c90"></a></h2></div></div><p>
+The arg parameter is a pointer passed to your work queue
+handler by the kernel each time it is invoked. It is specified by the
+data parameter in the DECLARE_WORKQUEUE() macro. By
+using a parameter, device drivers can use a single work queue handler
+for multiple work queues. The data parameter can be used to
+distinguish between work queues.
+</p><p>
+If you do not want to create your work queue structure directly but
+instead dynamically, you can do that too. If you have only indirect
+reference to the work queue structure, say, because you created it with
+kmalloc(), you can initialize it using:
+
+<pre     class="programlisting">
+INIT_WORK(p, function, data)
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe14e48"></a></h2></div></div><p>
+In this case, p is a pointer to a work_struct structure,
+function is the work queue handler and data is the lone
+argument the kernel passes to it on invocation.
+</p><p>
+Creating the work queue structure normally is done once&mdash;for example,
+in your driver's initialization routine. The kernel uses the work queue
+structure to keep track of the various work queues on the system. You
+need to keep track of the structure, because you will need it later.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe14fa8"></a>
+Your Work Queue Handler</h2></div></div><p>
+Basically, your work queue handler can do whatever you want. It is
+your bottom half, after all. The only stipulation is that the
+handler's function fits the correct prototype. Because your work queue
+handler runs in process context, it can sleep if needed.
+</p><p>
+So you have a work queue data structure and a work queue handler&mdash;how do
+you schedule it to run? To queue a given work queue handler to run at the
+kernel's earliest possible convenience, invoke the following function,
+passing it your work queue structure:
+
+<pre     class="programlisting">
+int schedule_work(struct work_struct *work)
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe15160"></a></h2></div></div><p>
+This function returns nonzero if the work was successfully queued; on
+error, it returns zero. The function can be called from either process
+or interrupt context.
+</p><p>
+Sometimes, you may not want the scheduled work to run immediately,
+but only after a specified period has elapsed. In those situations, use:
+
+<pre     class="programlisting">
+int schedule_delayed_work(struct work_struct *work,
+                          unsigned long <i>delay</i>)
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe15370"></a></h2></div></div><p>
+In this case, the work queue handler associated with the given work queue
+structure will not run for at least <span   class="emphasis"><em>delay</em></span> jiffies. For example,
+if you have a work queue structure named my_work and you wish to
+delay its execution for five seconds, call:
+
+<pre     class="programlisting">
+
+schedule_delayed_work(&amp;my_work, 5*HZ)
+
+</pre>
+</p><p>
+Normally, you would schedule your work queue handler from your interrupt
+handler, but nothing stops you from scheduling it from anywhere you
+want. In normal practice, the interrupt handler and the bottom half work
+together as a team. They each perform a specific share of the duties
+involved in processing a device's interrupt. The interrupt handler, as
+the top half of the solution, usually prepares the remaining work for the
+bottom half and then schedules the bottom half to run. You conceivably
+can use work queues for jobs other than bottom-half processing, however.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe155d8"></a>
+Work Queue Management</h2></div></div><p>
+When you queue work, it is executed when the worker thread next wakes up.
+Sometimes, you need to guarantee in your kernel code that your queued
+work has completed before continuing. This is especially important
+for modules, which need to ensure any pending bottom halves have
+executed before unloading.
+For these needs, the kernel provides a function to wait on all work
+pending for the worker thread:
+
+<pre     class="programlisting">
+void flush_scheduled_work(void)
+</pre>
+</p><p>
+Because this function waits on <span   class="emphasis"><em>all</em></span> pending work for the worker
+thread, it might take a relatively long time to complete. While waiting
+for the worker threads to finish executing all pending work, the call
+sleeps. Therefore, you must call this function only from process
+context. Do not call it unless you truly need to ensure that your
+scheduled work is executed and no longer pending.
+</p><p>
+This function does not flush any pending
+delayed work. If
+you scheduled the work with a delay, and the delay is not yet up, you
+need to cancel the delay before flushing the work queue:
+
+<pre     class="programlisting">
+int cancel_delayed_work(struct work_struct *work)
+</pre>
+</p><p>
+In addition, this function cancels the timer associated with the given work queue
+structure&mdash;other work queues are not affected. You can call
+cancel_delayed_work() only from process context because it may
+sleep. It returns nonzero if any outstanding work was canceled;
+otherwise, it returns zero.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe158f0"></a>
+Creating New Worker Threads</h2></div></div><p>
+In rare cases, the default worker threads may be insufficient. Thankfully,
+the work queue interface allows you to create your own worker threads
+and use those to schedule your bottom-half work. To create new worker
+threads, invoke the function:
+
+<pre     class="programlisting">
+struct workqueue_struct *
+create_workqueue(const char *name)
+</pre>
+</p><p>
+For example, on system initialization, the kernel creates the default
+queues with:
+
+<pre     class="programlisting">
+keventd_wq = create_workqueue("events");
+</pre>
+</p><p>
+This function creates all of the per-processor worker threads. It returns
+a pointer to a struct workqueue_struct, which is used to identify
+this work queue from other work queues (such as the default one). Once
+you create the worker thread, you can queue work in a fashion similar
+to how work is queued with the default worker thread:
+
+<pre     class="programlisting">
+int queue_work(struct workqueue_struct *wq,
+               struct work_struct *work)
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe15bb0"></a></h2></div></div><p>
+Here, wq is a pointer to the specific work queue that you
+created using the call to create_workqueue(), and work is
+a pointer to your work queue structure. Alternatively, you can schedule
+work with a delay:
+
+<pre     class="programlisting">
+int
+queue_delayed_work(struct workqueue_struct *wq,
+                   struct work_struct *work,
+                   unsigned long delay)
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe0c5a0"></a></h2></div></div><p>
+This function works the same as queue_work(), except
+it delays the queuing of the work for <i>delay</i>
+jiffies. These two functions are analogous to schedule_work()
+and schedule_delayed_work(), except they queue the given
+work into the given work queue instead of the default one. Both functions
+return nonzero on success and zero on failure. Both functions may be
+called from both interrupt and process context.
+</p><p>
+Finally, you may flush a specific work queue with the function:
+
+<pre     class="programlisting">
+void flush_workqueue(struct workqueue_struct *wq)
+</pre>
+</p><p>
+This function waits until all queued work on the wq work queue
+has completed before returning.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe0c808"></a>
+Conclusion</h2></div></div><p>
+The work queue interface has been a part of the kernel since 2.5.41. In
+that time, a large number of drivers and subsystems have made it their
+method of deferring work. But is it the right bottom half for you?
+If you need to run your bottom half in process context, a work queue
+is your <span   class="emphasis"><em>only</em></span> option. Furthermore, if you are considering creating
+a kernel thread, a work queue may be a better choice. But what
+if you do not need a bottom half that can sleep? In that case, you may find
+tasklets are a better choice. They also are easy to use, but they do not
+run in a kernel thread. Because they are not run in process context,
+no context switch overhead is associated with their execution;
+therefore, they may offer you less overhead.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd1c580.0xe0c9c0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Work Queue Function Reference</b></p><p>
+Statically create a work queue structure:
+<pre     class="screen">
+DECLARE_WORK(name, function, data)
+</pre>
+</p><p>
+Dynamically initialize a work queue structure:
+<pre     class="screen">
+INIT_WORK(p, function, data)
+</pre>
+</p><p>
+Create a new worker thread:
+<pre     class="screen">
+struct workqueue_struct
+*create_workqueue(const char *name)
+</pre>
+</p><p>
+Destroy a worker thread:
+<pre     class="screen">
+void
+destroy_workqueue(struct workqueue_struct *wq)
+</pre>
+</p><p>
+Queue work to a given worker thread:
+<pre     class="screen">
+int
+queue_work(struct workqueue_struct *wq,
+           struct work_struct *work)
+</pre>
+</p><p>
+Queue work, after the given delay, to the given worker thread:
+<pre     class="screen">
+int
+queue_delayed_work(struct workqueue_struct *wq,
+                   struct work_struct *work,
+                   unsigned long delay)
+</pre>
+</p><p>
+Wait on all pending work on the given worker thread:
+<pre     class="screen">
+void
+flush_workqueue(struct workqueue_struct *wq)
+</pre>
+</p><p>
+Schedule work to the default worker thread:
+<pre     class="screen">
+int
+schedule_work(struct work_struct *work)
+</pre>
+</p><p>
+Schedule work, after a given delay, to the default worker thread:
+<pre     class="screen">
+int
+schedule_delayed_work(struct work_struct *work,
+                      unsigned long delay)
+</pre>
+</p><p>
+Wait on all pending work on the default worker thread:
+<pre     class="screen">
+void
+flush_scheduled_work(void)
+</pre>
+</p><p>
+Cancel the given delayed work:
+<pre     class="screen">
+int
+cancel_delayed_work(struct work_struct *work)
+</pre>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Robert Love is a kernel hacker involved in various projects. He is a
+mathematics and computer science student at the University of Florida
+and a kernel engineer at MontaVista Software. He can be reached at
+<a href="mailto:rml@tech9.net">rml@tech9.net</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../115/toc115.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

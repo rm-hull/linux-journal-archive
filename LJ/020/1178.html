@@ -1,0 +1,365 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Porting Linux to the DEC Alpha: The Kernel and Shell</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Last month, Jim described the task of porting the kernal and&#10;    basic environment needed to get to the shell prompt. In this&#10;    last of 3 parts, he tells us about building a real&#10;    environment.&#10;    "><meta name="keywords" content="porting, DEC, kernel, system, admin, programming"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1cb1580.0x1da8ab0"></a>Porting Linux to the DEC Alpha: The Kernel and Shell</h1></div><div><div class="author"><h3 class="author">Jim Paradis</h3></div><div class="issuemoyr">Issue #20, December 1995</div></div><div><p>
+    Last month, Jim described the task of porting the kernal and
+    basic environment needed to get to the shell prompt. In this
+    last of 3 parts, he tells us about building a real
+    environment.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1da9558"></a></h2></div></div><p>Achieving the shell prompt was only the
+beginning of the trial, not the end. Now we had to get other
+utilities working so as to allow us to debug more of the system and
+to make it into a real, usable UNIX-like system.
+</p><p>I set Brian Nelson to the task of porting more utilities,
+starting with the &ldquo;fileutils&rdquo; and &ldquo;shellutils&rdquo; subsets of the MCC
+1.0+ distribution. Meanwhile, I realized that better debugging
+tools would expedite the debug process, and I started thinking
+about implementing some kind of remote debugger support for gdb. My
+first implementation was under the ISP CPU simulator. The reason
+for this is that I could add code to ISP to examine and modify the
+state of the machine and communicate with a debugger without having
+to code a breakpoint handler into the kernel itself.</p><p>GDB has a remote debugging protocol built into it; all I
+needed to do was to add code to ISP to respond to gdb commands and
+to encode the simulated machine state for GDB's consumption.
+Getting this all working was only a few days' work.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1da9710"></a>Device Drivers</h2></div></div><p>While all this was happening we realized that Linux/Alpha was
+turning into a serious project and that we could use some help in
+the device driver space. While console callback drivers had served
+admirably to get us up and running, they were not equal to the task
+of supporting a production system. We recruited Jay Estabrook from
+the Digital UNIX group in this capacity, and he has proved to be an
+immensely valuable addition to our team. Within his first two weeks
+with the group he produced a native text-mode VGA driver and a
+native keyboard driver for Linux on the DEC 2000 AXP (&ldquo;Jensen&rdquo;)
+series.</p><p>Porting device drivers to Linux/Alpha presents some
+interesting challenges. Fortunately, many of the problems only
+needed to be solved once and the results would be applicable to
+many different drivers.</p><p>The Alpha CPU has no concept of I/O bus access; there is no
+Alpha equivalent of the Intel inb/outb instructions for
+communicating with the I/O bus. In order to implement a PCI- or
+EISA-based Alpha system, some sort of &ldquo;glue&rdquo; logic is needed to
+translate Alpha load/store accesses into I/O bus accesses. On
+systems based on the DECchip 21064 and 21164 CPUs, this glue logic
+is implemented in an external chipset (DECchip 21071 series). On
+systems based on the DECchip 21066, this glue logic is built into
+the CPU. This glue logic sets aside certain areas of the system
+physical address space for communicating with the I/O busses. To
+perform a bus access, one takes such information as the I/O port
+number and the size of the transfer and encodes it into a special
+memory address (This encoding is different for the different glue
+logic implementations). One may then load the data from or store
+the data to this address.</p><p>Interrupt handling is also different on Alpha systems. On
+most Intel-based systems, the mapping between bus IRQs and
+interrupt vectors is fixed and straightforward, and the hardware
+dispatches directly to the interrupt vector associated with a
+particular IRQ. On Alpha, all interrupts are dispatched by PALcode.
+The Digital UNIX PALcode vectors all device interrupts to a single
+routine. One of the arguments to this routine is a number (called
+the &ldquo;SCB vector&rdquo; for reasons I don't need to go into here)
+indicating which interrupt was received. Unfortunately, the mapping
+between bus IRQs and SCB offsets is not the same across all
+platforms. This means that we need extra code in the interrupt
+handling path to map the SCB vector back to an IRQ number. In fact,
+there are different versions of the mapping routine for the
+different platforms.</p><p>It turns out that many Intel Linux device drivers rely on the
+fact that the BIOS puts the device into a known state before the
+operating system even sees it. We discovered this when we were
+debugging the interrupt handling for the keyboard driver (and,
+later on, the SCSI driver). Apparently the interrupt controller on
+Intel boxes is initialized by the BIOS to trigger on the
+<span   class="emphasis"><em>transition</em></span> of an IRQ line (edge triggering)
+rather than on the <span   class="emphasis"><em>state</em></span> of an IRQ line (level
+triggering). We were having no end of problems with &ldquo;spurious&rdquo;
+interrupts until we added code to the CPU initialization routine to
+set the interrupt controller properly.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1da9a28"></a>The Miniloader</h2></div></div><p>While our early decision to use the SRM console was good to
+get the project off the ground, it turns out that the SRM console
+is not the best choice for Linux. First of all, the SRM console is
+memory-hungry because it must implement numerous functions required
+by OpenVMS and Digital UNIX. Many of these functions are not needed
+by Linux. Second, and more serious, is the fact that the SRM
+console is not freely redistributable. Digital charges a
+substantial license fee to third parties for resale rights to the
+SRM firmware, as well as a per-unit charge for each copy of the SRM
+firmware sold by Digital or a third party. While the end-user
+typically never sees these charges, they do serve to raise the
+price of the hardware when it is sold in a Digital UNIX or OpenVMS
+configuration. In addition, requiring the SRM console for
+Linux/Alpha would present a significant burden to clone vendors who
+wished to build and sell Alpha systems for the Linux
+marketplace.</p><p>For these reasons, we decided to investigate the possibility
+of developing a freeware &ldquo;miniloader&rdquo; for Linux/Alpha. The
+miniloader could be much smaller than the SRM console because it
+needs to implement only the functionality necessary to initialize
+the system, load the PALcode, and load Linux. It could also be
+freely redistributable in source and binary form.</p><p>Unfortunately, developing a replacement for the console
+firmware is a non-trivial undertaking. Fortunately, however, we had
+help in the person of Dave Rusling from the Digital Semiconductor
+facility in Reading, England. Dave had much experience in low-level
+hardware support on the evaluation boards produced by Digital
+Semiconductor, and he had already done significant work for the
+Linux/Alpha project in the area of PCI support. He eagerly took on
+the task of developing the miniloader.</p><p>The miniloader consists of system initialization code, an
+OSF-compliant PALcode library, a bootstrap loader, and console
+callback routines. It presents to the bootloader and kernel an
+interface similar to that seen in the SRM console, with
+stripped-down functionality. The miniloader only implements those
+SRM features and callbacks that are used by Linux. As of this
+writing, the miniloader has succeeded in booting Linux on several
+models of Digital Semiconductor evaluation boards, as well as on
+the low-cost AXPpci/33 &ldquo;NoName&rdquo; motherboard and the
+high-performance &ldquo;Cabriolet&rdquo; motherboard.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1da9c38"></a>Cutting Over to 1.2</h2></div></div><p>While we were working on our 32-bit port, Linus was toiling
+away in Helsinki on his 64-bit Alpha port. We knew that we would
+want to cut over to using his code base at some point so that we
+would be in sync with the rest of the Linux community. The main
+question was <span   class="emphasis"><em>when</em></span> we would do the cutover. Our
+port had more demonstrable functionality earlier (e.g. device
+support, networking, utilities), but Linus was catching up fast. We
+decided to continue working on the 32-bit port for demonstration
+purposes while keeping track of Linus' progress, and we would cut
+over to Linus' code base when doing so would yield a system of
+roughly equivalent functionality.</p><p>This point came in March, 1995 when Linus posted a message to
+the linux-alpha mailing list with the subject &ldquo;self-hosting linux
+on ftp.cs.helsinki.fi&rdquo;. While one of our own major goals was to
+have a self-hosting Linux/Alpha system, we had not been able to
+realize it due to the immense complexity of porting the GNU
+compiler suite in our cross-development environment. Linus very
+neatly sidestepped the entire cross-build issue by making his
+Linux/Alpha system calls compatible with their Digital UNIX
+counterparts. Therefore, he could achieve self-hosting simply by
+running the compilers from his Digital UNIX system on his
+Linux/Alpha system.</p><p>While this self-hosting environment did not meet our
+criterion of being 100% freeware, it was a useful starting point.
+Instead of building the GNU tools in a cantankerous
+cross-development environment and testing them on an immature
+operating system, we could prototype and debug our
+<span   class="emphasis"><em>entire</em></span> development environment on a Digital
+UNIX system. When we were satisfied with its functionality, we
+could then copy it over to a Linux/Alpha system with reasonable
+assurance that it would work. This, in fact, is exactly how we put
+together the self-hosting demo that we exhibited at DECUS in May,
+1995 (&ldquo;Linux at DECUS&rdquo;, <i  >Linux Journal</i> issue
+15, July 1995).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1da9ef8"></a>Getting By With a Little Help From Our
+Friends...</h2></div></div><p>An operating system is much more than just a kernel, as any
+of the creators of Linux distributions could tell you. In order to
+be able to provide all of Digital's Linux/Alpha contributions to
+the Linux community free of charge, we necessarily had to limit the
+investment we made in the project. As of this writing, Digital is
+funding three full-time engineers, a part-time product manager, a
+part-time technical writer, and several loaner Alpha systems
+(including the Alpha systems that Linus has been using). In my
+project plan outline for Linux/Alpha I pointed out that Linux was
+unique in that we could do the project with such limited resources.
+Given the history of Linux, I reasoned, once the Linux/Alpha code
+became available, developers all over the net would add
+functionality and fixes. My prediction turned out delightfully
+true. Several people, both inside and outside of Digital, made
+significant contributions to the project at no cost to Digital. The
+result is of enormous benefit to both Digital and the Linux
+community as a whole.</p><p>Linus Torvald's own contributions, of course, are legendary.
+I mention him here because without his tireless work the project
+would have taken a different turn and probably would not be as
+successful as it is today (Linus, if you're reading this, we
+<span   class="emphasis"><em>could</em></span> use a little breathing room between
+releases. At least let me finish <span   class="emphasis"><em>compiling</em></span> one
+release before you turn out the next!)</p><p>Another major champion and supporter of the Linux/Alpha
+project is David Mosberger-Tang of the University of Arizona. He
+was literally the first on his block to own an Alpha-based
+AXPpci/33 motherboard, and he provided all of the initial patches
+to enable both the 32-bit and 64-bit kernels to function on that
+platform. He has also been a valuable resource and a second set of
+eyes to assist in untangling sticky problems. In addition, he has
+ported numerous system and utility packages that would have taken
+us days or even weeks to do ourselves in our spare (ha!)
+time.</p><p>It has been said that &ldquo;any sufficiently advanced technology
+is indistinguishable from a rigged demo,&rdquo; and this could certainly
+be said of the DECUS demo that we staged. While the toolset was
+capable of building and linking the kernel, the 64-bit C runtime
+library was not yet stable enough to build user utilities. Fixing
+this was on our &ldquo;to do&rdquo; list along with a lot of other things, but
+it turned out we didn't have to. Shortly after we released the
+64-bit development tools to Digital's FTP area, Bob Manson of Ohio
+State University released a working 64-bit library based on our
+earlier 32-bit work. Bob also released several useful sets of
+utilities that, again, it would have taken us weeks to get around
+to porting on our own. He is also rumored to be working on
+modifying gcc to generate floating-point code that is capable of
+recovering from exceptions.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1daa1b8"></a>The BLADE Releases</h2></div></div><p>After showing off Linux/Alpha at DECUS, it became clear that
+some kind of end-user-installable distribution was needed. At that
+point, Linux/Alpha resembled in some ways the early days of Intel
+Linux: the &ldquo;system&rdquo; consisted of a motley collection of source and
+binary archives scattered over several FTP sites on different
+continents. Putting together a running system out of these pieces
+was a job only a dedicated hacker would be willing to go through
+with.</p><p>One difference between then and now is that now there are
+high-quality commercial Linux distributions (Plug-And-Play, Red
+Hat, and Slackware, to name just a few) that can serve as the basis
+for equivalent Linux/Alpha distributions. We knew, though that it
+would be some time before these distributions were ported and
+qualified for Linux/Alpha. In oder to sustain the momentum built up
+at DECUS, we needed some kind of Linux/Alpha distribution sooner
+than that. That's when we decided to embark on a project designed
+to become obsolete: BLADE. BLADE stands for
+<span   class="bold"><b>B</b></span>asic
+<span   class="bold"><b>L</b></span>inux
+<span   class="bold"><b>A</b></span>lpha
+<span   class="bold"><b>D</b></span>istribution
+<span   class="bold"><b>E</b></span>xpletive (I picked the name by
+starting with &ldquo;LAD&rdquo; for &ldquo;Linux Alpha Distribution&rdquo; and grepping
+through /usr/dict/words for this combination and playing acronym
+games with some of the results). BLADE is a Linux/Alpha kit that
+can be installed without needing to build kernels or use a host
+development system.</p><p>BLADE was designed to be deployed quickly, and it's pretty
+rough around the edges. There's only one automatic installation
+script, called install_subset. A lot of steps that are done
+automatically by other distributions must be handled manually in
+BLADE. We provide full step-by-step instructions, though, so the
+user knows what steps need to be taken.</p><p>The first release of BLADE (V0.1) provided basic
+functionality and a development system in character-cell mode.
+There was no networking, no GUI, and a limited utility set.
+However, it was self-hosting, and it came with kernel sources and
+the gnu compiler suite. One could build the kernel or any utilities
+one desired using BLADE. In fact, we used BLADE V0.1 as our primary
+development system for BLADE V0.2. BLADE V0.1 was based on a
+modified 1.2.8 kernel and supported the AXPpci/33 only.</p><p>The second release of BLADE (V0.2) added more utilities and
+networking functionality. Graphics were still not available, but
+one could perform development and basic networking (ftp, telnet,
+rlogin) in character-cell mode. BLADE V0.2 was also the first
+release to support the Linux/Alpha Miniloader (aka MILO/Alpha) on
+the AXPpci/33. MILO is a drop-in system firmware replacement that
+allows the user to boot and run Linux without requiring the SRM
+console firmware. BLADE V0.2 also added a kernel boot disk for the
+Digital Semiconductor 275-MHz EBPC/64 evaluation motherboard. This
+is the fastest system to date that supports Linux. BLADE V0.2 is
+also based on the modified 1.2.8 kernel.</p><p>Currently under development is BLADE V0.3. BLADE V0.3 will be
+based on a 1.3 kernel and will add support for the X window system
+(see below). It should also support more system types.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1daa630"></a>X Marks The Spot</h2></div></div><p>Thanks to the tireless efforts of my colleague Jay Estabrook,
+as of this writing X11R6 is up and running on Linux/Alpha. Most of
+the standard libraries and client executables are in place. At the
+present time, only the S3 server has been ported, and it has only
+been qualified on a few video cards. The current plan is to let
+this be a sample server and solicit other parties (e.g. the XFree86
+Consortium) to port other servers.</p><p>One major problem with supporting multiple video cards has to
+do with the on-board ROM BIOS that many cards have. This BIOS
+typically contains code to initialize the card and to set video
+modes. Unfortunately, this BIOS is nearly always written in 80x86
+assembly code. To execute it on an Alpha system requires an Intel
+execution engine. We are investigating several strategies to
+provide this functionality as part of MILO/Alpha in source form,
+and rumor has it that our old friend David Mosberger-Tang has made
+good progress in this area.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1daa790"></a>Surf's Up!</h2></div></div><p>As I write this, Linux/Alpha is being exhibited at UNIX Expo
+in New York City in all of its X-windows glory. We have ported the
+freeware web-browser <span   class="bold"><b>chimera</b></span>, and
+these systems are available for surfing the web and for connecting
+to remote systems on the Internet via rlogin, telnet, and ftp. In
+fact, on setup day several people from non-net-connected boths came
+by to use these systems to retrieve forgotten files from their home
+systems. This includes yours truly, embarrassingly enough. We
+needed to connect to the serial port on our PC64 system to use the
+ROM debug monitor, but the version of Linux/Alpha on the other
+system did not have kermit, cu, tip, or any other terminal
+emulation or serial connection program. No problem: I ftp'ed over
+to David Mosberger-Tang's archive at ftp.azstarnet.com and
+retrieved the Linux/Alpha version of kermit. We were in business in
+a few minutes.</p><p>In short, Linux/Alpha is starting to feel like a real Linux
+system!</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1cb1580.0x1daa948"></a>Future Directions</h2></div></div><p>Despite our great progress, much work remains to be done on
+Linux/Alpha:</p><div class="itemizedlist"><ul type="disc"><li><p>As mentioned above, we need to deploy some sort of
+BIOS-emulation facility so that we can execute the proprietary
+initialization code on some expansion cards. While initial code
+exists and works, it does not support the real-mode 32-bit
+instructions that are used in the BIOSes of some cards.</p></li><li><p>We need to tackle the great unsolved problem of
+floating-point exception handling. Programs that are floating-point
+intensive are not likely to work until this is done.</p></li><li><p>We need to write a character-cell driver and an X
+server for the TGA graphics adapter that is provided with Multia
+and several other Digital Alpha systems.</p></li><li><p>We desperately need shared libraries! As of this
+writing, the statically-linked executables in Linux/Alpha are
+rather large (around 200Kb for a typical utility, several megabytes
+for the X server). Shared libraries will decrease both disk space
+requirements and virtual-memory usage.</p></li><li><p>We need to work on compiler optimizations. The
+Alpha support in gcc does very good optimizations in some places,
+not so good in others. In addition, the compiler does not yet take
+advantage of Alpha's multiple-instruction issue feature. This
+feature allows more than one instruction to be issued per clock
+cycle, but only certain combinations are allowed. By carefully
+rearranging the instructions in the executable, one can take
+advantage of this feature and achieve significant performance
+improvements.</p></li></ul></div><p>All in all, we are excited about the future. Linux/Alpha,
+even in its relatively primitive state, feels like a real Linux
+system. Addressing the above areas can only make it better!</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Jim Paradis</b></span>
+      works as a Principal Software
+      Engineer for Digital Equipment Corporation as a member of the Alpha
+      Migration Tools group. Ever since a mainframe system administrator
+      yelled at him in college, he's wanted to have a multiuser,
+      multitasking operating system on his own desktop system. To this
+      end, he has tried nearly every UNIX variant ever produced for PCs,
+      including PCNX, System V, Minix, BSD, and Linux. Needless to say,
+      he likes Linux the best. Jim currently lives in Worcester,
+      Massachusetts with his wife, eleven cats, and a house forever under
+      renovation. He can be reached via e-mail at
+      <a href="mailto:paradis@sousa.amt.tay1.dec.com">paradis@sousa.amt.tay1.dec.com</a>
+      and on the WWW at
+      <a href="http://www.iii.net/users/jrp.html" target="_self">www.iii.net/users/jrp.html</a></p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../020/toc020.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

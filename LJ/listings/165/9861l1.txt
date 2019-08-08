@@ -1,0 +1,113 @@
+Listing 1. wallet Script
+
+  1  #!/bin/bash
+  2
+  3  . ~/bin/functions
+  4  is_installed gpg
+  5  is_installed dialog
+  6  is_installed mktemp
+  7  is_installed basename
+  8
+  9  if [ -f ~/.walletrc ]; then
+ 10      . ~/.walletrc
+ 11  fi
+ 12
+ 13  if [ -z $VISUAL ]; then
+ 14      VISUAL=vi
+ 15  fi
+ 16
+ 17  EDIT_PWFILE=0
+ 18  while getopts 'ec:' OPTION
+ 19  do
+ 20    case $OPTION in
+ 21      e) EDIT_PWFILE=1;;
+ 22      c) WALLET_FILENAME="$OPTARG";;
+ 23      ?) printf "usage: %s [ -e ] [ -c encrypted_file ]\n" \
+ 24          $( basename $0 ) >&2
+ 25         exit 1
+ 26         ;;
+ 27    esac
+ 28  done
+ 29  shift $(($OPTIND - 1))
+ 30
+ 31  if [ -z "$WALLET_FILENAME" ]; then
+ 32      echo "need the encrypted file specified by WALLET_FILENAME"
+ 33      echo "(in ~/.walletrc or the envariable) or with the -c option"
+ 34      exit 2
+ 35  fi
+ 36
+ 37  if [ ! -f $WALLET_FILENAME ]; then
+ 38      echo "$WALLET_FILENAME doesn't exist--attempting to create..."
+ 39      echo "(you'll need to give gpg a master password)"
+ 40      mkdir -p $( dirname $WALLET_FILENAME )
+ 41      TEMPFILE=$( mktemp /tmp/wallet.XXXXXX )
+ 42      gpg -c -o $WALLET_FILENAME $TEMPFILE
+ 43      rm -f $TEMPFILE
+ 44      EDIT_PWFILE=1
+ 45  fi
+ 46
+ 47  if [ $EDIT_PWFILE -eq 1 ]; then
+ 48      is_installed $VISUAL
+ 49  fi
+ 50
+ 51  # prompt the user for the password
+ 52  PASSWORD=$( dialog --stdout --backtitle "Password Wallet" \
+ 53      --title "Master Password" --clear --passwordbox \
+ 54      "Please provide the master password." 8 40 )
+ 55  if [ $? -ne 0 ]; then
+ 56      echo "Failed to acquire master password"
+ 57      exit 4
+ 58  fi
+ 59  if [ -z $PASSWORD ]; then
+ 60      echo "Password is required"
+ 61      exit 8
+ 62  fi
+ 63
+ 64  # if we're not editing the file, just display it and quit
+ 65  if [ $EDIT_PWFILE -eq 0 ]; then
+ 66      echo $PASSWORD | gpg --decrypt --passphrase-fd 0 \
+ 67          $WALLET_FILENAME | less
+ 68      clear
+ 69      exit 0
+ 70  fi
+ 71
+ 72  # set up the directory in which the unencrypted wallet file
+ 73  # will be edited
+ 74  TMPDIR=$( mktemp -d /tmp/wallet.XXXXXX )
+ 75  CLEARTEXT_WALLET_FILENAME=$TMPDIR/wallet
+ 76
+ 77  # try to ensure that cleartext wallet file is deleted,
+ 78  # even after unexpected terminations
+ 79  trap "{ rm -rf $TMPDIR; }" 0 1 2 5 15
+ 80
+ 81  # decrypt the password wallet--an error here probably means
+ 82  # the user typed the wrong password to decrypt the wallet
+ 83  echo $PASSWORD | gpg -o $CLEARTEXT_WALLET_FILENAME \
+ 84      --passphrase-fd 0 \
+ 85      $WALLET_FILENAME &> /dev/null
+ 86  case $? in
+ 87      0)
+ 88          # decryption succeeded, so open the wallet in the editor
+ 89          # and then re-encrypt it when the editor closes
+ 90          mv $WALLET_FILENAME ${WALLET_FILENAME}.bak
+ 91          $VISUAL $CLEARTEXT_WALLET_FILENAME 2> /dev/null
+ 92          echo $PASSWORD | gpg -c -o $WALLET_FILENAME \
+ 93              --passphrase-fd 0 \
+ 94              $CLEARTEXT_WALLET_FILENAME &> /dev/null
+ 95          if [ $? -eq 0 ]; then
+ 96              clear
+ 97          else
+ 98              LAST_RESORT_FILENAME=$( mktemp ~/wallet.XXXXXX )
+ 99              cp $CLEARTEXT_WALLET_FILENAME $LAST_RESORT_FILENAME
+100              chmod 600 $LAST_RESORT_FILENAME
+101              echo "gpg failed to enrypt your password wallet: I have"
+102              echo "tried to put a CLEARTEXT copy of your wallet at"
+103              echo $LAST_RESORT_FILENAME
+104              exit 16
+105          fi
+106          exit 0;;
+107      ?)
+108          echo "error condition detected (invalid password?)"
+109          exit 32;;
+110  esac
+

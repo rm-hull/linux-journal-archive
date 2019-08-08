@@ -1,0 +1,799 @@
+#
+# Copyright (C) 1998, 1999 Philip J. Lewis
+#
+
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+#
+#    Contact: lewispj@email.com
+#
+
+An Inexpensive High Availability Cluster for Linux
+
+Introduction
+
+Although Linux is widely known to be an extremely stable operating system,
+the fact that the standard PC hardware is not quite so reliable must not be
+overlooked. I've been maintaining Linux servers for a long time and in most
+cases where a system has failed, it has been due to server hardware failure.
+Unix in the commercial world has the reputation for having good clustering
+and high availability (HA) technologies. Linux has not really been put to
+the test quite so much in this area.
+
+In my present company, Electec, we rely heavily upon email (sendmail and
+imap4), windows file sharing (Samba), ftp and dial-up authentication
+(radius) services on a 24 hour basis for communications with our suppliers,
+staff, and customers who are spread all over different timezones. Until
+recently we had all of these services consolidated in one Linux server. This
+system has served us very well. However, it is just a matter of time before
+a hardware failure occurs which may cause us loss of productivity and
+revenue.
+
+High availability is becoming increasingly important as we depend more and
+more on computers in businesses today. I decided to design and implement an
+inexpensive high availability solution for our business critical needs
+without requiring the use of expensive additional hardware or software. This
+article will go into the design aspects, pitfalls and implementation
+experiences of the solution.
+
+Clusters or Fault-Tolerant Hardware
+
+There are quite a few different approaches and combinations of approaches to
+high availability on servers. One way is to use a single fault-tolerant
+server with redundant power supplies, RAID, environmental monitoring, fans,
+network interface cards, and so on. The other way involves the use of
+several units of non-redundant hardware but arranged in a cluster so that
+each node (or server) in the cluster is able to takeover from any failures
+of partner nodes. In comparison, the fault-tolerant server approach has the
+advantage that operating system, application configurations and operations
+are the same as if you were using a simple inexpensive server. Whereas with
+a cluster, the application and OS configurations may get very complex and
+much advanced planning is needed.
+
+With a fault-tolerant server, failures are catered for in such a way that
+the clients will not notice any downtime; the recovery is seamless. Ideally
+this should also be the case with node failures in a cluster. In many cases
+the hardware cost of a cluster is far less than a single fault-tolerant
+server especially when you do not have to fork out lots of cash for some of
+the commercial cluster software offerings.
+
+Trade-off Between Cost and Downtime
+
+There is a trade-off between cost and client disruption/downtime. You must
+ask yourself how much downtime you and your users can tolerate. Shorter
+downtimes usually require a much more complex or costly solution. In our
+case I decided that we could live with approximately five minutes downtime
+in the event of a failure therefore I chose to use a cluster as opposed to a
+single fault-tolerant server.
+
+There are many clustering solutions available to the Unix market which can
+provide almost zero downtime in the event of a node takeover by means of
+session and network connection takeover. These solutions are mostly
+expensive and normally require the use of external shared storage hardware.
+In our case we can allow for sessions and connections to be lost. This
+simplifies the task of implementing a high availability cluster.
+
+Distribution of Storage Devices
+
+When implementing HA clustering it is recommended by some that a shared
+storage device should be used such as a dual ported RAID box, however it is
+possible to approach the problem by using a separate storage device for each
+node in the cluster and to mirror the storage devices as and when necessary.
+Each avenue has its own merits. The shared storage approach has the benefit
+of never requiring any software mirroring of data between cluster nodes thus
+saving precious CPU, I/O and network resources. Sharing is also beneficial
+because data accessible from another cluster node is always up to date. The
+mirroring approach, which uses separate storage devices, has the advantage
+that the cluster nodes definitely do not need to be in the same geographical
+location and is therefore more useful in a disaster recovery center
+scenario. In fact, if the mirror data was compressed, it could be sent over
+a WAN connection to a remote node.
+
+There are RAID systems available which allow the disks to be geographically
+distributed and which require interconnectivity by optical fibre, however,
+these are rather expensive. The cost of two sets of simple storage devices
+is less expensive than a dual ported RAID box of similar capacity. The dual
+ported RAID box can, in some cases, introduce a single point of failure in
+the cluster. If the RAID filesystem is somehow corrupted beyond recovery, it
+would cause serious cluster downtime. Most RAID systems mirror the data at
+the device level and have no regard for which filesystem is in use. A
+software based system can mirror files in user space so if a file becomes
+unreadable on one node it will not necessarily copy the same filesystem
+corruption to the other node. Due to this weakness and the cost factor I
+decided to use separate storage devices on each node in the cluster. It
+should be noted that even if a dual ported storage device is used, both
+nodes in the cluster should never mount the same partition read/write
+simultaneously.
+
+Cluster Load Balancing
+
+It is often desirable to spread the workload evenly across the nodes in a
+cluster. It would be a waste of resources to have one node do all the hard
+work until it failed and then have another node take over everything. That
+would be termed a hot standby system.
+
+Load balancing can take many forms depending on the service in question. For
+web servers, which provide simple static pages and which are often mainly
+read-only, a round-robin DNS solution can be quite effective. Unfortunately,
+with the read/write or transactional type of services like email or database
+access, unless the connection and session information from the service on
+one node can be shared and used by other nodes, it would be very difficult
+to provide seamless load balancing over the cluster. It would also require
+that the disk mirroring be near-instantaneous and use lots of distributed
+locking techniques which most daemons will not support without complex
+modifications. To avoid these complex drawbacks I decided that a simpler
+approach could be used which stands between the hot-standby and the
+network-level load balancing.
+
+In my two node cluster, I put half of the required services on node 'A'
+(Serv1) and the other half on node 'B' (Serv2). A mutual
+failover configuration was employed so that if node 'A' failed, node 'B'
+would take over all of its services and vice versa.
+
+Service Suitability for Clustering
+
+It had to be decided which services needed to be running on the overall
+cluster. This involved comparatively rating how much computing resource each
+service would consume. For our previous Linux server it was found that Samba
+and cyrus imap4 were the most resource intensive services with ftp, httpd
+and sendmail coming in approximately joint second place. Careful
+consideration had to be given to which services were already suited to
+running on two or more nodes concurrently. Examples of such services
+included sendmail (for sending mail only or as a relay), bind, httpd, ftpd
+(downloading only) and radius. Examples of services which cannot simply be
+run in such a way are cyrus imap4, ftpd (uploading), and Samba. The reason
+Samba cannot be running on two servers at once is simply because there would
+be two servers broadcasting the same netbios name on the same LAN. It is not
+yet possible to have PDC/BDC (primary and backup domain controller)
+arrangements with the current stable versions of Samba. The pages on a
+simple web site, on the other hand, are not fast changing so mirroring is
+very effective and parallel web servers can run quite happily without any
+major problems. The servers were configured so that each server took primary
+care of a specific group of services. In my case I put Samba on Serv1
+and cyrus imap4 on Serv2. The other services are shared in a similar
+way. httpd, bind, and radius run on both nodes concurrently.
+
+Node Takeover
+
+In the event of a node failure, the other node takes over all the services
+of the failed one in such a way as to minimize disruption to the network
+users. This was best achieved by using IP and MAC address takeover from the
+failed node onto an unused ethernet card on the takeover node. In effect,
+the node would appear to be both Serv1 and Serv2 to the
+network users.
+
+The use of MAC address takeover was preferred to avoid the potential
+problems with the clients' ARP cache still associating the old MAC address
+with the IP address. MAC address takeover, in my opinion, is neater and more
+seamless than IP takeover alone but unfortunately has some scalability
+limitations.
+
+Networking Hardware
+
+When considering the HA network setup it was very important to try to
+eliminate all single points of failure. Our previous server had many single
+points of failure; the machine itself, the network cable, the ethernet hub,
+the UPS, etc. The list was endless. The network has been designed to be
+inexpensive and reliable as shown in Figure 1.
+
+In the network diagram you can see that there are three network interface
+cards (NICs) in each server. The first NIC in each server is used for the
+main LAN access to clients. Each node is plugged into a separate ethernet
+switch or hub to give redundancy in case of a switch lock-up or failure
+(this actually happened to us not so long ago). The second NIC is used for
+creating a private inter-node network using a simple cross-over 100BaseTX
+full-duplex ethernet cable. A cross-over cable is far less likely to fail
+than two cables plugged into an ethernet hub or switch. This link is
+primarily used for disk mirroring traffic and the cluster heartbeat. It also
+helps to take the network traffic load off the main interface and provides a
+redundant network path between the nodes. The third NIC is the redundant LAN
+access card which is used for MAC and IP address takeover in the event of a
+remote node failure in the cluster. Again, these are plugged into different
+ethernet switches or hubs for greater network availability.
+
+Cluster Partitioning
+
+If a node fails in some way it is vital that only one of the nodes performs
+the IP and MAC address takeover. Determining which node has failed in a
+cluster is easier said than done. If the heartbeat network failed, while
+using a simplistic takeover algorithm, both of the nodes would wrongly
+perform MAC, IP and application takeover and the cluster would become
+partitioned. This would cause major problems on any LAN and would probably
+result in some kind of network and server deadlock. One way to prevent this
+scenario from taking place is to make the node which first detects a remote
+node failure, remote login to each of that remote node's interfaces and
+attempt to put it into a standby runlevel (eg. single user mode). This
+runlevel would prevent the failed node from attempting to restart itself and
+thus stop an endless failure-recovery loop. There are problems with this
+method. What if node 'A' which has a failed NIC thinks node 'B' is not
+responding then remotely puts node 'B' into single user mode? You would end
+up with no servers available to the LAN at all! There needs to be some
+mechanism to decide which node has actually failed. One of the only ways to
+do this on a two node cluster is to rely on a third party. My method of
+implementing this is to use a list of locally accessible devices which can
+be pinged on the LAN. Then by a process of arbitration, the node which
+detects the highest number of unreachable devices will gracefully surrender
+and go into the standby runlevel. This is shown in Figure 2. 
+
+Distributed Mirroring of Filesystems
+
+To implement this solution with minimal risk of data loss, the data on the
+two servers needs to be constantly mirrored. It would be ideal if the data
+written to Serv1 would get simultaneously written to Serv2 and
+vice versa. In practice, a near-perfect mirror would require a substantial
+kernel implementation and there would be many hurdles along the way such as
+filesystem performance and distributed lock management. One way would be to
+implement a RAID mirror which used disks from different nodes; a cluster
+filesystem. This is supposed to be possible in the later incarnations of the
+2.1 and probably the 2.2 kernel by using md, NFS and network block devices.
+The performance hit of this solution remains to be evaluated once the 2.2
+kernel is released. Another solution, which also remains to be evaluated, is
+the use of the CODA distributed filesystem.
+
+Synchronization Design
+
+A practical way to have a mirror of data on each node is to allow the
+frequency of the file mirroring to be predefined by the administrator. Not
+only for the overall node but rather on a per file or directory basis. With
+this fine grained level of control the data volatility characteristics of a
+particular file, directory or application can be reflected in frequency of
+mirroring to the other node in the cluster. For example, fast changing data
+such as an imap4 email spool where users are constantly moving, reading and
+deleting email could be mirrored every minute, whereas slow changing data
+such as the company's mainly static web pages could be mirrored hourly.
+
+Trade-off Between Mirror Integrity and Excessive Resource Usage
+
+There are trade-offs to be considered when mirroring data this way. One
+major trade-off is mirror integrity and CPU and I/O resource consumption. It
+would be nice if I could have my imap4 mail spools mirrored every 1 second.
+In practice this would not work because the server takes 15 seconds to
+synchronize this spool each time. The CPU and disk I/O usage could also be
+so high that the services would be noticeably slowed down. This would seem
+to defeat the objective of high availability. Even if the CPU had the
+resources to read the disks in less than 1 second, there may still be
+problems transferring the data changes between the nodes due to a network
+throughput bottleneck.
+
+The Risk of Data loss
+
+This mirroring approach does have some flaws.  If a file is saved to a Samba
+fileshare on Serv1, then before the Samba fileshares are mirrored
+Serv1 fails, the file will remain unavailable until Serv1 fully
+recovers. In a worst case scenario the Serv1 filesystem will have been
+corrupted and the file lost forever. However, compared to a single server
+with a backup tape, this scenario is less risky because traditional backups
+are made far less frequently than the mirroring in the cluster. Of course, a
+cluster is no replacement for traditional backups which are still vital for
+many other reasons.
+
+Resynchronization of Files on Node Recovery
+
+A major design factor is resynchronization (mirroring back) of the files
+once a failed node has recovered. A reliable procedure must be employed so
+that data which has changed on the failover node during the failure period
+is mirrored back to the original node and not lost due to the original node
+overwriting or deleting it when restoring that same file or directory. The
+resynchronization procedure should be implemented such that (i) a node
+cannot perform any mirroring while another node has taken over its services
+and, (ii) before the services can be started the original node after a
+failure, all files associated with it must be completely mirrored back to
+the original node. This must be done while the services are kept off-line on
+both nodes to prevent the services writing to the files which are being
+written to from the other node. Failure to prevent this could result in data
+corruption and loss.
+
+Mirroring Caveats
+
+There was a brain-teasing problem when using this solution with imap4 and
+pop3 mail spools. If an email is received then delivered on serv2, and
+before mirroring can take place, serv2 fails, serv1 will
+takeover the mail services. Subsequent mails would arrive in serv1's
+mail spool. When serv2 recovers the email that was received just
+before failure will be overwritten by the new mails received on serv1.
+The best way to solve this would be to configure sendmail to queue a copy of
+any mail destined for itself also for delivery to the takeover node. In the
+event that the takeover node is offline, mails would remain in the sendmail
+queue. Once the failed node has recovered they would get successfully
+delivered. This method requires that there is no mirroring of the mail
+spools and queues. However, it would be necessary to have two sendmail
+configurations available on both nodes. One configuration for normal
+operation and the other for node takeover operation. This would be to prevent
+mail bouncing between the two servers.
+
+I will not pretend to be a Sendmail expert. If you know how to configure
+dual queuing sendmail delivery please let me know. This part is still a
+work-in-progress. As a temporary measure, until I implement the above
+solution, I create backup files on resynchronization of the mail spool which
+need manual checking on node recovery which is time consuming. I also
+prevent such difficulties by mirroring the mail spool as frequently as
+possible. This has the unfortunate temporary side effect of making my hard
+disks work overtime. Similar problems would be encountered when clustering a
+database service. However, a few large Unix database vendors are now
+providing parallel versions of their products which enable concurrent
+operation across several nodes in a cluster.
+
+The Node Recovery Procedure
+
+A node could fail for various reasons ranging from an operating system
+crash, which would result in a hang or reboot, to a hardware failure which
+could result in the node going into standby mode. If the system is in
+standby mode it will not automatically recover. It should be necessary for
+the administrator to manually remove a standby lock file and start runlevel
+5 on the failed node to confirm to the rest of the cluster that the problem
+that caused the failure has been resolved. If the OS hangs then this would
+have the same effect as a standby runlevel but if the reset button is
+pressed or the system reboots, the node will try to rejoin the cluster as
+there will be no standby lock file. When a node attempts to rejoin the
+cluster, the other node will detect the recovery and stop all of the cluster
+services while the resynchronization of the disks takes place. Once this has
+completed the cluster services will be restarted and the cluster will once
+again be in full operation.
+
+Implementation Platform
+
+My choice of Linux distribution is Redhat 5.1 on the intel platform. There
+are, however, no reasons why this should not be adapted for another Linux
+distribution. The implementation is purely in user space. No special drivers
+are required. There are some basic prerequisites in order to effectively
+deploy this system. You will need:
+
+* Two similarly equipped servers especially in terms of data storage space.
+
+* Three network interface cards per server are recommended (although you
+could actually get away with two at the expense of some modifications and
+extra LAN traffic.)
+
+* Sufficient network bandwidth between the cluster nodes.
+
+My system is configured as follows:
+* 2 x DELL PowerEdge 2300 Servers
+Each complete with:
+* 3 x 3C905B 100BaseTX Ethernet Cards
+* 2 x 9 Gbyte Ultra SCSI 2 Hard disks
+* 1 x Pentium II 350 MHz CPU
+
+Overview of Cluster Software Configuration
+
+The administrator can configure groups of files which are mirrored together
+by creating some small mirror description files in the configuration
+directory. Below is the description file for my lpd mirroring. Note that
+directory entries must end with a '/'.
+
+Contents of '/etc/cluster.d/serv1/Flpd':
+
+/var/spool/lpd/
+/etc/printcap
+
+
+The frequency of the mirroring is then controlled by an entry in the
+'/etc/crontab' file also shown below. Each entry executes the sync-app
+program which examines the specified service mirror description file and
+mirrors the contents to the specified server IP address. In this example the
+specified server address is the cross-over cable IP address on Serv2.
+These crontab entries are from Serv1. Mirroring of the lpd system is
+done every hour.
+
+Example Crontab entries:
+
+0,5,10,15,20,25,30,35,40,45,50,55 * * * * root /usr/local/bin/sync-app \
+	/etc/cluster.d/serv1/Fsmbd serv2-hb
+0 * * * * root /usr/local/bin/sync-app /etc/cluster.d/serv1/Flpd serv2-hb
+
+
+Cluster Daemon Implementation
+
+The brains of the system lie in the cluster daemon, clusterd. This was
+written in the Bourne shell and will shortly get rewritten in 'C'. The
+algorithm outline is shown as a flowchart in figure 2.
+
+clusterd continuously monitors the ICMP reachability of the other node
+in the cluster as well as a list of hosts which are normally reachable from
+each node. It does this using a simple ping mechanism with a timeout. If the
+other node becomes unreachable or partially unreachable clusterd will
+decide which node actually has the failure by counting the number of hosts
+in the list which each node can reach. The node which can reach the least
+hosts is the one which gets put into standby mode. clusterd will then
+start the failover and takeover procedures on the working node. This node
+then continues to monitor if the failed node recovers. When it recovers
+clusterd controls the resynchronization procedure. clusterd is
+invoked on each node as:
+
+
+clusterd <local-nodename> <remote-nodename>
+
+
+It has to know which applications and services are running on each node so
+that it knows which ones to start and stop at failover and takeover time.
+This is defined in the same configuration directories as the service mirror
+description files described earlier. The configuration directories in each
+node are identical and mirrored across the whole cluster. This makes life
+easier for the cluster administrator as he or she can configure the cluster
+from a single designated node. Within the '/etc/cluster.d/' directory there
+is a '<nodename>.conf' file and a '<nodename>' directory for each node in
+the cluster. The reachlist file contains a list of reachable external hosts
+on the LAN. The contents of the '/etc/cluster.d' directory are shown here:
+
+
+[root@serv1 /root]# ls -al /etc/cluster.d/
+total 8
+drwxr-xr-x  4 root root 1024 Nov 15 22:39 .
+drwxr-xr-x 23 root root 3072 Nov 22 14:27 .. 
+drwxr-xr-x  2 root root 1024 Nov  4 20:30 serv1
+-rw-r--r--  1 root root  213 Nov  5 18:49 serv1.conf
+drwxr-xr-x  2 root root 1024 Nov  8 20:29 serv2
+-rw-r--r--  1 root root  222 Nov 22 22:39 serv2.conf
+-rw-r--r--  1 root root   40 Nov 12 22:19 reachlist
+
+
+As you can see, the two nodes are called serv1 and serv2. The
+configuration directory for serv1 has the following files:
+
+
+etc/cluster.d/serv1: total 9
+drwxr-xr-x 2 root root 1024 Nov 16 20:30 .
+drwxr-xr-x 4 root root 1024 Nov 15 22:39 ..
+-rw-r--r-- 1 root root   23 Oct  8 19:39 Fauth
+-rw-r--r-- 1 root root   16 Nov 16 20:30 Fclusterd
+-rw-r--r-- 1 root root   34 Oct  8 19:39 Fdhcpd
+-rw-r--r-- 1 root root   30 Oct  8 19:39 Flpd
+-rw-r--r-- 1 root root   12 Nov 15 22:14 Fnamed
+-rw-r--r-- 1 root root   19 Oct  8 19:39 Fradiusd
+-rw-r--r-- 1 root root  102 Oct  8 19:39 Fsmbd
+lrwxrwxrwx 1 root root   24 Oct 25 17:33 K10radiusd -> /etc/rc.d/init.d/radiusd
+lrwxrwxrwx 1 root root   20 Oct 25 17:33 K30httpd -> /etc/rc.d/init.d/httpd
+lrwxrwxrwx 1 root root   20 Oct 25 17:33 K40smb -> /etc/rc.d/init.d/smb
+lrwxrwxrwx 1 root root   20 Oct 25 17:33 K60lpd -> /etc/rc.d/init.d/lpd
+lrwxrwxrwx 1 root root   22 Oct 25 17:33 K70dhcpd -> /etc/rc.d/init.d/dhcpd
+lrwxrwxrwx 1 root root   22 Oct 25 17:33 K80named -> /etc/rc.d/init.d/named
+lrwxrwxrwx 1 root root   22 Oct 25 17:33 S20named -> /etc/rc.d/init.d/named
+lrwxrwxrwx 1 root root   22 Oct 25 17:33 S30dhcpd -> /etc/rc.d/init.d/dhcpd
+lrwxrwxrwx 1 root root   20 Oct 25 17:33 S40lpd -> /etc/rc.d/init.d/lpd
+lrwxrwxrwx 1 root root   20 Oct 25 17:33 S50smb -> /etc/rc.d/init.d/smb
+lrwxrwxrwx 1 root root   20 Oct 25 17:33 S60httpd -> /etc/rc.d/init.d/httpd
+lrwxrwxrwx 1 root root   24 Oct 25 17:33 S90radiusd -> /etc/rc.d/init.d/radiusd
+
+
+The files that begin with the letter 'F' are service mirror description
+files. Those starting with 'S' and 'K' are linked to the SysVinit start/stop
+scripts and behave in a similar way to the files in the SysVinit runlevels.
+The 'S' services are started when node serv1 is in normal operation.
+The 'K' services are killed when node serv1 goes out of service. The
+number following the 'S' and 'K' determine the order of starting and
+stopping the services.  clusterd running on node serv2 uses this
+same '/etc/cluster.d/serv1/' directory to decide which services to start on
+serv2 when node serv1 has failed. It also uses the serv1
+service mirror description files (those files starting with 'F') to
+determine which files and directories need to be mirrored back
+(resynchronized) to serv1 after it has recovered. The configuration
+directory for node serv2 is as follows:
+
+
+/etc/cluster.d/serv2:
+total 6
+drwxr-xr-x 2 root root 1024 Nov 16 20:29 . 
+drwxr-xr-x 4 root root 1024 Nov 15 22:39 ..
+-rw-r--r-- 1 root root   88 Oct 15 17:15 Fftpd
+-rw-r--r-- 1 root root   29 Oct 15 17:15 Fhttpd
+-rw-r--r-- 1 root root   44 Oct  8 18:47 Fimapd
+-rw-r--r-- 1 root root   62 Nov 16 20:29 Fsendmail
+lrwxrwxrwx 1 root root   25 Sep 25 17:33 K60sendmail -> /etc/rc.d/init.d/sendmail
+lrwxrwxrwx 1 root root   22 Sep 25 17:33 K80httpd -> /etc/rc.d/init.d/httpd
+lrwxrwxrwx 1 root root   22 Sep 25 17:33 K85named -> /etc/rc.d/init.d/named
+lrwxrwxrwx 1 root root   21 Nov 15 22:52 K90inetd -> /etc/rc.d/init.d/inet
+lrwxrwxrwx 1 root root   21 Nov 15 22:52 S10inetd -> /etc/rc.d/init.d/inet
+lrwxrwxrwx 1 root root   22 Sep 25 17:33 S15named -> /etc/rc.d/init.d/named
+lrwxrwxrwx 1 root root   22 Sep 25 17:33 S20httpd -> /etc/rc.d/init.d/httpd
+lrwxrwxrwx 1 root root   25 Sep 25 17:33 S40sendmail -> /etc/rc.d/init.d/sendmail
+
+
+As you can see here, the node serv2 normally runs sendmail, named,
+httpd, imap4, and ftpd.
+
+Network control scripts
+
+Whenever the network interfaces need to be brought up or down I have used
+RedHat's supplied 'ifup' and 'ifdown' scripts respectively. This makes the
+network interface configuration more tightly integrated with the GUI network
+configuration tools. The node configuration files
+'/etc/cluster.d/<nodename>.conf' allows you to specify which ethernet NIC is
+used for which purpose on each node in the cluster. Here are my node
+configuration files:
+
+
+[root@serv1 /root]# cat serv1.conf
+# config for serv1 main interface & address
+MAIN_IPADDR=203.1.2.1
+MAIN_INTERFACE=eth0
+MAIN_MACADDR=00:10:4B:63:1C:08
+# Server's heartbeat interface & address
+HEARTBEAT_IPADDR=192.168.111.1
+HEARTBEAT_INTERFACE=eth1
+# Server's redundant interface
+REDUNDANT_INTERFACE=eth2
+
+[root@serv1 /root]# cat serv2.conf
+# config for serv2 main interface & address
+MAIN_IPADDR=203.1.2.2
+MAIN_INTERFACE=eth0
+MAIN_MACADDR=00:10:4B:31:46:0F
+# Server's heartbeat interface & address
+HEARTBEAT_IPADDR=192.168.111.2
+HEARTBEAT_INTERFACE=eth1
+# Server's redundant interface
+REDUNDANT_INTERFACE=eth2 
+
+
+To implement the MAC address takeover there is one important addition to the
+RedHat ethernet configuration files. You must add a line to the
+'/etc/sysconfig/network-scripts/ifcfg-eth2' file to set the MAC address.
+eth2 is the redundant interface in my case so I need it to takeover the MAC
+address of the main service interface on the other node in the cluster. In
+other words, the MAC address of eth2 on serv2 must be the same as the
+MAC address of eth0 on serv1. The line 'MACADDR=00:10:4B:63:1C:08' was
+appended to this file on node serv2. The RedHat 'ifup' will use this
+variable when bringing up an interface. A similar modification must be made
+to each node.
+
+If you will be using an ethernet switch (instead of a hub) it will be
+necessary to set the MAC address cache timeout to a suitable period to avoid
+the cluster losing communication with the LAN clients after a MAC address
+takeover. I set ours to 20 seconds for the ports which are connected
+directly to the nodes. Consult your switch manual or vendor if you need
+information on how to do this. It can usually be done via the console cable.
+
+Procedure for setting up a cluster
+
+
+1. Install the required clusterd software and associated utilities (see
+resources)
+2. Configure the <nodename>.conf files with your selected interfaces, IP,
+and MAC addresses.
+3. On each node use the RedHat netcfg tool to configure the addresses
+of your three ethernet interfaces - make the first two (eth0 and eth1)
+'activate at boot time' and the redundant interface (eth2) to remain
+inactive. Configure the RedHat MACADDR variable as described above.
+4. Get ssh working as root user so that you may log in anywhere
+between the nodes without requiring any password to be entered when using
+any interface. You may want to use the '.shosts' file for this.
+5. Create a 'reachlist' which is made up of two or three normally reachable
+hosts on the shared LAN. SNMP managed ethernet switches/hubs are ideal candidates
+for this.
+6. Start the clusterd program from inittab.
+
+
+Procedure of adding a service to a cluster
+
+
+1. Install the service (eg. Samba) on each node as per normal.
+2. Configure the service as usual for a standalone server but only on one
+primary node (i.e. the node where the service will normally run).
+3. Create a service mirror description file in the <primary_nodename> 
+directory listing the directories and files you wish to be mirrored
+between the nodes - be sure to include the configuration files
+(eg. /etc/smb.conf) and the data directories (eg. /home/samba/ and /var/samba/).
+4. Create a sync-app crontab entry on the primary node and
+decide the mirroring frequency.
+5. Remove the start script symbolic links which may be present in the
+usual SysVinit runlevel directories (eg. /etc/rc.d/rc5.d/S??smbd).
+6. Create start/stop script symbolic links in the <primary_nodename> directory
+for your service.
+7. Double check your settings.
+
+
+
+Centralized Cluster Administration
+
+I have created service mirror description files and crontab entries for
+/etc/hosts, passwd/group files and the whole /etc/clusterd/ directory so
+that I can administer the cluster from a single node. This greatly
+simplifies cluster configuration. To avoid confusion, I found it helpful to
+create a DNS alias for each service used on the cluster which points to the
+primary node for that service so that when I need to configure Samba all I
+need to do is remote login to 'samba.yourdomainname.com'. If the secondary
+node for a service is configured by mistake, the changes will be ignored
+until the primary node fails.
+
+Current Software Limitations
+
+Currently only two nodes maybe in a cluster. The effort in scaling this upto
+clusters of more than two nodes should not be too difficult although a
+different approach would probably have to be used instead of MAC address
+takeover because of the large number of NICs otherwise required for larger
+clusters.
+
+Other utilities used
+
+Several useful utilities enabled me to do efficient mirroring. rsync
+is an invaluable utility which uses the 'rsync' algorithm. This program will
+look for changes in files and only mirror the parts which have changed
+rather than the whole file. It also checks if the file has been updated by
+examining the modification date and file size before doing any further
+comparisons. ssh (secure shell), can also be used between the nodes in
+conjunction with rsync so that the mirrored data is sent via an
+encrypted and authenticated connection. You can alternatively use rsh
+if you prefer.
+
+When rsync is doing file comparisons it uses the file's date and time
+therefore it is vital that the nodes all agree on the same time. I chose to
+run the netdate utility every hour from cron. The nodes used a list of
+remote trusted time sources. To make sure that a failed node boots with the
+correct time the CMOS PC clock is updated after running netdate.
+
+Synchronization Implementation
+
+rsync was configured so that files in the source directory that do not
+exist on the target directory are deleted. This behaviour is necessary to
+avoid accumulative and excessive disk usage on the target node. If this
+setting is not used then a user connected to a Samba file share would
+effectively not be able to delete any file on the mirrored node. The same
+goes for almost all applications. clusterd is configured to create
+backups of deleted or changed files when the resynchronization procedure is
+in progress. This can help minimize the risk of data loss in the event of
+mirroring failure prior to a node takeover. The subsequent removal of backup
+files would necessitate some human intervention after it has been confirmed
+that files or data were not lost after the node recovery. This was done
+using the '--backup' option in rsync version 2.2.1. You may find it
+more CPU efficient to turn off the rsync algorithm and fully mirror
+files which have changed instead of mirroring the changes however this will
+utilize more network bandwidth.
+
+Resynchronization Implementation
+
+The resynchronization (mirroring back) procedure was implemented also using
+rsync. It uses a lock file which disallows any mirroring to another
+node while it senses a node failure. The lock file is checked for existence
+by sync-app before any files are mirrored. This prevents node 'A'
+mirroring to node 'B' while node 'B' is mirroring the same files to node
+'A'.
+
+Using a Shared Storage Device
+
+clusterd could be used with a shared and/or distributed storage device
+if preferred by removing the resynchronization function and by not using
+sync-app, although I haven't tried this yet.
+
+Testing and Results
+
+To test server failure I had to simulate the failure of every interface on
+the cluster. In every case the cluster took the expected action and shut
+down the correct server. In the case of the inter-node/heartbeat network
+failing, the nodes simply carried on normal operation and notified the
+administrator of the failure. On a point-to-point network of this nature it
+is almost impossible to determine which NIC is at fault. I simulated various
+network switch failures and power supply failures. The results were all as
+expected. After a node was put into standby mode (single user mode) I had to
+manually remove a standby lock file in order to fully bring up the node once
+again. If a node recovered and entered a network runlevel while the standby
+lock file still existed, the remote node immediately put the node back into
+standby mode to prevent an IP and MAC address clash on the LAN.
+
+The mirroring was tested over a period of several months and I found that
+the nodes could typically compare 6 Gbytes of unchanged data in around
+50,000 files in under 45 seconds.
+
+After catastrophic node failure (pulled the power plug from the UPS),
+recovery time for the node was around 10-15 minutes for fsck disk checking,
+and a disk resynchronization time of around 3 minutes (9+ Gigabytes of
+data). This represented a cluster services downtime of around 3 minutes to
+the LAN clients.
+
+Failover delay from when a node failed until the remote node fully took over
+was typically 60-80 seconds. The effect this had on users was dependent on
+the service; sendmail, imap4, http and ftp just refused connection for users
+for the duration, whereas Samba sometimes momentarily locked up a windows PC
+application where there were open files at the point of failure. Radius and
+dhcpd caused no client lock-outs probably because of their UDP
+implementation.
+
+Conclusions
+
+On the whole the cluster provides us with much better system availability.
+It is a vast improvement over the single server as now we can afford to do
+server maintenance and upgrades during working hours. We have not yet had
+any real life catastrophic failures with the new Dell servers but the test
+results show that there is a minimal downtime of less than 2 minutes while a
+node takes over. We have saved spending large amounts of capital by
+implementing a simple high availability cluster without the need for
+expensive specialist hardware such as dual ported RAID.
+
+This clustering solution is certainly not as advanced as some of the
+commercial clusters or as thorough as some of the upcoming open source
+Linux-HA project proposals, however it does meet our needs sufficiently.
+
+The system has been in full time production operation since September 1998.
+We have over 30 LAN clients using the cluster as their primary 'server'. The
+system has proven to be reliable. The company sees the server as a business
+critical system and it seems like we have achieved the objectives of high
+availability.
+
+Future Improvements
+
+* Use of a high performance network block device with software RAID-1
+which would do away with the periodic mirroring and its associated caveats.
+
+* Evaluation of the CODA distributed filesystem for a cluster
+filesystem.
+
+* Improved administrator notification and communication with network
+management systems.
+
+* Use of service watchdogs or agents which will monitor the health of a
+particular service and initiate a node takeover when things look bad.
+
+* Inclusion of a lower level and more robust heartbeat system which
+could make use of the serial port or target mode SCSI instead of the more
+complex network interface card.
+
+* A GUI and setup scripts for cluster and node configuration.
+
+* Improved scalability across more than two nodes.
+
+* Dual sendmail queuing and delivery for concurrent operation.
+
+Other related links
+
+* Eddie - A high availability and load balancing system currently for
+DNS and httpd:
+	http://www.eddieware.org
+
+* RSF-1 - A commercial HA offering for Linux which uses dual ported RAID.
+	http://www.rsi.co.uk
+
+* Alan's High-Availability Linux Project Site:
+	http://www.henge.com/~alanr/ha
+
+* Software RAID Howto by Linas Vepstas:
+	http://www.linas.org/linux/Software-RAID/Software-RAID.html
+
+* Linux HA Howto by Harald Milz:
+	http://metalab.unc.edu/pub/Linux/ALPHA/linux-ha/High-Availability-HOWTO.html
+
+* The Coda Distributed File System:
+	http://www.coda.cs.cmu.edu/
+
+* Slashdot.org contributors:
+	http://slashdot.org
+
+Resources
+
+* clusterd:
+	ftp://ftp.ssc.com/pub/????/clusterd/
+
+* rsync, written by Andrew Tridgell:
+	http://samba.anu.edu.au/rsync
+
+* Secure Shell, ssh:
+	http://www.replay.com/redhat/ssh.html
+
+* RedHat Linux:
+	http://www.redhat.com
+
+Credits
+
+* Electec, Singapore for being guinea-pigs and letting me loose on their
+networks.
+
+* Dr. Ian Vince McLoughlin, for reading, correcting and suggesting
+useful improvements to this article.
+
+About the Author
+
+Philip Lewis is from the UK. He graduated from the University of Birmingham
+in 1994 & has spent 3 years working in Singapore. He has been writing
+software since 1983. He now runs his own consultancy company in UK designing
+WAN/LAN infrastructures & writing Linux software. His interests include
+Linux software development& hacking, telecomms, network security, promoting
+Linux, making wine and eating good food in Malaysia. He can be reached via
+email at lewispj@email.com

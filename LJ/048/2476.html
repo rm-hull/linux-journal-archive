@@ -1,0 +1,522 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Writing a Linux Driver</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    The main goal of this article is to learn what a driver is, how&#10;    to implement a driver for Linux and how to integrate it into the&#10;    operating system&mdash;an article for the experienced C programmer.&#10;    "><meta name="keywords" content="development, driver"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1501580.0x15f8ab0"></a>Writing a Linux Driver</h1></div><div><div class="author"><h3 class="author">Fernando Matia</h3></div><div class="issuemoyr">Issue #48, April 1998</div></div><div><p>
+    The main goal of this article is to learn what a driver is, how
+    to implement a driver for Linux and how to integrate it into the
+    operating system&mdash;an article for the experienced C programmer.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x15f92f0"></a></h2></div></div><p>The concept of an operating system (OS)
+must be well understood before any attempt to navigate inside it is
+made. Several definitions are available for an OS:
+<div class="orderedlist"><ol type="1"><li><p>An OS is the set of manual and automatic procedures
+which allow a set of users to share a computing system in an
+efficient manner.</p></li><li><p>The dictionary defines an OS as a program or set of
+programs which manage the processes of a computing system and allow
+the normal execution of the other jobs.</p></li><li><p>The definition from the Tanenbaum book (see
+Resources): An operating system is [the program] which controls all
+the resources of the computer and offers the support where users
+can develop application programs.</p></li></ol></div>
+
+</p><p>It is also very important to clearly distinguish a
+<span   class="emphasis"><em>program</em></span> from a <span   class="emphasis"><em>process</em></span>. A
+program is a block of data plus instructions, which is stored in a
+file on disk and is ready to be executed. On the other hand, a
+process is an image in memory of the program which is being
+executed. This difference is highly important, because usually the
+processes are running under OS control. Here, our program is the
+OS, so we cannot speak about processes.</p><p>We will use the term <span   class="emphasis"><em>kernel</em></span> to refer to
+the main body of the OS, which is a program written in the C
+language. The program file may be named vmlinuz, vmlinux or zImage,
+and has some things in common with the MS-DOS files COMMAND.COM,
+MSDOS.SYS and IO.SYS, although their functionality is different.
+When we discuss <span   class="emphasis"><em>compilation</em></span> of the kernel, we
+mean that we will edit the source files in order to generate a new
+kernel.</p><p>Peripheral or internal <span   class="emphasis"><em>devices</em></span> allow
+users to communicate with the computer. Examples of devices are:
+keyboards, monitors, floppy and hard disks, CD-ROMs, printers, mice
+(serial/parallel), networks, modems, etc. A
+<span   class="emphasis"><em>driver</em></span> is the part of the OS that manages
+communication with devices; thus, they are usually called
+<span   class="emphasis"><em>device drivers</em></span>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x15f99d0"></a>What is a Driver?</h2></div></div><div       class="mediaobject"><img src="2476f1.jpg"><div class="caption"><p>
+Figure 1. Software/Hardware Scheme
+</p></div></div><p>Figure 1 shows the relation between user programs, the OS and
+the devices. Differences between software and hardware are clearly
+specified in this scheme. At the left side, user programs may
+interact with the devices (for example, a hard disk) through a set
+of high-level library functions. For example, we can open and write
+to a file of the hard disk calling the C library functions
+<span   class="bold"><b>fopen</b></span>,
+<span   class="bold"><b>fprintf</b></span> and
+<span   class="bold"><b>close</b></span>:</p><pre     class="programlisting">
+FILE *fid=fopen("filename", "w");
+fprintf(fid, "Hello, world!");
+fclose(fid);
+</pre><p>The user can also write to a file (or to another device such
+as a printer) from the OS shell, using commands such as:
+<pre     class="programlisting">
+echo "Hello, world!" &gt;
+echo "Hello, world!" &gt; /dev/lp
+</pre>
+
+
+To execute this command, both the shell and the library functions
+perform a call to a low level function of the OS, e.g.,
+<span   class="bold"><b>open()</b></span>,
+<span   class="bold"><b>write()</b></span> or
+<span   class="bold"><b>close()</b></span>:
+<pre     class="programlisting">
+fid = open("/dev/lp", O_WRONLY);
+write(fid, "Hello, world!");
+close(fid);
+</pre>
+
+
+Each device can be referred to as a special file named /dev/*.
+Internally, the OS is composed of a set of drivers, which are
+pieces of software that perform the low-level communication with
+each device. At this execute level, the kernel calls driver
+functions such as <span   class="bold"><b>lp_open()</b></span> or
+<span   class="bold"><b>lp_write()</b></span>.
+</p><p>On the right side of Figure 1, the hardware is composed of
+the device (a video display or an Ethernet link) plus an interface
+(a VGA card or a network card). Finally, the device driver is the
+physical interface between the software and the hardware. The
+driver reads from and writes to the hardware through ports (memory
+addresses where the hardware links physically), using the internal
+functions <span   class="bold"><b>out_p</b></span> and
+<span   class="bold"><b>in_p</b></span>:</p><pre     class="programlisting">
+out_p(0x3a, 0x1f);
+data = in_p(0x3b);
+</pre><p>Note that these functions are not available to the user.
+Since the Linux kernel runs in protected mode, the low memory
+addresses, where the ports addresses reside, are not user
+accessible. Functions equivalent to the low-level functions
+<span   class="bold"><b>in</b></span> and
+<span   class="bold"><b>out</b></span> do not exist in the high-level
+library, as in other operating systems such as MS-DOS.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x15fa318"></a>Features of a Driver</h2></div></div><p>The main features of a driver are:</p><div class="itemizedlist"><ul type="disc"><li><p>It performs input/output (I/O) management.</p></li><li><p>It provides transparent device management, avoiding
+low-level programming (ports).</p></li><li><p>It increases I/O speed, because usually it has been
+optimized.</p></li><li><p>It includes software and hardware error
+management.</p></li><li><p>It allows concurrent access to the hardware by
+several processes.</p></li></ul></div><p>There are four types of drivers: character drivers, block
+drivers, terminal drivers and streams. <span   class="emphasis"><em>Character
+drivers</em></span> transmit information from the user to the device
+(or vice versa) byte per byte (see Figure 2). Two examples are the
+printer, /dev/lp, and the memory (yes, the memory is also a
+device), /dev/mem.</p><div       class="mediaobject"><img src="2476f2.jpg"><div class="caption"><p>
+Figure 2. Character Drivers
+</p></div></div><p><span   class="emphasis"><em>Block drivers</em></span> (see Figure 3) transmit
+information block per block. This means that the incoming data
+(from the user or from the device) are stored in a buffer until the
+buffer is full. When this occurs, the buffer content is physically
+sent to the device or to the user. This is the reason why all the
+printed messages do not appear in the screen when a user program
+crashes (the messages in the buffer were lost), or the floppy drive
+light does not always turn on when the user writes to a file. The
+clearest examples of this type of driver are disks: floppy disks
+(/dev/fd0), IDE hard disks (/dev/hda) and SCSI hard disks
+(/dev/sd1).</p><div       class="mediaobject"><img src="2476f3.jpg"><div class="caption"><p>
+Figure 3. Block Drivers
+</p></div></div><p><span   class="emphasis"><em>Terminal drivers</em></span> (see Figure 4)
+constitute a special set of character drivers for user
+communication. For example, command tools in an open windows
+environment, an X terminal or a console, are devices which require
+special functions, e.g., the up and down arrows for a command
+buffer manager or tabbing in the bash shell. Examples of block
+drivers are /dev/tty0 or /dev/ttya (a serial port). In both cases
+the kernel includes special routines, and the driver special
+procedures, to cope with all particular features.</p><div       class="mediaobject"><img src="2476f4.jpg"><div class="caption"><p>
+Figure 4. Terminal Drivers
+</p></div></div><p><span   class="emphasis"><em>Streams</em></span> are the youngest drivers (see
+Figure 5) and are designed for very high speed data flows. Both the
+kernel and the driver include several protocol layers. The best
+example of this type is a network driver.</p><div       class="mediaobject"><img src="2476f5.jpg"><div class="caption"><p>
+Figure 5. Stream Drivers
+</p></div></div><p>As we have said, a driver is a piece of a program. It is
+composed of a set of C functions, some of which are mandatory. For
+example, for a printer device, some typical functions only called
+by the kernel, may be:</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>lp_init()</b></span>:
+Initializes the driver and is called only at boot time.</p></li><li><p><span   class="bold"><b>lp_open()</b></span>: Opens a
+connection with the device.</p></li><li><p><span   class="bold"><b>lp_read()</b></span>: Reads
+from the device.</p></li><li><p><span   class="bold"><b>lp_write()</b></span>: Writes
+to the device.</p></li><li><p><span   class="bold"><b>lp_ioctl()</b></span>:
+Performs device configuration operations.</p></li><li><p><span   class="bold"><b>lp_release()</b></span>:
+Interrupts connection with device.</p></li><li><p><span   class="bold"><b>lp_irqhandler()</b></span>:
+Specific functions called by the device to handle
+interrupts.</p></li></ul></div><p>Some additional functions are available for particular
+applications, like <span   class="bold"><b>*_lseek()</b></span>,
+<span   class="bold"><b>*_readdir()</b></span>,
+<span   class="bold"><b>*_select()</b></span> and
+<span   class="bold"><b>*_mmap()</b></span>. You may find more
+information about them in Michael Johnson's <span   class="emphasis"><em>Hacker's
+Guide</em></span> (see Resources).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x19f3dd0"></a>Do I Really Need to Write a Driver?</h2></div></div><p>There are several reasons for writing our own device
+driver:</p><div class="itemizedlist"><ul type="disc"><li><p>To solve concurrency problems when two or more
+processes try to access a device at the same time.</p></li><li><p>To use hardware interrupts: as the kernel runs in
+protected mode, the user cannot manage interrupts directly from a
+program.</p></li><li><p>To handle other unusual applications, such as
+managing a virtual device (a RAM disk or a device
+simulator).</p></li><li><p>To obtain satisfaction as a programmer: writing a
+driver increases personal motivation as well as control over the
+computer.</p></li><li><p>To learn about the internal parts of the
+system.</p></li></ul></div><p>Conversely, there are also several reasons for not writing
+our own driver:</p><div class="itemizedlist"><ul type="disc"><li><p>It requires a good deal of mental
+preparation.</p></li><li><p>It requires low-level programming, i.e., direct
+management of ports and interrupt handlers.</p></li><li><p>In the debug process, the kernel hangs easily, and
+it is not possible to use debuggers or C library functions such as
+<span   class="bold"><b>printf</b></span>.</p></li></ul></div><p>In order to understand the following explanation, you must
+know the C programming language, the basic I/O procedures, a
+minimum about the internal architecture of a PC and have some
+experience in the development of software applications for Unix
+systems.</p><p>Finally, we must add that writing our own device driver is
+only necessary when the device manufacturer does not supply a
+driver for our OS or when we wish to add extra functionality to the
+one we have.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x19f4668"></a>An Actual Example of a Driver</h2></div></div><p>The first question we answer is: why use Linux as an example
+of how to write a driver? The answer is twofold: all the source
+files are available in Linux, and I have a working example at my
+lab in UPM-DISAM, Spain.</p><p>However, both the directory structure and the driver
+interface with the kernel are OS dependent. Indeed small changes
+may appear from one version or release to the next. For example,
+several things changed from Linux 1.2.x to Linux 2.0.x, such as the
+prototypes of the driver functions, the kernel configuration method
+and the Makefiles for kernel compilation.</p><p>The device we have selected for our explanation is the MRV-4
+Mobile Robot from the U.S. company Denning-Brach International
+Robotics. Although the robot uses a PC with a specific board for
+hardware interfacing (a motor/sonar card), the company does not
+supply a driver for Linux. Nevertheless, all the source files of
+the software, which control the robot through the motor/sonar card,
+are available in C language for MS-DOS. The solution is to write a
+driver for Linux. In the example, we use kernel release 2.0.24,
+although it will also work in later versions with few
+modifications.</p><p>The mobile platform is composed of a set of wheels coupled
+with two motors (the drive and the steer), a set of 24 sonars which
+act as proximity sensors for obstacle detection and a set of
+bumpers which detect collisions. We need to implement a driver
+with, at least, the following services
+(<span   class="bold"><b>init</b></span>,
+<span   class="bold"><b>open</b></span> and
+<span   class="bold"><b>release</b></span> are mandatory):</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>write</b></span>: to send
+linear and angular velocity commands</p></li><li><p><span   class="bold"><b>read</b></span>: to read
+sonar measures and encoder values</p></li><li><p><span   class="bold"><b>three interrupt
+handlers</b></span>: to store sonar measures when a sonar echo is
+received, to implement an emergency stop when a bumper detects a
+collision and to stop the steer motor when the wheels are located
+at 0 (zero) degrees and a <span   class="emphasis"><em>go to home</em></span> flag is
+active</p></li><li><p><span   class="bold"><b>ioctl commands</b></span>:
+<span   class="emphasis"><em>go to home</em></span> which sends a constant angular
+velocity to the wheels and activates the <span   class="emphasis"><em>go to
+home</em></span> flag; and configuration of motors and sonars</p></li></ul></div><p>The <span   class="emphasis"><em>go to home</em></span> service allows the user
+to stop the wheels at an initial position which is always the same
+(0 degrees). The incoming values from sonars and encoders, as well
+as the velocity commands, might be part of the main loop of the
+control program of the robot.</p><p>Returning to the initial scheme (Figure 1), the device is the
+MRV-4 robot, the hardware interface is the motor/sonar card, the
+source file of the driver will be mrv4.c, the new kernel we will
+generate will be vmlinuz, the user program for kernel testing will
+be <span   class="bold"><b>mrv4test.c</b></span> and the device will
+be /dev/mrv4 (see Figure 6).</p><div       class="mediaobject"><img src="2476f6.jpg"><div class="caption"><p>
+Figure 6. mrv4hard MRV-4 Scheme
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x1905b28"></a>General Programming Considerations</h2></div></div><p>To build a driver, these are the steps to follow:</p><div class="orderedlist"><ol type="1"><li><p>Program the driver source files, giving special
+attention to the kernel interface.</p></li><li><p>Integrate the driver into the kernel, including in
+the kernel source calls to the driver functions.</p></li><li><p>Configure and compile the new kernel.</p></li><li><p>Test the driver, writing a user program.</p></li></ol></div><p>The directory structure of the Linux source files can be
+described as follows: the /usr/src contains subdirectories such as
+/xview and /linux. Inside the /linux directory, the different parts
+of the kernel are classified into subdirectories: init, kernel,
+ipc, drivers, etc. The directory /usr/src/linux/drivers/ contains
+the driver sources, classified into categories such as block, char,
+net, etc.</p><p>Another interesting directory is /usr/include, where the main
+header files, such as stdio.h, are located. It contains two special
+subdirectories:</p><div class="itemizedlist"><ul type="disc"><li><p>/usr/include/system/, which includes system header
+files, such as types.h</p></li><li><p>/usr/include/linux/, which includes the Linux
+kernel headers such as lp.h, serial.h, mem.h and mrv4.h.</p></li></ul></div><p>The first task when programming the source files of a driver
+is to select a name to identify it uniquely, such as hd, sd, fd,
+lp, etc. In our case we decided to use mrv4. Our driver is going to
+be a character driver, so we will write the source into the file
+/usr/src/linux/drivers/char/mrv4.c, and its header into
+/usr/include/linux/mrv4.h.</p><p>The second task is to implement the driver I/O functions. In
+our case, <span   class="bold"><b>mrv4_open()</b></span>,
+<span   class="bold"><b>mrv4_read()</b></span>,
+<span   class="bold"><b>mrv4_write()</b></span>,
+<span   class="bold"><b>mrv4_ioctl()</b></span> and
+<span   class="bold"><b>mrv4_release()</b></span>.</p><p>Special care must be taken when programming the driver
+because of the following limitations:</p><div class="itemizedlist"><ul type="disc"><li><p>Standard library functions are not
+available.</p></li><li><p>Some floating-point operations are not
+available.</p></li><li><p>Stack size is limited.</p></li><li><p>It is not possible to wait for events, because the
+kernel, and so all the processes, are stopped.</p></li></ul></div><p>The OS functions supported at kernel level are, of course,
+only those functions programmed inside it:</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>kmalloc()</b></span>,
+<span   class="bold"><b>kfree()</b></span>: memory management</p></li><li><p><span   class="bold"><b>cli()</b></span>,
+<span   class="bold"><b>sti()</b></span>: enable/disable
+interrupts</p></li><li><p><span   class="bold"><b>add_timer()</b></span>,
+<span   class="bold"><b>init_timer()</b></span>,
+<span   class="bold"><b>del_timer()</b></span>: timing
+management</p></li><li><p><span   class="bold"><b>request_irq()</b></span>,
+<span   class="bold"><b>free_irq()</b></span>: irq management</p></li><li><p><span   class="bold"><b>inb_p()</b></span>,
+<span   class="bold"><b>outb_p()</b></span>: port management</p></li><li><p><span   class="bold"><b>memcpy_*fs()</b></span>: data
+management</p></li><li><p><span   class="bold"><b>printk()</b></span>:
+input/output</p></li><li><p><span   class="bold"><b>register_*dev()</b></span>,
+<span   class="bold"><b>unregister_*dev()</b></span>: device
+management</p></li><li><p><span   class="bold"><b>*sleep_on()</b></span>,
+<span   class="bold"><b>wake_up*()</b></span>: process
+management</p></li></ul></div><p>Detailed information on these functions is given in
+Johnson's <span   class="emphasis"><em>Guide</em></span> (see Resources) or even
+inside the kernel source files.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x19074f0"></a>Low-Level Programming</h2></div></div><p>Access to the hardware interface (the card) is provided
+through low-memory addressing. The I/O registers of the card, where
+we can read/write information, are physically connected to memory
+addresses of the PC (i.e., ports). For instance, the motor/sonar
+card of the MRV-4 mobile robot is associated with the address
+<b  >0x1b0</b>. Sixteen registers are used in this card,
+so the port map includes addresses from <b  >0x1b0</b> to
+<b  >0x1be</b>. A typical list of port addressing is
+shown in Table 1.:</p><p><a href="2476t1.html" target="_self"><span   class="bold"><b>Table 1.
+Typical Port Addresses</b></span></a></p><p>A free address region must be found to allocate the ports for
+the new card. In Table 1, addresses from <b  >1b0</b> to
+<b  >1be</b> were free. The source code example, foo.c,
+is available on the SSC FTP site (see end of article) and includes
+a call to a system function that allows us to see the previous
+table of addresses. Finally, access to the ports is granted via the
+functions <span   class="bold"><b>inb_p</b></span> and
+<span   class="bold"><b>outb_p</b></span>.</p><p>Interrupts are the other main topic when talking about
+low-level programming and hardware control. Interrupt handling
+versus polling has the main advantage that hardware is usually
+slow. We cannot stop all processes in a computer until a printer
+finishes a job. Instead, we can continue with normal work until the
+printer finishes, then send an interrupt signal that is handled by
+a specific function.</p><p>Continuing with our example, we need three handlers, one for
+each of the hardware interrupts that the card can generate: sonars
+handler (at irq <b  >0x0a</b>), home handler (at irq
+<b  >0x0b</b>) and bumper handler (at irq
+<b  >0x0c</b>). As example of what the source code must
+do, we show the structure of the
+<span   class="bold"><b>sonar_irq_hdlr</b></span> function. Each time
+an echo from a sonar is received, it must:</p><div class="orderedlist"><ol type="1"><li><p>Disable hardware interrupts.</p></li><li><p>Read sonar value from its port and store it in a
+driver internal variable.</p></li><li><p>Enable interrupts again.</p></li></ol></div><p>If a user program wants to read the incoming data from the
+sonars, it must perform a
+<span   class="bold"><b>mrv4_read</b></span> operation, which returns
+the data stored in the internal variables of the driver.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x1b83bc8"></a>Implementation of Driver Functions</h2></div></div><p>Although we will explain the guidelines to implement each of
+the driver functions, when programming your own driver it is a good
+idea to use the driver most similar to yours as an example. In our
+case, the models for mrv4.c and mrv4.h are lp.c and lp.h,
+respectively.</p><p>The file mrv4.c includes the initialisation and I/O
+functions. The initialisation function
+<span   class="bold"><b>mrv4_init</b></span> must follow these steps
+(see guidelines in file foo.c):</p><div class="orderedlist"><ol type="1"><li><p>Check in the device.</p></li><li><p>Get a free region for port addressing.</p></li><li><p>Test if hardware is present.</p></li><li><p>Test if irq numbers are free.</p></li><li><p>Initialise driver internal variables.</p></li><li><p>Return an OK status.</p></li></ol></div><p>If an error is detected in any of these steps, it must undo
+all previous operations and return an error status. To implement
+the I/O functions, the following structure (or similar) must be
+defined and initialized in mrv4.c:</p><pre     class="programlisting">
+static struct   file_operations mrv4_fops = {
+NULL,   /* mrv4_lseek   */
+mrv4_read,      /* mrv4_read    */
+mrv4_write,     /* mrv4_write   */
+NULL,   /* mrv4_readdir */
+NULL,   /* mrv4_select  */
+mrv4_ioctl,     /* mrv4_ioctl   */
+NULL,   /* mrv4_mmap    */
+mrv4_open,      /* mrv4_open    */
+mrv4_release    /* mrv4_release */
+};
+</pre><p>Pointers to all existent I/O functions must be set in this
+structure. Then, the I/O function code can be implemented,
+following the guidelines shown in the sidebar.
+</p><p>The available commands are defined in the file mrv4.h (see
+guidelines in file foo.h also available on the FTP site):</p><pre     class="programlisting">
+#define MRV4_MAGIC, 0x07
+#define MRV4_RESET      _IO(MRV4_MAGIC, 0x01
+#define MRV4_GOTOHOME   _IO(MRV4_MAGIC, 0x02
+#define MRV4_RESETHOME  _IO(MRV4_MAGIC, 0x03
+#define MRV4_JOYSTICK   _IOW(MRV4_MAGIC, 0x04,
+        unsigned int
+#define MRV4_PREPMOVE   _IOW(MRV4_MAGIC, 0x05,
+        unsigned int
+#define MRV4_INITODOM   _IO(MRV4_MAGIC, 0x06
+#define MRV4_SONTOFIRE  _IOW(MRV4_MAGIC, 0x07,
+unsigned int
+</pre><p>The <b  >_IO</b> macro is used for commands without
+arguments. The <b  >_IOW</b> is used for commands with
+input arguments. In this case, the macro needs the argument type,
+for example a pointer might be of type <b  >unsigned
+int</b>. The magic number must be chosen by the programmer.
+Try to select one not reserved by the system (see other header
+files at /usr/include/linux). Constants are defined in the file
+/usr/include/linux/mrv4.h, which must be included by both the
+driver (mrv4.c) and the user programs. In general, the mrv4.h file
+can include:
+<div class="itemizedlist"><ul type="disc"><li><p>Constants and macros definitions</p></li><li><p>ioctl commands</p></li><li><p>Port names</p></li><li><p>Type definitions</p></li><li><p>Data structures to be exchanged between the driver
+and the user</p></li><li><p>mrv4_init() function prototype</p></li></ul></div>
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x1b84988"></a>Driver Integration in the Kernel</h2></div></div><p>The task of integrating the driver into the kernel includes
+several steps:</p><div class="itemizedlist"><ul type="disc"><li><p>Insert kernel calls to the new driver.</p></li><li><p>Add the driver to the list of drivers.</p></li><li><p>Modify compilation scripts.</p></li><li><p>Re-compile the driver.</p></li></ul></div><p>The insertion of the OS call to mrv4_init() is done in the
+/usr/src/linux/kernel/mem.c file. The other driver function calls
+(open, read, write, ioctl, release, etc.) are user transparent.
+They are carried out through the file_operations structure. A
+driver major number must be added to the list located at
+/usr/include/linux/major.h. Search for a free driver number; for
+example, if number 62 is free, you must add one or both of the
+following lines to the file, depending on the Linux release:</p><pre     class="programlisting">
+/dev/mrv4 62
+#define MRV4_MAJOR 62
+</pre><p>Each device is referenced by one major and one minor number.
+The major number represents the number of the driver. The minor
+number distinguishes between several devices which are controlled
+by the same device (e.g., several hard disks controlled by the same
+IDE driver: hd0, hd1, hd2).
+</p><p>The next step is to create a logical device to access the
+driver. You must use the command
+<span   class="bold"><b>mknod</b></span> in this way:</p><pre     class="programlisting">
+mknod -m og+rw /dev/mrv4 c 62 0
+</pre><p>where <b  >62</b> is the major,
+<b  >0</b> the minor (only one physical device) and
+<b  >c</b> indicates a character device. Set the
+permissions as necessary, although you can modify them later with
+the command <span   class="bold"><b>chmod</b></span>. For example,
+enable <b  >rw</b> if you want to allow all users to
+access the device:
+<pre     class="programlisting">
+crw-rw-rw-2 bin bin 62, 0 Mar 12 1997 /dev/mrv4
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x1b85220"></a>Driver Compilation and Testing</h2></div></div><p>To allow driver compilation within the kernel, the following
+lines must be added to the script file
+/usr/src/linux/arch/i386/config.in:</p><pre     class="programlisting">
+comment 'MRV 4'
+bool 'MRV 4 card support' CONFIG_MRV4
+</pre><p>and the following lines to
+/usr/src/linux/drivers/char/Makefile:
+<pre     class="programlisting">
+ifdef CONFIG_MRV4
+  L_OBJS += mrv4.o
+  endif
+</pre>
+
+
+It is recommended that the driver be compiled alone, before linking
+the kernel. This method will save time testing syntax errors:
+<pre     class="programlisting">
+cd /usr/src/linux/drivers/char
+gcc -c mrv4.c -Wall -D__KERNEL__
+</pre>
+
+
+And when all is well, delete the object file:
+<pre     class="programlisting">
+rm -f mrv4.o
+</pre>
+
+
+Next, configure the kernel by typing:
+<pre     class="programlisting">
+cd /usr/src/linux
+make config
+</pre>
+
+
+Answer <b  >yes</b> when the script asks you about
+installing the MRV-4 driver (this sets the constant
+<b  >CONFIG_MRV4</b>). Finally, insert an empty floppy
+disk and re-build the kernel by typing the following commands:
+<pre     class="programlisting">
+make zdisk    # generate a bootable
+# floppy disk
+dev -R /dev/fd0 1   # disable writes to&lt;\n&gt;
+# floppy
+</pre>
+
+
+Once you are sure that the kernel works, you can overwrite the file
+vmlinuz with the new kernel. To test the new kernel, restart the
+system (type <b  >reboot</b>) and ... good luck! There
+are no debuggers available.
+</p><p>If the kernel seems to work, you might test the driver by
+writing one or more user programs, i.e., mrv4test.c which call the
+driver functions:</p><pre     class="programlisting">
+fid = open("/dev/mrv4", ...);
+read(fid, ...);
+write(fid, ...);
+ioctl(fid, ...);
+close(fid);
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1501580.0x1b85748"></a>How to Obtain Additional Information</h2></div></div><p>You can obtain privileged documentation at sunsite.unc.edu
+(see Resources). But of course, you will never be able to write
+your own driver using only the general guidelines of this article.
+To facilitate this task, we supply the source files for a dummy
+driver for Linux 2.0.24, which is a model for character driver
+development. It simulates the equation <b  >y = a x</b>
+and includes an example of interrupt management (which does not
+work since it is not associated with any hardware). Its name is
+foo, since Linux already has a driver called dummy. These files
+are:</p><div class="itemizedlist"><ul type="disc"><li><p><span   class="bold"><b>README</b></span>: summary of
+instructions to install it</p></li><li><p><span   class="bold"><b>foo.c</b></span>: driver
+source file</p></li><li><p><span   class="bold"><b>foo.h</b></span>: driver
+header file</p></li><li><p><span   class="bold"><b>footest.c</b></span>: program
+for driver testing</p></li></ul></div><p>You can obtain these files via anonymous FTP at
+ftp://ftp.linuxjournal.com/pub/lj/listings/issue48/2476.tgz.</p><p><a href="2476s1.html" target="_self">Guidelines</a></p><p><a href="2476s2.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>Fernando Mat&iacute;a is an Associate Professor
+      at the Universidad Politecnica de Madrid (UPM). He was born in
+      Madrid, Spain, in 1966. He became an Industrial Engineer at UPM in
+      1990 and received his Ph.D. degree at UPM in 1994 in the area of
+      Control Engineering. He works at the Systems and Automatic Control
+      Engineering Division (DISAM). His main activities are Intelligent
+      Control, Fuzzy Control, Robotics and Computer Sciences. He can be
+      reached at matia@disam.upm.es.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../048/toc048.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

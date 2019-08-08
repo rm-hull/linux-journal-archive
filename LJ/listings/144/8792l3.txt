@@ -1,0 +1,109 @@
+Listing 3. xmlrpc-lookup.rb
+
+#!/usr/bin/ruby
+
+require 'net/http'
+require 'rexml/document'
+require 'xmlrpc/server'
+
+# Set our regular expressions
+not_in_collection_re = /class="yourEntryWouldBeHereData"/ix
+on_shelf_re = /CHECK\s+SHELF/ix
+checked_out_re = /DUE /ix
+
+# ------------------------------------------------------------
+# XML-RPC
+# ------------------------------------------------------------
+
+# Start an HTTP server on port 8080, to listen for clients
+server = XMLRPC::Server.new(8080)
+
+server.add_handler(name="atf.books",
+                   signature=['array', 'array']) do |isbns|
+
+  output = [ ]
+
+  # Iterate through each of our arguments
+  isbns.each do |isbn|
+
+    isbn_output = {'ISBN' => isbn}
+
+    # Ignore non-ISBN arguments
+    if not isbn.match(/^[0-9xX]{10}$/)
+      isbn_output['message'] = "ISBN #{isbn} is invalid."
+      output << isbn_output
+      next
+    end
+
+    # ------------------------------------------------------------
+    # Amazon
+    # ------------------------------------------------------------
+
+    # Put together an Amazon parameter string
+    amazon_params = {'Service' => 'AWSECommerceService',
+      'Operation' => 'ItemLookup',
+      'AWSAccessKeyId' => 'XXX',
+      'ItemId' => isbn,
+      'ResponseGroup' => 'Medium,OfferFull',
+      'MerchantId' => 'All'}.map {|key,value|
+"#{key}=#{value}"}.join("&")
+
+    # Ask Amazon what it knows about our ISBN
+    amazon_response = Net::HTTP.get_response('webservices.amazon.com',
+                                             '/onca/xml?' <<
+amazon_params)
+
+    xml = REXML::Document.new(amazon_response.body)
+
+    # Get the lowest new, used, and collectible prices
+    new_price =
+xml.root.elements["Items/Item/OfferSummary/LowestNewPrice/FormattedPrice"]
+    if new_price.nil?
+      isbn_output['New'] = "None available"
+    else
+      isbn_output['New'] = new_price.text
+    end
+
+    used_price =
+xml.root.elements["Items/Item/OfferSummary/LowestUsedPrice/FormattedPrice"]
+    if used_price.nil?
+      isbn_output['Used'] = "None available"
+    else
+      isbn_output['Used'] = used_price.text
+    end
+
+    collectible_price =
+xml.root.elements["Items/Item/OfferSummary/LowestCollectiblePrice/FormattedPrice"]
+    if collectible_price.nil?
+      isbn_output['Collectible'] = "None available"
+    else
+      isbn_output['Collectible'] = collectible_price.text
+    end
+
+    # ------------------------------------------------------------
+    # Library
+    # ------------------------------------------------------------
+
+    # Ask the library what it knows about our ISBN
+    library_response = Net::HTTP.get_response('catalog.skokie.lib.il.us',
+                                              "/search~S4/i?SEARCH=#{isbn}")
+
+    # Check our regular expressions against the HTML response
+    if not_in_collection_re.match(library_response.body)
+      isbn_output['Library'] = "Library: Not in the Skokie collection."
+    elsif checked_out_re.match(library_response.body)
+      isbn_output['Library'] = "Checked out."
+    elsif on_shelf_re.match(library_response.body)
+      isbn_output['Library'] = "On the shelf."
+    else
+      isbn_output['Library'] = "Unparseable response."
+    end
+
+    output << isbn_output
+  end
+
+  output
+end
+
+server.serve
+

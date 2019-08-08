@@ -1,0 +1,296 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>CPU Affinity</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Bind specific processes to specific processors with a new&#10;    system call.&#10;    "><meta name="keywords" content="kernel, CPU, affinity, system, call"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1945580.0x1a3cab0"></a>CPU Affinity</h1></div><div><div class="author"><h3 class="author">Robert Love</h3></div><div class="issuemoyr">Issue #111, July 2003</div></div><div><p>
+    Bind specific processes to specific processors with a new
+    system call.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3d608"></a></h2></div></div><p>The ability in Linux to bind one or more
+processes to one or more processors, called CPU affinity, is a
+long-requested feature. The idea is to say &ldquo;always run this
+process on processor one&rdquo; or &ldquo;run these processes on all
+processors but processor zero&rdquo;. The scheduler then obeys the
+order, and the process runs only on the allowed processors.
+</p><p>Other operating systems, such as Windows NT, have long
+provided a system call to set the CPU affinity for a process.
+Consequently, demand for such a system call in Linux has been high.
+Finally, the 2.5 kernel introduced a set of system calls for
+setting and retrieving the CPU affinity of a process.</p><p>In this article, I look at the reasons for introducing a CPU
+affinity interface to Linux. I then cover how to use the interface
+in your programs. If you are not a programmer or if you have an
+existing program you are unable to modify, I cover a simple utility
+for changing the affinity of a given process using its PID.
+Finally, we look at the actual implementation of the system
+call.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3d7c0"></a>Soft vs. Hard CPU Affinity</h2></div></div><p>There are two types of CPU affinity. The first, soft
+affinity, also called natural affinity, is the tendency of a
+scheduler to try to keep processes on the same CPU as long as
+possible. It is merely an attempt; if it is ever infeasible, the
+processes certainly will migrate to another processor. The new O(1)
+scheduler in 2.5 exhibits excellent natural affinity. On the
+opposite end, however, is the 2.4 scheduler, which has poor CPU
+affinity. This behavior results in the ping-pong effect. The
+scheduler bounces processes between multiple processors each time
+they are scheduled and rescheduled. Table 1 is an example of poor
+natural affinity; Table 2 shows what good natural affinity looks
+like.</p><p><a href="6799t1.html" target="_self">Table 1. The Ping-Pong
+Effect</a></p><p><a href="6799t2.html" target="_self">Table 2. Good
+Affinitiy</a></p><p>Hard affinity, on the other hand, is what a CPU affinity
+system call provides. It is a requirement, and processes must
+adhere to a specified hard affinity. If a processor is bound to CPU
+zero, for example, then it can run only on CPU zero.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3da80"></a>Why One Needs CPU Affinity</h2></div></div><p>Before we cover the new system calls, let's discuss why
+anyone would need such a feature. The first benefit of CPU affinity
+is optimizing cache performance. I said the O(1) scheduler tries
+hard to keep tasks on the same processor, and it does. But in some
+performance-critical situations&mdash;perhaps a large database or a
+highly threaded Java server&mdash;it makes sense to enforce the affinity
+as a hard requirement. Multiprocessing computers go through a lot
+of trouble to keep the processor caches valid. Data can be kept in
+only one processor's cache at a time. Otherwise, the processor's
+cache may grow out of sync, leading to the question, who has the
+data that is the most up-to-date copy of the main memory?
+Consequently, whenever a processor adds a line of data to its local
+cache, all the other processors in the system also caching it must
+invalidate that data. This invalidation is costly and unpleasant.
+But the real problem comes into play when processes bounce between
+processors: they constantly cause cache invalidations, and the data
+they want is never in the cache when they need it. Thus, cache miss
+rates grow very large. CPU affinity protects against this and
+improves cache performance.</p><p>A second benefit of CPU affinity is a corollary to the first.
+If multiple threads are accessing the same data, it might make
+sense to bind them all to the same processor. Doing so guarantees
+that the threads do not contend over data and cause cache misses.
+This does diminish the performance gained from multithreading on
+SMP. If the threads are inherently serialized, however, the
+improved cache hit rate may be worth it.</p><p>The third and final benefit is found in real-time or
+otherwise time-sensitive applications. In this approach, all the
+system processes are bound to a subset of the processors on the
+system. The specialized application then is bound to the remaining
+processors. Commonly, in a dual-processor system, the specialized
+application is bound to one processor, and all other processes are
+bound to the other. This ensures that the specialized application
+receives the full attention of the processor.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3dc38"></a>Getting the New System Calls</h2></div></div><p>The system calls are new, so they are not available yet in
+all systems. You need at least kernel 2.5.8-pre3 and glibc 2.3.1;
+glibc 2.3.0 supports the system calls, but it has a bug. The system
+calls are not yet in 2.4, but patches are available at
+<a href="http://www.kernel.org/pub/linux/kernel/people/rml/cpu-affinity" target="_self">www.kernel.org/pub/linux/kernel/people/rml/cpu-affinity</a>.</p><p>Many distribution kernels also support the new system calls.
+In particular, Red Hat 9 is shipping with both kernel and glibc
+support for the new calls. Real-time solutions, such as MontaVista
+Linux, also fully support the new interface.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3ddf0"></a>Affinity Masks</h2></div></div><p>On most systems, Linux included, the interface for setting
+CPU affinity uses a bitmask. A bitmask is a series of
+<span   class="emphasis"><em>n</em></span> bits, where each bit individually
+corresponds to the status of some other object. For example, CPU
+affinity (on 32-bit machines) is represented by a 32-bit bitmask.
+Each bit represents whether the given task is bound to the
+corresponding processor. Count the bits from right to left, bit 0
+to bit 31 and, thus, processor zero to processor 31. For
+example:</p><pre     class="programlisting">
+11111111111111111111111111111111 = 4,294,967,295
+</pre><p>is the default CPU affinity mask for all processes. Because
+all bits are set, the process can run on any processor. Conversely:
+<pre     class="programlisting">
+00000000000000000000000000000001 = 1
+</pre>
+
+
+is much more restrictive. Only bit 0 is set, so the process may run
+only on processor zero. That is, this affinity mask binds a process
+to processor zero.
+</p><p>Get it? What do the next two masks equal in decimal? What is
+the result of using them as the affinity mask of a process?</p><pre     class="programlisting">
+10000000000000000000000000000000
+00000000000000000000000000000011
+</pre><p>The first is equal to 2,147,483,648 and, because bit 31 is
+set, binds the process to processor number 31. The second is equal
+to 3, and it binds the process in question to processor zero and
+processor one.
+</p><p>The Linux CPU affinity interface uses a bitmask like that
+shown above. Unfortunately, C does not support binary constants, so
+you always have to use the decimal or hexadecimal equivalent. You
+may get a compiler warning for very large decimal constants that
+set bit 31, but they will work.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3e1b8"></a>Using the New System Calls</h2></div></div><p>With the correct kernel and glibc in hand, using the system
+calls is easy:</p><pre     class="programlisting">
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+long
+sched_setaffinity(pid_t pid, unsigned int len,
+                  unsigned long *user_mask_ptr);
+long
+sched_getaffinity(pid_t pid, unsigned int len,
+                  unsigned long *user_mask_ptr);
+</pre><p>The first system call is used to set the affinity of a
+process, and the second system call retrieves it.
+</p><p>In either system call, the PID argument is the PID of the
+process whose mask you wish to set or retrieve. If the PID is set
+to zero, the PID of the current task is used.</p><p>The second argument is the length in bytes of the CPU
+affinity bitmask, currently four bytes (32 bits). This number is
+included in case the kernel ever changes the size of the CPU
+affinity mask and allows the system calls to be forward-compatible
+with any changes; breaking syscalls is bad form, after all. The
+third argument is a pointer to the bitmask itself.</p><p>Let us look at retrieving the CPU affinity of a task:</p><pre     class="programlisting">
+unsigned long mask;
+unsigned int len = sizeof(mask);
+if (sched_getaffinity(0, len, &amp;mask) &lt; 0) {
+    perror("sched_getaffinity");
+    return -1;
+    }
+printf("my affinity mask is: %08lx\n", mask);
+</pre><p>As a convenience, the returned mask is binary ANDed against
+the mask of all processors in the system. Thus, processors in your
+system that are not on-line have corresponding bits that are not
+set. For example, a uniprocessor system always returns 1 for the
+above call (bit 0 is set and no others).
+</p><p>Setting the mask is equally easy:</p><pre     class="programlisting">
+unsigned long mask = 7; /* processors 0, 1, and 2 */
+unsigned int len = sizeof(mask);
+if (sched_setaffinity(0, len, &amp;mask) &lt; 0) {
+    perror("sched_setaffinity");
+}
+</pre><p>This example binds the current process to the first three
+processors in the system.
+</p><p>You then can call sched_getaffinity() to ensure the change
+took effect. What does sched_getaffinity() return for the above
+setup if you have only two processors? What if you have only one?
+The system call fails unless at least one processor in the bitmask
+exists. Using a mask of zero always fails. Likewise, binding to
+processor seven if you do not have a processor seven will
+fail.</p><p>It is possible to retrieve the CPU affinity mask of any
+process on the system. You can set the affinity of only the
+processes you own, however. Of course, root can set any process'
+affinity.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3e6e0"></a>I Want a Tool!</h2></div></div><p>If you are not a programmer, or if you cannot modify the
+source for whatever reason, you still can bind processes. Listing 1
+is the source code for a simple command-line utility to set the CPU
+affinity mask of any process, given its PID. As we discussed above,
+you must own the process or be root to do this.</p><p><a href="6799l1.html" target="_self">Listing 1. bind</a></p><p>Usage is simple; once you learn the decimal equivalent of the
+CPU mask, you need:</p><pre     class="programlisting">
+usage: bind <span   class="emphasis"><em>pid</em></span> <span   class="emphasis"><em>cpu_mask</em></span>
+</pre><p>As an example, assume we have a dual computer and want to
+bind our <span   class="emphasis"><em>Quake</em></span> process (with PID 1600) to
+processor two. We would enter the following:
+<pre     class="programlisting">
+bind 1600 2
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a3eb00"></a>Getting Really Crafty</h2></div></div><p>In the previous example, we bound <span   class="emphasis"><em>Quake</em></span>
+to one of the two processors in our system. To ensure top-notch
+frame rates, we need to bind all the other processes on the system
+to the other processor. You can do this by hand or by writing a
+crafty script, but neither is efficient. Instead, make use of the
+fact that CPU affinity is inherited across a fork(). All of a
+process' children receive the same CPU affinity mask as their
+parent.</p><p>Then, all we need to do is have init bind itself to one
+processor. All other processes, by nature of init being the root of
+the process tree and thus the superparent of all processes, are
+then likewise bound to the one processor.</p><p>The cleanest way to do this type of bind is to hack this
+feature into init itself and pass in the desired CPU affinity mask
+using the kernel command line. We can accomplish our goal with a
+simpler solution, though, without having to modify and recompile
+init. Instead, we can edit the system startup script. On most
+systems this is /etc/rc.d/rc.sysinit or /etc/rc.sysinit, the first
+script run by init. Place the sample bind program in /bin, and add
+these lines to the start of rc.sysinit:</p><pre     class="programlisting">
+/bin/bind 1 1
+/bin/bind $$ 1
+</pre><p>These lines bind init (whose PID is one) and the current
+process to processor zero. All future processes will fork from one
+of these two processes and thus inherit the CPU affinity mask. You
+then can bind your process (whether it be a real-time nuclear
+control system or <span   class="emphasis"><em>Quake</em></span>) to processor one. All
+processes will run on processor zero except our special process
+(and any children), which will run on processor one. This ensures
+that the entire processor is available for our special process.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a356a8"></a>Kernel Implementation of CPU Affinity</h2></div></div><p>Long before Linus merged the CPU affinity system calls, the
+kernel supported and respected a CPU affinity mask. There was no
+interface by which user space could set the mask.</p><p>Each process' mask is stored in its task_struct as an
+unsigned long, cpus_allowed. The task_struct structure is called
+the process descriptor. It stores all the information about a
+process. The CPU affinity interface merely reads and writes
+cpus_allowed.</p><p>Whenever the kernel attempts to migrate a process from one
+processor to another, it first checks to see if the destination
+processor's bit is set in cpus_allowed. If the bit is not set, the
+kernel does not migrate the process. Further, whenever the CPU
+affinity mask is changed, if the process is no longer on an allowed
+processor it is migrated to one that is allowed. This ensures the
+process begins on a legal processor and can migrate only to a legal
+processor. Of course, if it is bound to only a single processor, it
+does not migrate anywhere.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1945580.0x1a35860"></a>Conclusion</h2></div></div><p>The CPU affinity interface introduced in 2.5 and back-ported
+elsewhere provides a simple yet powerful mechanism for controlling
+which processes are scheduled onto which processors. Users with
+more than one processor may find the system calls useful in
+squeezing another drop of performance out of their systems or for
+ensuring that processor time is available for even the most
+demanding real-time task. Of course, users with only one processor
+need not feel left out. They also can use the system calls, but
+they aren't going to be too useful.</p><p><a href="6799s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="6799aa.jpg"></div>
+
+       email: <a href="mailto:rml@tech9.net">rml@tech9.net</a>
+       </p><p><span   class="bold"><b>Robert Love</b></span> is a
+      kernel hacker involved in various projects, including the
+      preemptive kernel and the scheduler. He is a Mathematics and
+      Computer Science student at the University of Florida and a kernel
+      engineer at MontaVista Software. He enjoys photography.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../111/toc111.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

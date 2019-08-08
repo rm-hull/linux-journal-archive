@@ -1,0 +1,612 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Dissecting Interrupts and Browsing DMA</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    This is the fourth in a series of articles about writing&#10;    character device drivers as loadable kernel modules. This&#10;    month, we further investigate the field of interrupt&#10;    handling. Though it is conceptually simple, practical&#10;    limitations and constraints make this an &ldquo;interesting&rdquo; part&#10;    of device friver writing, and several different facilities&#10;    have been provided for different situations. We also&#10;    investigate the complex topic of DMA.&#10;    "><meta name="keywords" content="kernel, programming, development, device, driver"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x18f2580.0x19e9ab0"></a>Dissecting Interrupts and Browsing DMA</h1></div><div><div class="authorgroup"><div class="author"><h3 class="author">Alessandro Rubini</h3></div><div class="author"><h3 class="author">Georg V. Zezschwitz</h3></div><div class="issuemoyr">Issue #26, June 1996</div></div></div><div><p>
+    This is the fourth in a series of articles about writing
+    character device drivers as loadable kernel modules. This
+    month, we further investigate the field of interrupt
+    handling. Though it is conceptually simple, practical
+    limitations and constraints make this an &ldquo;interesting&rdquo; part
+    of device friver writing, and several different facilities
+    have been provided for different situations. We also
+    investigate the complex topic of DMA.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19ea710"></a></h2></div></div><p>Though <a href="../025/1221.html" target="_self">last
+month's</a> installment appeared to cover everything about
+interrupts, that is not true. One month later, you are ready to
+understand the ultimate technology for interrupt handling. We also
+begin to investigate the fascinating world of memory management by
+explaining the tasks of a DMA-capable driver.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19ea870"></a>Changes in Current Linux Versions</h2></div></div><p>Before we start, you should note two changes in recent Linux
+versions. In Linux 1.3.70, the first steps were taken to support
+<span   class="emphasis"><em>shared interrupts</em></span>. The idea is that several
+devices and device drivers <span   class="emphasis"><em>share</em></span> the same
+interrupt line. This is also part of the PCI specification, where
+every device has its own vendor- and product-dependent device ID.
+When reading this ID, Linux gets quite verbose about plugged-in PCI
+devices when booting with PCI enabled. For this reason, the
+declaration of <b  >request_irq</b> and
+<b  >free_irq</b> in <b  >linux/sched.h</b> now
+reads:</p><pre     class="programlisting">
+extern int request_irq(unsigned int irq,
+   void (*handler)(int, void *, struct pt_regs *),
+   unsigned long flags,
+   const char *device,
+   void *dev_id);
+extern void free_irq(unsigned int irq, void *dev_id);
+</pre><p>Thus, when registering an interrupt with
+<b  >request_irq()</b>, a fourth parameter must be handed
+to Linux: the device ID. Currently, most devices will pass a
+<b  >NULL</b> for <b  >dev_id</b> when
+requesting and freeing interrupts&mdash;this results in the same
+behaviour as before. If you really want to share interrupts, you
+also have to set <b  >SA_SHIRQ</b> in
+<b  >flags</b>, in addition to passing
+<b  >dev_id</b>. Sharing of interrupts only works if all
+device drivers on one interrupt line agree to share their
+interrupt.</p><p>The second &ldquo;change&rdquo; is not a real change, but rather, a
+stylistic upgrade: <b  >get_user_byte()</b> and
+<b  >put_user_byte()</b> are considered obsolete and
+should not be used in new code. They are replaced by the more
+flexible <b  >get_user</b> and
+<b  >put_user</b> calls.</p><p>Linus Torvalds explains that these functions use compiler
+&ldquo;magic&rdquo; to look at the pointer they are passed and read or write
+the correct size item. This means you can't use <b  >void
+*</b> or <b  >unsigned long</b> as a pointer; you
+always have to use a pointer to the right type. Also, if you give
+it a <b  >char *</b>, you get a <b  >char</b>
+back, <span   class="bold"><b>not</b></span> an <b  >unsigned
+char</b>, unlike the old <b  >get_fs_byte()</b>
+function. If you need an <b  >unsigned</b> value, use a
+pointer to an <b  >unsigned</b> type. Never cast the
+return value to get the access size you want&mdash;if you think you need
+to do that, you are doing something wrong. Your argument pointer
+should always be of the right type.</p><p>Essentially, you should think of
+<b  >get_user()</b> as a simple pointer dereference (kind
+of like <b  >*(xxx)</b> in plain C, except it fetches the
+pointer data from user space instead). In fact, on some
+architectures, that is exactly what it is.</p><p>While we're fixing previous oversights, it is worth noting
+that the kernel offers a facility to autodetect interrupt lines.
+That's slightly different from what was shown in our article a
+couple of months ago. Those who are interested can look at
+<b  >&lt;linux/interrupt.h&gt;</b> for documentation
+about it.</p><p>We now return you to your regularly scheduled
+programming.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19eb528"></a>A Split View of Interrupts</h2></div></div><p>As you may remember from last time, interrupt handling is
+managed by a single driver function. Our implementation dealt with
+both low-level (acknowledging the interrupt) and high-level (such
+as awakening tasks) issues. This way of doing things may work for
+simple drivers, but it is prone to failure if the handling is too
+slow.</p><p>If you look at the code, it is clear that acknowledging the
+interrupt and retrieving or sending the relevant data is a minimal
+part of the workings. With common devices where you are moving only
+one or a few bytes per interrupt, most of the time is spent in
+managing device-specific queues, chains, and whatever other strange
+data structures are used in your implementation. Don't take our
+<b  >skel_interrupt()</b> as an example here, since it is
+the most simplified interrupt handler possible; real devices may
+have a lot of status information and many modes of operation. If
+you spend too much time processing your data structures, it is
+possible to miss the next interrupt or interrupts and either hang
+or lose data, because when an interrupt handler is running, at
+least that interrupt is blocked, and with fast interrupt handlers,
+all interrupts are blocked.</p><p>The solution devised for this problem is to split the task of
+interrupt handling into two halves:</p><div class="itemizedlist"><ul type="disc"><li><p>First, a fast &ldquo;top half&rdquo; handles hardware issues
+and must terminate before a new interrupt is issued. Normally, very
+little is done here besides moving data between the device and some
+memory buffer (and not even that, if your device driver uses DMA),
+and making sure the hardware is in a sane state.</p></li><li><p>Then a slower &ldquo;bottom half&rdquo; of the handler runs
+with interrupts enabled and can take as long as is needed to
+accomplish everything. It is executed as soon as possible after the
+interrupt is serviced.</p></li></ul></div><p>Fortunately, the kernel offers a special way to schedule
+execution of the bottom half code, which isn't necessarily related
+to a particular process; this means both the request to run the
+function and the execution of the function itself are done outside
+of the context of any process. A special mechanism is needed,
+because the other kernel functions all operate in the context of a
+process&mdash;an orderly thread of execution, normally associated with a
+running instance of a user-level program&mdash;while interrupt handling
+is asynchronous and not related to a particular process.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19eb948"></a>Bottom Halves: When and How</h2></div></div><p>From the programmer's point of view, the bottom half is very
+similar to the top half, in that it cannot call
+<b  >schedule()</b> and can only perform atomic memory
+allocations. This is understandable, because the function is not
+called in the context of a process; the bottom half is
+asynchronous, just like the top half, the normal interrupt handler.
+The difference is mainly that interrupts are enabled and there is
+no critical code in progress. So, when exactly are those routines
+executed?</p><p>As you know, the processor is mostly executing on behalf of a
+process, both in user space and in kernel space (while executing
+system calls). The notable exceptions are servicing an interrupt
+and scheduling another process in place of the current one: during
+these operations the <b  >current</b> pointer is not
+meaningful, even though it is always a valid pointer to a
+<b  >struct task_struct</b>. Additionally, kernel code is
+controlling the CPU when a process enters/exits a system call. This
+happens quite often, as a single piece of code handles every system
+call.</p><p>With this in mind, it is apparent that if you want your
+bottom half executed as soon as possible, it must be called from
+the scheduler or when entering or leaving a system call, since
+doing it during interrupt service is taboo. Actually, Linux calls
+<b  >do_bottom_half()</b>, defined in
+<b  >kernel/softirq.c</b> from
+<b  >schedule()</b> (<b  >kernel/sched.c</b>)
+and from <b  >ret_from_sys_call()</b>, defined in an
+architecture-specific assembly file, usually
+<b  >entry.S</b>.</p><p>The bottom halves are not bound to the interrupt number,
+though the kernel keeps a static array of 32 such functions.
+Currently (I'm using 1.3.71), there is no way to ask for a free
+bottom half number or ID, so we will hard-code one. This is dirty
+coding, but it is used only to show the idea; later we will remove
+such ID stealing.</p><p>In order to execute your bottom half, you need to tell the
+kernel about it. This is accomplished through the
+<b  >mark_bh()</b> function, which takes one argument,
+the ID of your bottom half.</p><p>This listing shows the code for a split-interrupt handler
+using the &ldquo;dirty&rdquo; ID pseudo-allocation.</p><pre     class="programlisting">
+#include &lt;linux/interrupt.h&gt;
+#define SKEL_BH 16 /* dirty planning */
+/*
+ * This is the top half, argument to request_irq()
+ */
+static void skel_interrupt(int irq,
+                           struct pt_regs *regs)
+{
+  <span   class="emphasis"><em>do_top_half_stuff()</em></span>
+  /* tell the kernel to run the bh later */
+  mark_bh(SKEL_BH);
+}
+/*
+ * This is the bottom half
+ */
+static void do_skel_bh(void)
+{
+  <span   class="emphasis"><em>do_bottom_half_stuff()</em></span>
+}
+/*
+ * But the bh must be initialized ...
+ */
+int init_module(void)
+{
+  /* ... */
+  init_bh(SKEL_BH, do_skel_bh);
+  /* ... */
+}
+/*
+ * ... and cleaned up
+ */
+void cleanup_module(void)
+{
+  /* ... */
+  disable_bh(SKEL_BH)
+  /* ... */
+}
+</pre><p><a href="1222f1.html" target="_self">Using Task Queues</a></p><p>Actually, dirty allocation of a bottom half ID is not really
+needed, because the kernel implements a more sophisticated
+mechanism which you will surely enjoy.</p><p>This mechanism is called &ldquo;task queues&rdquo;, because the
+functions to be called are kept in queues, constructed of linked
+lists. This also means you can register more than one bottom half
+function that is associated with your driver. Moreover, task queues
+are not directly related to interrupt handling and can be used
+independently of interrupt management.</p><p>A task queue is a chain of <b  >struct
+tq_struct</b>'s, as declared in
+<b  >&lt;linux/tqueue.h&gt;</b>.</p><pre     class="programlisting">
+struct tq_struct {
+    /* linked list of active bh's */
+    struct tq_struct *next;
+    /* must be initialized to zero */
+    int sync;
+    /* function to call */
+    void (*routine)(void *);
+    /* argument to function */
+    void *data;
+};
+typedef struct tq_struct * task_queue;
+void queue_task(struct tq_struct *bh_pointer,
+                task_queue *bh_list);
+void run_task_queue(task_queue *list);
+</pre><p>You'll notice the <b  >routine</b> argument is a
+function getting a pointer argument. This is a useful feature, as
+you'll soon discover by yourself, but remember the
+<b  >data</b> pointer is your complete responsibility: if
+it points to <b  >kmalloc()</b>ed memory, you must
+remember to free it yourself.</p><p>Another thing to keep in mind is that the
+<b  >next</b> field is used to keep the queue consistent,
+so you must be careful never to look in it, and
+<span   class="emphasis"><em>never</em></span> insert the same
+<b  >tq_struct</b> in multiple queues, nor twice in the
+same queue.</p><p>There are a few other functions similar to
+<b  >queue_task()</b> in the header, which are worth
+looking at. Here we stick to the most general call.</p><p>In order to use a task queue, you will need either to declare
+your own queue or add tasks to a predefined queue. We are going to
+explore both methods.</p><p>This listing shows how to run multiple bottom halves in your
+interrupt handler with your own queue.</p><pre     class="programlisting">
+#include &lt;linux/interrupt.h&gt;
+#include &lt;linux/tqueue.h#gt;
+DECLARE_TASK_QUEUE(tq_skel);
+#define SKEL_BH 16 /* dirty planning */
+/*
+ * Two different tasks
+ */
+static struct tq_struct task1;
+static struct tq_struct task2;
+/*
+ * The bottom half only runs the queue
+ */
+static void do_skel_bh(void)
+{
+  run_task_queue(&amp;tq_skel);
+}
+/*
+ * The top half queues the different tasks based
+ * on some conditions
+ */
+static void skel_interrupt(int irq,
+                           struct pt_regs *regs)
+{
+  <span   class="emphasis"><em>do_top_half_stuff()</em></span>
+  if <span   class="emphasis"><em>(condition1()(I) {
+    queue_task(&amp;task1, &amp;tq_skel);
+    mark_bh(SKEL_BH);
+  }
+  if</em></span> (condition2()(I) {
+    queue_task(&amp;task2, &amp;tq_skel);
+    mark_bh(SKEL_BH);
+  }
+}
+/*
+ * And init as usual
+ */
+int init_module(void)
+{
+  /* ... */
+  task1.routine=proc1; task1.data=arg1;
+  task2.routine=proc2; task2.data=arg2;
+  init_bh(SKEL_BH, do_skel_bh);
+  /* ... */
+}
+void cleanup_module(void)
+{
+  /* ... */
+  disable_bh(SKEL_BH)
+  /* ... */
+}
+</pre><p>Using task queues is an enjoyable experience and helps keep
+your code clean. For example, if you are running the skel-machine
+described in the previous few Kernel Korner columns, you can
+service multiple hardware devices by using a single interrupt
+handling function that gets the hardware structure as an argument.
+This behaviour can be accomplished by having a
+<b  >tq_struct</b> as a member of the
+<b  >Skel_Hw</b> structure. The big advantage here is if
+multiple devices request attention at nearly the same time, all of
+them are queued and serviced later all at once (with interrupts
+enabled). Of course, this only works if the Skel hardware isn't too
+picky about when interrupts are acknowledged and the interrupt
+condition is dealt with.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19e3200"></a>Running Predefined Queues</h2></div></div><p>The kernel proper defines three task queues for your
+convenience and amusement. A custom driver should normally use one
+of those queues instead of declaring its own queue, and any driver
+may use the predefined queues without declaring new ones. The only
+reason there are special queues is higher performance: queues with
+smaller IDs are executed first.</p><p>The three predefined queues are:</p><pre     class="programlisting">
+struct tq_struct *tq_timer;
+struct tq_struct *tq_scheduler;
+struct tq_struct *tq_immediate;
+</pre><p>The first is run in relation with kernel timers and won't be
+discussed here&mdash;it is left as an exercise for the reader. The next
+is run anytime scheduling takes place, and the last is run
+&ldquo;immediately&rdquo; upon exit from the interrupt handler, as a generic
+bottom half; this will generally be the queue you use in your
+driver to replace the older bottom half mechanism.</p><p>The &ldquo;immediate&rdquo; queue is used like
+<b  >tq_skel</b> above. You don't need to choose an ID
+and declare it, although <b  >mark_bh()</b> must still be
+called with the <b  >IMMEDIATE_BH</b> argument as shown
+below. Correspondingly, the <b  >tq_timer</b> queue uses
+<b  >mark_bh(TIMER_BH)</b>, but the
+<b  >tq_scheduler</b> queue does not need to be marked to
+run, and so <b  >mark_bh()</b> is not called.</p><p>This listing shows an example of using the &ldquo;immediate&rdquo;
+queue:</p><pre     class="programlisting">
+#include &lt;linux/interrupt.h&gt;
+#include &lt;linux/tqueue.h&gt;
+/*
+ * Two different tasks
+ */
+static struct tq_struct task1;
+static struct tq_struct task2;
+/*
+ * The top half queues tasks, and no bottom
+ * half is there
+ */
+static void skel_interrupt(int irq,
+                           struct pt_regs *regs)
+{
+  <span   class="emphasis"><em>do_top_half_stuff()</em></span>
+  if <span   class="emphasis"><em>(condition1()(I) {
+    queue_task(&amp;task1,&amp;tq_immediate);
+    mark_bh(IMMEDIATE_BH);
+    }
+  if</em></span> (condition2()(I) {
+    queue_task(&amp;task2,&amp;tq_skel);
+    mark_bh(IMMEDIATE_BH);
+    }
+}
+/*
+ * And init as usual, but nothing has to be
+ * cleaned up
+ */
+int init_module(void)
+{
+  /* ... */
+  task1.routine=proc1; task1.data=arg1;
+  task2.routine=proc2; task2.data=arg2;
+  /* ... */
+}
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19e3830"></a>An Example: Playing with
+<b  >tq_scheduler</b></h2></div></div><p>Task queues are quite amusing to play with, but most of us
+lack &ldquo;real&rdquo; hardware needing deferred handling. Fortunately, the
+implementation of <b  >run_task_queue()</b> is smart
+enough you can enjoy yourself even without suitable
+hardware.</p><p>The good news is <b  >run_task_queue()</b> calls
+queued functions <span   class="emphasis"><em>after</em></span> removing them from the
+queue. Thus, you can re-insert a task in the queue from within the
+task itself.</p><p>This silly task prints a message only every ten seconds, up
+to the end of the world. It needs to be registered only once, and
+then it will arrange its own existence.</p><pre     class="programlisting">
+struct tq_struct silly;
+void silly_task(void *unused)
+{
+  static unsigned long last;
+  if (jiffies/HZ/10 != last) {
+    last=jiffies/HZ/10;
+    printk(KERN_INFO "I'm there\n");
+  }
+queue_task(&amp;silly, &amp;tq_scheduler);
+/* tq_scheduler doesn't need mark_bh() */
+}
+</pre><p>If you're thinking about viruses, please hold on, and
+remember a wise administrator doesn't do anything as root without
+reading the code beforehand.</p><p>But let's leave task queues and begin looking at memory
+issues.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19e3c50"></a>DMA on the PC&mdash;Dirty, Machine-dependent,
+Awful</h2></div></div><p>Remember the old days of the IBM PC? Yes, those days, when
+the PC was delivered with 128 KB of RAM, an 8086-processor, tape
+interface and 360 KB floppy. [You got a whole 128KB? Lucky
+you!  &mdash;ED] Those were the days when DMA on ISA bus was considered
+<span   class="emphasis"><em>fast</em></span>. The idea of DMA is to transfer a block
+of data from a device to memory or vice versa without letting the
+CPU do the boring job of moving individual bytes. Instead, after
+initialization of both the device and the on-board DMA controller
+of the motherboard, the device signals the DMA controller that it
+has data to transfer. The DMA controller puts the RAM in a state
+receiving data from the data bus, the device puts the data on the
+data bus, and when this has been done, the controller increments an
+address counter and decrements a length counter, so that further
+transfers go into the next location.</p><p>In those old days this technique was fast, allowing transfer
+rates of up to 800 kilobytes per second on 16-bit ISA. Today we
+have transfer rates of 132 MB/second with PCI 2.0. But good old ISA
+DMA has still its applications: imagine a sound card playing 16-bit
+coded music at 48 kHz stereo. This would result in 192 kilobytes
+per second. Transmitting the data by interrupt requesting, say, two
+words every 20 microseconds would certainly let the CPU drop a
+whole lot of interrupts. Polling the data (non-interrupt driven
+data transfer) at that rate would certainly stop the CPU from doing
+anything useful, too. What we need is a continuous data flow at
+midrange speed&mdash;perfect for DMA. Linux only has to initiate and
+stop the data transfer. The rest is done by the hardware
+itself.</p><p>We will deal only with ISA DMA in this article&mdash;most
+expansion cards are still ISA, and ISA DMA is fast enough for many
+applications. However, DMA on the ISA bus has severe
+restrictions:</p><div class="itemizedlist"><ul type="disc"><li><p>The hardware and the DMA controllers know nothing
+about virtual memory&mdash;all they can see is physical memory and its
+addresses (This restriction belongs to all kinds of ISA DMA.)
+Instead of using a page here and another there and gluing them
+together in virtual memory, we must allocate continuous blocks of
+physical memory, and we may <span   class="emphasis"><em>not</em></span> swap them
+out.</p></li><li><p>Intel-based systems have two DMA controllers, one
+with the lower four DMA channels allowing byte-wise transfers and
+one with the upper four channels allowing (faster) word transfer.
+Both have only a 16-bit address counter and a 16-bit length
+counter. Therefore, we may not transfer more than 65535 bytes (or
+words, with the second controller) at once.</p></li><li><p>The address counter represents only the lower 16
+bits of the address (<b  >A0</b>-<b  >A15</b>
+on DMA channels 0-3, <b  >A1</b>-<b  >A16</b>
+on channels 4-7). The upper 8 bits of address space are represented
+in a <span   class="emphasis"><em>page</em></span> register. They will not change
+during a transfer, meaning transfers can take place only within one
+16-bit (64 KB) segment of memory.</p></li><li><p>Upper <span   class="bold"><b>8</b></span> bits? 24
+bits of address space in total? Yes, it's sad, but true. We can
+only transfer within the <span   class="emphasis"><em>lower 16MB</em></span> of RAM. If
+your data eventually needs to reach another address, the CPU has to
+copy it &ldquo;by hand&rdquo; again, using the DMA-accessible memory as a
+&ldquo;bounce buffer&rdquo;, as it is called.</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x19e4438"></a>Allocating a DMA Buffer</h2></div></div><p>Right, you know the restrictions&mdash;so decide now to read on or
+not!</p><p>The first thing we need for DMA is a
+<span   class="emphasis"><em>buffer</em></span>. The restrictions (lower 16 MB of
+memory, continuous page-addresses in physical memory) are all
+fulfilled if you allocate your buffer with:</p><pre     class="programlisting">
+void  *dma_buf;
+dma_buf = kmalloc(<span   class="emphasis"><em>buffer_size</em></span>,
+                  GFP_BUFFER | GFP_DMA);
+</pre><p>The returned address will never fit the start of a page, as
+much as you would prefer it do so. The reason is Linux has a quite
+advanced memory management on used and unused blocks of pages with
+<b  >kmalloc()</b>. It maintains lists of free segments
+as small as 32 bytes (64 on the DEC Alpha), another list for
+segments of double size, another for quadruple-size, etc. Every
+time you free <b  >kmalloc()</b>ed memory, Linux will try
+to join your released segment with a free neighbor segment. If the
+neighbor is free, too, they are passed into the list of double
+size, where it is checked again, if it has a free-neighbor, to get
+into the next order list.</p><p>The sizes <b  >kmalloc</b> supports at the moment
+(Linux 1.3.71) range from <b  >PAGE_SIZE &gt; 7</b> to
+<b  >PAGE_SIZE &lt;&lt; 5</b>. Each step in the power of
+2 is one list, so two joined elements in the one list form one
+element of the next higher order.</p><p>You might wonder why you don't get a simple whole page.
+That's because at the beginning of every segment, some list
+information is maintained. This is called the (somewhat misleading)
+<b  >page_descriptor</b>, and its size is currently
+between 16 and 32 bytes (depending on your machine type).
+Therefore, if you ask Linux for 64KB of RAM, Linux will have to use
+a block of free 128KB RAM and hand you 128 kilobytes to 32
+bytes.</p><p>And this is difficult to get&mdash;the floppy driver sometimes
+dreams of this, when it tries to allocate its DMA buffer at run
+time and can't find any continuous RAM. Therefore, always think in
+powers of two, but then subtract some bytes (about 0x20). If you
+want to look at the magic numbers, they're all in
+<b  >mm/kmalloc.c</b>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x1cf8008"></a>The Role of Interrupts</h2></div></div><p>Most devices using DMA will generate interrupts. For example,
+a sound card will generate an interrupt to tell the CPU, &ldquo;Gimme
+data, I'm running out of it.&rdquo;</p><p>The machine we built our driver for is quite fascinating: it
+is a laboratory interface with its own CPU, own RAM, analog and
+digital inputs and outputs, and bells and whistles. It uses a
+character channel for receiving commands and sending answers and
+uses DMA for block transfer of sampled data (or data to output).
+Therefore, an invoked interrupt might have these reasons:</p><div class="itemizedlist"><ul type="disc"><li><p>send data on the character channel</p></li><li><p>read data from the character channel</p></li><li><p>initiate a DMA-transfer to or from the host</p></li><li><p>the transfer is done</p></li><li><p>the transfer is going to cross the boundary of the
+DMA page register (DMA page-register has to be incremented)</p></li></ul></div><p>Your interrupt handler has to find out what is meant by the
+interrupt. Normally, it will read a status register of the device
+having more detailed information on the task to perform.</p><p>As you see, we have gone far away from the general truth of a
+clean loading and unloading of a module and are right in the middle
+of dirty specialization. We decided our lab driver should perform
+the following tasks:</p><div class="itemizedlist"><ul type="disc"><li><p>Allocate DMA-able memory on user request and map
+this memory to the user space (the user has direct access to the
+DMA buffer and can &ldquo;see&rdquo; how it fills up&mdash;this is faster and more
+flexible than first capturing the data and then transferring it
+via, say, a character channel to the user).</p></li><li><p>Check, whenever a transfer is required, if the
+buffer address is valid (was allocated by our driver) and if the
+length is sufficient.</p></li><li><p>And, of course, do not forget to release the memory
+when the user closes the character channel, even if it has not been
+released explicitly.</p></li></ul></div><p>This concept differs from the floppy driver, where you will
+never look directly at the actual DMA buffer. But it is probably
+good for you as well: you might decide to use this method for a
+frame grabber. The user might allocate multiple buffers, set up the
+transfer address for the one and look at the other while the first
+is filled up. As the only thing the user and the system have to do
+is toggle the sampling address and the buffers are both mapped into
+the user address space, not a single byte of the picture has to be
+transferred by the CPU&mdash;they just arrive at the location where the
+user wants them. We will describe the tricks to do this in the next
+Kernel Korner.</p><p>Before we start with real code, let us think of the steps to
+be taken for a complete transfer:</p><div class="orderedlist"><ol type="1"><li><p>An interrupt occurs, meaning a transfer should
+start.</p></li><li><p>The interrupt handler starts the transfer.</p></li><li><p>The interrupt handler returns, while the CPU starts
+its normal activity and the transfer is running.</p></li><li><p>Interrupt occurs, meaning the transfer is
+finished.</p></li><li><p>The interrupt handler ends the transfer...</p></li><li><p>...and probably asks the device for another one,
+wakes up <span   class="emphasis"><em>sleeping beauties</em></span>, etc.</p></li></ol></div><p>Don't be disappointed that we don't write your whole device
+driver&mdash;things will be very different in different situations!
+Here's the code for step 2) and 5):</p><pre     class="programlisting">
+static int skel_dma_start (unsigned long dma_addr,
+                           int dma_chan,
+                           unsigned long dma_len,
+                           int want_to_read) {
+    unsigned long flags;
+    if (!dma_len || dma_len &gt; 0xffff)
+        /* Invalid length */
+        return -EINVAL;
+    if (dma_addr &amp; 0xffff !=
+       (dma_addr + dma_len) &amp; 0xffff)
+        /* We would cross a 64kb-segment */
+        return -EINVAL;
+    if (dma_addr + dma_len &gt; MAX_DMA_ADDRESS)
+        /* Only lower 16 MB */
+        return -EINVAL;
+    /* Don't need any irqs here... */
+    save_flags (flags); cli ();
+    /* Get a well defined state */
+    disable_dma (dma_chan);
+    clear_dma_ff (dma_chan);
+    set_dma_mode (dma_chan,
+                  want_to_read ?
+                  /* we want to get data */
+                  DMA_MODE_READ
+                  /* we want to send data */
+                 : DMA_MODE_WRITE);
+    set_dma_addr (dma_chan, dma_addr);
+    set_dma_count (dma_chan, dma_len);
+    enable_dma (dma_chan);
+    restore_flags (flags);
+    return 0;
+}
+static void skel_dma_stop (int dma_chan) {
+    disable_dma (dma_chan);
+}
+</pre><p>Sorry, we can't give you a more detailed code here, as you
+have to decide for yourself how to include DMA in your driver. As
+usual, the best way to get things working is to look at some
+working implementation as a starting point.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f2580.0x1cf8ed0"></a>Deeper and Further</h2></div></div><p>If you want to go deeper with the topics just described, the
+best teacher is the source, as usual. Split-half interrupt handlers
+and task queues are used throughout the mainstream kernel, while
+the DMA implementation shown here is taken from our
+<b  >ceddrv-0.17</b>, available by ftp from
+<b  >tsx-11.mit.edu</b>.</p><p>The <a href="../028/1287.html" target="_self">next installment</a> will
+come back to more concrete issues&mdash;we realize that both DMA and
+task queues may appear to be rather esoteric topics. We'll show how
+<b  >mmap()</b> works and how a driver may implement its
+semantics.</p></div></div>
+<div class="authorblurb"><p>
+        <span   class="bold"><b>Alessandro Rubini</b></span>
+        is a 27-year-old Linuxer with a
+        taste for the practical side of computer science and a tendency to
+        delay sleeping. This helps him meet deadlines by exploiting
+        time-zone offsets.
+      </p><p>
+        <span   class="bold"><b>Georg V. Zezschwitz</b></span>
+        is also 27-year-old Linuxer with the same
+        taste for the practical side of computer science and a tendency to
+        delay sleeping.
+      </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../026/toc026.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

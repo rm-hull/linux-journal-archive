@@ -1,0 +1,981 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"/>
+<link href="https://fonts.googleapis.com/css?family=Lateef" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+<title>How-To: Implementing a Real-Time Syslog Shipper for Your Terminal</title>
+<link href="../../css/archive.css" type="text/css" rel="stylesheet"/>
+<script type="text/javascript" src="../../js/archive.js"></script>
+<script type="text/javascript" src="../../js/highlight.js"></script>
+</head>
+
+<body class="from_sigil">
+  
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+
+  <div class="tophrdiv">
+  </div>
+
+  
+  <div id="top_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+<h1 class="title">How-To: Implementing a Real-Time Syslog Shipper for Your Terminal</h1>
+
+<h2 class="sigil_not_in_toc">
+Ever wondered how to <code>tail -F /var/log/messages</code> from multiple servers at
+once? Read on. By Fabien Wernli</h2>
+
+<p>
+Troubleshooting Linux systems can be challenging, especially at times when
+the tools available to system administrators are constantly evolving.
+But, it's hard to avoid using some classic utilities on a daily basis.
+One of them can be summarized by the following command:
+
+</p>
+<pre><code>
+tail -F /var/log/messages
+</code>
+</pre>
+<p></p>
+
+<p>
+Reviewing logs is indeed a key player of the <a href="http://www.brendangregg.com/usemethod.html">"Utilization Saturation and
+Errors" (USE) method</a>.
+While storing historic logs from many servers in a centralized storage engine
+like <a href="http://elastic.co/products/elasticsearch">Elasticsearch</a> has
+become quite common nowadays, it's sometimes important to have a low-latency
+view of what's happening right now in your infrastructure. Unfortunately,
+there is no standard out-of-the-box tool to view logs in real time
+simultaneously on all hosts of a data center.
+</p>
+
+<p>
+Here are some use cases where low-latency treatment makes sense, along with
+an example for each:
+</p>
+
+<ul><li>
+Security incidents: account Y is compromised; trigger an alert for each
+successful connection attempt site-wide.
+</li>
+
+<li>
+Change management: committed a new change to configuration management; show
+each
+hosts' resource status as it changes.
+</li>
+<li>
+
+</li>
+<li>
+Real-time data mining: show all nodes on which application Z is currently
+serving more than N requests per second.
+</li>
+</ul>
+
+<p>
+This article shows how to set up a site-wide low-latency
+(sub-millisecond) log shipping infrastructure. I'll do this with minimal
+intrusion and demonstrate its usage in the command-line interface, just like
+good-old <code>tail -f /var/log/messages</code>.
+</p>
+
+<p>
+As your mileage may vary, let's stick to a simple scenario that you can
+adapt to your own use case. Most instructions given here are for recent
+Debian-based GNU/Linux distributions, but they easily can be adapted to other
+environments.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Scenario</h3>
+
+<p>
+Let's assume a number of Linux or UNIX servers, and that you'd
+like to be able to subscribe to all or a subset of their logs in real time,
+using a terminal.
+Let's refer to these servers as the <em>clients</em>.
+</p>
+
+<p>
+Let's further assume that they all have a running syslog collection dæmon, which
+you'll configure to forward the logs to a remote server that will serve as the
+log subscription <em>hub</em>.
+</p>
+
+<p>
+Finally, you'll use a <em>control node</em> that will serve as the login
+host. This will be the human-machine interface. The control node can be the
+same machine as the hub, or you can use your workstation or laptop, provided
+the firewalls are set up accordingly.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Software</h3>
+
+<p>
+Although no extra software is required on the <em>clients</em>, you'll need
+the following on the <em>hub</em>:
+</p>
+
+<ul><li>
+syslog-ng &gt;= 3.6.1 (or earlier with syslog-ng-incubator).
+</li>
+
+<li>
+riemann = 0.3.0.
+</li>
+</ul>
+
+<p>
+On the <em>control node</em>, you'll need to install the following:
+</p>
+
+<ul><li>
+A websocket (WS) client or a server-side-event (SSE) client:
+python websocket-client = 0.47.0 <em>or</em> nodejs wscat = 2.1.1.
+</li>
+
+<li>
+riemann-dash = 0.2.14 (optional).
+</li>
+</ul>
+
+<h3 class="sigil_not_in_toc">
+How It Works</h3>
+
+<p>
+Before getting your hands dirty modifying configuration files, let's get a glimpse of the big picture.
+See Figure 1 for a diagram of the overall architecture and event flow.
+</p>
+<div class="caption">
+<img alt="Architecture Diagram" src="12435f1.jpg"/>
+
+<p class="caption">Figure 1. Architecture Diagram</p>
+</div>
+
+<p>This diagram shows the following:</p>
+
+<ol><li>
+An application "app" on the <em>client</em> calls <code>syslog()</code> to
+log a message about an event.
+</li>
+
+<li>
+The local syslog dæmon captures the event and sends it to the remote
+<em>hub</em> using the syslog protocol.
+</li>
+
+<li>
+The syslog-ng dæmon on the <em>hub</em>
+forwards the event to the riemann dæmon using <a href="https://developers.google.com/protocol-buffers">protocol buffers</a>.
+</li>
+
+<li>
+The <em>control node</em> issues a subscription request to the <em>hub</em>
+using either WS or SSE.
+</li>
+
+<li>
+The riemann dæmon on the <em>hub</em> parses the query and starts
+forwarding matching events to the <em>control node</em>.
+</li>
+
+<li>
+The <em>control node</em> parses incoming events and displays them on your
+terminal in real time.
+</li>
+</ol>
+
+<p>
+The whole process, from step 1 to 6, usually takes less than a tenth of a
+millisecond (three sigma), even if tens of thousands of events happen per
+second.
+</p>
+
+<p>
+From the user's perspective, the workflow steps are the following:
+</p>
+
+<ol><li>
+<code>ssh</code> to the control node.
+</li>
+
+<li>
+Run the CLI with query as argument.
+</li>
+
+<li>
+Read messages on the terminal.
+</li>
+</ol>
+
+<p>
+Syslog-ng acts as a syslog-forwarder to riemann.
+Riemann acts as a real-time synchronous event publisher and subscription manager.
+It can push events matching a certain query using a websocket, for instance,
+to a command-line client or web browser.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Riemann Queries in a Nutshell</h3>
+
+<p>
+The query must be in riemann's domain-specific language, which is very simple
+but quite strict. Basically, you have to remember that riemann events have
+tags and attributes. You can query tags using the <code>tagged "foo"</code>
+pragma and attributes with <code>key = "value"</code>. You can combine
+conditions using <code>and</code> and <code>or</code> operators, and use the special
+wild-card character "%" in attribute expressions in the following form:
+
+</p>
+<pre><code>
+MESSAGE =~ "%quick brown fox%"
+</code>
+</pre>
+<p></p>
+
+<p>
+You can learn more about queries on the <a href="http://riemann.io">Riemann
+website</a>. You could, for
+instance, subscribe to all events having a syslog priority of "warning":
+
+</p>
+<pre><code>
+PRIORITY = "warning"
+</code>
+</pre>
+<p></p>
+
+<p>
+Or subscribe to all events:
+
+</p>
+<pre><code>
+true
+</code>
+</pre>
+<p></p>
+
+<p>
+Or match events from a given IP address:
+
+</p>
+<pre><code>
+HOST_FROM = "172.18.0.1"
+</code>
+</pre>
+<p></p>
+
+<h3 class="sigil_not_in_toc">
+Setup</h3>
+
+
+<p><em>
+Clients:</em>
+</p>
+
+<p>
+On the <em>clients</em>, you'll need to configure the local syslog dæmon to
+forward all events to the <em>hub</em>.
+</p>
+
+<p>
+The precise method depends on the syslog application you use on the
+<em>client</em>.
+If you are using legacy syslogd or rsyslog, add the following line to your
+(r)syslog.conf file:
+
+</p>
+<pre><code>
+* @hub.example.com
+</code>
+</pre>
+<p></p>
+
+<p>
+If you are using syslog-ng, add the following lines to your syslog-ng.conf file:
+
+</p>
+<pre><code>
+destination d_hub {
+  network(
+    'hub.example.com',
+    transport(udp),
+    port(514),
+    flags(syslog-protocol)
+  );
+};
+</code>
+</pre>
+<p></p>
+
+<p>
+And, don't forget to add the new destination to your existing log path (see the Configuration section for an example).
+</p>
+
+<p><em>
+hub:</em>
+</p>
+
+<p>
+On the <em>hub</em>, you have more work to do, as you'll be installing and configuring both syslog-ng and riemann.
+Make sure to download and install at least the versions listed earlier.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Installation</h3>
+
+<p>
+The procedure to install syslog-ng highly depends on the operating system you are using.
+On recent Debian-based GNU/Linux distributions, chances are the distribution packages will contain a recent enough version:
+
+</p>
+<pre><code>
+apt install syslog-ng-mod-riemann
+</code>
+</pre>
+<p></p>
+
+<p>
+If your distribution doesn't provide the required version, the <a href="https://syslog-ng.com/open-source-log-management">syslog-ng
+project's home page</a> has pointers to download packages for various
+platforms. Last but not least, there's always the option of building your own
+binaries using the source code available on <a href="https://github.com/balabit/syslog-ng">GitHub</a>. If you decide to go
+down that path, make sure to enable the riemann destination in the
+compilation options.
+</p>
+
+<p>
+Installing riemann is just a matter of downloading the package from its
+website and grabbing a copy of a Java Runtime Environment (JRE). On
+Debian, the most straightforward option is to install
+<code>openjdk-8-jre-headless</code>. You can also build riemann from source (see
+instructions on its <a href="https://github.com/riemann/riemann">GitHub
+page</a>). On Debian/Stretch, you could do the
+following:
+
+</p>
+<pre><code>
+apt install openjdk-8-jre-headless
+wget https://github.com/riemann/riemann/releases/download/
+↪0.3.0/riemann_0.3.0_all.deb
+dpkg -i riemann_0.3.0_all.deb
+</code>
+</pre>
+<p></p>
+
+<h3 class="sigil_not_in_toc">
+Configuration</h3>
+
+<p>
+The syslog-ng configuration given here is the minimum required for the task
+at hand.
+It doesn't technically conflict with the existing syslog-daemon
+implementation, unless it's already listening on the UDP port 514. However,
+on Debian-based distributions, installing syslog-ng will uninstall rsyslog,
+because the packages conflict with one another.
+</p>
+
+<p>
+In this light, you'll add a drop-in file,
+/etc/syslog-ng/syslog-ng.conf.d/riemann.conf, that syslog-ng will
+include in the main configuration file. That way, it won't interfere with
+the configuration file provided in the distribution:
+
+</p>
+<pre><code>
+# syslog listener definition on *:514/udp
+source s_syslog {
+  network(
+    ip('0.0.0.0')
+    transport(udp)
+    port(514)
+    flags(syslog-protocol)
+  );
+};
+# riemann destination definition
+destination d_riemann {
+  riemann(
+    server('127.0.0.1')
+    port(5555)
+    type('tcp')
+    ttl('300')
+    state("${state:-ok}")
+    attributes(
+      scope(all-nv-pairs rfc5424)
+    )
+    tags('syslog')
+  );
+};
+# log path
+log {
+  source(s_syslog);
+  destination(d_riemann);
+};
+</code>
+</pre>
+<p></p>
+
+<p>
+Ensure that the /etc/syslog-ng/syslog-ng.conf file includes the
+following line; otherwise, syslog-ng will ignore the
+/etc/syslog-ng/syslog-ng.conf.d/riemann.conf file:
+
+</p>
+<pre><code>
+@include "/etc/syslog-ng/conf.d/*.conf"
+</code>
+</pre>
+<p></p>
+
+<p>
+The above configuration defines a syslog listener on standard UDP port 514, a
+riemann destination and a log path connecting the two. Refer to the
+<a href="https://syslog-ng.com/documentation">syslog-ng documentation</a> for any details on the syntax used here.
+</p>
+
+<p>
+The riemann configuration is given in its entirety. You simply can replace
+the shipped /etc/riemann/riemann.config with the following:
+
+</p>
+<pre><code>
+; Configure logging
+(logging/init {:file "/var/log/riemann/riemann.log"})
+
+; Disable riemann's internal instrumentation
+(instrumentation {:enabled? false})
+
+; Listen on the local interface over TCP (5555), websockets
+; (5556), and server-side-events (5558)
+(let [host "0.0.0.0"]
+  (tcp-server {:host host :port 5555})
+  (ws-server  {:host host :port 5556})
+  (sse-server {:host host :port 5558}))
+
+; Expire old events from the index every 5 seconds.
+(periodically-expire 5)
+
+; Index all events with a default time-to-live of 60 seconds
+(let [index (index)]
+  (streams
+    (default :ttl 60
+      index)))
+</code>
+</pre>
+<p></p>
+
+<p>
+This configuration sets up three listeners:
+</p>
+
+<ol>
+<li>
+Port 5555 will receive events from syslog-ng in protobuf format.
+</li>
+
+<li>
+Port 5556 will listen for websocket subscriptions.
+</li>
+
+<li>
+Port 5558 will listen for server-side-event subscriptions.
+</li>
+</ol>
+
+<p>
+It also disables riemann's instrumentation service, so you're not confused
+with internal messages and can focus only on syslog.
+</p>
+
+<p>
+Refer to riemann's resources on the website—especially the how-to
+section for details on the configuration syntax.
+</p>
+
+<p>
+Now that both syslog-ng and riemann are configured to your needs, check the
+configurations for errors:
+
+</p>
+<pre><code>
+syslog-ng -f /etc/syslog-ng/syslog-ng.conf -s
+riemann test /etc/riemann/riemann.config
+</code>
+</pre>
+<p></p>
+
+<p>
+If both return without errors, (re)start the services:
+
+</p>
+<pre><code>
+service riemann start
+service syslog-ng restart
+</code>
+</pre>
+<p></p>
+
+<h3 class="sigil_not_in_toc">
+Control Node</h3>
+
+<p>
+The last thing you need to connect all the dots is the command-line interface
+that will let you <code>tail -F</code> all logs from all the
+<em>clients</em>. There
+are a number of options here: the CLI you need should support either
+websockets or server-side-events. Both are technologies borrowed from the web
+that allow the web server (Riemann in this case) to push data to the client,
+instead of the client pulling.
+</p>
+
+<p>
+You'll be using websockets, as existing software tends to be more generally
+available. There is a convenient <a href="https://pypi.python.org/pypi/websocket-client">Python package</a> that works right out of
+the box:
+
+</p>
+<pre><code>
+pip install websocket-client
+</code>
+</pre>
+<p></p>
+
+<p>
+Alternatively, you also can use a <a href="https://blog.grandcentrix.net/a-command-line-websocket-client">Node.js
+implementation</a>:
+
+</p>
+<pre><code>
+npm install -g wscat
+</code>
+</pre>
+<p></p>
+
+<p>
+Now, subscribe to the syslog flow:
+
+</p>
+<pre><code>
+# subscribe to all events (query 'true')
+wscat --connect 'ws://hub.example.com:5556/index?subscribe=
+↪true&amp;query=true'
+# or
+wsdump.py -r 'ws://hub.example.com:5556/index?subscribe=
+↪true&amp;query=true'
+</code>
+</pre>
+<p></p>
+
+<p>
+Note that you may have to URL-encode the query:
+
+</p>
+<pre><code>
+# subscribe to events matching the query 'PRIORITY = "warning"'
+wsdump.py -r 'ws://hub.example.com:5556/index?subscribe=
+↪true&amp;query=PRIORITY+%3D+%22warning%22'
+</code>
+</pre>
+<p></p>
+
+<p>
+Let's push some events to it by crafting a syslog message from another shell:
+
+</p>
+<pre><code>
+logger -d -n hub.example.com -p 4 -t foo bar baz
+</code>
+</pre>
+<p></p>
+
+<p>
+On the WS CLI, you immediately should see:
+
+</p>
+<pre><code>
+{"host":"172.18.0.1","service":"test","state":"ok",
+↪"description":null,"metric":null,"tags":["syslog"],"time":
+↪"2018-04-10T13:36:04.787Z","ttl":300.0,"DATE":"Apr 10 
+↪15:36:04","HOST":"172.18.0.1","FACILITY":"user","MESSAGE":
+↪"bar baz",".SDATA.timeQuality.isSynced":"0","HOST_FROM":
+↪"172.18.0.1","SOURCE":"s_syslog",".SDATA.timeQuality.tzKnown":
+↪"1","PRIORITY":"warning","PROGRAM":"foo"}
+</code>
+</pre>
+<p></p>
+
+<p>
+If you want to see a more traditional representation of the message (as in
+/var/log/messages), you can pipe the client's output through the <a href="https://stedolan.github.io/jq">jq
+utility</a> in the following way:
+
+</p>
+<pre><code>
+wsdump.py -r [...] | jq -r '"\(.time) \(.HOST) \(.PROGRAM) 
+ ↪\(.MESSAGE)"'
+</code>
+</pre>
+<p></p>
+
+<p>
+In which case, you'll see:
+
+</p>
+<pre><code>
+2018-04-10T14:04:53.489Z 172.18.0.1 foo bar baz
+</code>
+</pre>
+<p></p>
+
+<h3 class="sigil_not_in_toc">
+Troubleshooting</h3>
+
+<p>
+To troubleshoot syslog-ng, run it in the foreground in debug mode:
+
+</p>
+<pre><code>
+syslog-ng -Fdv
+</code>
+</pre>
+<p></p>
+
+<p>
+Although very verbose, the parser and debug messages are extremely valuable when
+tracking configuration or payload issues.
+</p>
+
+<p>
+If needed, feel free to subscribe to the very friendly <a href="https://lists.balabit.hu/mailman/listinfo/syslog-ng">official mailing
+list</a>,
+where many users and also the core developers are active.
+</p>
+
+<p>
+Debugging riemann configuration problems can be challenging, especially if
+you've never programmed in Clojure before. If there is a syntax error, like a
+missing parenthesis, you quickly can be flooded by Java stack traces. Be
+patient and try to find the relevant bits in the trace messages.
+</p>
+
+<p>
+If that doesn't suffice, there's a very <a href="http://riemann.io/support.html">helpful community on IRC and the
+mailing-list</a>.
+</p>
+
+<h3 class="sigil_not_in_toc">
+What's Next?</h3>
+
+<p>
+Now that you've got a working proof of concept (PoC), there are quite a few
+things you can do to improve the system. Although I won't go into much detail
+about those things, here are a few ideas based on our experience at <a href="https://cc.in2p3.fr">CCIN2P3</a>.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Security</h3>
+
+<p>
+First off, you might want to add a bit of security to the setup. You actually
+made things quite worse while moving from <code>ssh+tail -f messages</code> to
+the websocket solution. Anyone on the network now can subscribe to the whole
+site's syslog, without any authentication. Luckily, there's a simple
+solution to this: set up a reverse proxy in front of riemann's websocket
+listener. As authentication is very site-specific, I won't cover it
+extensively here. However, here's a simple example using the <a href="https://caddyserver.com">Caddy web server</a>
+and basic authentication:
+
+</p>
+<pre><code>
+# /etc/Caddyfile
+hub.example.com:5559 {
+  tls self_signed
+  basicauth / user pass
+  proxy / localhost:5556 {
+    websocket
+  }
+}
+</code>
+</pre>
+<p></p>
+
+<p>
+This configuration will listen to the external port 5559 and proxy the
+traffic to local port 5556 if the user provided correct credentials. This
+only makes sense if riemann is reconfigured to listen on the local network
+interface.
+</p>
+
+<p>
+On the <em>control node</em>, you now can connect to the proxy using basic
+authentication:
+
+</p>
+<pre><code>
+wsdump.py --headers 'Authorization: Basic dXNlcjpwYXNz' -r 
+ ↪'wss://hub.example.com:5559/index?subscribe=true&amp;query=true' -n
+# or
+wscat -n --auth user:pass --connect 'wss://hub.example.com:5559/
+↪index?subscribe=true&amp;query=true'
+</code>
+</pre>
+<p></p>
+
+<p>
+Note that the Python CLI doesn't support supplying basic auth credentials on
+the command line, so you need to pass the base64 encoded
+<code>user:pass</code> using
+an HTTP header.
+</p>
+
+<p>
+Another improvement could be to write a higher-level CLI that integrates with
+your local organization's central authentication mechanisms. For example, it
+could leverage roles from a central identity directory and apply access
+control lists. Those could be host-based or even application-based: role A
+can subscribe to events matching queries X, Y and Z.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Stream Processing</h3>
+
+<p>
+Both software suites installed on the hub can be leveraged further to
+filter, aggregate and even correlate syslog messages.
+</p>
+
+<p>
+Although syslog-ng can do this in a more traditional fashion by using
+configuration elements like filters, parsers and template functions, riemann
+on the other hand gives you full control over the event flow. In fact, its
+configuration file is code that will be compiled, so you can do
+virtually anything. One of the most common usages in the wild for both
+software packages are structuring incoming data. Although you saw that syslog
+events already feature some structure in the form of key/value pairs, both
+riemann and syslog-ng can help you extract or add additional features to your
+events. Those will help you filter the live stream of events and answer real
+questions.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Web App</h3>
+
+<p>
+There is a web interface (<a href="http://riemann.io/dashboard.html">riemann-dash</a>) that takes advantage of
+riemann's subscription mechanism.
+It can display events in textual, grid or even graphical form, and it's
+invaluable when you want to monitor changes in real time in a distributed
+application.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Resiliency</h3>
+
+<p>
+Another caveat of this PoC is that this <em>hub</em> is a single point of
+failure (SPoF).
+You could do the following to improve the situation:
+</p>
+
+<ul><li>
+Install syslog-ng on all the clients.
+</li>
+
+<li>
+Configure all syslog-ng instances to send the logs to multiple riemann
+servers.
+</li>
+
+<li>
+Write a high-level CLI that uses load-balancing to subscribe to the riemann
+servers' streams.
+</li>
+</ul>
+
+<h3 class="sigil_not_in_toc">
+Dockerfile</h3>
+
+<p>
+For your convenience, a GitHub repository containing the means to build a
+<a href="https://github.com/ccin2p3/docker-distributed-tail--f-messages">Docker
+container for the solution described in this article</a> is at your
+disposal. It includes the steps on how to build, run and use the
+container.</p>
+
+<h3 class="sigil_not_in_toc">
+Resources</h3>
+
+<ul><li>
+<a href="http://www.brendangregg.com/usemethod.html">Utilization Saturation
+and 
+Errors (USE) Method</a>
+</li>
+
+<li>
+<a href="http://elastic.co/products/elasticsearch">Elasticsearch</a>
+</li>
+
+<li>
+<a href="https://developers.google.com/protocol-buffers">Protocol Buffers</a>
+</li>
+
+<li>
+<a href="http://riemann.io">Riemann Website</a>
+</li>
+
+<li>
+<a href="https://syslog-ng.com/open-source-log-management">syslog-ng
+Project's Home Page</a>
+</li>
+
+<li>
+<a href="https://github.com/balabit/syslog-ng">syslog-ng on GitHub</a>
+</li>
+
+<li>
+<a href="https://github.com/riemann/riemann">Riemann GitHub Page</a>
+</li>
+
+<li>
+<a href="https://syslog-ng.com/documentation">syslog-ng Documentation</a>
+</li>
+
+<li>
+<a href="https://pypi.python.org/pypi/websocket-client">WebSocket Client for
+Python</a>
+</li>
+
+<li>
+<a href="https://blog.grandcentrix.net/a-command-line-websocket-client">Node.js
+WebSocket Implementation</a>
+</li>
+
+<li>
+<a href="https://stedolan.github.io/jq">jq Utility</a>
+</li>
+
+<li>
+<a href="https://lists.balabit.hu/mailman/listinfo/syslog-ng">syslog-ng
+Mailing List</a>
+</li>
+
+<li>
+<a href="http://riemann.io/support.html">Riemann Support and IRC</a>
+</li>
+
+<li>
+<a href="https://cc.in2p3.fr">Centre de Calcul de L'IN2P3</a>
+</li>
+
+<li>
+<a href="https://caddyserver.com">Caddy Web Server</a>
+</li>
+
+<li>
+<a href="http://riemann.io/dashboard.html">riemann dash Web Interface</a>
+</li>
+
+<li>
+<a href="https://github.com/ccin2p3/docker-distributed-tail--f-messages">Distributed
+tail -f /var/log/messages Docker Container</a>
+</li>
+</ul>
+
+<p><strong>
+Further Reading:</strong></p>
+
+<ul><li>
+<a href="https://www.artofmonitoring.com"><em>The Art of Monitoring</em></a> is a fine book
+that covers various aspects of monitoring. Luckily, it includes a free
+complete section on riemann.
+</li>
+
+<li>
+The <a href="http://riemann.io/clojure.html">Just enough Clojure to work with
+Riemann</a> section on riemann's website tries
+to address the steep learning curve of the "configuration syntax".
+</li>
+
+<li>
+The syslog-ng website features multiple
+<a href="https://syslog-ng.com/white-papers">whitepapers</a> with various use cases,
+including sections on how to parse and structure your syslogs.
+</li>
+</ul>
+
+<h3 class="sigil_not_in_toc">About the Author</h3>
+
+<p>
+Fabien Wernli (faxm0demi/faxmodem on GitHub, Twitter and Freenode) has been
+administering Linux clusters at the Computing Centre of the National
+Institute of Nuclear Physics and Particle Physics (CC-IN2P3) for 15 years.
+Among other things, he is an expert on performance-data monitoring and
+infrastructure management.
+</p>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../292/toc292.html">Issue Table of Contents</a>
+    <a class="link3" href="../292/12435.html">Article</a>
+  </div>
+  <div class="bottomhrdiv"></div>
+
+  <div id="bottom_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+</body>
+</html>

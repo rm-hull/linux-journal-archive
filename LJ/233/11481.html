@@ -1,0 +1,568 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Advanced Hard Drive Caching Techniques
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Enhance the longevity of your slower mechanical hard drive and limit&#10;its power consumption by caching data to SSD or RAM.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x15dc580.0x16d3ac0"></a>
+Advanced Hard Drive Caching Techniques
+</h1></div><div><div class="author"><h3 class="author">
+Petros
+ 
+Koutoupis
+</h3></div><div class="issuemoyr">Issue #233, September 2013</div></div><div><p>
+Enhance the longevity of your slower mechanical hard drive and limit
+its power consumption by caching data to SSD or RAM.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16d41f8"></a></h2></div></div><p>
+With the introduction of the solid-state Flash drive, performance
+came to the forefront for data storage technologies. Prior to that,
+software developers and server administrators needed to devise methods
+for which they could increase I/O throughput to storage, most of which
+resulted in low capacity caching to random access memory (RAM)
+or a RAM drive. Although not as fast as RAM, the Flash drive was almost a
+dream come true, but it had its limitations&mdash;one of which was its low
+capacities packaged in the NAND-based chips. The traditional spinning
+disk drive provided users' desired capacities but lacked in speedy
+accessibility. Even with the 6Gb SATA protocol, sequential data
+access at best performed at approximately 150MB per second (or
+MB/s) for both read and write operations, while random access varied
+between 2&ndash;5MB/s as the seeking across multiple sectors laid out
+in multiple tracks across multiple spinning platters proved to be an
+extremely disruptive bottleneck. The solid-state drive (SSD) with no
+movable components significantly decreased these access latencies, thus
+rendering this bottleneck almost nonexistent.
+</p><p>
+Even today, the consumer SSD cannot compare to the capacities provided
+by the magnetic hard disk drive (or HDD), which is why in this article I
+intend to introduce readers to proven methods for obtaining near
+SSD performance with the traditional HDD. Multiple open-source projects exist that can
+achieve this, all but one of which utilizes an
+SSD as a caching node, and the other caches to RAM. The device drivers
+I cover here are dm-cache, FlashCache and the
+RapidDisk/RapidCache suite; I also briefly discuss bcache and
+EnhanceIO.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16d4408"></a></h2></div></div><div class="sidebar"><p class="title"><b>Note:</b></p><p>
+To build the kernel modules shown in this article, you need
+to have either the full kernel source or the kernel headers installed
+for your current kernel image revision.
+</p></div><p>
+In my examples, I am using a commercial SATA III (6Gbps) SSD with
+an average performance of the following:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Sequential read: 231MB/s
+</p></li><li><p>
+Sequential write: 74MB/s
+</p></li><li><p>
+Random read: 230MB/s
+</p></li><li><p>
+Random write: 72MB/s
+</p></li></ul></div><p>
+This SSD provides the caching layer for a slower mechanical SATA
+III HDD that performs at the following:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Sequential read: 115MB/s
+</p></li><li><p>
+Sequential write: 72MB/s
+</p></li><li><p>
+Random read: 2MB/s
+</p></li><li><p>
+Random write: 2MB/s
+</p></li></ul></div><p>
+In my environment, the SSD is labeled as /dev/sdb, and the HDD is
+/dev/sda3. These are non-intrusive transparent caching solutions
+intended to achieve the performance benefits of SSDs. They can be
+added and removed to existing storage targets without issue or data
+loss (assuming that all cached data has been flushed to
+disk successfully). Also, all the examples here showcase a write-back caching
+scheme with the exception of RapidCache, which instead will be used in
+write-through mode. In write-back mode, newly written data is cached but
+not immediately written to the destination target. Write-through
+mode always will write new data to the target while still maintaining it in
+cache for future reads.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16d4d50"></a></h2></div></div><div class="sidebar"><p class="title"><b>Note:</b></p><p>
+The benchmarks shown here were obtained by
+using FIO, a file I/O benchmarking and test tool designed for data
+storage technologies. It is maintained by Linux kernel developer Jens
+Axboe. Unless noted otherwise, all captured I/O is written at the typical
+4KB page size, asynchronously to the storage target 32 transfers at
+a time (that is, queue depth).
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16d4f60"></a>
+dm-cache</h2></div></div><p>
+dm-cache has been around for quite some time&mdash;at least since 2006. It
+originally made its debut as a research project developed by Dr Ming Zhao
+through his summer internship at IBM research. The dm-cache module 
+just recently was integrated into the Linux kernel tree as of version
+3.9. Whether you choose to enable it in a recently downloaded kernel
+or compile it from the official project site, the results will be the
+same. To load the module, you need to invoke modprobe or insmod:
+
+<pre     class="programlisting">
+$ sudo modprobe dm-cache
+</pre>
+</p><p>
+Now that the module is loaded, you need to inform that module
+about which drive to point to for the cache and which to point to
+for the destination. The dm-cache project site provides a Perl script to
+simplify this process called dmc-setup.pl. For example, if I wanted to
+use the entire SSD in write-back caching mode with a 4KB block size,
+I would type:
+
+
+<pre     class="programlisting">
+$ sudo perl dmc-setup.pl -o /dev/sda3 -c /dev/sdb -n cache -b 8 -w
+</pre>
+</p><p>
+This script is a wrapper to the equivalent dmsetup command below:
+
+
+<pre     class="programlisting">
+$ echo 0 20971520 cache /dev/sda3 /dev/sdb 0 8 65536 16 1 | 
+ &#8618;dmsetup create cache
+</pre>
+</p><p>
+The dm-cache documentation hosted on the project site provides details on
+each parameter field, so I don't cover them here.
+</p><p>
+You may notice that in both examples, I named the mapping to both
+drives &ldquo;cache&rdquo;. So, when I need to access the drive mapping, I must
+refer to it as &ldquo;cache&rdquo;.
+</p><p>
+The following mapping passes all data requests to the caching driver, which in
+turn performs the necessary magic to process the requests either
+by handling it entirely out of cache or both the cache and the slower device:
+
+
+<pre     class="programlisting">
+$ ls -l /dev/mapper
+total 0
+lrwxrwxrwx 1 root root       7 Jun 30 12:10 cache -&gt; ../dm-0
+crw------- 1 root root 10, 236 Jun 30 11:52 control
+</pre>
+</p><p>
+Just like with any other device-mapper-enabled target, I also can pull up
+detailed mapping data:
+
+
+<pre     class="programlisting">
+$ sudo dmsetup status cache
+0 20971520 cache stats: reads(83), writes(0), 
+ &#8618;cache hits(0, 0.0),replacement(0), replaced dirty blocks(0)
+
+$ sudo dmsetup table cache
+0 20971520 cache conf: capacity(256M), associativity(16), 
+ &#8618;block size(4K), write-back
+</pre>
+</p><p>
+If the target drive already is formatted with data on it, you just
+need to mount it; otherwise, format it to your specified filesystem:
+
+<pre     class="programlisting">
+$ sudo mke2fs -F /dev/mapper/cache
+</pre>
+</p><p>
+Remember, these solutions are non-intrusive, so if you have existing
+data that needs to remain on that disk drive, skip the above step and
+go straight to mounting it for data accessibility:
+
+
+<pre     class="programlisting">
+$ sudo mount /dev/mapper/cache /mnt/cache
+$ df|grep cache
+/dev/mapper/cache  10321208 1072632   8724288  11% /mnt/cache
+</pre>
+</p><p>
+Using a benchmarking utility, the numbers will vary. On read operations,
+it is wholly dependent on whether the desired data resides in cache
+or whether the module needs to retrieve it from the slower disk. On write
+operations, it depends on the Flash technology itself, and whether it needs
+to go through a typical programmable erase (PE) cycle to write the new
+data. Regardless of this, the random read/write access to the slower
+drive has been increased significantly:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Sequential read: 105MB/s
+</p></li><li><p>
+Sequential write: 50MB/s
+</p></li><li><p>
+Random read: 67MB/s
+</p></li><li><p>
+Random write: 51MB/s
+</p></li></ul></div><p>
+You can continue monitoring the cache status by typing:
+
+<pre     class="programlisting">
+$ sudo dmsetup status cache 
+0 20971520 cache stats: reads(301319), writes(353216), 
+ &#8618;cache hits(24485, 0.3),replacement(345972), 
+ &#8618;replaced dirty blocks(92857)
+</pre>
+</p><p>
+To remove the cache mapping, unmount the drive and invoke dmsetup:
+
+<pre     class="programlisting">
+$ sudo umount /mnt/cache
+$ sudo dmsetup remove cache
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16d5cc8"></a>
+FlashCache</h2></div></div><p>
+FlashCache is a project developed and maintained by Facebook. It was
+inspired by dm-cache. Much like dm-cache, it too is built from the
+device-mapper framework. It currently is hosted on GitHub and can be
+cloned from there. The repository encompasses the kernel module and
+administration utilities. Once built and installed, load the kernel
+module and in a similar fashion to the previous examples, create a mapping
+of the SSD and HDD:
+
+
+<pre     class="programlisting">
+$ sudo modprobe flashcache
+$ sudo flashcache_create -p back -b 8 cache /dev/sdb /dev/sda3
+cachedev cache, ssd_devname /dev/sdb, disk_devname /dev/sda3 
+ &#8618;cache mode WRITE_BACK block_size 8, md_block_size 8, 
+ &#8618;cache_size 0
+FlashCache metadata will use 223MB of your 3944MB main memory
+</pre>
+</p><p>
+The flashcache_create administration utility is similar to the
+dmc-setup.pl Perl script used for dm-cache. It is a wrapper utility
+designed to simplify the dmsetup process. As with the dm-cache module,
+once the mapping has been created, you can view mapping details by typing:
+
+
+<pre     class="programlisting">
+$ sudo dmsetup table cache
+0 20971520 flashcache conf:
+    ssd dev (/dev/sdb), disk dev (/dev/sda3) cache mode(WRITE_BACK)
+    capacity(57018M), associativity(512), data block size(4K) 
+     &#8618;metadata block size(4096b)
+    skip sequential thresh(0K)
+    total blocks(14596608), cached blocks(83), cache percent(0)
+    dirty blocks(0), dirty percent(0)
+    nr_queued(0)
+Size Hist: 4096:83 
+$ sudo dmsetup status cache
+0 20971520 flashcache stats: 
+    reads(83), writes(0)
+    read hits(0), read hit percent(0)
+    write hits(0) write hit percent(0)
+    dirty write hits(0) dirty write hit percent(0)
+    replacement(0), write replacement(0)
+    write invalidates(0), read invalidates(0)
+    pending enqueues(0), pending inval(0)
+    metadata dirties(0), metadata cleans(0)
+    metadata batch(0) metadata ssd writes(0)
+    cleanings(0) fallow cleanings(0)
+    no room(0) front merge(0) back merge(0)
+    disk reads(83), disk writes(0) ssd reads(0) ssd writes(83)
+    uncached reads(0), uncached writes(0), uncached IO requeue(0)
+    disk read errors(0), disk write errors(0) ssd read errors(0) 
+     &#8618;ssd write errors(0)
+    uncached sequential reads(0), uncached sequential writes(0)
+    pid_adds(0), pid_dels(0), pid_drops(0) pid_expiry(0)
+</pre>
+</p><p>
+Mount the mapping for file accessibility:
+
+<pre     class="programlisting">
+$ sudo mount /dev/mapper/cache /mnt/cache
+</pre>
+</p><p>
+Using the same benchmarking utility, observe the differences between 
+FlashCache and the previous module:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Sequential read: 284MB/s
+</p></li><li><p>
+Sequential write: 72MB/s
+</p></li><li><p>
+Random read: 284MB/s
+</p></li><li><p>
+Random write: 71MB/s
+</p></li></ul></div><p>
+The numbers look more like the native SSD performance. However, I want
+to note that this article is not intended to prove that one solution
+performs better than the other, but instead to enlighten readers of the
+many methods you can use to accelerate data access to existing and
+slower configurations.
+</p><p>
+To unmount and remove the drive mapping, type the following in the terminal:
+
+<pre     class="programlisting">
+$ sudo umount /mnt/cache
+$ sudo dmsetup remove /dev/mapper/cache
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16ccd98"></a>
+RapidDisk and RapidCache</h2></div></div><p>
+Currently at version 2.9, RapidDisk is an advanced Linux RAM disk whose
+features include the capabilities to allocate RAM dynamically as a block
+device, use it as standalone disk drives, or even map it as caching
+nodes to slower local disk drives via RapidCache (the latter of which
+was inspired by FlashCache and uses the device-mapper framework). RAM is
+being accessed to handle the data storage by allocating memory pages as
+they are needed. It is a volatile form of storage, so if power is
+removed or if the computer is rebooted, all data stored within RAM will
+not be preserved. This is why the RapidCache module was designed to
+handle only read-through/write-through caching, which means that whatever
+is intended to be written to the slower storage device will be cached
+to RapidCache and written immediately to the hard drive. And, if data is
+being requested from the hard drive and it does not pre-exist in the
+RapidCache node, it will read the data from the slower device and then
+cache it to the RapidCache node. This method will retain the same write
+performance as the hard drive, but significantly increase sequential
+and random access read performance to cached data.
+</p><p>
+Once the package, which consists of two kernel modules and an
+administration utility, is built and installed, you need to insert
+the modules by typing the following on the command line:
+
+<pre     class="programlisting">
+$ sudo modprobe rxdsk
+$ sudo modprobe -r rxdsk
+</pre>
+</p><p>
+Let's assume that you're running on a computer that contains 4GB of RAM,
+and you confidently can say that at least 1GB of that RAM is never
+used by the operating system and its applications. Using RapidDisk
+to create a RAM drive of 1GB in size, you would type:
+
+<pre     class="programlisting">
+$ sudo rxadm --attach 1024
+</pre>
+</p><p>
+Remember, RapidDisk will not pre-allocate this storage. It will 
+allocate RAM only as it is used.
+</p><p>
+A quick benchmark test of just the RAM drive produces some
+overwhelmingly fast results with 4KB I/O transfers:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Sequential read: 1.6GB/s
+</p></li><li><p>
+Sequential write: 1.6GB/s
+</p></li><li><p>
+Random read: 1.3GB/s
+</p></li><li><p>
+Random write: 1.1GB/s
+</p></li></ul></div><p>
+It produces the following with 1MB I/O transfers:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Sequential read: 4.9GB/s
+</p></li><li><p>
+Sequential write: 4.3GB/s
+</p></li><li><p>
+Random read: 4.9GB/s
+</p></li><li><p>
+Random write: 4.0GB/s
+</p></li></ul></div><p>
+Impressive, right? To utilize such a speedy RAM drive as a caching node to
+a slower drive, a mapping must be created, where /dev/rxd0 is the node
+used to access the RAM drive, and /dev/mapper/rxc0 is the node used to
+access the mapping of the two drives:
+
+<pre     class="programlisting">
+$ sudo rxadm --rxc-map rxd0 /dev/sda3 4
+</pre>
+</p><p>
+You can get a list of attached devices and mappings by typing:
+
+
+<pre     class="programlisting">
+$ sudo rxadm --list
+rxadm 2.9
+Copyright 2011-2013 Petros Koutoupis
+
+List of rxdsk device(s):
+
+ RapidDisk Device 1: rxd0
+    Size: 1073741824
+
+List of rxcache mapping(s):
+
+ RapidCache Target 1: rxc0
+0 20971519 rxcache conf:
+    rxd dev (/dev/rxd0), disk dev (/dev/sda3) mode (WRITETHROUGH)
+    capacity(1024M), associativity(512), block size(4K)
+    total blocks(262144), cached blocks(0)
+ Size Hist: 512:663 
+</pre>
+</p><p>
+As with the previous device-mapper-based solutions, you even
+can list detailed information of the mapping by typing:
+
+
+<pre     class="programlisting">
+$ sudo dmsetup table rxc0
+0 20971519 rxcache conf:
+    rxd dev (/dev/rxd0), disk dev (/dev/sda3) mode (WRITETHROUGH)
+    capacity(1024M), associativity(512), block size(4K)
+    total blocks(262144), cached blocks(0)
+ Size Hist: 512:663 
+
+$ sudo dmsetup status rxc0
+0 20971519 rxcache stats: 
+    reads(663), writes(0)
+    cache hits(0) replacement(0), write replacement(0)
+    read invalidates(0), write invalidates(0)
+    uncached reads(663), uncached writes(0)
+    disk reads(663), disk writes(0)
+    cache reads(0), cache writes(0)
+</pre>
+</p><p>
+Format the mapping if needed and mount it:
+
+<pre     class="programlisting">
+$ sudo mount /dev/mapper/rxc0 /mnt/cache
+</pre>
+</p><p>
+A benchmark test produces the following results:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Sequential read: 794MB/s
+</p></li><li><p>
+Sequential write: 70MB/s
+</p></li><li><p>
+Random read: 901MB/s
+</p></li><li><p>
+Random write: 2MB/s
+</p></li></ul></div><p>
+Notice that the write performance is not very great, and that's
+because it is not meant to be. Write-through mode promises only faster
+read performance of cached data and consistent write performance to
+the original drive. The read performance, however, shows significant
+improvement when accessing cached data.
+</p><p>
+To remove the mapping and detach the RAM drive, type the following:
+
+<pre     class="programlisting">
+$ sudo umount /mnt/cache
+$ sudo rxadm --rxc-unmap rxc0
+$ sudo rxadm --detach rxd0
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16cdf78"></a>
+Other Solutions Worth Mentioning</h2></div></div><p>
+<span   class="bold"><b>bcache:</b></span>
+</p><p>
+bcache is relatively new to the hard drive caching scene. It offers all
+the same features and functionalities as the previous solutions with
+the exception of its capability to map one or more SSDs as the cache for
+one or more HDDs instead of one volume to one volume. The project's
+maintainer does, however, tout its superiority over the other solutions
+when it comes to data access performance from the cache. From what I can
+tell, bcache is unlike the previous solutions where it does not rely on
+the device-mapper framework and instead is a standalone module. At the
+time of this writing, it is set to be integrated into release 3.10 of
+the Linux kernel tree. Unfortunately, I haven't had the opportunity
+or the appropriate setup to test bcache. As a result, I haven't been
+able to dive any deeper into this solution and benchmark its performance.
+</p><p><span   class="bold"><b>
+EnhanceIO:</b></span>
+</p><p>
+EnhanceIO is an SSD caching solution produced by STEC, Inc., and hosted
+on GitHub. It was greatly inspired by the work done by Facebook for
+FlashCache, and although it's open-source, a commercial version is offered by the
+company for those seeking additional support. STEC did not
+simply modify a few lines of code of FlashCache and republish it. Instead,
+STEC rewrote the write-back caching logic while also improving other
+areas, such as memory footprint, failure handling and more. As with
+bcache, I haven't had the opportunity to install and
+test EnhanceIO.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16ce238"></a>
+Summary</h2></div></div><p>
+These solutions are intended to provide users with near SSD
+speeds and HDD capacities at a significantly reduced cost. From the
+data center to your home office, these solutions can be deployed almost
+anywhere. They also can be tuned to operate more appropriately in their
+intended environments. Some of them even offer a variety of caching
+algorithm options, such as Least Recently Used (LRU), Most Recently Used
+(MRU), hybrids of the two or just a simple first-in first-out (FIFO)
+caching scheme. The first three options can be expensive regarding
+performance, as
+they require the tracking of cached data sets for what has been accessed
+and how recently in order to determine whether to discard it. FIFO, however,
+functions as a circular buffer in which the oldest cached data set
+will be discarded first. With the exception of RapidCache, the SSD-focused modules also preserve metadata of the cache to ensure that
+any disruptions, including power cycles/outages, don't compromise the
+integrity of the data.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x16ce340"></a></h2></div></div><div class="sidebar"><p class="title"><b>Resources</b></p><p>
+dm-cache: <a href="http://visa.cs.fiu.edu/tiki/dm-cache" target="_self">visa.cs.fiu.edu/tiki/dm-cache</a>
+</p><p>
+FlashCache: <a href="https://github.com/facebook/flashcache" target="_self">https://github.com/facebook/flashcache</a>
+</p><p>
+EnhanceIO: <a href="https://github.com/stec-inc/EnhanceIO" target="_self">https://github.com/stec-inc/EnhanceIO</a>
+</p><p>
+bcache: <a href="http://bcache.evilpiepirate.org" target="_self">bcache.evilpiepirate.org</a>
+</p><p>
+RapidDisk: <a href="http://www.rapiddisk.org" target="_self">www.rapiddisk.org</a>
+</p><p>
+FIO Git Repository: <a href="http://git.kernel.dk/?p=fio.git;a=summary" target="_self">git.kernel.dk/?p=fio.git;a=summary</a>
+</p><p>
+Wikipedia Page on Caching Algorithms: <a href="http://en.wikipedia.org/wiki/Cache_algorithms" target="_self">en.wikipedia.org/wiki/Cache_algorithms</a>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15dc580.0x19e1f68"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Petros Koutoupis is a full-time Linux kernel, device driver and
+application developer for embedded and server platforms. He has been
+working in the data storage industry for more than eight years and enjoys discussing
+the same technologies.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../233/toc233.html">Issue Table of Contents</a>
+    <a class="link3" href="../233/11481.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

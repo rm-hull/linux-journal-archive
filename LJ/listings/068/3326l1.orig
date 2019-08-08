@@ -1,0 +1,108 @@
+#include <linux/unistd.h>
+#include <linux/ioport.h>
+#include <linux/interrupt.h>
+#include <asm/system.h>
+#include <asm/io.h>
+#include <asm/irq.h>
+#define PORT 0x3f8
+#define LCR  3
+#define MSB 1
+#define LSB 0
+#define FCR 2
+#define SCR 7
+int bufferin;
+int bufferout;
+char buffer[1024];
+/****************sioEnable****************/
+asmlinkage int sioEnable(int irq)
+{
+int i;
+int myirq=irq;
+unsigned long flags;
+ bufferin = 0;
+ bufferout = 0;
+ save_flags(flags); cli();
+  i=request_irq(myirq,sioHandler,SA_INTERRUPT,"sioJRMS",NULL);
+     if(i) {
+     {
+restore_flags(flags);
+  	return -1;
+}
+outb(0,PORT + 1);        /* Turn off interrupts -
+                            Port1 */
+outb(0,PORT + 1);        /* Disable interrupts -
+                            bit 0 ->0 */
+outb(0x80,PORT + 3);  /* enable DLAB - bit 7 ->1*/
+outb(0x0C,PORT + 0);  /* Set Divisor LSB */
+outb(0x00,PORT + 1);  /* Set Divisor MSB */
+outb(0x03,PORT + 3);  /* 8 Bits, No Parity, 1 Stop
+                         Bit */
+outb(0xC7,PORT + 2);  /* Enable FIFO if UART is
+                         16500+ */
+outb(0x0B,PORT + 4);  /* Turn on DTR, RTS, and
+                         OUT2 */
+outb(0x01,PORT + 1);  /* Interrupt when data
+                         received */
+printk("sioEnable --ok ... irq: %d\n", irq);
+restore_flags(flags);
+return 1;
+}
+/************* sioHandle ***************/
+static void sioHandler(int myirq, void *dev_id, struct pt_regs * regs)
+{
+  int i;
+ do { i = inb(PORT + 5);
+	if (i & 1) {
+		buffer[bufferin] = inb(PORT);
+		bufferin++;
+		if (bufferin == 1024) bufferin = 0;
+		}
+	}while (i & 1);
+}
+/************** sioRead ****************/
+asmlinkage int sioRead(void)
+{
+char ch;
+if (bufferin != bufferout){
+	ch = buffer[bufferout];
+	bufferout++;
+	if (bufferout == 1024) bufferout = 0;
+	return ch;
+	}
+}
+/***************** sioWrite *******************/
+asmlinkage void sioWrite(unsigned char c)
+{
+	outb(c,PORT);
+}
+/***************** sioEnd *********************/
+asmlinkage void sioEnd()
+{
+unsigned int myirq=4;
+free_irq(myirq,NULL);
+}
+/**************** getLCR ***********************/
+unsigned char getLCR(){
+	return (inb(PORT+LCR));
+}
+/**************** setLCR *********************/
+void setLCR (unsigned char byte){
+	outb(byte,PORT+LCR);
+}
+/************ sioGetDivisor *****************/
+asmlinkage unsigned sioGetDivisor(){
+	unsigned divisor;
+	setLCR(getLCR() | 0x80);
+	divisor=inb(PORT+MSB);
+	divisor=divisor << 8;
+	divisor+=inb(PORT+LSB);
+	setLCR(getLCR() & 0x7f);
+	return (divisor);
+}
+/************* sioSetDivisor ********************/
+asmlinkage void sioSetDivisor(unsigned newDiv){
+	setLCR(getLCR() | 0x80);
+	outb(newDiv & 0x00ff, PORT+LSB);
+	outb(newDiv >> 8, PORT+MSB);
+	setLCR(getLCR() & 0x7f);
+}

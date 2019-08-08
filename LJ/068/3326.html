@@ -1,0 +1,428 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Implementing Linux System Calls</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    How to create and install a system call in Linux and install&#10;    an interrupt for controlling the serial port.&#10;    "><meta name="keywords" content="system, call"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x221f580.0x2316ab0"></a>Implementing Linux System Calls</h1></div><div><div class="author"><h3 class="author">Jorge Manjarrez-Sanchez</h3></div><div class="issuemoyr">Issue #68, December 1999</div></div><div><p>
+    How to create and install a system call in Linux and install
+    an interrupt for controlling the serial port.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x221f580.0x23172f0"></a></h2></div></div><p>This article is based on my experiences
+in creating and installing a system call in Linux and how to
+install one interrupt vector to control the serial port. In one
+way, this is a mini-HOWTO about these two topics.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x221f580.0x23173f8"></a>What is a System Call?</h2></div></div><p>A system call (or system request) is a call to the kernel in
+order to execute a specific function that controls a device or
+executes a privileged instruction. The way system calls are handled
+is up to the processor. Usually, a call to the kernel is due to an
+interrupt or exception; in the call, there is a request to execute
+something special. For example, the serial port may be programmed
+to assert an interrupt when some character has arrived, instead of
+polling for it. This way, the processor can be used by other
+processes and service the serial port only when it is
+required.</p><p>The internal operation between an interrupt request and its
+servicing involve several CPU registers and memory segments.
+Briefly, a device raises an interrupt by asserting an interrupt
+request line on the Peripheral Interrupt Controller (PIC) which
+informs the CPU by setting the interrupt request pin. After each
+instruction, the CPU checks this pin. If it is enabled, it gets the
+ID from the data bus, which points to the Interrupt Descriptor
+Table (IDT), where a number of task, interrupt and gate descriptors
+are stored. The descriptor contains a selector to the Global
+Descriptor Table (GDT) which contains the base address to a memory
+segment in which the Interrupt Service Routine (ISR)
+resides.</p><p>Note that the CPU has suspended the process it was executing,
+so it has to save some information to be able to resume the process
+after the interrupt has been serviced&mdash;this is a context switching.
+Several files are involved in this process; most can be found in
+the linux/arch/i386/kernel/ directory. One is entry.S, an entry
+point to all system calls which initializes the treatment of
+exceptions. Another is irq.c, which contains the functions to deal
+with interrupts. The linux/arch/i386/boot/setup.S file initializes
+the GDT, installs virtual memory, etc. There are many connections
+between files ending in .h and .c. You can check irq.c to see how
+many includes are there to get macros definitions, such as
+<span   class="bold"><b>cli()</b></span>, which clears interrupts in
+linux/include/asm-i386/system.h.</p><p>To follow the definition path of any function, type at your
+command prompt:</p><pre     class="programlisting">
+grep cli 'find / -name '*.[ch]'
+-print'
+</pre><p>This will search all files with extension c and h in the root
+directory for the word cli. Also, you can issue the command
+<b  >man 2 intro</b> to see something about system calls.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x221f580.0x2317768"></a>Implementation of System Calls</h2></div></div><p>There are several ways to create, install and execute a
+system call. The best is the one that isn't concerned with
+low-level details like context switching and doesn't code any
+routines in assembly language. This can be done through the use of
+the <span   class="bold"><b>_syscall</b></span><span   class="emphasis"><em>N</em></span>
+macro in the linux/include/asm/unistd.h directory; it is expanded
+in assembly, but the operating system takes care of details. It
+uses the <b  >int 0x80</b> to transfer execution control
+to the kernel. One possible problem is this macro can expand to an
+existing function, so care must be taken; otherwise, you will
+overwrite the existing function.</p><p>In order to implement your own system calls, you should have
+the Linux kernel source code (first make a backup) to use as the
+working copy. As superuser (root), create in your home directory an
+entire tree copy of /usr/src/linux, as you will not have the chance
+to do so again. The files we will use are in
+<span   class="emphasis"><em>somewhere</em></span>/linux/.</p><p>Now you must choose a name for every function you are
+planning to implement. You can check the existing ones in your
+source tree at linux/arch/i386/kernel/entry.S and
+linux/include/asm/unistd.h. In entry.S, they are at the end, and in
+unistd.h, at the beginning. Checking these files will also help you
+get an idea of how to create a prototype of a system call. While
+checking, you will see that each call is associated with one
+number. This number is passed in the <b  >%eax</b>
+processor register indicating the number of arguments, and each
+argument of the system call (a function) is passed in
+<b  >%ebx</b>, <b  >%ecx</b>,
+<b  >%edx</b>, <b  >%esi</b> or
+<b  >%edi</b>--up to five arguments on Intel platforms.
+The macro definitions corresponding to each
+_syscall<span   class="emphasis"><em>N</em></span>, depending on the value of
+<span   class="emphasis"><em>N</em></span>, can be found in unistd.h. More on the
+internal workings can be found in various files under
+linux/arch/i386/, because we will leave the &ldquo;dirty work&rdquo; to the
+operating system.</p><p>Now let's see how to implement a new system call using the
+syscall<span   class="emphasis"><em>N</em></span> macro in the simplest possible way.
+Let's make a system call <span   class="bold"><b>sysSum</b></span>,
+which accepts two integer arguments and returns the sum of the two.
+Also, it uses <span   class="bold"><b>printk</b></span>, which is
+similar to <span   class="bold"><b>printf</b></span> except that it
+works on the kernel level, so we will see when our function is
+called.</p><p>To do this, edit a randomly selected file (for example, the
+file linux/ipc/sem.c), and at the end, add the following
+lines:</p><pre     class="programlisting">
+asmlinkage int sysSum(int a, int b)
+{
+        printk("calling sysSum\n");
+        return a+b;
+}
+</pre><p>Then edit unistd.h and add
+<pre     class="programlisting">
+#define __NR_sysSum     171
+</pre>
+
+
+<b  >171</b> is the next in numerical order. In entry.S
+near the end, add
+<pre     class="programlisting">
+.long SYMBOL_NAME(sysSum)
+</pre>
+
+
+Finally, increment by one the number that is the last line:
+<pre     class="programlisting">
+.space (NR_syscall-172)*4
+</pre>
+
+
+If you don't match number and name in both files, you will get an
+&ldquo;undefined reference to sysSum&rdquo; error message. If you have a
+working kernel, you have to be careful only about incrementing the
+numbers by one and correctly writing your function name. At this
+point, you have added your system call; now you should get the new
+kernel with it. To recompile the kernel, take the following
+sequential steps:
+<pre     class="programlisting">
+#make config
+#make dep
+#make clean
+#make zImage
+#cat ~/linux/arch/i386/boot/zImage &gt;/dev/fd0
+</pre>
+
+
+Step 1 creates the basic kernel configuration; you can skip it next
+time if no hardware changes are made. Step 2 checks that any
+dependency between files is correct. Step 3 cleans any compilation
+intermediate file (object files, etc.). The last two create a
+compressed kernel image and copy it to floppy, so we can try our
+new kernel and keep the original one untouched.
+</p><p>Reboot using this newly created kernel to invoke the system
+call from a user program: simply insert the floppy disk on the
+drive and reboot. This simple program tests the newly created
+system call:</p><pre     class="programlisting">
+#include &lt;linux/unistd.h&gt;
+_syscall2(int, sysSum, int,a,int,b)
+main(){
+printf("the sum of 4+3 is %d\n",sysSum(4,3));
+}
+</pre><p>The <b  >include</b> line indicates where the
+_syscall definition is located. The next line says our system call
+has a return type of <b  >int</b> and two arguments of
+type <b  >int</b>. To compile, use the command
+<pre     class="programlisting">
+gcc -I ~/linux/include
+</pre>
+
+
+to instruct the compiler to use our include file. After execution,
+you will see messages: first the one from sysSum, then the one from
+the test program.
+</p><p>The functions we will implement will be the basic ones needed
+to control the serial port using interrupts on character reception.
+The serial ports can't be accessed by a common user. In Linux, the
+functions <span   class="bold"><b>inb</b></span>(port) and
+<span   class="bold"><b>outb</b></span>(byte, port) exist to receive
+and send one byte; <span   class="bold"><b>inw</b></span> and
+<span   class="bold"><b>outw</b></span> do the same on two-byte data.
+In order to use them, you have to gain the rights by using the
+<span   class="bold"><b>iopl</b></span> or
+<span   class="bold"><b>ioperm</b></span> functions, which must be
+invoked as super user and will give the common user application
+access to the I/O ports.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x221f580.0x2318688"></a>The Serial Port</h2></div></div><p>The serial port, called UART or RS-232, has two I/O addresses
+given by BIOS (on PC systems) associated with it and one IRQ
+(interrupt request) for each. Fortunately, they are the same as in
+DOS:</p><pre     class="programlisting">
+COM1 0x3F8 IRQ4
+COM2 0x2F8 IRQ3
+</pre><p>Each I/O port has a range of addresses to hold various
+support registers. COM1 is mapped in memory from 0x3F8 to 0x3FF,
+and COM2 from 0x2F8 to 0x2FF. See Table 1 for a description of some
+of them. To set one bit in any register, first read the actual
+value, and then <b  >OR</b> with the desired value, thus
+preserving the other bit values.
+</p><p><a href="3326t1.jpg" target="_self">Table 1</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x221f580.0x2318948"></a>The Serial Port Syscall</h2></div></div><p>The functions we are going to implement are the ones shown in
+Table 2. At this time, we will use IRQ4, but it's not difficult to
+use the other port or implement a select port routine.</p><p><a href="3326t2.jpg" target="_self">Table 2</a></p><p><a href="3326l1.html" target="_self">Listing 1</a></p><p>As you can see in Listing 1, we set some defines and global
+variables, save flags and disable interrupts to make our
+transaction atomic:</p><pre     class="programlisting">
+save_flags;
+cli();
+</pre><p>If an interrupt with higher priority takes the processor, the
+UART will be initialized incorrectly. We also need to indicate the
+routine or interrupt vector that services IRQ4. To service the
+interrupts, we use <span   class="bold"><b>request_irq</b></span> (in
+linux/arch/i386/kernel/irq.c) that is more or less the equivalent
+of <span   class="bold"><b>setvect</b></span> in DOS. Its prototype
+is
+<pre     class="programlisting">
+int request_irq(unsigned int irq,
+void (*handler) (int, void *, struct pt_regs *),
+unsigned long irqflags,
+        const char *devname,
+        void *dev_id)
+</pre>
+
+
+and we call it with:
+<pre     class="programlisting">
+i = request_irq (
+myirq,sioRead,SA_INTERRUPT,"sioJRMS",NULL);
+if (i) return -1;
+</pre>
+
+
+where <span   class="emphasis"><em>myirq</em></span> is equal to 4 (the COM1 IRQ),
+<span   class="emphasis"><em>sioRead</em></span> is a void pointer to the interrupt
+vector, that is, the routine that will service the interrupt; and
+<span   class="emphasis"><em>SA_INTERRUPT</em></span> is a flag that states our
+interrupt will be of type &ldquo;fast&rdquo; or non-maskable.
+<span   class="emphasis"><em>sioJRMS</em></span> is a name generally used to identify
+device drivers, but is used here to monitor the interrupts serviced
+by our routine by looking at the /proc/interrupts file. Once our
+program is running, we check this file to see if our interrupt has
+been set. If the value returned for <span   class="emphasis"><em>i</em></span> is 0,
+the interrupt vector is installed.
+</p><p>Next we have to set some UART initial values by using the
+outb function. Remember, at this time we are a superuser. After we
+have created our system calls, recompiled the kernel and rebooted
+with it, these functions will be available as an interface to the
+serial port in a library for every user without requiring special
+privileges. We use a constant, <b  >PORT</b>, to identify
+the port address, so you can change it later.</p><pre     class="programlisting">
+outb(0,PORT + 1);     /* Disable interrupts - bit
+                          0 -&gt;0 */
+outb(0x80,PORT + 3);  /* enable DLAB - bit 7 -&gt;1*/
+outb(0x0C,PORT + 0);  /* Set Divisor LSB */
+outb(0x00,PORT + 1);  /* Set Divisor MSB */
+outb(0x03,PORT + 3);  /* 8 Bits, No Parity, 1
+                           Stop Bit */
+outb(0xC7,PORT + 2);  /* Enable FIFO if UART is
+                         16500+ */
+outb(0x0B,PORT + 4);  /* Turn on DTR, RTS, and
+                         OUT2 */
+outb(0x01,PORT + 1);  /* Interrupt when data
+                         received */
+</pre><p>These instructions set an initial baud rate of 9600. To set
+to a different rate, divide 115,200 (crystal frequency) by the
+divisor formed by registers 3F8 (MSB) and 3F9 (LSB) when bit 7 of
+3FB is 1. Now that we have initialized the UART, we can restore
+flags with the line:
+<pre     class="programlisting">
+restore_flags(flags);
+</pre>
+
+
+We don't need <span   class="bold"><b>sti</b></span> (set
+interrupts), because it is done automatically by
+<span   class="bold"><b>restore_flags</b></span>. Next, define the
+routine that will service the interrupt to read a character and put
+it in a circular queue:
+<pre     class="programlisting">
+static void sioHandler(int myirq, void *dev_id, struct pt_regs * regs)
+{
+ int i;
+ do { i = inb(PORT + 5);
+        if (i &amp; 1) {
+                buffer[bufferin] = inb(PORT);
+                bufferin++;
+                if (bufferin == 1024) bufferin = 0;
+                }
+        }while (i &amp; 1);
+}
+</pre>
+
+
+The next function is the one available as a syscall to all users:
+<pre     class="programlisting">
+asmlinkage int sioRead(void)
+{
+char ch;
+if (bufferin != bufferout){
+        ch = buffer[bufferout];
+        bufferout++;
+        if (bufferout == 1024) bufferout = 0;
+          return ch;
+        }
+}
+</pre>
+
+
+It will return a character from the buffer. The purpose of other
+syscalls is explained in Listing 1. Now we have to deal with
+informing the kernel that new system calls are created, using the
+steps mentioned previously.
+</p><p>In unistd.h, we put a line for each one of the newly created
+syscalls:</p><pre     class="programlisting">
+#define __NR_sioEnable          170
+#define __NR_sioRead            171
+#define __NR_sioWrite           172
+#define __NR_sioEnd             173
+#define __NR_sioSetDivisor      174
+#define __NR_sioGetDivisor      175
+</pre><p>Note that the corresponding numbers will vary depending on
+the total number of system calls you have. In the entry.s file, put
+the lines:
+<pre     class="programlisting">
+.long SYMBOL_NAME(sioEnable)
+.long SYMBOL_NAME(sioRead)
+.long SYMBOL_NAME(sioWrite)
+.long SYMBOL_NAME(sioEnd)
+.long SYMBOL_NAME(sioSetDivisor)
+.long SYMBOL_NAME(sioGetDivisor)
+</pre>
+
+
+and remember to increment the number in the last line.
+<pre     class="programlisting">
+.space (NR_syscalls-177)*4
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x221f580.0x230fd30"></a>Adding a Makefile</h2></div></div><p>This time, we are not going to modify any files. Instead, we
+will create our library with our system calls. First, create a
+directory called /sio under the kernel source tree. Within it, you
+are going to create a file called sio.c which will contain the
+entire source of Listing 1 with all the includes, defines and
+system calls we have created. Now, in order to rebuild the new
+kernel with our library, we have to create a Makefile, also located
+in the /sio directory:</p><pre     class="programlisting">
+#Makefile for Serial Input/Output system calls
+O_OBJS = sio.o
+O_TARGET = siocalls.o
+include $(TOPDIR)/Rules.make
+</pre><p>This file will invoke <b  >Rules.make</b> under our
+Linux source directory. Also, the top-level Makefile (the first
+under your source directory) will work for us. Edit this Makefile,
+define where the directories of sources are defined, and add our
+new directory with the line:
+<pre     class="programlisting">
+SIOCALLS = sio/siocalls.o
+</pre>
+
+
+This appends the name of our directory to the path of source
+directories. Because we are using outb, we must compile with
+<b  >-O</b> or <b  >-O2</b> to enable
+optimization to allow the use of inline macros. Don't worry&mdash;the
+top-level Makefile does this. Now follow the steps mentioned
+earlier to recompile the kernel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x221f580.0x2310048"></a>Testing the New Syscall</h2></div></div><p>To work with our system calls over the serial port, make a
+serial cable in null modem configuration. You will need two DB-9
+connectors and wire 2-3, 3-2, 4-6, 6-4, 5-5, 7-8 and 8-7 pins. Then
+reboot with the new kernel and use some program like the one in
+Listing 2 in the archive file (see Resources) as a non-superuser,
+and you will see you have control of the serial port using our
+functions. Remember to connect two Linux boxes with the cable
+settings described in the COM1 port.</p><p><a href="3326s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>Jorge Manjarrez Sanchez (jmanjarr@acm.org) has a
+      master's Degree from the Center for Computing Research at IPN
+      Mexico. He is now involved in a co-doctorate program with UPM at
+      Spain. He has participated in several research projects mainly in
+      the database and Internet fields and has developed a JDBC-Access
+      type-3 driver. He spends his spare time studying Linux, Mexican
+      History, Astronomy and leading an ACM Student Chapter at
+      CIC-IPN.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../068/toc068.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

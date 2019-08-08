@@ -1,0 +1,116 @@
+#!/usr/bin/perl -w
+
+# rotate.fcg - a script to rotate sponsor ads.
+use FCGI;
+
+# The QUERY_STRING is expected to be the name of an
+# HTML file in the following directory
+my $DOCROOT = "/path/to/files";
+
+# Scope the variables that we'll use throughout the
+# life of the script.
+my @ads = (); # array of ads
+my $ad  = ""; # member of @ads
+my @doc = (); # the requested page
+
+# Initialize the %ENV hash so it's not empty...
+my ($key, $val);
+while (($key, $val) = each %ENV) { next }
+
+# ...and reclaim unneeded memory
+undef $key;
+undef $val;
+
+# Force flush after each 'print'
+$| = 1;
+
+# Initialize the array of ads
+@ads = initialize();
+
+# Now the main show
+REQUEST: while (FCGI::accept() >= 0) {
+    # Catch valid requests to reinitialize
+    if ($ENV{QUERY_STRING} eq 'reload' and
+        $ENV{REMOTE_ADDR} =~ /^127\.0\.0/)
+    {
+        @ads = initialize();
+        next REQUEST;
+    }
+
+    # Make sure we can open the file. If not, tell the
+    # user and wait for the next REQUEST.
+    unless (open(DOC, "$DOCROOT/$ENV{QUERY_STRING}")) {
+        file_not_found();
+        next REQUEST;
+    }
+
+    # Put file into an array, where we can do some
+    # text substitutions.
+    @doc = <DOC>;
+    close DOC;
+
+    # Get first $ad in line, then move it to the back.
+    $ad = shift @ads;
+    push @ads, $ad;
+
+    # Look for '<!-- Ad Here -->' and put one there.
+    foreach (@doc) {
+        s/<!--\s*Ad\s+Here\s*-->/$ad/;
+    }
+
+    # Send off the final doc.
+    print "Content-type: text/html",
+          "\r\n\r\n",
+          @doc;
+}
+
+# ----- Initialization subroutine -----
+
+sub initialize {
+    my ($entry, $datum, $key, $val);
+    my (@ads, @data);
+    my (%sponsor);
+
+    # Set the input record separator to null because
+    # we rely on multi-line records
+    $/ = "";
+
+    # If we can't find the data file, we'll page the
+    # admin and return an empty array; the script
+    # will still be able to function.
+    unless (open(SPONSORS, "/pathto/sponsors.txt")) {
+        page_sysadmin();
+        @ads = ();
+        return @ads;
+    }
+
+    foreach $entry (<SPONSORS>) {
+        @data = split(/\n/, $entry);
+
+        # Put the @data into a hash for easy lookup.
+        %sponsor = ();
+        foreach $datum (@data) {
+            ($key, $val) = split(/=/, $datum, 2);
+            $key = lc $key;  # just in case
+            $sponsor{$key} = $val;
+        }
+
+        # Format the ad in HTML and push it into @ads.
+        push @ads, join( '',
+            "<A HREF=\"$sponsor{url}\">",
+            "<IMG SRC=\"$sponsor{image}\" ",
+            "ALT=\"$sponsor{description}\" ",
+            "WIDTH=$sponsor{width} ",
+            "HEIGHT=$sponsor{height} ",
+            "BORDER=$sponsor{border}>",
+            "</A>" );
+    }
+
+    # Clean up after ourselves.
+    close SPONSORS;
+    $/ = "\n";
+
+    return @ads;
+}
+
+# Other functions would follow.

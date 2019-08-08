@@ -1,0 +1,321 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Work the Shell
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;More work on the Twitter response bot.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2543580.0x263aac0"></a>
+Work the Shell
+</h1></div><div><h3 class="subtitle"><i>
+Parsing Your Twitter Stream
+</i></h3></div><div><div class="author"><h3 class="author">
+Dave
+ 
+Taylor
+</h3></div><div class="issuemoyr">Issue #190, February 2010</div></div><div><p>
+More work on the Twitter response bot.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2543580.0x263b3b0"></a></h2></div></div><p>
+Last month, we circled back to Twitter and started developing a shell script
+that lets you actually parse and respond to queries sent via Twitter. The
+idea was that if you were a store, for example, a tweet of
+&ldquo;hours?&rdquo;
+could be answered automatically with a response tweet of the store's
+hours&mdash;simple, but interesting nonetheless.
+</p><p>
+We ended last month with a script that does quite a bit in just a few
+lines:
+
+
+<pre     class="programlisting">
+
+#!/bin/sh
+
+curl="/usr/bin/curl -s"
+inurl="http://www.twitter.com/statuses/mentions.xml"
+pw='PasswordGoesHere'
+temp="/tmp/$(basename $0).$$"
+
+trap "/bin/rm -f $temp" 0 1 9 15 # axe our temp file
+
+$curl -u "davetaylor:$pw" $inurl | \
+    grep -E '(&lt;screen_name&gt;|&lt;text&gt;)' | \
+    sed 's/@DaveTaylor //;s/  &lt;text&gt;//;s/&lt;\/text&gt;//' | \
+    sed 's/    &lt;screen_name&gt;//;s/&lt;\/screen_name&gt;//' | \
+    awk '{if (NR % 2 == 1) { printf ("msg=\"%s\"; ",$0) }
+          else             { print "id="$0 }}' &gt; $temp
+
+while read buffer
+do
+    eval $buffer
+    echo Twitter user @$id sent message $msg
+done &lt; $temp
+
+exit 0
+
+</pre>
+</p><p>
+(Unfortunately, it has to have the Twitter account password hard-coded,
+which I've obviously redacted here. You can see where I have
+&ldquo;davetaylor&rdquo; appear and can tweak this to match your own
+Twitter account.)
+</p><p>
+This is a pretty tricky script, if I say so
+myself. Here you can see
+that we unwrap the XML sent by Twitter and use a complicated sequence of
+grep/sed/awk to turn it into two name=value pairs, instantiating
+msg and id.
+</p><p>
+When I run the script, I see:
+
+<pre     class="programlisting">
+
+Twitter user @TedWahler sent message That sounds like a
+very interesting article. When and where can I read
+&amp;quot;When Not To Identify your Group Memberships&amp;quot; Dave?
+
+Twitter user @naomimimi sent message i will send you some
+of my amazing restedness after sleeping for 20 hours
+yesterday. *bzzzt* feel better? :)
+
+Twitter user @GaryBloomer sent message RE: Song. Dave,
+don't know if you have an answer yet, but: Supertramp:
+If Everyone Was Listening
+
+</pre>
+</p><p>
+A tiny tweak can show who sends you tweets (these are actually
+@ replies, which is what makes this work): simply change the
+<tt  >echo</tt> in the final loop to just
+<tt  >echo $id</tt>.
+</p><p>
+Want to find those shortened URLs and compile a list? That's a tiny
+bit more tricky, but you can use tr and grep to do the heavy lifting:
+
+<pre     class="programlisting">
+$ sh tweet-listen.sh | tr ' ' '\
+&gt; ' | grep 'http://'
+
+http://twurl.nl/bco8tq
+http://twurl.nl/bco8tq
+http://bit.ly/12PvjV
+</pre>
+</p><p>
+Hey, someone must have retweeted or something for the same URL to show up
+twice!
+</p><p>
+What we want to do though is look for a specific pattern within the
+stream, so let's do that instead.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2543580.0x263bb40"></a>
+Looking for Patterns</h2></div></div><p>
+The easy way is to change the <tt  >while read buffer</tt> loop to do the
+parsing:
+
+
+<pre     class="programlisting">
+
+while read buffer
+do
+  eval $buffer
+  if [ "$msg" == "hours" ] ; then
+    echo "Twitter user @$id asked what our hours are"
+
+  elif [ "$msg" = "address" ] ; then
+    echo "Twitter user @$id asked for our address"
+
+  # else
+  #   echo Twitter user @$id sent message $msg
+  fi
+done &lt; $temp
+
+</pre>
+</p><p>
+Armed with that (and with some cooperative Twitter pals), I can now run the
+script and find out that:
+
+<pre     class="programlisting">
+Twitter user @MommyBrain asked for our address
+Twitter user @lizhamilton asked what our hours are
+Twitter user @valdezign asked what our hours are
+Twitter user @bgindra asked what our hours are
+Twitter user @MommyBrain asked what our hours are
+</pre>
+</p><p>
+Coolness, eh? Now, let's answer.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2543580.0x263be58"></a>
+Responding to Tweet Queries</h2></div></div><p>
+From an earlier column &ldquo;Pushing Your Message Out to Twitter&rdquo;
+in the November 2008 issue of <span   class="emphasis"><em>LJ</em></span> (<a href="http://www.linuxjournal.com/article/10222" target="_self">www.linuxjournal.com/article/10222</a>),
+we have a script already lying around that lets you
+specify what message you'd like to send out on Twitter, so it's
+just a matter of assembling it properly:
+
+
+<pre     class="programlisting">
+
+while read buffer
+do
+  eval $buffer
+  if [ "$msg" == "hours" ] ; then
+    echo "Twitter user @$id asked what our hours are"
+    $tweet "@$id our hours are Mon-Fri 9-5, Sat 10-4."
+
+  elif [ "$msg" = "address" ] ; then
+    echo "Twitter user @$id asked for our address"
+    $tweet "@$id we're at 123 University Avenue, Anywhere USA"
+  fi
+done &lt; $temp
+
+</pre>
+</p><p>
+In this instance, I'll repeat the earlier tweet script
+because it's both so succinct and so darn useful:
+
+
+<pre     class="programlisting">
+#!/bin/sh
+# Twitter command line interface
+
+user="DaveTaylor" ; pass='PasswordGoesHere'
+
+curl="/usr/bin/curl"
+$curl --silent --user "$user:$pass" --data-ascii \
+    "status=$(echo $@ | tr ' ' '+')" \
+    "http://twitter.com/statuses/update.json" &gt; /dev/null
+
+echo "(sent tweet $@)"
+exit 0
+</pre>
+</p><p>
+The problem is a bit more complex than we've addressed so far,
+because when I asked people to send one-word queries, I also got things
+like &ldquo;directions&rdquo; and directions! rather than just the word by
+itself, unadorned by punctuation, quotation marks and so on.
+</p><p>
+This is something we'll need to deal with in the script, so we'll
+want to scrub the msg value to be just alphanumeric (or just
+alphabetic, if our set of canned response queries never includes a digit).
+This can be done with tr again, immediately after the
+<tt  >eval $buffer</tt> statement:
+
+<pre     class="programlisting">
+msg="$(echo $msg | tr -cd '[:alpha:]')"
+</pre>
+</p><p>
+That's not quite right. When we get &ldquo;directions&rdquo;, it's
+actually with the quotes escaped by HTML so they're &amp;quot; rather than
+just the " symbol. The result? quotdirectionsquot. Not good.
+</p><p>
+Just like so much in the world of programming, things aren't as
+easy as you'd like them to be. Instead, we're going to have to
+strip out quotes manually as part of the scrubbing process. Now it looks
+like this:
+
+
+<pre     class="programlisting">
+
+msg="$(echo $msg | sed 's/\&amp;quot;//g' | tr -cd '[:alpha:]')"
+
+</pre>
+</p><p>
+It's a bit more complicated, but not terribly so.
+</p><p>
+The bigger issue is recognizing when we've already responded to a
+Twitter query to the bot. I'm sure no one's going to
+appreciate it if a query for &ldquo;hours?&rdquo; results in an answer every
+ten minutes for the next two weeks!
+</p><p>
+There are two ways to address that particular problem, one of which is to
+add timestamps to each tweet and figure out when we last auto-responded, but
+that sounds suspiciously like work. Instead, we simply can remember the
+most recent tweet to which we responded, including user ID, and use that as
+the starting point for subsequent auto-response parsing efforts.
+</p><p>
+I can't squeeze it in this month, but rest assured that next month
+we'll add this third piece and then talk about how to slip it into a
+cron job so that every N minutes our Twitter response bot answers
+any pending queries from the twitterverse.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2543580.0x263c7a0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Ask Dave Taylor iPhone App</b></p><p>
+Dave Taylor's Ask Dave
+Taylor tech-support iPhone app is now available through the Apple iPhone app store for
+$0.99.
+</p><p>
+It has 2,500+ tech-support questions and a lot of Linux and shell
+script answers&mdash;in the palm of your hand. The app also includes Q&amp;A
+articles on auctions, blogging, building Web site traffic and much more.
+Plus,
+&ldquo;it's the first truly interactive tech-support application for the
+iPhone and for any mobile device anywhere on the planet&rdquo;.  
+</p><p>
+Be sure to check it out at <a href="http://www.askdavetaylor.com/app" target="_self">www.askdavetaylor.com/app</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Dave Taylor has been hacking shell scripts for a really long time. He's
+the author of the popular <span   class="emphasis"><em>Wicked Cool Shell Scripts</em></span> and can be
+found on Twitter as @DaveTaylor and more generally at
+<a href="http://www.DaveTaylorOnline.com" target="_self">www.DaveTaylorOnline.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../190/toc190.html">Issue Table of Contents</a>
+    <a class="link3" href="../190/10674.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,408 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Automating Firewall Log Scanning</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Techniques and scripts for automating scanning of log files&#10;    produced by ipchains.&#10;    "><meta name="keywords" content="ipchains, iptables, log, files, log, scanning"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1dd8580.0x1ecfab0"></a>Automating Firewall Log Scanning</h1></div><div><div class="author"><h3 class="author">Leo Liberti</h3></div><div class="issuemoyr">Issue #87, July 2001</div></div><div><p>
+    Techniques and scripts for automating scanning of log files
+    produced by ipchains.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ed05b0"></a></h2></div></div><p>Firewalls are computers dedicated to
+filtering particular kinds of network traffic between two networks.
+They are usually employed to protect a LAN from the rest of the
+Internet. Securing every box on the LAN is much more costly and
+time consuming than deploying, administering and monitoring a
+single firewall. A firewall is particularly essential to those
+institutions permanently connected to the Internet. Depending on
+the network configuration, the router can be set up as a packet
+filter; usually, though, it is more convenient to set up a
+dedicated box to act as a firewall. Because they can be made
+extremely secure and have a low cost, Linux boxes can be very
+effective firewalls.
+</p><p>Deploying a firewall on the Linux kernels 2.2.x is done with
+<span   class="bold"><b>ipchains</b></span>, while
+<span   class="bold"><b>iptables</b></span> are used on the new 2.4.x
+kernels. How to set up the actual firewall is beyond the scope of
+this article; we refer the reader to the ipchains HOWTO for the
+2.2.x kernels and to Paul &ldquo;Rusty&rdquo; Russell's Packet-Filtering
+HOWTO for the 2.4.x kernels. Both of them can be found on the
+Internet by using any search engine. But building the actual
+firewall is not enough; in order to offer tight security, a
+firewall needs to be monitored. In this article we explain how to
+build and use a web-based ipchains monitoring system called
+<span   class="bold"><b>inside-control</b></span>.</p><p>There are two main uses of a firewall monitoring system: to
+check that no malicious cracker is trying to wreak havoc in the
+internal LAN and to check that users inside the LAN are not abusing
+the internet service.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ed0870"></a>Firewall Setup Example</h2></div></div><p>Here is a setup for a very simple firewall to which we will
+refer as a working example later in the article.</p><p>Suppose, for example, that the internal network is
+10.0.1.0/255.255.255.0, the Linux gateway/firewall has the
+addresses 10.0.1.1 on the interface connected to the internal LAN
+and 10.200.200.1 on the interface connected to the Internet (both
+IP addresses are in fact nonroutable, so this is just a fictitious
+example). The first step to setting up a firewall is to enable
+gatewaying between the network interfaces:</p><pre     class="programlisting">
+echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+</pre><p>We then proceed to build up a logging firewall using
+ipchains. First we flush all preceding rules, and we allow packets
+on the loopback interface and all ICMP packets:
+<pre     class="programlisting">
+ipchains -F
+ipchains -A input -i lo -j ACCEPT
+ipchains -A input -p ICMP -j ACCEPT
+</pre>
+
+
+Now we block and log the Telnet protocol from the Internet to the
+internal LAN:
+<pre     class="programlisting">
+ipchains -A input -p TCP -s 0.0.0.0/0 -d 10.0.1.0/24 23 -l -j DENY
+</pre>
+
+
+But we allow and log the HTTP protocol from the internal LAN to the
+Internet:
+<pre     class="programlisting">
+ipchains -A input -p TCP -s 10.0.1.0/24 -d 0.0.0.0/0 80 -l -j ACCEPT
+</pre>
+
+
+Finally we set up permissive policies:
+<pre     class="programlisting">
+ipchains -P input ACCEPT
+</pre>
+
+
+This firewall blocks and logs all incoming Telnet connections, it
+allows and logs all outgoing HTTP connections, and it allows
+everything else (see Figure 1). Such a setup is too permissive for
+serious protection, but it will illustrate well what the automated
+log scanning script can do.
+<div       class="mediaobject"><img src="4543f1.jpg"><div class="caption"><p>
+Figure 1. Setup of Sample Firewall
+</p></div></div>
+
+</p><p>The file the firewall outputs its logs to is usually either
+/var/log/syslog or /var/log/messages. In order to find out which
+one, you can do</p><pre     class="programlisting">
+grep -q "Packet log" /var/log/syslog &amp;&amp; echo yes
+</pre><p>If it outputs &ldquo;yes&rdquo; then it is /var/log/syslog, if it
+outputs nothing it is most probably /var/log/messages. You can
+confirm with
+<pre     class="programlisting">
+grep -q "Packet log" /var/log/messages &amp;&amp; echo yes
+</pre>
+
+
+If both commands produce no output, then the firewall is inactive
+or there was no logged traffic (in our example, Telnet and HTTP)
+through the firewall.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ed0ef8"></a>2.4.x Kernels and iptables</h2></div></div><p>Regarding the 2.4.x kernels and iptables, things are a bit
+more complicated. First you must remember to compile the kernel
+with all of the packet-filtering options, including the LOG target.
+Second, change ipchains to iptables. Then change the names of the
+chains to uppercase (e.g., input becomes INPUT). Next, change the
+name of the targets (DENY becomes DROP). Lastly, specify port
+numbers in a different way. Listing 1 is the 2.4.x sequence of
+commands equivalent to the 2.2.x sequence of commands given
+above.</p><p><a href="4543l1.html" target="_self">Listing 1. 2.4.x iptable Command
+Sequence</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ed10b0"></a>ipchains Log Format</h2></div></div><p>Let us now examine a sample log entry from our firewall's
+/var/log/syslog:</p><pre     class="programlisting">
+Jun 12 16:15:54 myfirewall kernel: Packet log: input DENY eth1 PROTO=6 212.65.214.2:34251 10.0.1.2:23 L=52 S=0x10 I=24016 F=0x4000 T=53 SYN (#38)
+</pre><p>This means that at quarter past four in the afternoon on 12
+June, the firewall (called, rather boringly, myfirewall) denied and
+logged a packet coming into its network interface eth1 (the
+external interface on the Internet) with the TCP protocol coming
+from 212.65.214.2 (from port 34251), directed to 10.0.1.2 (on port
+23, i.e., the Telnet port) and having a length of 52 bytes. We
+shall skip most of the other details, apart from one: &ldquo;SYN&rdquo; means
+that the packet is the first packet of a connection. In practice,
+this information is very useful in discriminating those packets
+that are part of a pre-existing connection (that might have been
+initiated from the internal LAN) and those packets that attempt to
+establish a connection from the Internet towards the internal LAN.
+Usually one allows &ldquo;reply&rdquo; packets (which do not have the &ldquo;SYN&rdquo;
+flag set) but denies &ldquo;SYN&rdquo; packets because it means somebody out
+there is trying to make a connection to a computer in the internal
+LAN.
+</p><p>Of course, it is possible to check the status of a firewall
+by inspecting all relevant entries in the log file, but this is
+feasible if one logs only a few strange-looking packets. For
+example, on some firewalls I set up I decided to log all those
+packets coming from the Internet towards port 31337 on computers on
+the internal LAN, as 31337 is the default port BackOrifice uses.
+Whenever one is interested in getting some statistics from the
+firewall, it is likely that the size of the log file will be in
+excess of 5MB per day. In such cases, inspection of the log file by
+hand is no longer an option. This is when automated log scanning
+comes in.</p><p>When analyzing 2.4.x kernel firewall logs, the format is
+different:</p><pre     class="programlisting">
+Jun 12 16:15:54 myfirewall kernel: Packet log: IN=eth1 OUT= MAC=00:00:00:00:00:00:00:00:00:00:00:00:08:00 SRC=212.65.214.2 DST=10.0.1.2 LEN=52 TOS=0x10 PREC=0x00 TTL=64 ID=0 DF PROTO=TCP SPT=34251 DPT=23 WINDOW=11592 RES=0x00 SYN URGP=0
+</pre><p>The fields we are interested in are SRC (source IP address),
+DST (destination IP address), SPT (source port), DPT (destination
+port) and the presence or absence of the SYN flag.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ed13c8"></a>The inside-control Script Structure</h2></div></div><p>I am going to use Perl to build the log scanner. It is not
+the only option and, in fact, in order to achieve top performance
+one should use a compiled language. When I recoded this script in
+C++, I observed an execution speed gain of 100%.</p><p>The <span   class="bold"><b>inside-control</b></span> script is
+composed of a main parsing loop and an HTML data display loop.
+Since the script is a CGI it needs to reside on a web server
+configured for running CGI programs.</p><p>Note that the code, as described below, sacrifices
+functionality and useful details like error-checking for clarity.
+For example, there is no check that &ldquo;opening a file&rdquo; was
+successful before actually reading that file. Note also that the
+code below is customized to analyze the packet-logging format of
+kernels 2.2.x. Changing to the logging format of kernels 2.4.x, on
+the basis of the sample packet log described above, should be
+straightforward.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ed15d8"></a>Main Parsing Loop</h2></div></div><p>First, we open the log file and initialize some variables
+(those with Red Hat should use /var/log/messages instead of
+/var/log/syslog):</p><pre     class="programlisting">
+#!/usr/bin/perl
+open(LOGFILE, "/var/log/syslog");
+$firstdate = "";
+$date = "";
+$total_traffic = 0;
+</pre><p>Now we loop over each line in the log file:
+<pre     class="programlisting">
+while ( &lt;LOGFILE&gt; ) {
+</pre>
+
+
+Skip all log entries which do not belong to the firewall:
+<pre     class="programlisting">
+next unless /Packet log/;
+</pre>
+
+
+We also parse the line (warning: in the Perl script, write the last
+line in this chunk as a whole long line, without the backslash):
+<pre     class="programlisting">
+chomp;
+@log = split;
+($month,$day,$time,$policy,$proto,$ipsource,$ipdest, \
+$tot_len) = @log[0,1,2,8,10,11,12,13];
+</pre>
+
+
+We then calculate the date and store the first date in the log. As
+we go on, we store the current date as the last date, so that after
+the last step the variable lastdate will contain the last date in
+the log:
+<pre     class="programlisting">
+$date = $day . " " . $month . " " . $time;
+if (length($firstdate) == 0) {
+  $firstdate = $date;
+}
+$lastdate = $date;
+</pre>
+
+
+Read the protocol type, the source IP address, the source port, the
+destination IP address, the destination port and the packet length:
+<pre     class="programlisting">
+$proto = substr($proto, -1);
+($ips, $ports) = split ":", $ipsource;
+($ipd, $portd) = split ":", $ipdest;
+($flush, $packetlen) = split "=", $tot_len;
+</pre>
+
+
+Now record the destination IP address in a string, and associate
+that string to the source IP address so that in the data display
+loop we will be able to loop over source IP addresses and retrieve
+the hosts they connected to:
+<pre     class="programlisting">
+unless ( $sourcedest{$ips} =~ /$ipd/ ) {
+  $sourcedest{$ips} = $sourcedest{$ips} . $ipd . " ";
+}
+</pre>
+
+
+We count the log entries for the source IP address:
+<pre     class="programlisting">
+++$source{$ips};
+</pre>
+
+
+and sum up the total traffic volume:
+<pre     class="programlisting">
+$total_traffic += $packetlen;
+</pre>
+
+
+Finally, we sum up the per-host traffic volume:
+<pre     class="programlisting">
+$traffichost{$ips} += $packetlen;
+}
+</pre>
+
+
+Notice that not all the information gathered has been used (no talk
+of ports, for example), so there is plenty of room for expansion
+here.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ed1aa8"></a>Data Display Loop</h2></div></div><p>First we display a nice-looking web page header, as shown in
+Listing 2.</p><p><a href="4543l2.html" target="_self">Listing 2. Web Page
+Header</a></p><p>Loop over the sorted source IP addresses and print the source
+IP address, the number of packets coming from that IP and the
+traffic (in bytes) generated from that IP:</p><pre     class="programlisting">
+for (sort keys %source) {
+  print "&lt;TR&gt;&lt;TD&gt;$_&lt;/TD&gt; ";
+  print "&lt;TD&gt;$source{$_} &lt;/TD&gt;\n";
+  print "&lt;TD&gt;$traffichost{$_} bytes&lt;/TD&gt;\n";
+</pre><p>Now we are able to print the string containing the
+destination IP addresses contacted by the current source IP
+address:
+<pre     class="programlisting">
+$tmp1 = $sourcedest{$_};
+if (length($tmp1) gt 0) {
+  print "&lt;TD&gt;\n";
+  @lt1 = split " ", $tmp1;
+  for(sort @lt1) {
+    printf "$_ &lt;br&gt;\n";
+  }
+  print " &lt;/TD&gt;\n";
+}
+print " &lt;/TR&gt;\n";
+}
+</pre>
+
+
+Finally, we print the HTML tail:
+<pre     class="programlisting">
+print "&lt;/TABLE&gt;\n";
+print "&lt;/center&gt;\n";
+print "&lt;/BODY&gt;&lt;/HTML&gt;\n";
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ec86a8"></a>The Downloadable inside-control Script</h2></div></div><p>The version of inside-control I actually implemented is
+richer in functionality than the one presented here. You can
+download the script from
+<a href="http://www.iris-tech.net/hdsl-fw" target="_self">www.iris-tech.net/hdsl-fw</a>.
+Some of the main added features include the ability to display
+arbitrary names instead of IP addresses in the &ldquo;Source IP&rdquo;
+column. This is done with a very simple text database that maps IP
+numbers to names. The format is the same as the /etc/hosts file,
+and you can use that file if it is meaningfully configured for your
+internal LAN. The exact location of the &ldquo;IP to names&rdquo; database
+file can be specified by changing the relevant variable
+(<span   class="emphasis"><em>$useripdb</em></span>) at the beginning of the
+script.</p><p>There is also a search facility that allows one to look for a
+particular source IP address (or corresponding name found in the
+&ldquo;IP to names&rdquo; database) in the logs. The search form is displayed
+whenever the CGI is called without arguments from the browser.
+Arguments passing is done by the GET method.</p><p>Additionally, the main loop includes some data validation
+(the kernel cannot always log properly, especially on low RAM or
+low-spec CPUs) and some storage of port-dependent
+information.</p><p>Finally, the script can also be called without the web
+interface. Just pass any argument to inside-control, and all HTML
+output will be suppressed and some normal output will be provided
+instead. A search string for a source IP address (or its
+corresponding name found in the &ldquo;IP to names&rdquo; database) can be
+passed to the program via the -t option.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd8580.0x1ec8968"></a>Notes and Caveats</h2></div></div><p>The purpose of this article is to explain some design
+principles and give some hints, not to give a prepackaged solution
+to log scanning problems. There are many areas where the
+inside-control script can be made better, such as performance and
+security. The following are some notes about inside-control, mostly
+related to security issues.</p><p>In order for a CGI to read the computer log files
+/var/log/syslog or /var/log/messages, these have to be made
+readable by all. This can be accomplished with the command
+<b  >chmod +r /var/log/syslog</b>. This, however, is not
+very secure as it gives anybody on the system permission to read
+the computer log files. It would be much better to get the web
+server to run inside-control with a particular group permission,
+and then make the log files belong to that group.</p><p>After reading the article, one could conclude it is essential
+that a firewall also runs a web server, as inside-control needs to
+read the firewall log files. In fact, putting a web server on a
+firewall is very insecure: ideally a firewall should run no
+d&aelig;mon service, and all maintenance should be done at the
+console. When there is a need for remote administration, the only
+service that may be installed on the firewall is
+<span   class="bold"><b>ssh</b></span>, the secure shell. Running
+inside-control is still possible by setting up a separate web
+server within the internal network that also acts as a syslog
+server for the firewall.</p><p>Firewall logs can fill up a partition pretty quickly. In
+order to avoid having a clogged hard disk on the firewall (which
+could lead to a malfunctioning internet connection), depending on
+the amount of traffic you want to log, you have to allow for a
+large log file space. For high data volume services (typically
+HTTP, FTP, SMTP, NetBIOS, LPD and database services) I would advise
+setting up a second hard disk of at least 20GB in size, with just
+one partition mounted on /var/log. Also keep in mind that the
+script needs some error-checking code on critical steps like
+opening a file.</p><p>Finally, there is a lot of room for improvement everywhere in
+the script and especially in the main loop. One can use much more
+data from each log line than is discussed here. However, it is
+always a good idea to not show too many details; otherwise, the
+whole point of having an automated log scanner is defeated. If you
+display all available details, you end up having to look for
+suspicious entries in an unmanageably high volume of traffic
+log.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="4543aa.jpg"></div>
+
+        <span   class="bold"><b>Leo Liberti</b></span> is
+      technical director at IrisTech in Como, Italy, a firm that supplies
+      its customers with web-based applications and all kinds of
+      electronic services. His free time is dedicated to eating in as
+      many restaurants as possible.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../087/toc087.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,247 @@
+#!/bin/bash
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+# $Header: /var/log/sar/RCS/disk,v 1.3 1997/06/19 05:26:48 dgavin Exp dgavin $
+#
+# disk - display disk I/O
+#
+# input - /var/log/sar/data/disk.Mondd.yy
+# output- chart for each active disk showing r/w and block r/w per second
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+trap '/bin/rm /tmp/gnuplot.disk* 2>/dev/null;exit' SIGHUP SIGINT SIGQUIT SIGTERM
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Function definitions
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+function checkForEmpty {
+if [ ! -f ${1} ] ; then echo "0 0" >${1} ; fi
+return
+}
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Mainline code
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Variable initialization
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+HARDCOPY=""
+GHOSTVIEW=""
+CMDNAME=`basename $0`
+#
+HELP="${CMDNAME} generates X11 or hardcopy graph of disk I/O."
+USAGE="${CMDNAME} [-DHLVhPp] [MonDD[.YY]]
+  -D turns on execution tracing
+  -H displays help info and exits
+  -L displays RCS log and exits
+  -V display Revision info and exits
+  -h displays help info and exits
+  -P Print without display
+  -p display and offer print option
+
+  MonDD.YY - day to work with, defaults to today
+   i.e. Jun12.97 -the year will default to this year
+
+"
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Parse options
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+while getopts DHLVhPp c ; do
+  case ${c} in
+    h|H) echo -e "\n${HELP}\n\n${USAGE}\n"
+       exit 1
+       ;;
+    p) HARDCOPY="YES"
+       GHOSTVIEW="YES"
+       ;;
+    P) HARDCOPY="YES"
+       GHOSTVIEW=""
+       ;;
+    D) echo "DEBUG ON"
+       set -x
+       DEBUG="yes"
+       trap '' SIGHUP SIGINT SIGQUIT SIGTERM
+       ;;
+    L) echo '
+$Log: disk,v $
+Revision 1.3  1997/06/19 05:26:48  dgavin
+cleanup
+dgavin
+
+Revision 1.2  1997/06/12 03:44:37  dgavin
+removed extra log area
+
+Revision 1.1  1997/06/12 03:38:53  dgavin
+Initial revision
+
+'
+       exit 1
+       ;;
+    V) echo '$Revision: 1.3 $'
+       exit 1
+       ;;
+    ?) echo -e "\n${USAGE}\n"
+       exit 3
+       ;;
+  esac
+done
+# re-align the positional parameters as $1, $2,...
+shift `expr ${OPTIND} - 1`
+#
+cd /var/adm/sar/data
+if [ $# -eq 0 ] ; then
+ FN="disk.`date +%b%d.%y`"
+else
+ l=`echo ${1} | wc -c`
+ l=`expr ${l} + 0`
+ case ${l} in
+  6) FN="disk.${1}.`date +%y`";;
+  9) FN="disk.${1}";;
+  *) echo -e "\n${CMDNAME}: Invalid date  - ${1}\n"
+     exit
+     ;;
+ esac
+fi
+if [ ! -f ${FN} ] ; then
+  echo "No such file: ${FN}"
+  exit
+fi
+if [ ! -r ${FN} ] ; then
+  echo "File not readable: ${FN}"
+  exit
+fi
+if [ ! -s ${FN} ] ; then
+  echo "File empty: ${FN}"
+  exit
+fi
+#      tot - 0 rio    wio    rblk    wblk     1          2          3
+#0000  1136068 522777 613291 2781276 1551452  0 0 0 0 0  0 0 0 0 0  0 0 0 0 0 
+#0005  1136517 523032 613485 2782710 1552002  0 0 0 0 0  0 0 0 0 0  0 0 0 0 0 
+#0010  1139791 524476 615315 2791322 1556448  0 0 0 0 0  0 0 0 0 0  0 0 0 0 0 
+rm /tmp/gnuplot.disk* 2>/dev/null
+awk '
+BEGIN{}
+{
+ if (NR == 1) {
+   mm=substr($1,3,2) * .016;
+   tim=substr($1,1,2)+mm;
+   old_time = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+   tok = split(substr($0,6),old_array);
+   disks = int(tok / 5);
+   printf("%d disks in database\n",disks);
+ } else {
+   mm=substr($1,3,2) * .016;
+   tim=substr($1,1,2)+mm;
+   now = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+   delta_tim = now - old_time;
+   if(delta_tim < 1 ) { 
+     delta_tim = 1;
+   }
+   if ( array[1] > old_array[1] ) {
+     for (i=1;i<=tok;i++){
+       old_array[i] = 0;
+     }
+   } else {
+     x = split(substr($0,6),array);
+     for ( d = 0; d < disks ; d++ ) {
+       printf("%5.2f %7.2f %7.2f %7.2f %7.2f %7.2f\n",
+           tim,
+           (array[(d*5)+1]-old_array[(d*5)+1])/delta_tim,
+           (array[(d*5)+2]-old_array[(d*5)+2])/delta_tim,
+           (array[(d*5)+3]-old_array[(d*5)+3])/delta_tim,
+           (array[(d*5)+4]-old_array[(d*5)+4])/delta_tim,
+           (array[(d*5)+5]-old_array[(d*5)+5])/delta_tim)>"/tmp/gnuplot.disk."d;
+     }
+   }
+   for (i=1;i<=tok;i++){
+     old_array[i] = array[i];
+   }
+   old_time = now;
+ }
+}
+END{ 
+  for ( d = 0 ; d < disks ; d++){
+    if ( old_array[(d*5)+1] == 0 ) {
+      system("/bin/rm /tmp/gnuplot.disk."d);
+    }
+  }
+}' ${FN}
+DISKS=`ls -l /tmp/gnuplot.disk.[0-9]* | wc -l`
+echo "${DISKS} with non-zero data to be processed"
+#
+# Get system name and date of report into variables...
+system=`hostname -s | /usr/bin/tr "[A-Z]" "[a-z]"`
+#sysdate=`/bin/date`
+sysdate=`echo ${FN} | cut -c 6-`
+echo "Generating plot for $system $sysdate"
+#
+#
+# Start building the /tmp/gnuplot.disk.script
+#
+if [ -z ${HARDCOPY} ]; then
+  TERMINAL="set terminal X11"
+  PAUSE="pause 10"
+  YLABEL=""
+else
+  TERMINAL='set terminal postscript landscape monochrome dashed "Times-Roman" 18
+set output "/tmp/gnuplot.disk.ps"'
+  PAUSE=""
+  YLABEL='set ylabel "Disk I/O"'
+fi
+cat <<EOF >/tmp/gnuplot.disk.script 
+${TERMINAL}
+set data style lines
+set nogrid
+set key
+set xlabel "Time of Day"
+set xrange [00:24]
+set xtics 0,1,24
+${YLABEL}
+set autoscale y
+EOF
+D=0
+while [ ${D} -lt ${DISKS} ] ; do
+cat <<EOF >>/tmp/gnuplot.disk.script 
+set title "Disk I/O per Second - Disk # ${D} - $system On $sysdate"
+plot \
+"/tmp/gnuplot.disk.${D}" u 1:2 t "Total i/o per second" with line 1,\
+"/tmp/gnuplot.disk.${D}" u 1:3 t "Total reads per second" with line 2,\
+"/tmp/gnuplot.disk.${D}" u 1:4 t "Total writes per second" with line 3,\
+"/tmp/gnuplot.disk.${D}" u 1:5 t "Total blocks reads per second" with line 4,\
+"/tmp/gnuplot.disk.${D}" u 1:6 t "Total blocks writes per second" with line 5
+${PAUSE}
+EOF
+D=`expr ${D} + 1`
+done
+echo "quit" >>/tmp/gnuplot.disk.script
+#
+# Generate the plots
+#
+gnuplot /tmp/gnuplot.disk.script
+#
+if [ .${HARDCOPY} = ".YES" ]; then
+  if [ -z ${GHOSTVIEW} ] ; then
+    lpr /tmp/gnuplot.disk.ps
+  else
+    ghostview -upsidedown -magstep 3 /tmp/gnuplot.disk.ps
+    echo "Print ?"
+    read ans
+    if [ ${ans} = "y" ] ; then
+      lpr /tmp/gnuplot.disk.ps
+    fi
+  fi
+fi
+# clean up the junk
+if [ ${DEBUG}. = "." ]; then
+  rm /tmp/gnuplot.disk* 2>/dev/null
+fi
+exit

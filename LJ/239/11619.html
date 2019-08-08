@@ -1,0 +1,449 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Two-Factor Authentication System for Apache and SSH
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;If you have personal publicly accessible Web sites and/or publicly&#10;accessible SSH services, you should take steps to limit your risks by&#10;adding a simple, yet effective two-factor solution.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1dbf580.0x1eb6ac0"></a>
+Two-Factor Authentication System for Apache and SSH
+</h1></div><div><div class="author"><h3 class="author">
+James
+ 
+Litton
+</h3></div><div class="issuemoyr">Issue #239, March 2014</div></div><div><p>
+If you have personal publicly accessible Web sites and/or publicly
+accessible SSH services, you should take steps to limit your risks by
+adding a simple, yet effective two-factor solution.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dbf580.0x1eb71f8"></a></h2></div></div><p>
+If you run a publicly accessible Web server for your own use (and let's
+face it, if you're reading <span   class="emphasis"><em>Linux Journal</em></span>, there's a very good chance you
+do), how do you go about limiting the risk of someone accessing your
+site and doing bad things? How about SSH, an even bigger concern? In
+today's world, it's imperative to think about your exposure and take
+steps to limit as much risk as possible.
+</p><p>
+In this tutorial, I walk through the steps necessary to implement
+a home-grown two-factor authentication system for accessing your Web
+sites and for SSH access.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dbf580.0x1eb7460"></a>
+The Infrastructure and the &ldquo;Challenge&rdquo;</h2></div></div><p>
+Running your own hardware can be a pain in the neck. After dealing with
+hardware failures, such as failed fans, failed power supplies, bad hard
+disks and the like, you finally may decide to dump your co-lo or bedroom
+closet and your hardware and jump into the world of elastic computing.
+One such option is Amazon's EC2 platform, which offers a variety of
+Linux flavors and has one of the most robust and mature cloud platforms
+available. I'm not an Amazon representative, but I'm the first
+to say <span   class="emphasis"><em>try it</em></span>. It's amazing stuff, and a micro instance is free for
+a year.
+</p><p>
+In the test scenario for this article, I use an Amazon EC2 server running Ubuntu
+12.04 LTS to host a couple Web applications. If you use a different
+flavor of Linux, the instructions easily can be adapted to meet your
+specific needs. Let's assume the applications are, for the most part,
+for personal use only. If the sites were accessed only from work or
+home, you simply could secure the sites by creating firewall rules to
+allow Web traffic from only those IP addresses. This, incidentally,
+is exactly how one should secure SSH. 
+</p><p>
+Let's assume though that this won't
+work for your Web apps because you do a fair amount of traveling and need
+to be able to access those applications while you're on the road, so
+a couple firewall rules won't help you. Let's also assume that your
+applications have their own security systems, but you still want an extra
+layer of security. 
+</p><p>
+You could have set up a VPN server, but every once
+in a while, you might like to give a family member access to one of your
+sites, so a VPN approach wouldn't work. 
+</p><p>
+Another consideration is Google
+Authenticator for true two-factor authentication. You certainly could go
+down this path, but you're looking for something you can do
+yourself&mdash;something that is self-contained and yours. 
+</p><p>
+Just like so many things in
+the Linux world, where there's a will, there's a way! It turns out you
+easily can set up your own, homegrown, two-factor solution and use it to
+control access to your Web apps and SSH, while also making it possible
+to allow occasional access to your sites by other users.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dbf580.0x1eb7828"></a>
+Apache Authentication and Authorization</h2></div></div><p>
+Since the Web server for this example is Apache, let's leverage the server's
+authentication and authorization capabilities to ask for a set of
+credentials before any of your sites are served up to a user.
+</p><p>
+In the interest of keeping things simple, and since you will follow best
+practice and allow only https traffic to and from your Web server, let's
+use the <tt  >mod_auth_basic</tt> module for authentication. 
+</p><p>
+Start by
+becoming root and installing Apache on your fresh Ubuntu install:
+
+<pre     class="programlisting">
+sudo su
+apt-get install apache2
+</pre>
+</p><p>
+Let's assume your Web applications run in subfolders off of the main www
+document folder. This allows you to take care of all your sites at once
+by creating a single .htaccess file in the http server root folder:
+
+<pre     class="programlisting">
+vim /var/www/.htaccess
+</pre>
+</p><p>
+Now, let's add a few lines that tell Apache to require authentication
+and where to look for the password file:
+
+<pre     class="programlisting">
+AuthType Basic
+AuthName "restricted area"
+AuthUserFile /home/ubuntu/.htpasswd
+require valid-user
+</pre>
+</p><p>
+With that in place, you now need to change the ownership of the file so
+the Apache process can read its contents:
+
+<pre     class="programlisting">
+chown www-data:www-data /var/www/.htaccess
+</pre>
+</p><p>
+Next, you need to create the .htpasswd file that you reference in your
+.htaccess file and configure its ownership so the Web server can read it:
+
+<pre     class="programlisting">
+htpasswd -cb /home/ubuntu/.htpasswd jameslitton test123
+chown www-data:www-data /home/ubuntu/.htpasswd
+</pre>
+</p><p>
+Now you need to tell Apache to require authentication and to use the
+<tt  >mod_auth_basic</tt> module for that purpose:
+
+<pre     class="programlisting">
+vim /etc/apache2/sites-available/default-ssl
+</pre>
+</p><p>
+Then you need to change <tt  >AllowOverride None</tt> to
+<tt  >AllowOverride AuthConfig</tt>:
+
+<pre     class="programlisting">
+Service apache2 restart
+</pre>
+</p><p>
+Visiting your site now prompts for a user name and password (Figure 1).
+</p><div       class="mediaobject"><a href="11619f1.large.jpg"><img src="11619f1.jpg"></a><div class="caption"><p>
+Figure 1. Authentication Request from <tt >mod_auth_basic</tt>
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dbf580.0x1eb8220"></a>
+One-Time Day Password/PIN</h2></div></div><p>
+The approach I'm going to take here is to have your secondary authentication password
+change daily instead of more frequently. This allows the
+<tt  >mod_auth_basic</tt>
+approach described above to work. I won't go into the details here,
+but suffice it to say that every time the password changes, an immediate
+re-authentication is required, which is not the behavior you want.
+</p><p>
+Let's go with a six-digit numeric pin code and have that delivered
+to a mobile phone at midnight every night. I'm a big fan of Pushover,
+which is a service that pushes instant notifications to mobile phones and
+tablets from your own scripts and application.
+</p><p>
+To set this up, create a bash script:
+
+<pre     class="programlisting">
+vim /home/ubuntu/2fac.sh
+</pre>
+</p><p>
+Now add the following lines:
+
+
+<pre     class="programlisting">
+1  #!/bin/bash
+2  ppwd=`od -vAn -N4 -tu4 &lt; /dev/urandom | tr -d '\n' | tail -c 6`
+3  curl -s -F "token=id" -F "user=id" -F "message=$ppwd"
+    &#8618;https://api.pushover.net/1/messages.json
+4  htpasswd -b /home/ubuntu/.htpasswd jameslitton $ppwd
+5  echo $ppwd | base64 &gt;/home/ubuntu/.2fac
+</pre>
+</p><p>
+Line 2 produces a random six-digit PIN code and assigns it to a variable
+called ppwd. Line 3 sends the PIN to the Pushover service for delivery
+to your mobile phone. Line 4 updates the .htpasswd file with the new
+password, and last but not least, Line 5 stores a copy of the PIN in a
+format that you can recover, as you will see later on.
+</p><p>
+Now save the script, and make it executable:
+
+<pre     class="programlisting">
+chmod +x /home/ubuntu/2fac.sh
+</pre>
+</p><p>
+To complete this solution, all you need to do is schedule the script to run,
+via cron, at midnight each night:
+
+<pre     class="programlisting">
+crontab -e
+00 00 * * * /home/ubuntu/2fac.sh
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dbf580.0x1eb8748"></a>
+Making It Web-Accessible</h2></div></div><p>
+You certainly could leave it there and call it done, but suppose you didn't
+receive your code and want to force a change. Or, perhaps you gave
+someone temporary access to your site, and now you want to force a password
+change to ensure that that person no longer can access the site. You always
+could SSH
+to your server and manually run the script, but that's too hard. 
+Let's
+create a Web-accessible PHP script that will take care of this for you.
+</p><p>
+To start, change the ownership of your 2fac.sh script so your Web
+server can run it:
+
+<pre     class="programlisting">
+chown www-data:www-data /home/Ubuntu/2fac.sh
+</pre>
+</p><p>
+Now you need to create a new folder to hold your script and create the
+PHP script itself that allows a new &ldquo;key&rdquo; to be run manually:
+
+<pre     class="programlisting">
+
+mkdir /vaw/www/twofactor
+vim /var/www/twofactor/index.php 
+
+1  &lt;?php
+2  exec('/home/ubuntu/2fac.sh');
+3  header('Location: http://www.google.com');
+4  ?&gt;
+
+</pre>
+</p><p>
+Because it's conceivable that you're needing to force a new key because
+you didn't receive the previous one, you need to make sure the folder
+that holds this script does not require authentication. To do that,
+you need to modify the Apache configuration:
+
+<pre     class="programlisting">
+vim /etc/apache2/sites-available/default-ssl
+</pre>
+</p><p>
+Now add the following below the Directory directive for /var/www:
+
+<pre     class="programlisting">
+
+&lt;Directory /var/www/twofactor/&gt;
+        satisfy any
+&lt;/Directory&gt;
+
+</pre>
+</p><p>
+Now let's configure ownership and restart Apache:
+
+<pre     class="programlisting">
+chown -R www-data:www-data /var/www/twofactor
+Service apache2 restart
+</pre>
+</p><p>
+So thinking this through, it's conceivable that the Pushover service
+could be completely down. That would leave you in a bad situation where
+you can't access your site. Let's build in a contingency for exactly
+this scenario.
+</p><p>
+To do this, let's build a second script that grabs a copy of your PIN
+(remember the .2fac file that you saved earlier) and e-mails it to you. In
+this case, let's use your mobile carrier's e-mail to SMS bridge to SMS
+the message to you.
+</p><p>
+Start by installing mailutils if you haven't done so already, and be
+sure to select the Internet option:
+
+<pre     class="programlisting">
+apt-get install mailutils
+</pre>
+</p><p>
+Now create the second script:
+
+<pre     class="programlisting">
+vim /home/Ubuntu/2fac2.sh
+</pre>
+</p><p>
+Then add the code:
+
+<pre     class="programlisting">
+#!/bin/bash
+ppwd=`cat /home/ubuntu/.2fac | base64 --decode`
+echo " " | mail -s $ppwd xxx5551212@vtext.com
+</pre>
+</p><p>
+Don't forget to change the file's ownership:
+
+<pre     class="programlisting">
+chown www-data:www-data /home/ubuntu/2fac2.sh
+chown www-data:www-data /home/ubuntu/.2fac
+</pre>
+</p><p>
+With that out of the way, now you need to modify the PHP script:
+
+<pre     class="programlisting">
+vim /var/www/twofactor/index.php 
+</pre>
+</p><p>
+Replace line 2 with the following:
+
+<pre     class="programlisting">
+2  if (isset($_GET["sms"])) {
+3    exec('/home/ubuntu/2fac2.sh');
+4    } else {
+5    exec('/home/ubuntu/2fac.sh');
+6    }
+</pre>
+</p><p>
+Then create two bookmarks, so that any time you want to generate a new PIN
+and have it sent to you via Pushover, you simply can click the link and
+it's done. The second bookmark will send a copy of the existing PIN to
+the e-mail address of your choice in the unlikely event that the Pushover
+service is unavailable.
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+2Factor = https://www.thelittonfamily.com/twofactor/index.php
+</p></li><li><p>
+2Factor&mdash;SMS = https://www.thelittonfamily.com/twofactor/index.php?sms=1
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dbf580.0x22b1548"></a>
+Extending to SSH</h2></div></div><p>
+Extending this solution to cover SSH is really pretty simple. The key
+is to use the little-known <tt  >ForceCommand</tt> directive in your sshd_config
+file. This forces the SSH d&aelig;mon to run a script before spanning the
+terminal session.
+</p><p>
+Let's start with the script:
+
+<pre     class="programlisting">
+vim /home/ubuntu/tfac-ssh.sh
+</pre>
+</p><p>
+Now add the following lines:
+
+
+<pre     class="programlisting">
+1  #!/bin/bash
+2  code=`cat .2fac | base64 --decode`
+3  echo -ne "Enter PIN: "
+4  while IFS= read -r -s -n1 pass; do
+5    if [[ -z $pass ]]; then
+6       echo
+7       break
+8    else
+9       echo -n '*'
+10      input+=$pass
+11   fi
+12 done
+13 if [ $code = $input ];
+14 then
+15   sleep 1
+16   clear
+17   /bin/bash
+18 else
+19   sleep 1
+20   curl -s -F "token=id" -F "user=id" -F "message=$input"
+      &#8618;https://api.pushover.net/1/messages.json
+21 fi
+</pre>
+</p><p>
+Line 2 loads the PIN into a variable. Lines 3&ndash;12 prompt for the PIN
+and echo a star back for each key press. Line 13 compares the user's
+input to the PIN. If they match, lines 14&ndash;17 clear the screen and start a
+bash session. If the user's input does not match the PIN, lines 18&ndash;21
+send a notification to Pushover so you know a failure occurred and
+then ends the session.
+</p><p>
+Let's configure the SSH d&aelig;mon to run the script:
+
+<pre     class="programlisting">
+vim /etc/ssh/sshd_config
+</pre>
+</p><p>
+Now add the following to the top of the file:
+
+<pre     class="programlisting">
+ForceCommand /home/ubuntu/tfac-ssh.sh
+</pre>
+</p><div       class="mediaobject"><a href="11619f2.large.jpg"><img src="11619f2.jpg"></a><div class="caption"><p>
+Figure 2. Two-Factor Request from SSH
+</p></div></div><p>
+This approach works great. The only limitation is no backspaces. If
+you press the wrong key, your session will be terminated, and you'll
+have to try again.
+</p><p>
+There you have it, a poor-man's two-factor authentication implementation
+with very little effort and from my experience, it's rock solid!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dbf580.0x22b1cd8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+James Litton is an entrepreneur, business owner and a regular
+contributor to various Linux-related periodicals.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../239/toc239.html">Issue Table of Contents</a>
+    <a class="link3" href="../239/11619.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

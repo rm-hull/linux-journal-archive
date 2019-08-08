@@ -1,0 +1,613 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>I2C Drivers, Part II</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Here's what has to happen to read the sensors that report the&#10;temperature, fan speed and other important system health information.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2225580.0x231cab0"></a>I2C Drivers, Part II</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #118, February 2004</div></div><div><p>
+Here's what has to happen to read the sensors that report the
+temperature, fan speed and other important system health information.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x231d298"></a></h2></div></div><p>
+In my last column [<i  >LJ</i>, December 2003], we discussed
+how I2C bus drivers and I2C
+algorithm drivers work. We also described how to make a tiny dummy I2C
+bus driver. This month, we discuss how an I2C chip driver
+works and provide an example of one in action.
+</p><p>
+An I2C chip driver controls the process of talking to an individual I2C device
+that lives on an I2C bus. I2C chip devices usually monitor
+a number of different physical devices on a motherboard, such as
+the different fan speeds, temperature values and voltages.
+</p><p>
+The struct i2c_driver structure describes a
+I2C chip driver. This structure is defined in the
+include/linux/i2c.h file. Only the following
+fields are necessary to create a working chip driver:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+struct module *owner; &mdash; set to the value
+THIS_MODULE that allows the proper module reference
+counting.
+</p></li><li><p>
+char name[I2C_NAME_SIZE]; &mdash; set to a descriptive
+name of the I2C chip driver.
+This value shows up in the sysfs
+file name created for every I2C chip device.
+</p></li><li><p>
+unsigned int flags; &mdash; set to the value
+I2C_DF_NOTIFY
+in order for the chip driver to
+be notified of any new I2C
+devices loaded after
+this driver is loaded. This
+field probably will go away
+soon, as almost all drivers set
+this field.
+</p></li><li><p>
+int (*attach_adapter)(struct i2c_adapter *); &mdash;
+called whenever a new I2C bus driver is loaded in the system.
+This function is described in more detail below.
+</p></li><li><p>
+int (*detach_client)(struct i2c_client *); &mdash;
+called
+when the i2c_client device is to
+be removed from the system. More information about this
+function is provided below.
+</p></li></ul></div><p>
+The following code is from an example I2C chip driver called
+tiny_i2c_chip.c., which is available from the <i  >Linux Journal</i> FTP site [<a href="../listings/118/7252.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue118/7252.tgz</a>]. It shows how the
+struct i2c_driver structure is set up:
+
+<pre     class="programlisting">
+
+static struct i2c_driver chip_driver = {
+    .owner          = THIS_MODULE,
+    .name           = "tiny_chip",
+    .flags          = I2C_DF_NOTIFY,
+    .attach_adapter = chip_attach_adapter,
+    .detach_client  = chip_detach_client,
+};
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x231d9d0"></a>Registering a Chip Driver</h2></div></div><p>
+To register this I2C chip driver, the function
+i2c_add_driver should be called with a
+pointer to the struct i2c_driver:
+
+<pre     class="programlisting">
+
+static int __init tiny_init(void)
+{
+    return i2c_add_driver(&amp;chip_driver);
+}
+
+</pre>
+</p><p>
+To unregister the I2C chip driver, the
+i2c_del_driver function should be called with
+the same pointer to the struct i2c_driver:
+
+<pre     class="programlisting">
+
+static void __exit tiny_exit(void)
+{
+    i2c_del_driver(&amp;chip_driver);
+}
+
+</pre>
+</p><p>
+After the I2C chip driver is registered, the
+attach_adapter function callback is
+called when an I2C bus driver is loaded. This function checks to see if any
+I2C devices are on this I2C bus to which the client driver wants to
+attach. Almost all I2C chip drivers call the core I2C
+function i2c_detect to determine
+this. For example, the tiny_i2c_chip.c driver does this:
+
+<pre     class="programlisting">
+
+static int
+chip_attach_adapter(struct i2c_adapter *adapter)
+{
+    return i2c_detect(adapter, &amp;addr_data,
+                      chip_detect);
+}
+
+</pre>
+</p><p>
+The i2c_detect function probes the I2C
+adapter, looking for the different addresses specified in the
+addr_data structure. If a device is
+found, the chip_detect function then is
+called.
+</p><p>
+If you look closely at the source code, you
+cannot find the addr_data structure
+anywhere. The reason for this is it is created by the
+SENSORS_INSMOD_1 macro. This macro is
+defined in the include/linux/i2c-sensor.h
+file and is quite complicated. It sets up a static variable
+called addr_data based on the number of
+different types of chips that this driver supports and the
+addresses at which these chips typically are present. It then
+provides the ability to override these values by using module
+parameters. An I2C chip driver must provide the variables
+normal_i2c, normal_i2c_range, normal_isa and
+normal_isa_range. These variables define the
+i2c smbus and i2c isa addresses this chip driver supports.
+They are an array of addresses, all terminated by either the special
+value I2C_CLIENT_END or
+I2C_CLIENT_ISA_END.
+Usually a specific type of I2C chip shows up in
+only a limited
+range of addresses. The tiny_i2c_client.c
+driver defines these variables as:
+
+<pre     class="programlisting">
+
+static unsigned short normal_i2c[] =
+  { I2C_CLIENT_END };
+static unsigned short normal_i2c_range[] =
+  { 0x00, 0xff, I2C_CLIENT_END };
+static unsigned int normal_isa[] =
+  { I2C_CLIENT_ISA_END };
+static unsigned int normal_isa_range[] =
+  { I2C_CLIENT_ISA_END };
+
+</pre>
+</p><p>
+The normal_i2c_range variable specifies that
+we can find this chip device at any I2C smbus address. This
+allows us to test this driver on almost any I2C bus driver.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x231de48"></a>What to Do When the Chip Is Found</h2></div></div><p>
+In the tiny_i2c_chip.c driver, when an I2C
+chip device is found, the function
+chip_detect is called by the I2C core.
+This function is declared with the following parameters:
+
+<pre     class="programlisting">
+
+static int
+chip_detect(struct i2c_adapter *adapter,
+            int address, int kind);
+
+</pre>
+</p><p>
+The adapter variable is the I2C adapter
+structure on which this chip is located. The
+address variable contains the address where
+the chip was found, and the kind variable
+indicates what kind of chip was found. The
+kind variable usually is ignored, but some I2C chip
+drivers support different kinds of I2C chips, so this variable
+can be used to determine the type of chip present.
+</p><p>
+This function is responsible for creating a
+struct i2c_client structure that then is
+registered with the I2C core. The I2C core uses that
+structure as an individual I2C chip device. To create this
+structure, the chip_detect function does the
+following:
+
+<pre     class="programlisting">
+
+struct i2c_client *new_client = NULL;
+struct chip_data *data = NULL;
+int err = 0;
+
+new_client = kmalloc(sizeof(*new_client),
+                     GFP_KERNEL);
+if (!new_client) {
+    err = -ENOMEM;
+    goto error;
+}
+memset(new_client, 0x00, sizeof(*new_client));
+
+data = kmalloc(sizeof(*data), GFP_KERNEL);
+if (!data) {
+    err = -ENOMEM;
+    goto error;
+}
+memset(data, 0x00, sizeof(*data));
+
+i2c_set_clientdata(new_client, data);
+new_client-&gt;addr = address;
+new_client-&gt;adapter = adapter;
+new_client-&gt;driver = &amp;chip_driver;
+new_client-&gt;flags = 0;
+strncpy(new_client-&gt;name, "tiny_chip",
+        I2C_NAME_SIZE);
+
+
+</pre>
+</p><p>
+First, the struct i2c_client structure and a
+separate local data structure (called
+struct chip_data) are created and initialized
+to zero. It is important that the i2c_client structure is
+initialized to zero, as the lower levels of the kernel driver
+core require this in order to work properly. After the memory
+is allocated successfully, some fields in the
+struct i2c_client are set to point to this
+specific device and this specific driver. Notably, the
+addr, adapter and driver variables must be initialized. The
+name of the struct i2c_client also must be
+set if it is to show up properly in the sysfs tree for this I2C
+device.
+</p><p>
+After the struct i2c_client structure is
+initialized, it must be registered with the I2C core. This is
+done with a call to the i2c_attach_client
+function:
+
+<pre     class="programlisting">
+
+/* Tell the I2C layer a new client has arrived */
+err = i2c_attach_client(new_client);
+if (err)
+    goto error;
+
+</pre>
+</p><p>
+When this function returns, with no errors reported, the I2C
+chip device is set up properly in the kernel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x231e210"></a>I2C and sysfs</h2></div></div><p>
+In the 2.0, 2.2 and 2.4 kernels, the I2C code would place the
+I2C chip devices in the /proc/bus/i2c directory. In the 2.6
+kernel, all I2C chip devices and adapters show up in the sysfs
+filesystem. I2C chip devices can be found at
+/sys/bus/i2c/devices, listed by their adapter
+address and chip address. For example, the tiny_i2c_chip
+driver loaded on a machine might produce the following sysfs
+tree structure:
+
+<pre     class="screen">
+
+$ tree /sys/bus/i2c/
+/sys/bus/i2c/
+|-- devices
+|   |-- 0-0009 -&gt; ../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-0009
+|   |-- 0-000a -&gt; ../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-000a
+|   |-- 0-000b -&gt; ../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-000b
+|   `-- 0-0019 -&gt; ../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-0019
+`-- drivers
+    |-- i2c_adapter
+    `-- tiny_chip
+        |-- 0-0009 -&gt; ../../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-0009
+        |-- 0-000a -&gt; ../../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-000a
+        |-- 0-000b -&gt; ../../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-000b
+        `-- 0-0019 -&gt; ../../../../devices/pci0000:00/0000:00:06.0/i2c-0/0-0019
+</pre>
+</p><p>
+This shows four different I2C chip devices, all controlled by the
+same tiny_chip driver. The controlling
+driver can be located by looking at the devices in the
+/sys/bus/i2c/drivers directory or by looking
+in the directory of the chip device itself and reading the
+name file:
+
+<pre     class="screen">
+$ cat /sys/devices/pci0000\:00/0000\:00\:06.0/i2c-0/0-0009/name
+tiny_chip
+</pre>
+</p><p>
+All I2C chip drivers export the different sensor values through
+sysfs files within the I2C chip device directory. These filenames are
+standardized, along with the units in which the values are
+expressed, and are documented within the kernel tree in the
+file Documentation/i2c/sysfs-interface (Table 1).
+</p><div class="table"><a name="N0x2225580.0x231e478"></a><p class="title"><b>Table 1. Sensor Values Exported through sysfs Files</b></p><table     summary="Table 1. Sensor Values Exported through sysfs Files7252t1.qrk" border="1"><colgroup><col><col></colgroup><tbody><tr><td>temp_max[1-3]</td><td>Temperature max value.
+Fixed point value in form XXXXX and should be divided by
+1,000 to get degrees Celsius.
+Read/Write value.</td></tr><tr><td>temp_min[1-3]</td><td>Temperature min or hysteresis value.
+Fixed point value in form XXXXX and should be divided by
+1,000 to get degrees Celsius. This is preferably a
+hysteresis value, reported as an absolute temperature,
+<span   class="emphasis"><em>not</em></span> a delta from the max value. Read/Write value.</td></tr><tr><td>temp_input[1-3]</td><td>Temperature input value. Read-only value.</td></tr></tbody></table></div><p>
+As the information in Table 1 shows, there is only one value per file.
+All files are readable and some can be written to by
+users with the proper privileges.
+</p><p>
+The tiny_i2c_chip.c driver emulates an I2C
+chip device that can report temperature values. It creates the
+files, temp_max1,
+temp_min1 and temp_input1
+in sysfs. The values it returns when these files are read
+from is incremented every time the file is read to show how to
+access different unique chip values.
+</p><p>
+In order to create a file in sysfs, the
+DEVICE_ATTR macro is used:
+
+<pre     class="programlisting">
+
+static DEVICE_ATTR(temp_max, S_IWUSR | S_IRUGO,
+                   show_temp_max, set_temp_max);
+static DEVICE_ATTR(temp_min, S_IWUSR | S_IRUGO,
+                   show_temp_hyst, set_temp_hyst);
+static DEVICE_ATTR(temp_input, S_IRUGO,
+                   show_temp_input, NULL);
+
+</pre>
+</p><p>
+This macro creates a structure that then is passed to the
+function device_create_file at the end of the
+chip_detect function:
+
+<pre     class="programlisting">
+
+/* Register sysfs files */
+device_create_file(&amp;new_client-&gt;dev,
+                   &amp;dev_attr_temp_max);
+device_create_file(&amp;new_client-&gt;dev,
+                   &amp;dev_attr_temp_min);
+device_create_file(&amp;new_client-&gt;dev,
+                   &amp;dev_attr_temp_input);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x231ebb0"></a></h2></div></div><p>
+That call creates the sysfs files for the device:
+
+<pre     class="screen">
+/sys/devices/pci0000:00/0000:00:06.0/i2c-0/0-0009
+|-- detach_state
+|-- name
+|-- power
+|   `-- state
+|-- temp_input
+|-- temp_max
+`-- temp_min
+</pre>
+</p><p>
+The file name is created by the I2C core, and
+the files detach_state and
+power/state are created by the driver core.
+</p><p>
+But, let's go back to the DEVICE_ATTR macro. That
+macro wants to know the name of the file to be created, the mode
+of the file to be created, the name of the function to be called
+when the file is read from and the name of the function to be
+called when the file is written to. For the file
+temp_max, this declaration was:
+
+<pre     class="programlisting">
+
+static DEVICE_ATTR(temp_max, S_IWUSR | S_IRUGO,
+                   show_temp_max, set_temp_max);
+
+</pre>
+</p><p>
+The function called when the file is read from is
+show_temp_max. This is defined, as are many
+sysfs files, with another macro that creates a function:
+
+<pre     class="programlisting">
+
+#define show(value) \
+static ssize_t \
+show_##value(struct device *dev, char *buf)        \
+{                                                  \
+    struct i2c_client *client = to_i2c_client(dev);\
+    struct chip_data *data =                       \
+        i2c_get_clientdata(client);                \
+                                                   \
+    chip_update_client(client);                    \
+    return sprintf(buf, "%d\n", data-&gt;value);      \
+}
+show(temp_max);
+show(temp_hyst);
+show(temp_input);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x2315758"></a></h2></div></div><p>
+The reason this function is created with a macro is that it is
+quite simple to create other sysfs files that do almost the same
+thing, with different names and that read from different variables,
+without having to duplicate code. This single macro creates
+three different functions to read from three different
+variables from the struct chip_data
+structure.
+</p><p>
+In this function, the struct device * is
+converted into a struct i2c_client *. Then
+the private struct chip_data * is obtained
+from the struct i2c_client *. After that the
+chip data is updated with a call to
+chip_update_client. From there, the variable
+that has been asked for is printed into a buffer and returned to
+the driver core, which then returns it to the user:
+
+<pre     class="screen">
+$ cat /sys/devices/pci0000:00/0000:00:06.0/i2c-0/0-0009/temp_input
+1
+</pre>
+</p><p>
+The chip_update_client increments all values
+by one every time it is called:
+
+<pre     class="programlisting">
+
+static void
+chip_update_client(struct i2c_client *client)
+{
+    struct chip_data *data =
+        i2c_get_clientdata(client);
+
+    down(&amp;data-&gt;update_lock);
+    dev_dbg(&amp;client-&gt;dev, "%s\n", __FUNCTION__);
+    ++data-&gt;temp_input;
+    ++data-&gt;temp_max;
+    ++data-&gt;temp_hyst;
+    data-&gt;last_updated = jiffies;
+    data-&gt;valid = 1;
+    up(&amp;data-&gt;update_lock);
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x23159c0"></a></h2></div></div><p>
+So, all subsequent requests for this value are different:
+
+<pre     class="programlisting">
+$ cat /sys/devices/pci0000:00/0000:00:06.0/i2c-0/0-0009/temp_input
+2
+$ cat /sys/devices/pci0000:00/0000:00:06.0/i2c-0/0-0009/temp_input
+3
+</pre>
+</p><p>
+The set_temp_max function also is created
+from a macro to allow variables to be written to:
+
+<pre     class="programlisting">
+
+#define set(value, reg)	\
+static ssize_t                                     \
+set_##value(struct device *dev,                    \
+            const char *buf, size_t count)         \
+{                                                  \
+    struct i2c_client *client = to_i2c_client(dev);\
+    struct chip_data *data =                       \
+        i2c_get_clientdata(client);                \
+    int temp = simple_strtoul(buf, NULL, 10);      \
+                                                   \
+    down(&amp;data-&gt;update_lock);                      \
+    data-&gt;value = temp;                            \
+    up(&amp;data-&gt;update_lock);                        \
+    return count;                                  \
+}
+set(temp_max, REG_TEMP_OS);
+set(temp_hyst, REG_TEMP_HYST);
+
+</pre>
+</p><p>
+Just like the show functions, this function
+converts the struct device * to a
+struct i2c_client *, and then the private
+struct chip_data * is found. The data
+the user provides then is turned into a number with a call to
+simple_strtoul and is saved into the
+proper variable:
+
+<pre     class="screen">
+$ cat /sys/devices/pci0000:00/0000:00:06.0/i2c-0/0-0009/temp_max
+1
+$ echo 41 &gt; /sys/devices/pci0000:00/0000:00:06.0/i2c-0/0-0009/temp_max
+$ cat /sys/devices/pci0000:00/0000:00:06.0/i2c-0/0-0009/temp_max
+42
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x2315c80"></a>Cleaning Up</h2></div></div><p>
+When the I2C chip device is removed from the system, either
+by the I2C bus driver being unloaded or by the I2C chip driver being
+unloaded, the I2C core calls the
+detatch_client function specified in
+the struct i2c_driver structure. This usually is
+a simple function, as can be seen in the example
+driver's implementation:
+
+<pre     class="programlisting">
+
+static int chip_detach_client(struct i2c_client *client)
+{
+    struct chip_data *data = i2c_get_clientdata(client);
+    int err;
+
+    err = i2c_detach_client(client);
+    if (err) {
+        dev_err(&amp;client-&gt;dev,
+                "Client deregistration failed, "
+                "client not detached.\n");
+        return err;
+    }
+    kfree(client);
+    kfree(data);
+    return 0;
+}
+
+</pre>
+</p><p>
+As the i2c_attach_client function was called
+to register the struct i2c_client structure
+with the I2C core, the i2c_detach_client
+function must be called to unregister it. If that function
+succeeds, the memory the driver has allocated for the I2C
+device then needs to be freed before returning from the function.
+</p><p>
+This example driver does not specifically remove the sysfs files
+from the sysfs core. This step is done automatically
+in the driver core within the
+i2c_detach_client function. But if the
+author would like, the file can be removed manually by a call to
+device_remove_file.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2225580.0x2315e90"></a>Conclusion</h2></div></div><p>
+This two-part series of articles has explained the basics of how to write a kernel I2C
+bus driver, I2C algorithm driver and I2C chip driver. A lot of good information on how to
+write I2C drivers can be found in the Documentation/i2c
+directory in the kernel tree and on the Lm_sensors Web site
+(<a href="http://secure.netroedge.com/~lm78" target="_self">secure.netroedge.com/~lm78</a>).
+</p></div></div>
+<div class="authorblurb"><p>
+Greg Kroah-Hartman currently is the Linux kernel maintainer for a
+variety of different driver subsystems. He works
+for IBM, doing Linux kernel-related things, and can
+be reached at <a href="mailto:greg@kroah.com">greg@kroah.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../118/toc118.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

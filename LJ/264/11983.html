@@ -1,0 +1,608 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Rock-Solid Encrypted Video Streaming Using SSH Tunnels and the BeagleBone Black
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Gain a deep understanding of SSH port forwarding by implementing a&#10;streaming video server on a BeagleBone Black.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1bfb580.0x1cf2ac0"></a>
+Rock-Solid Encrypted Video Streaming Using SSH Tunnels and the BeagleBone Black
+</h1></div><div><div class="author"><h3 class="author">
+Ramon
+ 
+Crichlow
+</h3></div><div class="issuemoyr">Issue #264, April 2016</div></div><div><p>
+Gain a deep understanding of SSH port forwarding by implementing a
+streaming video server on a BeagleBone Black.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x1cf31f8"></a></h2></div></div><p>
+You probably have used SSH as a remote login shell, but you also can use SSH
+in a number of unexpected but very useful applications. One such use is
+tunnelling, or port forwarding, which is an effective method of accessing
+networked hosts located behind routers, firewalls and NAT gateways.
+As an added benefit, SSH encrypts the data passing through the tunnel,
+increasing the security of your communications. This article shows you
+how to set up stable and resilient SSH tunnels that will survive network
+outages, computer reboots and idle connection timeouts.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x1cf33b0"></a>
+Understanding SSH Tunnelling</h2></div></div><p>
+The SSH man page describes SSH as &ldquo;a program for logging into a
+remote machine and for executing commands on a remote machine...X11
+connections and arbitrary TCP ports can also be forwarded over the
+secure channel.&rdquo;
+</p><p>
+Starting at the socket level, let's take a look at how SSH 
+forwards TCP
+ports securely.
+It's easiest to begin with an example. 
+</p><div       class="mediaobject"><a href="11983f1.large.jpg"><img src="11983f1.jpg"></a><div class="caption"><p>
+Figure 1. Data Path for TCP Packets Traveling between Hosts Charlie and Sam
+</p></div></div><p>
+Figure 1 illustrates the data path for TCP packets traveling between
+hosts charlie and sam. In this example, the following command
+was executed on charlie:
+
+<pre     class="programlisting">
+$ ssh -L 4444:127.0.0.1:5555 some_user@sam
+</pre>
+</p><p>
+This command directs the SSH client on charlie to forward port 4444 to
+port 5555 on sam. The <tt  >-L</tt> flag indicates that port 4444 is on the local
+(or client) host, which, in this case, is charlie where the
+<tt  >ssh</tt> command
+was executed.
+</p><p>
+When this command runs, several actions take place:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The SSH program establishes a connection to sam using the default SSH
+port 22.
+</p></li><li><p>
+The SSH process on charlie creates a server socket bound to localhost:4444
+and begins listening.
+</p></li><li><p>
+When an arbitrary user process creates a client socket and connects
+to the server socket at 4444, the SSH process encrypts the data, then
+transmits it over the SSH connection (established in step 1) to sam.
+</p></li><li><p>
+The SSH server on sam decrypts the data.
+</p></li><li><p>
+The SSH server creates a client socket and writes the data to the
+host and port specified in the SSH command, which, in this case, is
+127.0.0.1:5555. 127.0.0.1 is, of course, the loopback or localhost address.
+</p></li><li><p>
+The arbitrary user server process on sam that created the server socket
+bound to 5555 receives the data.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x1cf3da8"></a>
+Understanding SSH Commands</h2></div></div><p>
+The location of the server socket and client socket is key to
+understanding how SSH tunnels work. As Figure 1 shows, SSH tunnels
+always result in the creation of a client and server socket. In a
+forward tunnel, the local host creates the server socket and the remote
+host creates the client socket. In a reverse tunnel, the local host creates the
+client socket and the remote host creates the server socket. The local host is
+the machine where the SSH command was executed.
+</p><p>
+The remote host to which the port is forwarded does not have to be the
+SSH server. Consider the following command executed on charlie:
+
+<pre     class="programlisting">
+$ ssh -L 1234:www.some_website.com:80 some_user@SAM
+</pre>
+</p><p>
+In this instance, charlie creates a server socket bound to port 1234.
+If you run a Web browser on charlie and point it to localhost:1234, SSH
+securely forwards the connection to sam, where the SSH server there creates
+a client socket and connects to the Web server at some_website.com.
+This command can be used to connect to a server from a private network
+on which it is blocked.
+</p><p>
+Reverse SSH tunnels work exactly the same way, except that the remote
+host creates the server socket and the local host creates the client socket.
+The <tt  >-R</tt> option instructs the SSH process to create a
+reverse tunnel:
+
+<pre     class="programlisting">
+$ ssh -R 1234:www.some_website.com:80 some_user@SAM
+</pre>
+</p><p>
+This command executed on charlie creates a server socket on sam at
+port 1234. A browser running on sam and connecting to port 1234 on
+sam would have its traffic encrypted and routed to charlie, and thence
+to some_website.com.
+</p><p>
+One source of confusion when using 127.0.0.1 (or localhost) in port-forwarding commands is determining which host is the localhost from the
+point of view of the tunnel. One way to resolve where localhost refers
+is to remember that a client socket at the end of the tunnel is used
+to connect to the specified host; thus, localhost is the machine that
+creates the client socket. For forward tunnels, 127.0.0.1 refers to
+the remote SSH server, and for reverse tunnels, 127.0.0.1 refers to the
+client machine where the SSH command executes.
+</p><p>
+Now, let's look at using 
+SSH tunnelling to stream video from a BeagleBone
+Black. An Amazon Web server, configured with a public static IP
+will serve as a relay where the video can be viewed.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x1cf4278"></a>
+Amazon Web Server Configuration</h2></div></div><p>
+Follow these steps to create and configure an EC2 instance. Amazon has
+an excellent set of instructions on its Web site documenting each step
+if you encounter problems.
+</p><div class="orderedlist"><ol type="1"><li><p>
+Sign up for an AWS account at <a href="https://aws.amazon.com/free" target="_self">https://aws.amazon.com/free</a>. (The AWS
+Free Tier is free for one year at the time of this writing; however, be aware
+that if you exceed the bandwidth limit, it will trigger charges to your
+credit card.)
+</p></li><li><p>
+Open the EC2 dashboard by clicking on the &ldquo;EC2 virtual servers in
+the cloud&rdquo; tab and create an EC2 instance. Select the Ubuntu Server 14.04
+LTS (HVM) image. Note carefully the location of the downloaded private key
+file (.pem), as you will need it to <tt  >ssh</tt> in to your EC2 instance.
+</p></li><li><p>
+Assign a public static IP to your instance using the Elastic IP tab
+under the EC2 dashboard.
+</p></li><li><p>
+Open port 5555 on your instance by creating a new security group. 
+</p></li><li><p>
+Assign the newly created security group to your instance.
+</p></li></ol></div><p>
+The final step is to configure the keep-alive time for the SSH server.
+Append the following lines to /etc/ssh/sshd_config (note: it is
+sshd_config, not ssh_config):
+
+<pre     class="programlisting">
+# vi /etc/ssh/sshd_config
+ClientAliveCountMax 3
+ClientAliveInterval 60
+</pre>
+</p><p>
+Then reboot:
+
+<pre     class="programlisting">
+$ sudo shutdown -r now
+</pre>
+</p><p>
+<tt  >ClientAliveInterval</tt> is a timeout interval. If a connection has been idle
+for <tt  >ClientAliveInterval</tt> seconds, the sshd server will send a message through
+the encrypted channel to request a response from the client.
+</p><p>
+<tt  >ClientAliveCountMax</tt> sets the maximum number of
+client alive messages, which
+may be sent without any client response. If this threshold is reached, sshd
+will disconnect the client, terminating the session.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x1cf4b68"></a>
+BeagleBone Black Configuration</h2></div></div><p>
+Many intermittent BeagleBone Black problems can be resolved by using a 5V
+2A DC power supply instead of powering the BeagleBone over USB. Likewise,
+it is safer to use a powered USB hub when connecting multiple USB devices.
+</p><p>
+I used a BeagleBone Black Rev C to complete the steps outlined in this
+article. The default Debian image as shipped at the time of this
+writing was Debian GNU/Linux 7.4 (wheezy):
+
+<pre     class="programlisting">
+$ lsb_release -a
+No LSB modules are available.
+Distributor ID: Debian
+Description: Debian GNU/Linux 7.4 (wheezy)
+Release: 7.4
+Codename: wheezy
+</pre>
+</p><p>
+The kernel was upgraded to 3.8.13-bone79 using the built-in script:
+
+<pre     class="programlisting">
+$ cd /opt/scripts/tools/
+$ git pull
+$ sudo ./update_kernel.sh
+$ sudo reboot
+
+$ uname -r
+3.8.13-bone79
+</pre>
+</p><p>
+I used a Logitech HD Webcam C270 for the USB Webcam.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20ed078"></a>
+Installing mjpg-streamer</h2></div></div><p>
+To complete these steps, ensure that your BeagleBone has a live Internet connection. 
+Log in to your BeagleBone and type:
+
+<pre     class="programlisting">
+$ cd
+$ wget https://github.com/shrkey/mjpg-streamer/raw/master/
+&#8618;mjpg-streamer.tar.gz
+$ tar -xvf ./mjpg-streamer.tar.gz
+$ cd mjpg-streamer
+$ make
+</pre>
+</p><p>
+Note that in the following scripts and commands you must replace
+<tt  >my_beagle</tt>
+with its IP address.
+</p><p>
+Plug in your Webcam. You can use <tt  >lsusb</tt> to check that it has enumerated
+properly:
+
+<pre     class="programlisting">
+$ lsusb
+Bus 001 Device 003: ID 046d:0825 Logitech, Inc. Webcam C270
+</pre>
+</p><p>
+If the Webcam doesn't enumerate, leave it connected and reboot the
+BeagleBone.
+</p><p>
+Start mjpg_streamer:
+
+<pre     class="programlisting">
+$ ./mjpg_streamer -i "./input_uvc.so" -o "./output_http.so 
+ &#8618;-w ./www -p 8090"
+</pre>
+</p><p>
+Check whether the BeagleBone is streaming video by opening a browser in a host
+on the same network as the BeagleBone and browse to
+http://my_beagle:8090/?action=stream.
+</p><p>
+Now, create a script to start mjpg_streamer:
+
+<pre     class="programlisting">
+$ cd 
+$ mkdir scripts
+$ cd scripts
+$ vi mjpg_streamer.sh
+#!/bin/bash
+if ! pgrep -f /home/debian/mjpg-streamer/mjpg_streamer 
+then /home/debian/mjpg-streamer/mjpg_streamer -i "/home/debian/
+&#8618;mjpg-streamer/input_uvc.so --resolution QVGA " -o 
+ &#8618;"/home/debian/mjpg-streamer/output_http.so -w 
+ &#8618;/home/debian/mjpg-streamer/www -p 8090"
+fi
+$ chmod +x mjpg_streamer.sh
+</pre>
+</p><p>
+Create a cronjob that checks whether mjpg_streamer is running once per minute:
+ 
+<pre     class="programlisting">
+$ crontab -e
+* * * * * /home/debian/scripts/mjpg_streamer.sh
+</pre>
+</p><p>
+At this point, the video server is running on port 8090 with QVGA
+resolution and will restart automatically when the BeagleBone is rebooted.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20ed6a8"></a>
+SSH Setup</h2></div></div><p>
+To <tt  >ssh</tt> in to your EC2 instance, you will need to copy the private key to the
+BeagleBone. The private key is the .pem file that you downloaded when
+configuring the EC2 instance. You can copy the private key to the
+BeagleBone using <tt  >scp</tt> (which coincidentally also uses the SSH protocol) to
+transfer files between hosts. So from the computer where you downloaded
+the private key, type:
+
+<pre     class="programlisting">
+$ scp my_private_key.pem debian@my_beagle: ~/
+</pre>
+</p><p>
+Now log in to the BeagleBone and type:
+
+<pre     class="programlisting">
+$ chmod 0400 my_private_key.pem
+</pre>
+</p><p>
+Next, look up the public IP of my_amazon. The public IP for my_amazon can
+be found in the Elastic IP tabs in the AWS console.
+</p><p>
+Test that you can <tt  >ssh</tt> in to your EC2 instance by typing:
+
+<pre     class="programlisting">
+$ ssh ubuntu@my_amazon -i my_private_key.pem
+</pre>
+</p><p>
+To make things easier, let's set up an alias to store the EC2 information.
+Append these lines to the end of /etc/ssh/ssh_config:
+
+<pre     class="programlisting">
+$ sudo vi  /etc/ssh/ssh_config
+
+Host ec2
+        HostName my_amazon
+        IdentityFile  /home/debian/my_private_key.pem
+        User ubuntu
+        ServerAliveInterval 60          
+        ServerAliveCountMax 2 
+</pre>
+</p><p>
+Replace my_amazon with its public IP address. 
+</p><p>
+The <tt  >ServerAliveInterval</tt> and
+<tt  >ServerAliveCountMax</tt> are the client-side analogs
+to <tt  >ClientAliveInterval</tt> and
+<tt  >ClientAliveCountMax</tt>. They function in exactly
+the same way.
+</p><p>
+Now typing the following should log you in to your EC2 instance:
+
+<pre     class="programlisting">
+$ ssh ec2 
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20ede38"></a>
+autossh Configuration</h2></div></div><p>
+Many how-tos explain how to use SSH commands for port forwarding but fail
+to describe how to keep the SSH tunnel alive. One common challenge in
+keeping network connections up is managing the router or firewall inactive
+connection timeout. Routers often will close a connection if it is idle
+for a certain period, sometimes closing a connection if it is idle for as
+few as five minutes. Server reboots and network outages also obviously
+can kill the tunnel.
+</p><p>
+Fortunately, there is a ready-made utility that monitors SSH connections and
+restarts them when they die: autossh. The
+<tt  >ServerAlive</tt> configuration flags
+you added to send a packet periodically through the tunnel will defeat the
+inactive connection timeout.
+</p><p>
+Install autossh on my_beagle by typing:
+
+<pre     class="programlisting">
+$ sudo apt-get install autossh
+</pre>
+</p><p>
+Now, let's
+write a startup script that launches autossh at boot time using the
+<tt  >init.d</tt> facilities. Create a script named tunnel in
+/etc/init.d:
+
+<pre     class="programlisting">
+$ cd /etc/init.d
+$ sudo vi /etc/init.d/tunnel
+
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          tunnel
+# Required-Start:    $local_fs $remote_fs $network $syslog $named
+# Required-Stop:     $local_fs $remote_fs $network $syslog $named
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start/stop  ssh tunnel
+### END INIT INFO
+
+set -e #abort at first error
+LOGFILE=/home/debian/my_autossh.log
+export AUTOSSH_GATETIME=0  #Prevents autossh from exiting if first 
+                           #attempt  fails
+export AUTOSSH_PIDFILE=/home/debian/my_autossh.pid 
+
+case $1 in
+ start)
+  su -c "date &gt;&gt;$LOGFILE; autossh -M 0 -N -R 5555:localhost:8090 
+ &#8618;ec2 &amp;&gt;&gt;$LOGFILE" -s /bin/bash debian
+ ;;
+ stop)
+  if [ -e $AUTOSSH_PIDFILE ] 
+   then
+   kill -9 `cat $AUTOSSH_PIDFILE`
+  fi
+ ;;
+ *)
+  echo "Usage: /etc/init.d/tunnel {start|stop|}"
+  exit 1
+ ;;
+esac
+
+$ sudo chmod +x tunnel
+$ sudo update-rc.d tunnel defaults
+$ sudo shutdown -r now
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20ee200"></a>
+PC Setup</h2></div></div><p>
+Since this is a video streaming application, it is likely that you want to
+view the video stream on different computers. This can be achieved by
+allowing the sshd server on your AWS server to forward connections from any
+host (and by setting a password on mjpg_streamer for security). I'll
+explain 
+how to do that shortly; however, this exposes mjpg_streamer to brute-force password attacks. The intruder would only be able to view the video
+stream, but that may not be desirable.
+</p><p>
+One alternative is to create a forward tunnel and stream the encrypted
+video over this tunnel. This requires installing the private key on
+whatever machine you are viewing from, as well as setting up the tunnel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20ee360"></a>
+Secure Video Streaming</h2></div></div><p>
+To reduce typing, create an alias for your EC2 as you did on
+my_beagle:
+
+<pre     class="programlisting">
+$ sudo apt-get install autossh
+$ vi ~/.ssh/config
+Host ec2
+        HostName my_amazon
+        IdentityFile  path_to/my_private_key.pem
+        User ubuntu
+        ServerAliveInterval 60          
+        ServerAliveCountMax 2
+</pre>
+</p><p>
+The command to create a forward tunnel to my_amazon is the following:
+
+<pre     class="programlisting">
+$ ssh -L 1234:localhost:5555 ec2
+</pre>
+</p><p>
+The choice of the local server port (1234) is arbitrary; it can be any
+port. Port numbers under 1024 will require root access, however.
+</p><p>
+Once this command is executed, start a browser and open
+http://127.0.0.1:1234/?action=stream.
+</p><p>
+You should see the live video stream from the Webcam on my_beagle.
+</p><p>
+You can make this tunnel permanent by adding a startup script following the
+same model as before:
+
+<pre     class="programlisting">
+$ cd /etc/init.d
+$ sudo vi /etc/init.d/forwardtunnel
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          forwardtunnel
+# Required-Start:    $local_fs $remote_fs $network $syslog $named
+# Required-Stop:     $local_fs $remote_fs $network $syslog $named
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start/stop  ssh forwardtunnel
+### END INIT INFO
+
+set -e #abort at first error
+LOGFILE=/home/your_username/my_autossh.log  # CHANGE YOUR_USERNAME!!
+export AUTOSSH_GATETIME=0 #Prevents autossh from exiting if 
+ &#8618;first attempt fails
+export AUTOSSH_PIDFILE=/home/your_username/my_autossh.pid # CHANGE 
+ &#8618;YOUR_USERNAME!!
+
+case $1 in
+ start)
+  su -c "date &gt;&gt;$LOGFILE; autossh -M 0 -N -L 1234:localhost:5555 
+ &#8618;ec2 &amp;&gt;&gt;$LOGFILE" -s /bin/bash your_username# CHANGE YOUR_USERNAME!!
+ ;;
+ stop)
+  if [ -e $AUTOSSH_PIDFILE ] 
+   then
+   kill -9 `cat $AUTOSSH_PIDFILE`
+  fi
+ ;;
+ *)
+  echo "Usage: /etc/init.d/forwardtunnel {start|stop|}"
+  exit 1
+ ;;
+esac
+
+$ sudo chmod +x forwardtunnel
+$ sudo update-rc.d forwardtunnel defaults
+$ sudo shutdown -r now
+</pre>
+</p><p>
+Note that you will have to change <tt  >your_username</tt> in the above to your user name.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20ee7d8"></a>
+Unsecured Video Streaming</h2></div></div><p>
+Unsecured video streaming permits anyone with the correct user name and
+password to connect to the mjpg_streamer server and view the video stream.
+Although mjpg_streamer has password protection, it is vulnerable to
+brute-force attacks. However, the convenience of viewing the video stream from
+any platform without the private key and without setting up a forward
+tunnel may be worth it.
+</p><p>
+First, let's add some security by requiring anyone viewing the Webcam to
+authenticate with the correct user name and password by using the
+authentication option to mjpg_streamer.
+</p><p>
+On the BeagleBone:
+
+<pre     class="programlisting">
+$ vi /home/debian/scripts/mjpg_streamer.sh
+#!/bin/bash
+if ! pgrep -f /home/debian/mjpg-streamer/mjpg_streamer 
+then /home/debian/mjpg-streamer/mjpg_streamer -i "/home/debian/
+&#8618;mjpg-streamer/input_uvc.so" -o "/home/debian/mjpg-streamer/
+&#8618;output_http.so -w /home/debian/mjpg-streamer/www -p 8090 
+ &#8618;--resolution QVGA -c userNamE:Passw0rd"
+fi
+$ shutdown -r now
+</pre>
+</p><p>
+Change <tt  >userNamE:Passw0rd</tt> to one of your own invention. The user name is
+unrelated to any account on your BeagleBone.
+</p><p>
+The second change is to set the <tt  >GatewayPorts</tt> flag to yes on the Amazon Web
+server:
+
+<pre     class="programlisting">
+# vi /etc/ssh/sshd_config
+ClientAliveCountMax 3
+ClientAliveInterval 60
+GatewayPorts yes
+# service ssh restart
+</pre>
+</p><p>
+Once the SSH tunnels are re-established, browsing to
+my_amazon:5555/?action=stream will open the video stream after entering the
+correct user name and password. The <tt  >GatewayPorts</tt>
+flag controls whether the sshd
+server forwards connections from external hosts (<tt  >GatewayPorts
+yes</tt>) or only
+from localhost (<tt  >GatewayPorts no</tt>).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20eed00"></a>
+Conclusion</h2></div></div><p>
+In this article, I have described how to set up secure and reliable SSH tunnels,
+explained the
+underlying mechanism behind SSH tunnelling and implemented a secure video
+streaming server accessible from external networks without requiring any
+router or firewall changes. Another configuration you might explore is a
+tunnel to an sshd server on your BeagleBone. With this tunnel, you could
+log in remotely from any external network. Happy tunnelling!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1bfb580.0x20eee08"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Ramon v3.0 is an embedded software AI with a keen interest in real-time
+video streaming. Having outgrown several Saskatchewan-based hard drives,
+he now resides diffusely in the Google cloud.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../264/toc264.html">Issue Table of Contents</a>
+    <a class="link3" href="../264/11983.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

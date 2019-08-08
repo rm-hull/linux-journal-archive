@@ -1,0 +1,191 @@
+Listing 4. The Javascript code for capturing an image is in the file
+screengrab.js.
+
+var picnikScreenGrab = {
+  onLoad: function()
+  {
+    // Check if this firefox has 
+    // canvas AND toDataURL
+    var has_canvas = true;
+    try
+    {
+      var canvas = document.createElementNS('http://www.w3.org/1999/xhtml','canvas');
+      if( canvas == null )
+        throw Exception;
+      if( !("toDataURL" in canvas) )
+        throw Exception;
+    }
+    catch(e)
+    {
+      has_canvas = false;
+    }
+
+    if( !has_canvas )
+    {
+      var e = document.getElementById("picnik-tool-menu");
+      if(e)
+        e.hidden=true;
+
+      e = document.getElementById("picnik-button");
+      if(e)
+        e.hidden=true;
+
+      e = document.getElementById("picnik-ctx-grab");
+      if(e)
+        e.hidden=true;
+    }
+
+  },
+
+  // Grab the full webpage
+  grabFull: function()
+  {
+    var h = 0;
+    var w = 0;
+    var d =  window.content.document;
+    if( window.content.document.compatMode == "CSS1Compat" )
+    {
+      h = d.documentElement.scrollHeight;
+      w = d.documentElement.scrollWidth;
+    }
+    else
+    {
+      h = d.body.scrollHeight;
+      w = d.body.scrollWidth;
+    }
+    this.grab(window.content,0,0,w,h);
+  },
+
+  // Grab the visible part of the webpage
+  grabVisible: function()
+  {
+    var x = window.content.scrollX;
+    var y = window.content.scrollY; 
+    var h = 0;
+    var w = 0;
+    var d =  window.content.document;
+    if( window.content.document.compatMode == "CSS1Compat" )
+    {
+      h = d.documentElement.clientHeight;
+      w = d.documentElement.clientWidth;
+    }
+    else
+    {
+      h = d.body.clientHeight;
+      w = d.body.clientWidth;
+    }
+    
+    this.grab(window.content,x,y,w,h);
+  },
+
+  grab: function(win, x, y, w, h)
+  {
+    const MAX_DIM = 2800;
+    var canvasW = w;
+    var canvasH = h;
+    if( w>MAX_DIM || h>MAX_DIM)
+    {
+      // Scale the canvas size so that 
+      // we fit within 2800x2800 Keep the 
+      // aspect ratio so that the image 
+      // isn't distorted
+      if(w > h) 
+      {
+        canvasW = MAX_DIM;
+        canvasH = canvasW*h/w;
+      }
+      else 
+      {
+        canvasH = MAX_DIM;
+        canvasW = canvasH*w/h;
+      }
+    }
+
+    // Make the canvas
+    var canvas = document.createElementNS('http://www.w3.org/1999/xhtml','canvas');
+    canvas.style.width = canvasW+"px";
+    canvas.style.height = canvasH+"px";
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+    var ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvasW, canvasH);
+    ctx.save();
+    ctx.scale(canvasW/w, canvasH/h);
+    ctx.drawWindow(win, x, y, w, h, "rgb(255,255,255)");
+    ctx.restore();
+    
+    // Save it to picnik
+    data = canvas.toDataURL("image/png", "");
+    this.saveDataURL(data, "image/png");
+  },
+
+  saveDataURL: function(url, mimeType)
+  {
+    const MULTI = "@mozilla.org/io/multiplex-input-stream;1";
+    const STRINGIS = "@mozilla.org/io/string-input-stream;1";
+    const IOSVC = "@mozilla.org/network/io-service;1"
+    const nsIMultiplexInputStream = Components.interfaces.nsIMultiplexInputStream;
+    const nsIStringInputStream = Components.interfaces.nsIStringInputStream;
+    const nsIIOService = Components.interfaces.nsIIOService
+    const BOUNDARY = "345823569845694578678";
+
+    // Build the mime header
+    var header = new String();
+    header += "\r\n";
+    header += "--" + BOUNDARY + "\r\n";
+    header += "Content-disposition: form-data;name=\"_returntype\"\r\n\r\ntext\r\n";
+    header += "--" + BOUNDARY + "\r\n";
+    header += "Content-disposition: form-data;name=\"_apikey\"\r\n\r\n"+picnikCommon.APIKey+"\r\n";
+    header += "--" + BOUNDARY + "\r\n";
+    header += "Content-disposition: form-data;name=\"_file\";filename=\"snapshot.png\"\r\n";
+    header += "Content-Type: "+mimeType+"\r\n";
+    header += "\r\n";
+    var header_stream = Components.classes[STRINGIS].createInstance(nsIStringInputStream);
+    header_stream.setData(header, header.length);
+
+    // create a data url from the canvas and then create a stream
+    var io = Components.classes[IOSVC].getService(nsIIOService);
+    var channel = io.newChannelFromURI( io.newURI(url, "UTF8", null) );
+    var data_stream = channel.open();
+
+    // Ending MIME boundary
+    var end_stream = Components.classes[STRINGIS].createInstance(nsIStringInputStream);
+    var bs = new String("\r\n--" + BOUNDARY + "--\r\n");
+    end_stream.setData(bs, bs.length);
+
+    // Stick 'em all together
+    var mux_stream = Components.classes[MULTI].createInstance(nsIMultiplexInputStream);
+    mux_stream.appendStream(header_stream);
+    mux_stream.appendStream(data_stream);
+    mux_stream.appendStream(end_stream);
+
+    // Finally, POST it to picnik!
+    var req = new XMLHttpRequest();
+    req.open('POST', picnikCommon.baseURL+"service", true);
+    req.onreadystatechange = function(){ picnikScreenGrab.requestState(req); };
+    req.setRequestHeader("Content-Type", "multipart/form-data; boundary=" + BOUNDARY);
+    req.setRequestHeader("Content-Length", mux_stream.available() );
+    req.send(mux_stream);
+  },
+
+  // Called when XMLHttpRequest changes state as it does it's work
+  requestState: function(req)
+  {
+    if( req.readyState == 4 )
+    {
+      // The request is now finished, so check the status code.
+      if( req.status == 200 )
+      {
+        // The server said OK, and gave us a URL to load
+        result = req.responseText;
+        gBrowser.selectedTab = gBrowser.addTab(result);
+      }
+      else
+      {
+        alert('There was a problem with the request\nstatus=' + req.status);
+      }
+    }
+  }
+};
+
+window.addEventListener("load", picnikScreenGrab.onLoad, false);

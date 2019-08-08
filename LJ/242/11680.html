@@ -1,0 +1,625 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Berkeley Packet Filters with Scapy (and Friends)
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Get to know the language and tools that can take your network filtering&#10;rules to a&#10;whole new level.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1272580.0x1369ac0"></a>
+Berkeley Packet Filters with Scapy (and Friends)
+</h1></div><div><div class="author"><h3 class="author">
+Valentine
+ 
+Sinitsyn
+</h3></div><div class="issuemoyr">Issue #242, June 2014</div></div><div><p>
+Get to know the language and tools that can take your network filtering
+rules to a
+whole new level.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x136a1f8"></a></h2></div></div><p>
+Network filtering is probably as old as networks themselves. If you
+exchange data with the outside world, it's natural to control what's going
+in and out. If, however, you capture packets for a good reason (like
+traffic analysis or intrusion detection), filtering those you are not
+interested in as early as possible is crucial for performance. The
+first type of filtering is typically done with a firewall. Berkeley
+Packet Filter (BPF) is what comes to the rescue in the second case.
+</p><p>
+Originally, BPF referred to both the capturing technology and its
+high-performance filtering capabilities. For some Unices (for instance,
+FreeBSD), this still holds true, and there is a /dev/bpf device from which you
+can read captured packets. For others, BPF means what it says (the
+filter), and in this reincarnation, you can find it in various operating
+systems, including Linux, and with WinPcap and even Microsoft Windows.
+</p><p>
+BPF filters are programs written in a low-level language similar to
+assembler (I take a look at that in the last section of this article). These programs
+are executed by a BPF virtual machine. Most often, this virtual machine
+resides in the kernel and uses Just-In-Time compilation (JIT) to boost
+filtering performance. However, user-mode BPF interpreters (useful for
+debugging purposes or as fallbacks) are available as well&mdash;for instance,
+the one provided with the ubiquitous libpcap library (<a href="http://www.tcpdump.org" target="_self">www.tcpdump.org</a>), the
+main workhorse behind tcpdump, Wireshark and other popular network tools.
+</p><p>
+All of this may sound like you need to delve into registers and
+opcodes just to say you are interested in the packets coming to host
+192.168.1.1. Luckily, that's not the case. Of course, if you want (or need)
+to, you can, but libpcap provides its own high-level filter language
+that compiles directly to BPF. Largely, this syntax is synonymous with BPF
+(they are tightly related albeit different things), so I use these
+terms interchangeably here.
+</p><p>
+In this article, you'll learn the basics of BPF syntax and also see
+how it works under the hood.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x136a5c0"></a>
+The Testbed</h2></div></div><p>
+To get a better idea of what BPF really is, let's go through a set of
+examples, generating series of packets each time and filtering them as
+as needed. Sometimes these packets will come from a real network
+application, but other times you will craft them manually. It's not the best
+idea to allow these forged packets out from the local host, especially
+if you are on the office network. So the first step will be to create
+a virtual Ethernet interface.
+</p><p>
+Linux already has a concept of &ldquo;dummy&rdquo; network interfaces, and the kernel
+module named dummy implements them. Load it, and assign the dummy0
+interface a unique IP address:
+
+<pre     class="programlisting">
+# modprobe dummy
+# ip link set up dev dummy0
+# ip addr add 192.168.2.1/24 dev dummy0
+</pre>
+</p><p>
+Next, you'll need something to craft the packets and capture them subject
+to BPF filters. An obvious choice here is Scapy
+(<a href="http://www.secdev.org/projects/scapy" target="_self">www.secdev.org/projects/scapy</a>), a Python
+toolkit for packet manipulation. Install it with your package manager
+or from the sources. Raw packet generation and live traffic capture
+are considered privileged operations in Linux, so you'll need to run
+Scapy as root (for example, with sudo).
+</p><p>
+Scapy provides an interactive shell (which is naturally Python-based). You
+create different protocol layers as instances of the classes like TCP,
+IP or Ether. A complete list is available with the <tt  >ls()</tt> command, and you
+can add your own protocol if you really want to. The attributes of these
+classes correspond to protocol fields (addresses, ports, flags and so
+on). You can use raw numbers (say, 20) or symbolic names
+(<tt  >ftp_data</tt>)
+for attribute values. To assemble the packet, use the / Python operator:
+
+
+<pre     class="programlisting">
+&gt;&gt;&gt; Ether(src='08:60:6e:da:31:ae', dst='42:7f:79:88:de:3d') / 
+ &#8618;IP(src='192.168.1.5', dst='192.168.2.1')
+&lt;Ether  dst=42:7f:79:88:de:3d src=08:60:6e:da:31:ae type=IPv4 
+ &#8618;|&lt;IP  src=192.168.1.5 dst=192.168.2.1 |&gt;&gt;
+</pre>
+</p><p>
+Protocol fields usually have sensible default values (you can check
+them with <tt  >ls(IP)</tt> or similar), so you need to specify
+only those you want
+to override.
+</p><p>
+To disassemble the packet and get a specific protocol layer, use the []
+operator:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; _[IP]
+&lt;IP  src=192.168.1.5 dst=192.168.2.1 |&gt;
+</pre>
+</p><p>
+A special _ variable contains the last expression's value. Scapy makes
+it easy to generate a series of packets that follow a specific pattern:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; packets = Ether(src='08:60:6e:da:31:ae', 
+ &#8618;dst='42:7f:79:88:de:3d') / IP(src='192.168.1.5', 
+ &#8618;dst='192.168.2.1-3') / UDP(dport=[135,(137,139)])
+&gt;&gt;&gt; len(list(packets))
+12
+</pre>
+</p><p>
+Here, Scapy crafts 12 packets targeting UDP ports 135, 137, 138
+and 139 (common Windows stuff) on three hosts. You can define address
+ranges with an asterisk (<tt  >dst='192.168.*.2'</tt>), or whole subnets with CIDR
+notation (<tt  >dst='192.168.2.0/24'</tt>).
+</p><p>
+Several functions send packets over the wire, but here,
+let's deal with <tt  >send()</tt> and
+<tt  >sendp()</tt>. The main difference is that
+<tt  >sendp()</tt>
+works on Layer 2, so the packet you pass it must have an Ethernet
+header. <tt  >send()</tt> is for Layer 3, and it looks up the host's routing table
+to decide what to do with the packet you gave it:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; sendp(packets, iface='dummy0')
+............
+Sent 12 packets.
+</pre>
+</p><p>
+This way, you push crafted packets into the dummy0 interface.
+</p><p>
+To capture packets, use the <tt  >sniff()</tt> function. It has many different options,
+but on these pages, you'll mainly call it like this:
+
+
+<pre     class="programlisting">
+&gt;&gt;&gt; sniff(iface='dummy0', filter='udp')
+^C&lt;Sniffed: TCP:0 UDP:12 ICMP:0 Other:0&gt;
+&gt;&gt;&gt; _.summary()
+Ether / IP / UDP 192.168.1.5:domain &gt; 192.168.2.1:epmap
+Ether / IP / UDP 192.168.1.5:domain &gt; 192.168.2.1:netbios_ns
+... 10 lines skipped ...
+</pre>
+</p><p>
+If you omit the <tt  >iface=</tt>, Scapy will listen on all network interfaces. You
+also can add the <tt  >count=</tt> argument to capture only as many packets as specified;
+otherwise, you should stop the capture manually with Ctrl-C. Without the
+<tt  >filter=</tt>, <tt  >sniff()</tt> captures all packets. Internally, Scapy uses libpcap
+to compile the filter (either directly or via the <tt  >tcpdump
+-ddd</tt> command),
+so the syntax is just what you want.
+</p><p>
+This was a quick tour of Scapy; however, this tool can do much more than
+you've seen so far. Consult the official documentation
+(<a href="http://www.secdev.org/projects/scapy/doc" target="_self">www.secdev.org/projects/scapy/doc</a>) for more
+information. 
+Or, have a look at <span   class="emphasis"><em>Security Power Tools</em></span> published by O'Reilly
+(2007), which has a complete chapter (number 6) on Scapy written by its
+author, Philippe Biondi.
+</p><div       class="mediaobject"><a href="11680f1.large.jpg"><img src="11680f1.jpg"></a><div class="caption"><p>
+Figure 1. Scapy is a real Swiss army knife. It even can dump packets to PS
+or PDF.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x136b5e8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Some Scapy Tips</b></p><p>
+You easily can convert between symbolic names and their numeric values
+using the s2i and i2s attributes defined on the protocol fields. Both are
+dictionaries, which you can use to look up the mapping:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; TCP.sport.s2i['www'], TCP.sport.i2s[21]
+(80, 'ftp')
+</pre>
+</p><p>
+Note that I've used a class attribute here (not the instance one):
+
+<pre     class="programlisting">
+&gt;&gt;&gt; TCP().sport
+20
+</pre>
+</p><p>
+This is the default value for the TCP source port in Scapy:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; ls(TCP)
+sport      : ShortEnumField       = (20)
+...
+</pre>
+</p><p>
+Many network protocol fields also accept bit flags. Scapy allows single letter
+mnemonics for them:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; TCP().flags= 'S' # TCP SYN packet
+</pre>
+</p><p>
+Available mnemonics are in the field's &ldquo;names&rdquo; attribute:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; TCP.flags.names
+'FSRPAUEC'
+</pre>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x136bb68"></a>
+Let's Filter</h2></div></div><p>
+Now with the tools to experiment with in place, it's time to learn some
+actual high-level BPF. The most authoritative (and complete) reference
+documentation is the tcpdump(1) man page. Let's do a quick summary:
+filter expressions contain one or more primitives combined with the
+&ldquo;and&rdquo;,
+&ldquo;or&rdquo; and &ldquo;not&rdquo; keywords (equivalently written as
+&amp;&amp;, || and !). All basic
+arithmetic and bit operations are supported as well, and the explicit
+precedence can be set using parentheses. If you omit parentheses,
+&amp;&amp;
+and || are of the same precedence, and ! is applied first. Arithmetic
+and bit operations follow common rules.
+</p><p>
+Each primitive consists of the ID (either name or number) preceded
+with an optional protocol (<tt  >ether</tt>,
+<tt  >ip</tt>,
+<tt  >tcp</tt> or <tt  >udp</tt>, to name a few),
+direction (<tt  >src</tt>, <tt  >dst</tt>,
+<tt  >src or
+dst</tt>, and <tt  >src and dst</tt>; it is always a
+single token, so <tt  >or</tt> and <tt  >and</tt> aren't operators)
+and type (<tt  >host</tt>, <tt  >net</tt>,
+<tt  >port</tt> or <tt  >portrange</tt>). If some of these are
+missing, all protocols match;
+<tt  >host</tt> is assumed for the type, and <tt  >src or
+dst</tt> for the direction (this
+means either direction is okay). 
+</p><p>
+The following are valid primitives:
+<tt  >udp</tt> (no ID here), <tt  >port 80</tt>
+(TCP or UDP port 80), <tt  >ip host pluto</tt>
+(all IP packets for the host &ldquo;pluto&rdquo;; the name must be resolvable),
+<tt  >dst tcp portrange 0-1023</tt> (packets targeting all privileged TCP ports).
+</p><p>
+That's enough theory&mdash;now let's play. Arguably the most common case
+is to filter packets by their source or destination IP addresses. Let's
+use one Scapy instance to generate empty IP datagrams for random (and even
+nonexistent) hosts:
+
+
+<pre     class="programlisting">
+&gt;&gt;&gt; while True: sendp(Ether(src=RandMAC(), dst=RandMAC()) / 
+ &#8618;IP(src=RandIP(), dst=RandIP()) / ICMP(), iface='dummy0')
+</pre>
+</p><p>
+There are many <tt  >Rand*()</tt> functions in Scapy; two of
+them are used here.
+</p><p>
+A second Scapy instance will capture the datagrams that happen to be for
+host 192.168.1.1 or 192.168.1.2 (note that for the second operand
+in the expression, the <tt  >host</tt> keyword is implicit):
+
+<pre     class="programlisting">
+&gt;&gt;&gt; sniff(iface='dummy0', filter='host 192.168.1.1 or 
+ &#8618;192.168.1.2', count=1)
+</pre>
+</p><p>
+Unless you are very lucky, <tt  >sniff()</tt> will hang until you press
+Ctrl-C. That's because the probability for a given two addresses to occur
+in a randomly generated packet series is around 0.0000001%. Let's increase
+your chances and look for a whole A-class subnet:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; sniff(iface='dummy0', filter='net 1.0.0.0/8', count=1)
+</pre>
+</p><p>
+Equivalently, you can rewrite the filter as <tt  >net 1.0.0.0 mask
+255.0.0.0</tt>. This time, <tt  >sniff()</tt> should
+catch a packet much sooner: 
+
+<pre     class="programlisting">
+&gt;&gt;&gt; _.summary()
+Ether / 185.0.19.206 &gt; 1.205.135.116 hopopt
+</pre>
+</p><p>
+It's equally easy to filter traffic on ports. For instance, this is a
+very simple filter for MySQL client-server sessions:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; sniff(iface='lo', filter='tcp port 3306')
+</pre>
+</p><p>
+Try to connect to the MySQL server with the <tt  >mysql -h 127.0.0.1
+-P 3306</tt> command,
+and you'll see some packets captured. It doesn't matter if the server
+is actually running&mdash;if it doesn't, you'll catch a pair of TCP SYN and
+RST-ACK indicating the port is unavailable:
+
+<pre     class="programlisting">
+&gt;&gt;&gt; _.summary()
+Ether / IP / TCP 127.0.0.1:57485 &gt; 127.0.0.1:mysql S
+Ether / IP / TCP 127.0.0.1:mysql &gt; 127.0.0.1:57485 RA
+</pre>
+</p><p>
+Detecting services by the port numbers they use isn't really accurate. Let's
+do a deeper packet analysis. Imagine you need to collect data pertaining
+to NTP activity on the local network. NTP messages are sent to (or from,
+or both) UDP port 123. Moreover, they are 48 bytes in size and have
+the status of a local clock, which can't be greater than 4, encoded in
+bits 2&ndash;7 of the first octet (see Appendix B in RFC 958 at
+<a href="http://tools.ietf.org/html/rfc958" target="_self">tools.ietf.org/html/rfc958</a>). Given
+all of that, the filter you construct will consist of three primitives:
+<tt  >udp port 123</tt> (for the first two conditions), and the other two checking
+the UDP payload length and the clock status value.
+</p><p>
+To implement them, let's peek inside a protocol payload. BPF uses the
+<tt  >[offset:size]</tt> operator for this purpose. Offset is measured from 
+byte 0, so for instance, <tt  >tcp[0]</tt> gives the first byte of the TCP header
+(not a payload). The UDP datagram Length field is at offset 4 and is 16 bits
+wide. Thus, to check the packet length, you can use the following primitive:
+<tt  >udp[4:2] == 48+8</tt> (UDP header length 8 is bytes, and they are included
+in the Length field as well). The clock status check is a bit more convoluted,
+but the combined filter looks like this:
+
+
+<pre     class="programlisting">
+&gt;&gt;&gt; ntp = sniff(filter='proto udp and port 123 
+ &#8618;and udp[4:2] == 48+8 and ((udp[8] &amp; 0x38) &gt;&gt; 3) &lt;= 4')
+</pre>
+</p><p>
+Note the operators and hex numbers used&mdash;BPF is much like C in
+this sense. Leave this alone for some minutes, and on a modern Linux
+distribution you'll sooner or later spot the NTP requests the system sends
+(and the replies it receives):
+
+
+<pre     class="programlisting">
+&gt;&gt; ntp.summary()
+Ether / IP / UDP / NTP v4, client
+Ether / IP / UDP / NTP v4, server
+...
+&gt;&gt; ntp[0][NTP]
+&lt;NTP  leap=nowarning version=4L mode=client stratum=2L 
+ &#8618;poll=10L precision=233L delay=0.0422210693359 
+ &#8618;dispersion=0.0782623291016 id=194.190.168.1 ref=Tue, 
+ &#8618;15 Apr 2014 10:00:26 +0000 orig=Tue, 15 Apr 2014 
+ &#8618;10:15:20 +0000 recv=Tue, 15 Apr 2014 10:15:20 
+ &#8618;+0000 sent=Tue, 15 Apr 2014 10:33:04 +0000 |&gt;
+</pre>
+</p><p>
+In fact, it works so well, you even can drop the <tt  >udp proto
+123</tt> part without
+introducing too much error (my quick tests show about a 1% rate).
+</p><p>
+Another way to get the packet length is to use the
+<tt  >len</tt> operator. However,
+it accounts for all protocols used down to Layer 2. So, assuming UDP
+datagrams are encapsulated in IPv4 with no options and untagged Ethernet
+frames, you can rewrite <tt  >udp[4:2] == 48+8</tt> as
+<tt  >len == 14+20+8+48</tt>. By
+the way, you also can select packets longer (or shorter) than a specific
+threshold with the <tt  >greater</tt> and
+<tt  >less</tt> keywords.
+</p><p>
+Now you've seen that Scapy can decode (and encode) some application-level
+protocols like NTP (or DNS). But it can dig even deeper, so for the next
+example, let's use it to forge VLAN-tagged traffic:
+
+
+<pre     class="programlisting">
+&gt;&gt;&gt; sendp(Ether(src=RandMAC(), dst=RandMAC()) / 
+ &#8618;Dot1Q(vlan=[(1,5)]) / 'Nothing to see here', iface='dummy0')
+</pre>
+</p><p>
+This generates five 802.1Q Ethernet frames with arbitrary MAC addresses
+and VLAN tags in range 1&ndash;5 (note the syntax). Let's not worry about
+the payload now, so instead of IPv4 (or any other network-level)
+packet, let's just put raw bytes that form a <tt  >'Nothing to see
+here'</tt> string
+inside the frame.
+</p><p>
+This is how you can filter traffic with specific VLAN tags in BPF:
+
+
+<pre     class="programlisting">
+&gt;&gt;&gt; sniff(iface='dummy0', filter='vlan 1', count=1)
+&lt;Sniffed: TCP:0 UDP:0 ICMP:0 Other:1&gt;
+&gt;&gt;&gt; _
+&lt;Ether  dst=29:a0:ea:e9:df:ce src=c3:33:a3:9c:63:9c 
+ &#8618;type=n_802_1Q |&lt;Dot1Q  prio=0L id=0L vlan=1L 
+ &#8618;type=0x0 |&lt;Padding  load='Nothing to see here' |&gt;&gt;&gt;
+</pre>
+</p><p>
+If you just want to filter out untagged traffic, use
+<tt  >filter='vlan'</tt>.
+</p><div       class="mediaobject"><a href="11680f2.large.jpg"><img src="11680f2.jpg"></a><div class="caption"><p>
+Figure 2. Capture, craft, dissect and do other funky things with network
+packets in Scapy.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x1765af0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+When the Engine Matters</b></p><p>
+In Linux, Scapy defaults to PF_PACKET sockets internally. And, to my experience,
+sometimes it grabs more than the filter permits. If this happens to you too, force
+Scapy to use libpcap as an engine. First, install the pypcap library (it is usually
+named python-pypcap or something similar in your package manager). Then, edit
+scapy/config.py (depending on how you installed Scapy, it may be under
+/usr/lib/python2.7 or somewhere else), and set Conf.use_pcap to True.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x1765d58"></a>
+Under the Hood</h2></div></div><p>
+As you already know, BPF filters are actually expressed in a low-level
+assembler-like language. It targets a register-based virtual machine
+that has an accumulator register and an index register, along with
+some memory store. This machine has access to the packet buffer and
+supports several dozens of instructions that store and load values to
+the registers or memory, perform arithmetic or logical operations and do
+flow control. I won't discuss them in detail, but if you want a
+taste of what they look like, here is the equivalent of a libpcap-compiled
+simple filter, <tt  >ip</tt>:
+
+<pre     class="programlisting">
+ldh [12]
+jeq #0x800, Keep, Drop
+Keep: ret #0xffff
+Drop: ret #0x0000
+</pre>
+</p><p>
+Opcode mnemonics come from
+the original BPF USENIX paper (Steven McCanne and Van Jacobson's &ldquo;The BSD Packet Filter: A New Architecture for
+User-level Packet Capture&rdquo; available at
+<a href="https://www.usenix.org/legacy/publications/library/proceedings/sd93/mccanne.pdf" target="_self">https://www.usenix.org/legacy/publications/library/proceedings/sd93/mccanne.pdf</a>). 
+This program loads 16-bit (short)
+integer (&ldquo;h&rdquo; stands for &ldquo;half-word&rdquo;) at the fixed offset in
+the packet buffer
+(12, the Ethernet Type field) and compares it to 0x800 (the IPv4 protocol
+number). The filter returns the number of bytes in the packet to allow. Thus,
+zero means the packet should be dropped, and 0xffff (the maximum possible
+length) means to accept it entirely.
+</p><p>
+Linux's own implementation of BPF design is known as Linux Socket Filtering
+(LSF). It differs from the original BPF slightly (mainly in areas
+I haven't mentioned in this article), but largely what I've said here
+about BPF applies to LSF.
+</p><p>
+Given that the virtual machine is register-based, it comes
+as no surprise
+that its bytecode easily can be compiled to real machine instructions. It is
+exactly what a BPF JIT compiler (introduced in Linux 3.0) does. On my
+x86_64 system, the code above compiles into:
+
+
+<pre     class="programlisting">
+ 0:   push   %rbp
+ 1:   mov    %rsp,%rbp
+ 4:   sub    $0x60,%rsp
+ 8:   mov    %rbx,-0x8(%rbp)
+ c:   mov    0x68(%rdi),%r9d
+10:   sub    0x6c(%rdi),%r9d
+14:   mov    0xd8(%rdi),%r8
+1b:   mov    $0xc,%esi
+20:   callq  0xffffffffe104b2b3
+25:   cmp    $0x800,%eax
+2a:   jne    0x0000000000000033
+2c:   mov    $0xffff,%eax
+31:   jmp    0x0000000000000035
+33:   xor    %eax,%eax
+35:   leaveq
+36:   retq
+</pre>
+</p><p>
+This is a small function. By convention, the return value is stored in
+%eax register. Everything up to offset 0x1b is the utility stuff, but you
+easily can spot loading 0xc (12) to %esi (x86 source index register) and
+compare the result to 0x800. A few dozens of machine-level instructions
+are needed to check the filter against a packet, and since BPF was
+designed to execute filters on the original packet and not a copy of it,
+this should really be a fast process.
+</p><p>
+To control BPF JIT in the Linux kernel, you write to
+/proc/sys/net/core/bpf_jit_enable (or use the corresponding
+sysctl&mdash;see Jonathan Corbet's &ldquo;A JIT for packet filters&rdquo;
+at <a href="https://lwn.net/Articles/437981" target="_self">https://lwn.net/Articles/437981</a>). A value of 1 means to
+enable JIT, and a value of 2 means to enable
+tracing. When tracing is enabled, JIT code for the filter is printed to
+the kernel log buffer (that's what dmesg reads). With this in place,
+you can use the bpf_disasm tool (it comes with the Linux kernel sources)
+to print a disassembly.
+</p><p>
+With the neat high-level language libpcap provides, it is unlikely you
+will need to program in BPF &ldquo;assembler&rdquo; directly. But if you ever want
+some BPF feature that libpcap doesn't provide (maybe filtering by Netfilter
+mark value or something else Linux-specific), take a look at netsniff-ng
+(<a href="http://netsniff-ng.org" target="_self">netsniff-ng.org</a>). This toolkit contains a fully functional BPF compiler, bpfc.
+</p><p>
+Finally, what if you want to integrate BPF filtering capabilities into
+your own code? If it isn't possible (or feasible) to link against libpcap
+(or use one of its bindings), you can call the native kernel interface
+directly. BPF filter programs are represented as <tt  >struct
+sock_fprog</tt>
+that has a pointer to the array of opcodes (<tt  >struct sock_filter
+*</tt>) and
+a program length field. A sock_filter structure is what <tt  >tcpdump
+-dd</tt>
+(or bpfc) prints for you:
+
+<pre     class="programlisting">
+# tcpdump -i dummy0 -dd ip
+{ 0x28, 0, 0, 0x0000000c },
+{ 0x15, 0, 1, 0x00000800 },
+{ 0x6, 0, 0, 0x0000ffff },
+{ 0x6, 0, 0, 0x00000000 },
+</pre>
+</p><p>
+Sometimes (for example, in a script) you even can execute this command in the
+runtime (it is exactly what Scapy does when conf.use_pcap is False).
+</p><p>
+Filters are attached to (and detached from) the socket with the setsockopt(2)
+system call:
+
+<pre     class="programlisting">
+setsockopt(sockfd, SOL_SOCKET, SO_ATTACH_FILTER, 
+ &#8618;&amp;bpf, sizeof(bpf));
+</pre>
+</p><p>
+Here, <tt  >sockfd</tt> is the socket descriptor and
+<tt  >bpf</tt> is the <tt  >struct
+sock_fprog</tt>.
+</p><div       class="mediaobject"><a href="11680f3.large.jpg"><img src="11680f3.jpg"></a><div class="caption"><p>
+Figure 3. BPF and LSF are not the same; however, you still can use
+BSD-originated man pages.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x1679650"></a>
+BPF for Non-Sockets</h2></div></div><p>
+So far, I've spoken of BPF (and LSF) as a socket-level facility. To
+conclude this article, let's look at it from a different angle. Starting
+with Linux 3.9, there is an <tt  >xt_bpf</tt> module that allows you to use BPF in
+xtables rules:
+
+<pre     class="programlisting">
+iptables -A INPUT -m bpf --bytecode "$(nfbpf_compile 
+ &#8618;RAW 'tcp dst port telnet')" -j DROP
+</pre>
+</p><p>
+The <tt  >nfbpf_compile</tt> utility comes with iptables, provided those were built
+with the <tt  >--enable-bpf-compiler</tt> flag to the configure script.
+</p><p>
+Some tests show that <tt  >xt_bpf</tt> performs even faster
+than the u32 xtables module,
+so it's worth considering when you optimize your firewall rules.
+</p><p>
+Berkeley Packet Filters and their OS-specific implementations are
+no substitute for conventional firewalling code (like Netfilter in
+Linux). However, they may become indispensable when a fast application or
+system-level traffic filtering is the requirement.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1272580.0x1679a18"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Valentine Sinitsyn spent years developing easy-to-use Linux-based network 
+solutions for a local SMB market. In his spare time, he teaches Physics.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../242/toc242.html">Issue Table of Contents</a>
+    <a class="link3" href="../242/11680.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

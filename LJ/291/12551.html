@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"/>
+<link href="https://fonts.googleapis.com/css?family=Lateef" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+
+  <title>The Open-Source Classroom: Have a Plan for Netplan</title>
+  <link href="../../css/archive.css" rel="stylesheet" type="text/css"/>
+<script type="text/javascript" src="../../js/archive.js"></script>
+<script type="text/javascript" src="../../js/highlight.js"></script>
+</head>
+
+
+<body class="from_sigil">
+  
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+
+  <div class="tophrdiv">
+  </div>
+
+  
+  <div id="top_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <h1 class="title">The Open-Source Classroom: Have a Plan for Netplan</h1>
+
+  <h2 id="sigil_toc_id_31">Ubuntu changed networking. Embrace the YAML. By Shawn Powers</h2>
+
+  <p>If I'm being completely honest, I still dislike the switch from <code>eth0, eth1, eth2</code> to names like, <code>enp3s0, enp4s0, enp5s0</code>. I've learned to accept it and mutter to myself while I type in unfamiliar interface names. Then I installed the new LTS version of Ubuntu and typed <code>vi /etc/network/interfaces</code>. Yikes. After a technological lifetime of entering my server's IP information in a simple text file, that's no longer how things are done. Sigh. The good news is that while figuring out Netplan for both desktop and server environments, I fixed a nagging DNS issue I've had for years (more on that later).</p>
+
+  <h3 id="sigil_toc_id_32">The Basics of Netplan</h3>
+
+  <p>The old way of configuring Debian-based network interfaces was based on the <code>ifupdown</code> package. The new default is called Netplan, and although it's not terribly difficult to use, it's drastically different. Netplan is sort of the interface used to configure the back-end dæmons that actually configure the interfaces. Right now, the back ends supported are NetworkManager and <code>networkd</code>.</p>
+
+  <p>If you tell Netplan to use NetworkManager, all interface configuration control is handed off to the GUI interface on the desktop. The NetworkManager program itself hasn't changed; it's the same GUI-based interface configuration system you've likely used for years.</p>
+
+  <p>If you tell Netplan to use <code>networkd</code>, systemd itself handles the interface configurations. Configuration is still done with Netplan files, but once "applied", Netplan creates the back-end configurations systemd requires. The Netplan files are vastly different from the old /etc/network/interfaces file, but it uses YAML syntax, and it's pretty easy to figure out.</p>
+
+  <h3 id="sigil_toc_id_33">The Desktop and DNS</h3>
+
+  <p>If you install a GUI version of Ubuntu, Netplan is configured with NetworkManager as the back end by default. Your system should get IP information via DHCP or static entries you add via GUI. This is usually not an issue, but I've had a terrible time with my split-DNS setup and <code>systemd-resolved</code>. I'm sure there is a magical combination of configuration files that will make things work, but I've spent a lot of time, and it always behaves a little oddly. With my internal DNS server resolving domain names differently from external DNS servers (that is, split-DNS), I get random lookup failures. Sometimes <code>ping</code> will resolve, but <code>dig</code> will not. Sometimes the internal A record will resolve, but a <code>CNAME</code> will not. Sometimes I get resolution from an external DNS server (from the internet), even though I never configure anything other than the internal DNS!</p>
+
+  <p>I decided to disable <code>systemd-resolved</code>. That has the potential to break DNS lookups in a VPN, but I haven't had an issue with that. With <code>resolved</code> handling DNS information, the /etc/resolv.conf file points to 127.0.0.53 as the nameserver. Disabling <code>systemd-resolved</code> will stop the automatic creation of the file. Thankfully, NetworkManager itself can handle the creation and modification of /etc/resolv.conf. Once I make that change, I no longer have an issue with split-DNS resolution. It's a three-step process:</p>
+
+  <ol>
+    <li>Do <code>sudo systemctl disable systemd-resolved.service</code>.</li>
+
+    <li>Then <code>sudo rm /etc/resolv.conf</code> (get rid of the symlink).</li>
+
+    <li>Edit the /etc/NetworkManager/NetworkManager.conf file, and in the <code>[main]</code> section, add a line that reads <code>DNS=default</code>.</li>
+  </ol>
+
+  <p>Once those steps are complete, NetworkManager itself will create the /etc/resolv.conf file, and the DNS server supplied via DHCP or static entry will be used instead of a 127.0.0.53 entry. I'm not sure why the <code>resolved</code> dæmon incorrectly resolves internal addresses for me, but the above method has been foolproof, even when switching between networks with my laptop.</p>
+
+  <h3 id="sigil_toc_id_34">Netplan CLI Configuration</h3>
+
+  <p>If Ubuntu is installed in server mode, it is almost certainly configured to use <code>networkd</code> as the back end. To check, have a look at the /etc/netplan/config.yaml file. The <code>renderer</code> should be set to <code>networkd</code> in order to use the <code>systemd-networkd</code> back end. The file should look something like this:</p>
+  <pre><code>
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp2s0:
+      dhcp4: true
+</code>
+</pre>
+
+  <p><em>Important note:</em> remember that with YAML files, whitespace matters, so the indentation is important. It's also <em>very</em> important to remember that after making any changes, you need to run <code>sudo netplan apply</code> so the back-end configuration files are populated.</p>
+
+  <p>The default renderer is <code>networkd</code>, so it's possible you won't have that line in your configuration file. It's also possible your configuration file will be named something different in the /etc/netplan folder. All .conf files are read, so it doesn't matter what it's called as long as it ends with .conf. Static configurations are fairly simple to set up:</p>
+  <pre><code>
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    enp2s0:
+      dhcp4: no
+      addresses:
+        - 192.168.1.10/24
+        - 10.10.10.10/16
+      gateway4: 192.168.1.1
+      nameservers:
+        addresses: [192.168.1.1, 8.8.8.8]
+</code>
+</pre>
+
+  <p>Notice I've assigned multiple IP addresses to the interface. Netplan does not support virtual interfaces like <code>enp3s0:0</code>, rather multiple IP addresses can be assigned to a single interface.</p>
+
+  <p>Unfortunately, <code>networkd</code> doesn't create an /etc/resolv.conf file if you disable the <code>resolved</code> dæmon. If you have problems with split-DNS on a headless computer, the best solution I've come up with is to disable <code>systemd-resolved</code> and then manually create an /etc/resolv.conf file. Since headless computers don't usually move around as much as laptops, it's likely the /etc/resolv.conf file won't need to be changed. Still, I wish <code>networkd</code> had an option to manage the resolv.conf file the same way NetworkManager does.</p>
+
+  <h3 id="sigil_toc_id_35">Advanced Network Configurations</h3>
+
+  <p>The configuration formats are different, but it's still possible to do more advanced network configurations with Netplan:</p>
+
+  <p><em>Bonding:</em></p>
+  <pre><code>
+network:
+  version: 2
+  renderer: networkd
+  bonds:
+    bond0:
+      dhcp4: yes
+      interfaces:
+        - enp2s0
+        - enp3s0
+      parameters:
+        mode: active-backup
+        primary: enp2s0
+</code></pre>
+
+  <p>The various bonding modes (<code>balance-rr</code>, <code>active-backup</code>, <code>balance-xor</code>, <code>broadcast</code>, <code>802.3ad</code>, <code>balance-tlb</code> and <code>balance-alb</code>) are supported.</p>
+
+  <p><em>Bridging:</em></p>
+  <pre><code>
+network:
+  version: 2
+  renderer: networkd
+  bridges:
+    br0:
+      dhcp4: yes
+      interfaces:
+        - enp4s0
+        - enp3s0
+</code>
+</pre>
+
+  <p>Bridging is even simpler to set up. This configuration creates a bridge device using the two interfaces listed. The device (<code>br0</code>) gets address information via DHCP.</p>
+
+  <h3 id="sigil_toc_id_36">CLI Networking Commands</h3>
+
+  <p>If you're a crusty old sysadmin like me, you likely type <code>ifconfig</code> to see IP information without even thinking. Unfortunately, those tools are not usually installed by default. This isn't actually the fault of Ubuntu and Netplan; the old <code>ifconfig</code> toolset has been deprecated. If you want to use the old <code>ifconfig</code> tool, you can install the package:</p>
+  <pre><code>
+sudo apt install net-tools
+</code>
+</pre>
+
+  <p>But, if you want to do it the "correct" way, the new "ip" tool is the proper way to do it. Here are some equivalents of things I commonly do with <code>ifconfig</code>:</p>
+
+  <p><em>Show network interface information.</em></p>
+
+  <p>Old way:</p>
+  <pre><code>
+ifconfig</code></pre>
+
+  <p>New way:</p>
+  <pre><code>ip address show</code></pre>
+
+  <p>(Or you can just do <code>ip a</code>, which is actually less typing than <code>ifconfig</code>.)</p>
+
+  <p><em>Bring interface up.</em></p>
+
+  <p>Old way:</p>
+  <pre><code>ifconfig enp3s0 up</code></pre>
+
+  <p>New way:</p>
+  <pre><code>ip link set enp3s0 up</code></pre>
+
+  <p><em>Assign IP address.</em></p>
+
+  <p>Old way:</p>
+  <pre><code>ifconfig enp3s0 192.168.1.22</code></pre>
+
+  <p>New way:</p>
+  <pre><code>ip address add 192.168.1.22 dev enp3s0</code></pre>
+
+  <p><em>Assign complete IP information.</em></p>
+
+  <p>Old way:</p>
+  <pre><code>
+ifconfig enp3s0 192.168.1.22 net mask 255.255.255.0 broadcast 
+ ↪192.168.1.255
+</code></pre>
+
+  <p>New way:</p>
+  <pre><code>
+ip address add 192.168.1.22/24 broadcast 192.168.1.255 
+ ↪dev enp3s0
+</code>
+</pre>
+
+  <p><em>Add alias interface.</em></p>
+
+  <p>Old way:</p>
+  <pre><code>
+ifconfig enp3s0:0 192.168.100.100/24
+</code>
+</pre>
+
+  <p>New way:</p>
+  <pre><code>
+ip address add 192.168.100.100/24 dev enp3s0 label enp3s0:0
+</code>
+</pre>
+
+  <p><em>Show the routing table.</em></p>
+
+  <p>Old way:</p>
+  <pre><code>
+route</code>
+</pre>
+
+  <p>New way:</p>
+  <pre><code>
+ip route show
+</code>
+</pre>
+
+  <p><em>Add route.</em></p>
+
+  <p>Old way:</p>
+  <pre><code>
+route add -net 192.168.55.0/24 dev enp4s0
+</code>
+</pre>
+
+  <p>New way:</p>
+  <pre><code>
+ip route add 192.168.55.0/24 dev enp4s0
+</code>
+</pre>
+
+  <h3 id="sigil_toc_id_37">Old Dogs and New Tricks</h3>
+
+  <p>I hated Netplan when I first installed Ubuntu 18.04. In fact, on the particular server I was installing, I actually started over and installed 16.04 because it was "comfortable". After a while, curiosity got the better of me, and I investigated the changes. I'm still more comfortable with the old /etc/network/interfaces file, but I have to admit, Netplan makes a little more sense. There is a single "front end" for configuring networks, and it uses different back ends for the heavy lifting. Right now, the only back ends are the GUI NetworkManager and the <code>systemd-networkd</code> dæmon. With the modular system, however, that could change someday without the need to learn a new way of configuring interfaces. A simple change to the <code>renderer</code> line would send the configuration information to a new back end.</p>
+
+  <p>With regard to the new command-line networking tool (<code>ip</code> vs. <code>ifconfig</code>), it really behaves more like other network devices (routers and so on), so that's probably a good change as well. As technologists, we need to be ready and eager to learn new things. If we weren't always trying the next best thing, we'd all be configuring Trumpet Winsock to dial in to the internet on our Windows 95 machines. I'm glad I tried that new Linux thing, and while it wasn't quite as dramatic, I'm glad I tried Netplan as well!</p>
+
+  <h3 class="sigil_not_in_toc">About the Author</h3>
+
+  <div class="authorblurb">
+  <p>Shawn Powers is Associate Editor here at <em>Linux Journal</em>, and has been around Linux since the beginning. He has a passion for open source, and he loves to teach. He also drinks too much coffee, which often shows in his writing.</p>
+<img alt="Shawn Powers" src="12551aa.jpg"/></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../291/toc291.html">Issue Table of Contents</a>
+    <a class="link3" href="../291/12551.html">Article</a>
+  </div>
+  <div class="bottomhrdiv"></div>
+
+  <div id="bottom_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+</body>
+</html>

@@ -1,0 +1,496 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The tty Layer, Part II</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="keywords" content="tty, later, device, driver, embedded"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1c7b580.0x1d72ab0"></a>The tty Layer, Part II</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #102, October 2002</div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7b580.0x1d733a0"></a></h2></div></div><p>In the first part of this column
+(<i  >LJ</i>, August 2002) we covered the basics of the
+tty layer and how to create a minimal tty driver. Now we move on
+and cover more of the tty layer, trying to explain some of the
+advanced portions.
+</p><p>Remember from Part I the big struct tty_driver structure that
+all tty drivers need to implement? Let's focus on a few of its
+functions that were not fully covered last time.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7b580.0x1d73558"></a>101 ioctls</h2></div></div><p>The ioctl function callback in the struct tty_driver is
+called by the tty layer when ioctl(2) is called on the device node.
+If your driver does not know how to handle the ioctl value passed
+to it, it should return -ENOIOCTLCMD to try to let the tty layer
+implement a generic version of the call, if possible. But what
+ioctl values will your driver be expected to handle?</p><p>The 2.4.19 kernel defines around 60 different possible tty
+ioctls. Your tty driver doesn't have to implement all of them, but
+it is a good idea to try to handle the following common
+ones.</p><p><span   class="bold"><b>TIOCMGET:</b></span> called when the
+user wants to find the status of control lines of the serial port,
+such as the DTR or RTS lines. If you can directly read the MSR or
+MCR registers of your serial port, or if you keep a copy of them
+locally (like some USB to serial type devices need to do), here is
+how this ioctl can be implemented:</p><pre     class="programlisting">
+int tiny_ioctl (struct tty_struct *tty,
+                struct file *file,
+                unsigned int cmd, unsigned long arg)
+{
+    struct tiny_private *tp = tty-&gt;private;
+    if (cmd == TIOCMGET) {
+       unsigned int result = 0;
+       unsigned int msr = tp-&gt;msr;
+       unsigned int mcr = tp-&gt;mcr;
+       result = ((mcr &amp; MCR_DTR)    ? TIOCM_DTR: 0)
+                 /* DTR is set */
+
+                 | ((mcr &amp; MCR_RTS) ? TIOCM_RTS: 0)
+                 /* RTS is set */
+                 | ((msr &amp; MSR_CTS) ? TIOCM_CTS: 0)
+                 /* CTS is set */
+                 | ((msr &amp; MSR_CD)  ? TIOCM_CAR: 0)
+                 /* Carrier detect is set*/
+                 | ((msr &amp; MSR_RI)  ? TIOCM_RI:  0)
+                 /* Ring Indicator is set */
+                 | ((msr &amp; MSR_DSR) ? TIOCM_DSR: 0);
+                 /* DSR is set */
+       if (copy_to_user((unsigned int *)arg,
+                        &amp;result,
+                        sizeof(unsigned int)))
+           return -EFAULT;
+       return 0;
+    }
+    return -ENOIOCTLCMD;
+}
+</pre><p><span   class="bold"><b>TIOCMBIS, TIOCMBIC and
+TIOCMSET:</b></span> used to set different modem control registers
+on your tty device. The TIOCMBIS call can turn on the RTS, DTR or
+loopback registers, while the TIOCMBIC call can turn them off. The
+TIOCMSET call turns all three values off, and then it sets only the
+specific values it wants. Here's an example of how this can be
+handled:
+<pre     class="programlisting">
+int tiny_ioctl (struct tty_struct *tty,
+                struct file *file,
+                unsigned int cmd,
+                unsigned long arg)
+{
+    struct tiny_private *tp = tty-&gt;private;
+    if ((cmd == TIOCMBIS) ||
+        (cmd == TIOCMBIC) ||
+        (cmd == TIOCMSET)) {
+        unsigned int value;
+        unsigned int mcr = tp-&gt;mcr;
+        if (copy_from_user(&amp;value,
+                           (unsigned int *)arg,
+                           sizeof(unsigned int)))
+            return -EFAULT;
+        switch (cmd) {
+        case TIOCMBIS:
+            if (value &amp; TIOCM_RTS)
+                mcr |= MCR_RTS;
+            if (value &amp; TIOCM_DTR)
+                mcr |= MCR_RTS;
+            if (value &amp; TIOCM_LOOP)
+                mcr |= MCR_LOOPBACK;
+            break;
+        case TIOCMBIC:
+            if (value &amp; TIOCM_RTS)
+                mcr &amp;= ~MCR_RTS;
+            if (value &amp; TIOCM_DTR)
+                mcr &amp;= ~MCR_RTS;
+            if (value &amp; TIOCM_LOOP)
+                mcr &amp;= ~MCR_LOOPBACK;
+            break;
+        case TIOCMSET:
+            /* turn off the RTS and DTR and
+             * LOOPBACK, and then only turn on
+             * what was asked for */
+            mcr &amp;=  ~(MCR_RTS | MCR_DTR |
+                      MCR_LOOPBACK);
+            mcr |= ((value &amp; TIOCM_RTS) ?
+                    MCR_RTS : 0);
+            mcr |= ((value &amp; TIOCM_DTR) ?
+                    MCR_DTR : 0);
+            mcr |= ((value &amp; TIOCM_LOOP) ?
+                    MCR_LOOPBACK : 0);
+            break;
+        }
+        /* set the new MCR value in the device */
+        tp-&gt;mcr = mcr;
+        return 0;
+    }
+    return -ENOIOCTLCMD;
+}
+</pre>
+
+
+Note, the loopback request (TIOCM_LOOP) is not present in the 2.2
+kernel, but it is in the 2.4 and newer kernels.
+</p><p>If your tty driver can handle these four ioctls, it will work
+with the majority of existing user-space programs. However, there
+is always an odd program that asks for one of the other ioctls. So
+you may want to consider handling some of these other common ioctl
+functions as well.</p><p><span   class="bold"><b>TIOCSERGETLSR:</b></span> called to
+retrieve the line status register (LSR) value of your tty
+device.</p><p><span   class="bold"><b>TIOCGSERIAL:</b></span> called to get a
+bunch of serial line information from your device all at once. A
+pointer to a struct serial_struct is passed to this call, which
+your driver should fill up with the proper values. Some programs
+(like setserial and dip) call this function to make sure that the
+baud rate was set properly and to get general information on what
+type of device your tty is. Here's an example of how this can be
+implemented:</p><pre     class="programlisting">
+int tiny_ioctl (struct tty_struct *tty,
+                struct file *file,
+                unsigned int cmd,
+                unsigned long arg)
+{
+    struct tiny_private *tp = tty-&gt;private;
+    if (cmd == TIOCGSERIAL) {
+        struct serial_struct tmp;
+        if (!arg)
+            return -EFAULT;
+        memset(&amp;tmp, 0, sizeof(tmp));
+        tmp.type           = tp-&gt;type;
+        tmp.line           = tp-&gt;line;
+        tmp.port           = tp-&gt;port;
+        tmp.irq            = tp-&gt;irq;
+        tmp.flags          = ASYNC_SKIP_TEST |
+                             ASYNC_AUTO_IRQ;
+        tmp.xmit_fifo_size = tp-&gt;xmit_fifo_size;
+        tmp.baud_base      = tp-&gt;baud_base;
+        tmp.close_delay    = 5*HZ;
+        tmp.closing_wait   = 30*HZ;
+        tmp.custom_divisor = tp-&gt;custom_divisor;
+        tmp.hub6           = tp-&gt;hub6;
+        tmp.io_type        = tp-&gt;io_type;
+        if (copy_to_user(arg, &amp;tmp, sizeof(struct
+                                serial_struct)))
+            return -EFAULT;
+        return 0;
+        }
+    return -ENOIOCTLCMD;
+}
+</pre><p><span   class="bold"><b>TIOCSSERIAL:</b></span> the opposite of
+TIOCGSERIAL; with this one the user can set the serial line status
+of your device all at once. A pointer to a struct serial_struct is
+passed to this call, full of the data to which your device should
+now be set. If your device does not implement this call, almost all
+programs still will work properly.
+</p><p><span   class="bold"><b>TIOCMIWAIT:</b></span> an interesting
+call. If the user makes this ioctl call, they want to sleep within
+the kernel until something happens to the MSR register of the tty
+device. The &ldquo;arg&rdquo; parameter will contain the type of event for
+which the user is waiting. This ioctl is commonly used to wait for
+status line changes, signaling that more data is ready to be sent
+to the device.</p><p>Be careful in implementing the TIOCMIWAIT ioctl, however.
+Almost all of the existing kernel drivers that use it also use the
+interruptible_sleep_on() call, which is unsafe. (A lot of nasty
+race conditions are involved.) Instead, a wait_queue should be used
+in order to avoid these problems. Here's an example of a correct
+way to implement TIOCMIWAIT:</p><pre     class="programlisting">
+int tiny_ioctl (struct tty_struct *tty,
+                struct file *file,
+                unsigned int cmd,
+                unsigned long arg)
+{
+    struct tiny_private *tp = tty-&gt;private;
+    if (cmd == TIOCMIWAIT) {
+        DECLARE_WAITQUEUE(wait, current);
+        struct async_icount cnow;
+        struct async_icount cprev;
+        cprev = tp-&gt;icount;
+        while (1) {
+            add_wait_queue(&amp;tp-&gt;wait, &amp;wait);
+            set_current_state(TASK_INTERRUPTIBLE);
+            schedule();
+            remove_wait_queue(&amp;tp-&gt;wait, &amp;wait);
+            /* see if a signal woke us up */
+            if (signal_pending(current))
+                return -ERESTARTSYS;
+            cnow = edge_port-&gt;icount;
+            if (cnow.rng == cprev.rng &amp;&amp;
+                cnow.dsr == cprev.dsr &amp;&amp;
+                cnow.dcd == cprev.dcd &amp;&amp;
+                cnow.cts == cprev.cts)
+                return -EIO;
+                /* no change =&gt; error */
+            if (((arg &amp; TIOCM_RNG) &amp;&amp;
+                 (cnow.rng != cprev.rng)) ||
+                ((arg &amp; TIOCM_DSR) &amp;&amp;
+                 (cnow.dsr != cprev.dsr)) ||
+                ((arg &amp; TIOCM_CD)  &amp;&amp;
+                 (cnow.dcd != cprev.dcd)) ||
+                ((arg &amp; TIOCM_CTS) &amp;&amp;
+                 (cnow.cts != cprev.cts)) ) {
+                return 0;
+            }
+            cprev = cnow;
+        }
+    }
+    return -ENOIOCTLCMD;
+}
+</pre><p>Somewhere in the portion of the code that recognizes that the
+MSR register changes, the line:
+<pre     class="programlisting">
+wake_up_interruptible(&amp;tp-&gt;wait);
+</pre>
+
+
+must be called for this code to work properly.
+</p><p><span   class="bold"><b>TIOCGICOUNT:</b></span> called when the
+user wants to know the number of serial line interrupts that have
+occurred. The kernel is passed a pointer to a struct
+serial_icounter_struct, which needs to be filled up. This call is
+often made in conjunction with the previous TIOCMIWAIT ioctl call.
+If you keep track of all of these interrupts while your driver is
+operating, the code to implement this call can be quite simple. See
+drivers/usb/serial/io_edgeport.c for an example.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7b580.0x1d73e48"></a>write() Rules</h2></div></div><p>The write() callback in your tty_struct can be called from
+both interrupt context and user context. This is important to know,
+as you should not call any function that might sleep when you are
+in interrupt context. This includes any function that possibly
+might call schedule(), such as the common functions like
+copy_from_user(), kmalloc() and printk(). If you really want to
+sleep, then please check your status by calling
+in_interrupt().</p><p>The write() callback can be called when the tty subsystem
+itself needs to send some data through the tty device. This can
+happen if you do not implement the put_char() function in the
+tty_struct. (Remember, if there is no put_char() function, the tty
+layer will use the write() function.) This commonly happens when
+the tty layer wants to convert a newline character to a linefeed
+plus a newline character. The main point to remember here is your
+write() function must not return 0 for this kind of call. This
+means that you <span   class="emphasis"><em>must</em></span> write that byte of data to
+the device, as the caller (the tty layer) will NOT buffer the data
+and try again at a later time. As the write() call cannot determine
+if it is being called in place of put_char()--even if only one byte
+of data is being sent&mdash;please try to implement your write() call
+always to be able to accept at least one byte of data. A number of
+the current USB-to-serial tty drivers do not follow this rule, and
+as a result some terminal types do not work properly when connected
+to them.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7b580.0x1d74000"></a>set_termios() Implementation</h2></div></div><p>In order to properly implement the set_termios() callback,
+your driver must be able to decode all of the different settings in
+the termios structure. This is a complicated task, because all of
+the line settings are packed into the termios structure in a wide
+variety of ways.</p><p>Listing 1 shows a simple implementation of the set_termios()
+call that will print, to the kernel debug log, all of the different
+line settings that have been requested by the user.</p><p><a href="6226l1.html" target="_self">Listing 1. A Simple Implementation
+of the set_termios Call</a></p><p>First off, save a copy of the cflags variable from the tty
+structure, as we are going to be accessing it a lot:</p><pre     class="programlisting">
+        unsigned int cflag;
+        cflag = tty-&gt;termios-&gt;c_cflag;
+</pre><p>Next, test to see if there is anything we need to do. For
+example, see if the user is trying to use the same settings we
+currently have; we don't want to do any extra work if it's not
+necessary.
+<pre     class="programlisting">
+/* check that they really want us to change
+ * something */
+if (old_termios) {
+    if ((cflag == old_termios-&gt;c_cflag) &amp;&amp;
+        (RELEVANT_IFLAG(tty-&gt;termios-&gt;c_iflag) ==
+         RELEVANT_IFLAG(old_termios-&gt;c_iflag))) {
+             printk (KERN_DEBUG
+                     " - nothing to change...\n");
+             return;
+    }
+}
+</pre>
+
+
+The RELEVANT_IFLAG() macro is defined as:
+<pre     class="programlisting">
+#define RELEVANT_IFLAG(iflag)
+    (iflag &amp; (IGNBRK|BRKINT|IGNPAR|PARMRK|INPCK))
+</pre>
+
+
+and is used to mask off the important bits of the cflags variable.
+Compare this value to the old value, and see if they differ. If
+they don't, nothing needs to be changed, so we return. Note that we
+first check that the old_termios variable actually points to
+something, before we try to access a field off of it. This check is
+required, because sometimes this variable will be NULL. Trying to
+access a field off of a NULL pointer will cause a nasty oops in the
+kernel.
+</p><p>Now that we know we need to change the terminal settings,
+let's look at the requested byte size:</p><pre     class="programlisting">
+/* get the byte size */
+switch (cflag &amp; CSIZE) {
+    case CS5:
+        printk (KERN_DEBUG " - data bits = 5\n");
+        break;
+    case CS6:
+        printk (KERN_DEBUG " - data bits = 6\n");
+        break;
+    case CS7:
+        printk (KERN_DEBUG " - data bits = 7\n");
+        break;
+    default:
+    case CS8:
+        printk (KERN_DEBUG " - data bits = 8\n");
+        break;
+        }
+</pre><p>We mask the cflag with the CSIZE bit field and test the
+result. If we can't figure out what bits were set, we can use the
+default of 8 data bits. Then we check for the requested parity
+value:
+<pre     class="programlisting">
+/* determine the parity */
+    if (cflag &amp; PARENB)
+        if (cflag &amp; PARODD)
+            printk (KERN_DEBUG " - parity odd\n");
+        else
+            printk (KERN_DEBUG " - parity even\n");
+    else
+        printk (KERN_DEBUG " - parity none\n");
+</pre>
+
+
+We first test to see if the user actually wants a type of parity
+set in the first place. If so, then we need to test which kind of
+parity (odd or even) they want.
+</p><p>The stop bits requested are also simple to test for:</p><pre     class="programlisting">
+/* figure out the stop bits requested */
+if (cflag &amp; CSTOPB)
+    printk (KERN_DEBUG " - stop bits = 2\n");
+else
+    printk (KERN_DEBUG " - stop bits = 1\n");
+</pre><p>Now, we're on to determining the proper flow control
+settings. It's a simple process to determine if we should use
+RTS/CTS:
+<pre     class="programlisting">
+/* figure out the flow control settings */
+if (cflag &amp; CRTSCTS)
+    printk (KERN_DEBUG " - RTS/CTS is enabled\n");
+else
+printk (KERN_DEBUG " - RTS/CTS is disabled\n");
+</pre>
+
+
+Determining the different modes of software flow control and the
+different stop and start characters, however, is a bit more
+difficult:
+<pre     class="programlisting">
+/* determine software flow control */
+/* if we are implementing XON/XOFF, set the start
+ * and stop character in the device */
+if (I_IXOFF(tty) || I_IXON(tty)) {
+    unsigned char stop_char  = STOP_CHAR(tty);
+    unsigned char start_char = START_CHAR(tty);
+    /* if we are implementing INBOUND XON/XOFF */
+    if (I_IXOFF(tty))
+        printk (KERN_DEBUG
+            " - INBOUND XON/XOFF is enabled, "
+            "XON = %2x, XOFF = %2x",
+            start_char, stop_char);
+    else
+            printk (KERN_DEBUG
+                    " - INBOUND XON/XOFF "
+                    "is disabled");
+    /* if we are implementing OUTBOUND XON/XOFF */
+    if (I_IXON(tty))
+        printk (KERN_DEBUG
+                " - OUTBOUND XON/XOFF is enabled, "
+                "XON = %2x, XOFF = %2x",
+                start_char, stop_char);
+    else
+        printk (KERN_DEBUG
+                " - OUTBOUND XON/XOFF "
+                "is disabled");
+}
+</pre>
+
+
+Finally we want to determine the baud rate. Luckily, the
+tty_get_baud_rate() function can extract the specific baud rate out
+of the termios settings and return it as an integer:
+<pre     class="programlisting">
+/* get the baud rate wanted */
+printk (KERN_DEBUG " - baud rate = %d",
+        tty_get_baud_rate(tty));
+</pre>
+
+
+Now that all of the different line settings have been determined,
+it is up to you to use the information to set up the device
+properly.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7b580.0x1d74738"></a>Other tty Information</h2></div></div><p>Vern Hoxie has an excellent set of documentation and example
+programs on how to access serial ports from user space available at
+<a href="ftp://scicom.alphacdc.com/pub/linux" target="_self">scicom.alphacdc.com/pub/linux</a>.
+Most of this information will not be too useful for a kernel
+programmer, but some of the descriptions of the different ioctl(2)
+commands and the history behind the wide variety of different ways
+to get and set tty information are quite good. I highly recommend
+that anyone implementing a tty kernel driver read over these, if
+for no other reason than to determine how users will be trying to
+use your driver.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c7b580.0x1d74898"></a>Conclusion</h2></div></div><p>Hopefully these two articles have helped to demystify the tty
+layer. If you are stuck on how to implement a specific callback,
+quite a few drivers in the kernel interact with the tty layer as
+complete examples. Search for &ldquo;tty_register_driver&rdquo; in the
+drivers/char and drivers/usb directories for these files.</p><p>I would like to thank Al Borchers, who helped to determine
+how the write() callback really works and all of the nuances
+involved in it. Together with Peter Berger, they wrote
+drivers/usb/serial/digi_acceleport.c, a USB to serial driver for
+the Digi AccelePort devices. It is an excellent example of a
+well-working tty driver.</p></div></div>
+<div class="authorblurb"><p><span   class="bold"><b>Greg
+      Kroah-Hartman</b></span> is currently the Linux USB and PCI Hot
+      Plug kernel maintainer. He works for IBM, doing various Linux
+      kernel-related things and can be reached at
+      <a href="mailto:greg@kroah.com">greg@kroah.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../102/toc102.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

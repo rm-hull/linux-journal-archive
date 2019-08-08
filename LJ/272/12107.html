@@ -1,0 +1,548 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Low Power Wireless: Routing to the Internet
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;This article continues the series begun last month by getting two Raspberry&#10;Pis to communicate over a 6LoWPAN network. It looks at how to make&#10;them talk to other IPv6 hosts on different network segments,&#10;necessary to get IoT data off the sensors and onto the internet.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1fc1580.0x20b8ac0"></a>
+Low Power Wireless: Routing to the Internet
+</h1></div><div><div class="author"><h3 class="author">
+Jan
+ 
+Newmarch
+</h3></div><div class="issuemoyr">Issue #272, December 2016</div></div><div><p>
+This article continues the series begun last month by getting two Raspberry
+Pis to communicate over a 6LoWPAN network. It looks at how to make
+them talk to other IPv6 hosts on different network segments,
+necessary to get IoT data off the sensors and onto the internet.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20b91f8"></a></h2></div></div><p>
+In the first article in this series (in the November 2016 issue), I described how to configure two Raspberry Pis to talk using the
+low power wireless protocol 6LoWPAN over IEEE 802.15.4 with the OpenLabs wireless
+module. As an example, I showed Python code running a server on one RPi to deliver CPU temperature data
+to a client on another.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20b9300"></a>
+What's Next?</h2></div></div><p>
+But, that isn't the real point of using 6LoWPAN. You could have done the
+same thing using
+Zigbee, Bluetooth Low Energy, Z-Wave or some other low power networking system. The point
+of using 6LoWPAN is that it creates and sends IPv6 packets. This potentially brings it
+into the wider internet world where IP packets can be routed across multiple hosts
+without having to decode and re-code the packets.
+</p><p>
+The 6LoWPAN network generates IPv6 packets. The internet is very slowly moving across
+to IPv6, but much of it is still IPv4. If you have to deal with an IPv4 network,
+these are your choices:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Decode the packets on the RPi and use the data in them to talk to IPv4 hosts
+thereafter. That's what you could have done after following along with the first
+article in this series&mdash;you had decoded a
+packet and then could manipulate it or send it on.
+</p></li><li><p>
+Tunnel across the IPv4 network to another IPv6 network and carry on from there.
+</p></li><li><p>
+Use NAT'ing techniques to convert IPv6 packets into IPv4 packets automatically. This
+isn't easy and is beyond the scope of this article. (If you are interested, look up NAT64.)
+</p></li></ul></div><p>
+I'm going to assume you can continue to use IPv6, so the RPi is in an IPv6 6LoWPAN
+network on one side and an IPv6 Ethernet/Wi-Fi network on the other.
+</p><p>
+This article looks at how to get IPv6 packets from a 6LoWPAN network and route them
+into an IPv6 network (and of course, back the other way). As in the first article, if
+you're following along, you
+will use Raspberry Pis with the same OpenLabs modules. And just like in the first
+article, there are a number of problems to be resolved along the way.
+</p><p>
+The goal is to get suitable IPv6 addresses generated on all the 6LoWPAN devices and
+for one of these devices to act as a router (an &ldquo;edge router&rdquo;) between the 6LoWPAN
+network and some other IPv6 network. This article actually ends up really being about routing
+between IPv6 link local networks, joining them into a global IPv6 network.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20b9828"></a>
+IPv6 Address Types</h2></div></div><p>
+IPv6 has several different types of addresses, just like IPv4 does. Link local addresses
+are visible only on a single link, and you can't route them. They are like link local
+IPv4 addresses, and they're in the address range <tt  >fe80::/10</tt>.
+There also are site local
+addresses in the range <tt  >fec0::/10</tt>, but these are deprecated. Multicast addresses are in
+the <tt  >ff00::/8</tt> range. The loopback address is
+<tt  >::1/128</tt>. Every other address is a global
+address.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20b9a90"></a>
+Getting a Fixed Link Local Address</h2></div></div><p>
+Whenever you reboot the OpenLabs module, it gives itself a new MAC address. This is
+used to generate the link local address, and later you will see this used as part of the
+process to generate a global address. For the gateway, you will need a fixed global
+address, or external clients won't know how to find it. So for the gateway, you should
+fix the MAC address to ensure that you get a &ldquo;known&rdquo; global address.
+</p><p>
+General IPv6 addresses also are difficult to read and remember&mdash;16 hexadecimal
+numbers. There are special simplification rules for addresses with zeros in them, so I
+will exploit those here so you get simple addresses (for this article only, of course).
+You
+will set simple addresses on the gateway (needed) and on the sensor (convenient).
+</p><p>
+The MAC address <tt  >02:0:0:0:0:0:0:1</tt> generates the IPv6 host address
+<tt  >::1</tt>, which is about as
+simple as you can get. Set that on the gateway with:
+
+<pre     class="programlisting">
+ip link set dev wpan0 address 02:0:0:0:0:0:0:1
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20b9da8"></a></h2></div></div><p>
+to give IPv6 host part <tt  >::1</tt>, and for convenience on the
+sensor with:
+
+<pre     class="programlisting">
+ip link set dev wpan0 address 02:0:0:0:0:0:0:2
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20b9f60"></a></h2></div></div><p>
+to give IPv6 host part <tt  >::2</tt>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20ba0c0"></a>
+Getting a Routable IPv6 Address</h2></div></div><p>
+When any host starts its networking, it is assigned an IPv6 link local
+address automatically, based on its MAC address, which you have just set on the gateway and sensor
+RPis. Routing tables also are set up on the local link, so hosts on the same link can
+talk to each other directly.
+</p><p>
+It's easy to tell which addresses are link local addresses; they start with the prefix
+<tt  >fe80:</tt>. The <tt  >ifconfig</tt> program on any
+Linux/UNIX box will show something like this:
+	
+<pre     class="programlisting">
+inet6 addr: fe80::84f1:df50:eb27:97ff/64 Scope:Link
+</pre>
+</p><p>
+Because you've fixed the MAC address on the gateway, it's just:
+	
+<pre     class="programlisting">
+inet6 addr: fe80::1/64 Scope:Link
+</pre>
+</p><p>
+Link local packets aren't routable&mdash;that is, you can't send packets from one link to
+another link. To route packets from one link to another, they must have a unique global
+or unique local address.
+</p><p>
+Unique global addresses will be given to you by your internet provider, or
+you can buy them
+from an organization like ARIN. Australia's internet providers are way behind and
+very few of them support IPv6. I don't want to buy one when I can't use it yet.
+But, unique local addresses are good enough. I can route them across my private network
+for free, across all my network segments. I probably won't ever want to broadcast my
+temperature data across the whole internet anyway&mdash;at most I would process it on my
+own network or send it to a particular cloud service.
+</p><p>
+The <a href="http://unique-local-ipv6.com" target="_self">unique-local-ipv6.com</a> website generates random unique local
+/48 prefixes,
+such as:
+
+<pre     class="programlisting">
+fd28:e5e1:869::/48
+</pre>
+</p><p>
+That leaves you 80 bits (128&ndash;48) for any subnets you want to create and unique
+addresses within those subnets. So you can specify any 80 bits you want, or easier, any
+20 hex digits. I'm going to cheat a bit and simplify this to prefix
+<tt  >fd28::/64</tt> as a
+64-bit prefix. Use this on the gateway explicitly by setting:
+	
+<pre     class="programlisting">
+ip addr add fd28::1/64 dev lowpan0
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20ba6f0"></a>
+Packet Forwarding</h2></div></div><p>
+The RPi you are going to use as the gateway must have two NICs. Well, this one does: the
+6LoWPAN device and the Ethernet device. But just like any router in any UNIX system, it
+has to be configured for packet forwarding between the NICs. This is really easy: edit
+the /etc/sysctl.conf file and uncomment the line:
+
+<pre     class="programlisting">
+net.ipv6.conf.all.forwarding=1
+</pre>
+</p><p>
+Then reboot, and it's an IPv6 router.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x20ba8a8"></a>
+Router Advertisements</h2></div></div><p>
+You now have one fixed routable address that will be used for external clients to talk
+to the gateway/router. You also have a fixed link local address for hosts on this local
+link to talk to the gateway. At present, you have only one other RPi in the network, but
+your 6LoWPAN network might consist of hundreds or even thousands of nodes, and they
+need to be configured too, ending up with routable addresses so that external clients
+can get and set information on the sensors/actuators. But, you don't want to be 
+assigning addresses manually to every one of them!
+</p><p>
+The answer is <span   class="emphasis"><em>stateless address autoconfiguration</em></span> using
+<span   class="emphasis"><em>router solicitation</em></span> and <span   class="emphasis"><em>router
+advertisements</em></span>. You have to set up and configure router advertising, but then it becomes
+a no-brainer. This is the IPv6 equivalent of DHCP.
+</p><p>
+A new IPv6 node attempting to join a network will send out a router solicitation
+message using IPv6 multicast on its link local network. A router then will generate a
+router advertisement, which it will send back using unicast, which will contain enough
+information for the new node to configure itself.
+</p><p>
+The information supplied in the router adverts has basically two components:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The <span   class="emphasis"><em>link local</em></span> address of the router, so that the node can send it
+messages.
+</p></li><li><p>
+A <span   class="emphasis"><em>prefix</em></span> to be used as the network component of a
+<span   class="emphasis"><em>routable</em></span> address, to be used by the
+node to generate a unique local routable address for the node.
+</p></li></ul></div><p>
+That's why you need a fixed link local address for the router to be used in router
+adverts. This is in addition to the fixed routable address, so that external clients can
+talk to the 6LoWPAN side of the gateway.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x24b3180"></a>
+radvd: Router Advertisement D&aelig;mon for IPv6</h2></div></div><p>
+The Linux d&aelig;mon to act as a router advertisement d&aelig;mon for UNIX-like systems is
+<tt  >radvd</tt>. The version in the RPi repositories is unfortunately out
+of date, so you need to
+get a current version from GitHub and build it:
+
+<pre     class="programlisting">
+git clone https://github.com/linux-wpan/radvd.git -b 6LoWPAN
+cd radvd
+./autogen.sh
+./configure --prefix=/usr/local --sysconfdir=/etc 
+ &#8618;--mandir=/usr/share/man
+make
+sudo make install
+</pre>
+</p><p>
+You may need to install <tt  >bison</tt> from the repositories if it can't
+find <tt  >flex</tt>.
+</p><p>
+Once built and installed, <tt  >radvd</tt> uses the configuration file
+/etc/radvd.conf with the following contents:
+
+<pre     class="programlisting">
+interface lowpan0
+{
+    AdvSendAdvert on;
+    # UnicastOnly on;
+    AdvCurHopLimit 255;
+    AdvSourceLLAddress on;
+
+    prefix fd28::/64
+    {
+        # AdvOnLink off;
+        AdvOnLink on;
+        AdvAutonomous on;
+        AdvRouterAddr on;
+    };
+
+    abro fe80::1
+    {
+        AdvVersionLow 10;
+        AdvVersionHigh 2;
+        AdvValidLifeTime 2;
+    };
+};
+</pre>
+</p><p>
+This is adapted from Sebastian Meiling's page &ldquo;Setup native 6LoWPAN router using
+Raspbian and RADVD&rdquo; (<a href="https://github.com/RIOT-Makers/wpan-raspbian/wiki/Setup-native-6LoWPAN-router-using-Raspbian-and-RADVD" target="_self">https://github.com/RIOT-Makers/wpan-raspbian/wiki/Setup-native-6LoWPAN-router-using-Raspbian-and-RADVD</a>).
+The prefix is the random prefix I used earlier, <tt  >fd28::/64</tt>. The
+<tt  >abro</tt>
+(&ldquo;Authoritative Border Router Option&rdquo;) is the link local address of the router. You
+will need to set your own addresses&mdash;at a minimum, the routable prefix.
+</p><p>
+I've made a couple changes to Sebastian's configuration: I've set
+<tt  >AdvOnLink</tt> to <tt  >On</tt>;
+whereas he has it as <tt  >Off</tt>. Setting the advert to
+<tt  >On</tt> means:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The router itself won't get an address. That's okay; you want it to have a fixed
+address not assigned by <tt  >radvd</tt>.
+</p></li><li><p>
+For each node that has its IPv6 address set by <tt  >radvd</tt>, entries will be made in the
+routing table to route <tt  >fd28::/64</tt> addresses through the 6LoWPAN device. Addresses with
+this prefix are &ldquo;on this link&rdquo;.
+</p></li><li><p>
+Most important, general addresses (<tt  >::/0</tt>) will route using the
+<tt  >lowpan0</tt> NIC through the
+link local gateway address <tt  >fe80::1</tt> to the external world.
+</p></li></ul></div><p>
+I've also removed the <tt  >UnicastOnly on</tt> setting. The reasons are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Router adverts contain a timeout, defaulting to 30 minutes.
+</p></li><li><p>
+Unless updated, hosts will remove the routing entry on expiration of the timeout.
+</p></li><li><p>
+Hosts don't usually request new router adverts, only once on startup; they expect the
+router to multicast new adverts every few minutes.
+</p></li></ul></div><p>
+The <tt  >UnicastOnly on</tt> setting stops <tt  >radvd</tt>
+from sending out these adverts, so you need to
+remove it to allow the routing tables on hosts to be renewed.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x24b4200"></a>
+Router Configuration</h2></div></div><p>
+All the work on the 6LoWPAN side is now done. On the Ethernet side, I also want to have
+an IPv6 network, and as I am using unique local addresses, this network will be my
+private network, probably with many link segments. To change it to be internet-global,
+I would just need to change the unique local addresses to unique global addresses.
+</p><p>
+Initially I had problems routing IPv6 packets on my private network.
+My home router (a Linksys EA6900) didn't seem to want to route
+packets from my &ldquo;external&rdquo; host through to the gateway. I fixed that
+by using a cross-over cable directly from my &ldquo;external&rdquo; host to the
+gateway, and then after all, the home router decided to cooperate.
+Then with radvd also delivering adverts on the Ethernet side to my
+&ldquo;external&rdquo; host, I could ping from the 6LoWPAN network to the
+Ethernet network and vice versa.
+</p><p>
+In summary, the steps to go through on the 6LoWPAN side are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Configure /etc/radvd.conf.
+</p></li><li><p>
+Bring up the 6LoWPAN device.
+</p></li><li><p>
+Set link local and routable addresses on the 6LoWPAN device.
+</p></li><li><p>
+Start up <tt  >radvd</tt>.
+</p></li></ul></div><p>
+The <tt  >radvd</tt> configuration file is described above. The startup script for the rest should
+be run as root and is:
+
+<pre     class="programlisting">
+#!/bin/bash
+
+# set the MAC address
+ip link set dev wpan0 address 02:0:0:0:0:0:0:1
+
+iwpan dev wpan0 set pan_id 0xbeef
+ip link add link wpan0 name lowpan0 type lowpan
+ifconfig wpan0 up
+ifconfig lowpan0 up
+
+# set the gateway address on the 6LoWPAN side
+ip addr add fd28::1/64 dev lowpan0
+
+# start the router advert daemon
+radvd -m stderr
+</pre>
+</p><p>
+On the Ethernet side, I also had configured /etc/radvd.conf to deliver adverts with
+the <tt  >fd44::</tt> prefix, but I didn't get around to simplifying the Ethernet
+MAC addresses.
+</p><p>
+The resulting IPv6 addresses on the gateway are:
+
+<pre     class="programlisting">
+eth0      Link encap: ...
+          inet6 addr: fd44:::4adf:10a9:5c79:7954/64 Scope:Global
+          inet6 addr: fe80::4adf:10a9:5c79:7954/64 Scope:Link
+
+lowpan0   Link encap: ...
+          inet6 addr: fd28::1/64 Scope:Global
+          inet6 addr: fe80::1/64 Scope:Link
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x24b4a98"></a>
+Sensor Configuration</h2></div></div><p>
+The RPi acting as sensor doesn't have to do much; <tt  >radvd</tt> does most of it. The startup
+script is just: 
+
+<pre     class="programlisting">
+#!/bin/bash
+
+ip link set dev wpan0 address 02:0:0:0:0:0:0:2
+iwpan dev wpan0 set pan_id 0xbeef
+ip link add link wpan0 name lowpan0 type lowpan
+ifconfig wpan0 up
+ifconfig lowpan0 up
+</pre>
+</p><p>
+But, courtesy of <tt  >radvd</tt>, the device now has an IPv6-routable
+address: <tt  >fd28::2</tt>, as shown
+by <tt  >ifconfig</tt>:
+
+<pre     class="programlisting">
+lowpan0   Link encap: ...
+	  inet6 addr: fd28::2/64 Scope:Global
+          inet6 addr: fe80::2/64 Scope:Link
+</pre>
+</p><p>
+The routing table on the sensor RPi looks like:
+
+<pre     class="programlisting">
+$ route -A inet6
+Kernel IPv6 routing table
+Destination   Next Hop   Flag   Met Ref Use If
+fd28::/64     ::         UAe    256 0     0 lowpan0
+fe80::/64     ::         U      256 0     0 lowpan0
+::/0          fe80::1    UGDAe 1024 0     0 lowpan0
+ff00::/8      ::         U      256 1    18 lowpan0
+</pre>
+</p><p>
+As you can see, addresses with the prefix <tt  >fd28::/64</tt> are on the
+link through the <tt  >lowpan0</tt>
+device. The address <tt  >::/0</tt> is the default route address, so all other packets are routed
+through the <tt  >lowpan0</tt> NIC via the Next Hop address
+<tt  >fe80::1</tt>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x24b50c8"></a>
+Testing Routing</h2></div></div><p>
+You can test this from each RPi by pinging the other RPi. That just tests local routing
+though. To test this properly, you need to be able to talk through the Ethernet/Wi-Fi
+NIC on the RPi router to another IPv6 device.
+</p><p>
+I've got the RPi router talking to an &ldquo;external&rdquo; host through a crossover cable for
+simplicity, with <tt  >radvd</tt> delivering router adverts to it.
+</p><p>
+So then from the desktop, I can ping my RPi sensor:
+
+<pre     class="programlisting">
+$ping6 fd28::2
+PING fd28::2(fd28::2) 56 data bytes
+64 bytes from fd28::2: icmp_seq=1 ttl=254 time=14.0 ms
+64 bytes from fd28::2: icmp_seq=2 ttl=254 time=16.4 ms
+64 bytes from fd28::2: icmp_seq=3 ttl=254 time=17.9 ms
+</pre>
+</p><p>
+If you get successful pings, you know it works.
+</p><p>
+With that in place, the server code from my previous article (in the November 2016
+issue) can be modified to use
+routable addresses rather than link local addresses. This basically means you don't
+have to specify the &ldquo;scope id&rdquo; (the NIC) anymore:
+
+<pre     class="programlisting">
+#!/usr/bin/python3
+
+import socket
+from subprocess import PIPE, Popen
+
+HOST = ''       # Symbolic name meaning all available interfaces
+PORT = 2016     # Arbitrary non-privileged port
+
+def get_cpu_temperature():
+    process = Popen(['vcgencmd', 'measure_temp'], stdout=PIPE)
+    output, _error = process.communicate()
+    return output
+
+def main():
+    s6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM, 0)
+    s6.bind((HOST, PORT, 0, 0))
+    s6.listen(1)
+    
+    while True:
+        conn, addr = s6.accept()
+        conn.send(get_cpu_temperature())
+        conn.close()
+
+if __name__ == '__main__':
+    main()
+</pre>
+</p><p>
+The client gets modified similarly, omitting the scope id:
+
+<pre     class="programlisting">
+#!/usr/bin/python3
+
+import socket
+import time
+
+ADDR = 'fd28::2'
+PORT = 2016
+
+def main():
+    while True:
+        s6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM, 0)
+        s6.connect((ADDR, PORT, 0, 0))
+        data = s6.recv(1024)
+        print(data.decode('utf-8'), end='')
+
+        # get it again after 10 seconds
+        time.sleep(10)
+
+if __name__ == '__main__':
+    main()
+</pre>
+</p><p>
+The output from that on the client is:
+
+<pre     class="programlisting">
+temp=38.5'C
+temp=38.5'C
+temp=39.0'C
+...
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x23c7228"></a>
+Conclusion</h2></div></div><p>
+This article has shown that 6LoWPAN devices can communicate to other IPv6 systems on
+the routable internet. It has been mainly a journey about configuring IPv6 systems and
+setting up the IPv6 equivalent of DHCP. However, the story for low power wireless isn't
+over yet. The IoT at the application layer is standardizing on the CoAP and MQTT
+protocols, and in my next article, I'll take a look at the CoAP application protocol.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fc1580.0x23c7330"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Jan Newmarch has been using Linux since kernel 0.96. He has written
+many books and papers about software engineering, network programming,
+user interfaces and artificial intelligence, and he is currently digging
+into the IoT. He is in charge of ICT degrees at Box Hill Institute and
+Adjunct Professor at the University of Canberra.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../272/toc272.html">Issue Table of Contents</a>
+    <a class="link3" href="../272/12107.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

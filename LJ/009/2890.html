@@ -1,0 +1,357 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>An introduction to block device drivers</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Last month, we inaugurated a column on Linux kernel programming with an&#10;    article on how to write Linux device drivers without doing any kernel&#10;    programming. This month we touch the kernel as we explore block device&#10;    drivers.&#10;    "><meta name="keywords" content="kernel, device, driver"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2918580.0x2a0fab0"></a>An introduction to block device drivers</h1></div><div><div class="author"><h3 class="author">Michael K. Johnson</h3></div><div class="issuemoyr">Issue #9, January 1995</div></div><div><p>
+    Last month, we inaugurated a column on Linux kernel programming with an
+    article on how to write Linux device drivers without doing any kernel
+    programming. This month we touch the kernel as we explore block device
+    drivers.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2918580.0x2a10450"></a></h2></div></div><p>It is customary for authors explaining
+device drivers to start with a complete explanation of character
+devices, saving block device drivers for a later chapter. To
+explain why this is, I need to briefly introduce character devices
+as well. To do that, I'll give a little history.
+</p><p>When Unix was written 25 years ago, its design was eclectic.
+One unusual design feature was that every physical device connected
+to the computer was represented as a file. This was a bold
+decision, because many devices are very different from one another,
+especially at first glance. Why use the same interface to talk to a
+printer as to talk to a disk drive?</p><p>The short answer is that while the devices are very much
+different, they can be thought of as having most of the same
+characteristics as files. The entire system is then kept smaller
+and simpler by only using one interface with a few
+extensions.</p><p>This is fine, except that it hides important differences
+between devices. For example, it is possible to read any byte on a
+disk at any time, but it is only possible to read the
+<span   class="bold"><b>next</b></span> byte from a terminal.</p><p>There are other differences, but this is the most fundamental
+one: Some devices (like disks) are
+<span   class="bold"><b>random-access</b></span>, and others (like
+terminals) are <span   class="bold"><b>sequential-access</b></span>.
+Of course, it is possible to pretend that a random-access device is
+a sequential-access device, but it doesn't work the other way
+around.</p><p>A practical effect of the difference is that filesystems can
+only be mounted on block devices, not on character ones. For
+example, most tapes are <span   class="bold"><b>character</b></span>
+devices. It is possible to copy the contents of a raw, quiescent
+(unmounted and not being modified) filesystem to a tape, but you
+will not be able to mount the tape, even though it contains the
+same information as the disk.</p><p>Most textbooks and tutorials start by explaining character
+devices, the sequential-access ones, because a minimal character
+device driver is easier to write than a minimal block device
+driver. My own <span   class="emphasis"><em>Linux Kernel Hackers' Guide</em></span>
+(the <span   class="emphasis"><em>KHG</em></span>) is written the same way.</p><p>My reason for starting this column with block devices, the
+random-access devices, is that the KHG explains simple character
+devices better than it does block devices, and I think that there
+is a greater need for information on block devices right now.
+Furthermore, <span   class="bold"><b>real</b></span> character device
+drivers can be quite complex, just as complex as block device
+drivers, and fewer people know how to write block device
+drivers.</p><p>I am not going to give a complete example of a device driver
+here. I am going to explain the important parts, and let you
+discover the rest by examining the Linux source code. Reading this
+article and the ramdisk driver
+(<b  >drivers/block/ramdisk.c</b>), and possibly some
+parts of the KHG, should make it possible for you to write a
+simple, non-interrupt-driven block device driver, good enough to
+mount a filesystem on. To write an interrupt-driven driver, read
+<b  >drivers/block/hd.c</b>, the AT hard disk driver, and
+follow along. I've included a few hints in this article, as
+well.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2918580.0x2a10b30"></a>The Heart of the Driver</h2></div></div><p>Whereas character device drivers provide procedures for
+directly reading and writing data from and to the device they
+drive, block devices do not. Instead, they provide a single
+<b  >request()</b> procedure which is used for both
+reading and writing. There are generic
+<b  >block_read()</b> and
+<b  >block_write()</b> procedures which know how to call
+the <b  >request()</b> procedure, but all you need to
+know about those functions is to place a reference to them in the
+right place, and that will be covered later.</p><p>The <b  >request()</b> procedure (perhaps
+surprisingly for a function designed to do I/O) takes no arguments
+and returns void. Instead of explicit input and return values, it
+looks at a queue of requests for I/O, and processes the requests
+one at a time, in order. (The requests have already been sorted by
+the time the <b  >request()</b> function reads the
+queue.) When it is called, if it is not interrupt-driven, it
+processes requests for blocks to be read from the device, until it
+has exhausted all pending requests. (Normally, there will be only
+one request in the queue, but the <b  >request()</b>
+procedure should check until it is empty. Note that other requests
+may be added to the queue by other processes while the current
+request is being processed.)</p><p>On the other hand, if the device is interrupt-driven, the
+<b  >request()</b> procedure will usually schedule an
+interrupt to take place, and then let the interrupt handling
+procedure call <b  >end_request()</b> (more on
+<b  >end_request()</b> later) and then call the
+<b  >request()</b> procedure again to schedule the next
+request (if any) to be processed.</p><p>An idealized non-interrupt-driven
+<b  >request()</b> procedure looks something like
+this:</p><pre     class="programlisting">
+static void do_foo_request(void) {
+repeat:
+  INIT_REQUEST;
+  /* check to make sure that the request is for a
+     valid physical device */
+  if (!valid_foo_device(CURRENT-&gt;dev)) {
+     end_request(0);
+     goto repeat;
+  }
+  if (CURRENT-&gt;cmd == WRITE) {
+     if (foo_write(
+          CURRENT-&gt;sector,
+          CURRENT-&gt;buffer,
+          CURRENT-&gt;nr_sectors &lt; 9)) {
+        /* successful write */
+        end_request(1);
+        goto repeat;
+     } else
+        end_request(0);
+        goto repeat;
+     }
+  if (CURRENT-&gt;cmd == READ) {
+     if (foo_read(
+          CURRENT-&gt;sector,
+          CURRENT-&gt;buffer,
+          CURRENT-&gt;nr_sectors &lt;&lt; 9)) {
+        /* successful read */
+        end_request(1);
+        goto repeat;
+     } else
+        end_request(0);
+        goto repeat;
+     }
+  }
+}
+</pre><p>The first thing you notice about this function may be that it
+never explicitly returns. It does not run off the end and return,
+and there is no return statement. This is not a bug; the
+<b  >INIT_REQUEST</b> macro takes care of this for us. It
+checks the request queue and, if there are no requests in the
+queue, it returns. It does some simple sanity checks on the new
+<b  >CURRENT</b> request if there is another request in
+the queue to make <b  >CURRENT</b>.</p><p>CURRENT is defined by default as</p><pre     class="programlisting">
+blk_dev[MAJOR_NR].current_request
+</pre><p>in drivers <b  >/block/blk.h</b>. (We will cover
+<b  >MAJOR_NR</b> and <b  >blk.h</b> later.)
+This is the <span   class="bold"><b>current</b></span> request, the
+one at the head of the request queue that is being processed. The
+request structure includes all the information needed to process
+the request, including the device, the command (read or write;
+we'll assume read here), which sector is being read, the number of
+sectors to read, a pointer to memory to store the data in, and a
+pointer to the next request. There is more than that, but that's
+all we are concerned with.
+</p><p>The <b  >sector</b> variable contains the block
+number. The length of a sector is specified when the device is
+initialized (more later), and the sectors are numbered
+consecutively, starting at 0. If the physical device is addressed
+by some means other than sectors, it is the responsibility of the
+<b  >request()</b> procedure to translate.</p><p>In some cases, a command may read or write more than one
+sector. In those cases, the <b  >nr_sectors</b> variable
+contains the number of contiguous sectors to read or write.</p><p><b  >end_request()</b> is called whenever the
+<b  >CURRENT</b> request has been processed&mdash;either
+satisfied or aborted.</p><p>If it has been satisfied, it is called with an argument of 1
+and, if it has been aborted, it is called with an argument of 0. It
+complains if the request was aborted, does magic with the buffer
+cache, removes the processed request from the queue, &ldquo;ups&rdquo; a
+semaphore if the request was for swapping, and wakes up all
+processes that were waiting for a request to complete.</p><p>It may allow a task switch to occur if one is needed.</p><p><b  >end_request()</b> is a static function defined
+in <b  >blk.h</b>. A separate version is compiled into
+each block device driver, using special
+<b  >#define</b>'d values that are used throughout blk.h
+and the block device driver. This brings us to...</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2918580.0x2a11a50"></a>blk.h</h2></div></div><p>We have already seen several macros which are very helpful in
+writing block device drivers. Many of these are defined in
+<b  >drivers/block/blk.h</b>, and have to be specially
+set up.</p><p>At the top of the device driver, after including the standard
+include files your driver needs (which must include
+<b  >linux/major.h</b> and
+<b  >linux/blkdrv.h</b>), you should write the following
+lines:</p><pre     class="programlisting">
+#define MAJOR_NR FOO_MAJOR
+#include "blk.h"
+</pre><p>This, in turn, requires that you define
+<b  >FOO_MAJOR</b> to be the major number of the device
+you are writing in <b  >linux/major.h</b>.
+</p><p>Now you need to edit <b  >blk.h</b>. One section of
+<b  >blk.h</b>, right near the top, includes definitions
+of macros that depend on the definition of
+<b  >MAJOR_NR</b>. Add an entry to the end which looks
+like this:</p><pre     class="programlisting">
+#elif (MAJOR_NR == FOO_MAJOR)
+#define DEVICE_NAME "foobar"
+#define DEVICE_REQUEST do_foo_request
+#define DEVICE_NR(device) (MINOR(device) &gt;&gt; 6)
+#define DEVICE_ON(device)
+#define DEVICE_OFF(device)
+#endif
+</pre><p>These are the required macros for each block device driver.
+There are more macros that can be defined; they are explained in
+the KHG.</p><p><b  >DEVICE_NAME</b> is the name of the driver. The
+AT hard drive driver uses the abbreviation &ldquo;hd&rdquo; in most places; for
+example, the <b  >request()</b> procedure is called
+<b  >do_hd_request()</b>. However, its
+<b  >DEVICE_NAME</b> is &ldquo;harddisk&rdquo;. Similarly, the floppy
+driver, &ldquo;fd&rdquo;, has a <b  >DEVICE_NAME</b> of &ldquo;floppy&rdquo;.
+Other drivers are even more descriptive; read
+<b  >blk.h</b> and follow suit.</p><p><b  >DEVICE_REQUEST</b> is the
+<b  >request()</b> procedure for the driver.</p><p><b  >DEVICE_NR</b> is used to determine the actual
+physical device. For example, the standard AT hard disk driver uses
+64 minor devices for each physical device, so
+<b  >DEVICE_NR</b> is defined as
+(<b  >MINOR(device)&gt;6</b>). The SCSI disk driver uses
+16 minor device numbers per physical device, so for it,
+<b  >DEVICE_NR</b> is defined as
+(<b  >MINOR(device)&gt;4</b>). If you have only one minor
+device number per physical device, define
+<b  >DEVICE_NR</b> as
+(<b  >MINOR(device)</b>).</p><p><b  >DEVICE_ON</b> and
+<b  >DEVICE_OFF</b> are only used for devices that have
+to be turned on and off. The floppy driver is the only driver that
+uses this capability. You will most likely want to define these to
+be nothing at all.</p><p>All these macros, as well as many others, can be used in your
+driver where appropriate. <b  >blk.h</b> includes a lot
+of macros, and studying how they are used in other drivers will
+help you use them in your own driver. I won't document them fully
+here, but I will briefly mention some of them to make your life
+easier.</p><p><b  >DEVICE_INTR</b>, <b  >SET_INTR</b>,
+and <b  >CLEAR_INTR</b> make support for interrupt-driven
+devices much easier. <b  >DEVICE_ TIMEOUT</b>,
+<b  >SET_TIMER</b>, and <b  >CLEAR_TIMER</b>
+help you set limits on how long may be taken to satisfy a
+request.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2918580.0x2a09308"></a>The First Shall Be the Last</h2></div></div><p>I've saved the first, and perhaps most important, thing for
+last. Before you can read or write a single block, the kernel has
+to be notified that the device exists. All device drivers are
+required to implement an initialization function, and there are
+some special requirements for block device drivers. Here is a
+sample idealized initialization function:</p><pre     class="programlisting">
+long foo_init(long mem_start, int length)
+{
+  if (register_blkdev(FOO_MAJOR,"foo", &amp; foo_fops)) {
+    printk("FOOBAR: Unable to get major %d.\n",
+           FOO_MAJOR);
+    return 0;
+  }
+  if (!foo_exists()) {
+    /* the foobar device doesn't exist */
+    return 0;
+  }
+  /* initialize hardware if necessary */
+  /* notify user device found */
+  printk("FOOBAR: Found at address %d.\n",
+           foo_addr());
+  /* tell buffer cache how to process requests */
+  blk_dev[FOO_MAJOR].request_fn = DEVICE_REQUEST;
+  /* specify the blocksize */
+  blksize_size[MAJOR_NR] = 1024;
+  return(size_of_memory_reserved);
+}
+</pre><p>The three things here that are specific to block device
+drivers are:</p><div class="itemizedlist"><ul type="disc"><li><p><b  >register_blkdev()</b> registers the
+file operations structure with the Virtual Filesystem Switch (VFS),
+which is the system that manages access to files.</p></li><li><p><b  >blk_dev</b> tells the buffer cache
+where the request procedure is.</p></li><li><p><b  >blksize_size</b> tells the buffer
+cache what size blocks to request.</p></li></ul></div><p>It is worth noting that the hardware device detection and
+initialization, which I have denoted as
+<b  >foo_exists()</b> here, is very delicate code. If you
+can rely on a string somewhere in the BIOS of the computer to
+determine whether the device exists and where it is, it's
+relatively easy. However, if you have to check various I/O ports,
+you can hang the computer by writing the wrong value to the wrong
+port, <span   class="bold"><b>or even reading the wrong
+port</b></span>. Check only well-known ports if you must check
+ports, and provide kernel command-line arguments for other ports.
+To do this, read <b  >init/main.c</b> and add a section
+of your own. If you can't figure out how to do it, an explanation
+is forthcoming in the next version of the KHG.</p><p>Of course, none of this initialization will happen if
+<b  >foo_init()</b> is never called. Add a prototype to
+the top of <b  >blk.h</b> with the other prototypes, and
+add a call to <b  >foo_init()</b> in
+<b  >ll_rw_blk.c</b> in the
+<b  >blk_dev_init()</b> function. That call should be
+protected by <b  >#ifdef CONFIG_FOO</b> like the rest of
+the <b  >*_init()</b> functions there, and a
+corresponding line should be added to the
+<b  >config.in</b> file:</p><pre     class="programlisting">
+bool `Foobar disk support' CONFIG_FOO y
+</pre><p><b  >drivers/block/Makefile</b> should have a
+section added that looks like this:</p><pre     class="programlisting">
+ifdef CONFIG_FOO
+OBJS := $(OBJS) foo.o
+SRCS := $(SRCS) foo.c
+endif
+</pre><p>This done, configuration should work correctly. Your device
+driver file does not need to have any references to
+<b  >CONFIG_FOO</b>; the only specific reference to it is
+commented out in <b  >ll_rw_blk.c</b>, and the makefile
+only builds it if it has been configured in.</p><p>Now all you have to do is write and debug your own new block
+device driver. I wish you the best of luck, and I hope that this
+whirlwind tour has given you a head start.</p><p><a href="2890s1.html" target="_self">Other Resources</a></p></div></div>
+<div class="authorblurb"><p>
+           <span   class="bold"><b>Michael K. Johnson</b></span>
+           is the editor of <i  >Linux Journal</i>, and is
+           also the author of the Linux Kernel Hackers' Guide (the KHG). He is using this
+           column to develop and expand on the KHG.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../009/toc009.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,409 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Three-Tiered Design</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Learn how to implement middleware into the mod_perl/Apache&#10;    design mix.&#10;    "><meta name="keywords" content="middleware, mod_perl, three-tier, Mason, database"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2523580.0x261aab0"></a>Three-Tiered Design</h1></div><div><div class="author"><h3 class="author">Reuven M. Lerner</h3></div><div class="issuemoyr">Issue #81, January 2001</div></div><div><p>
+    Learn how to implement middleware into the mod_perl/Apache
+    design mix.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2523580.0x261b608"></a></h2></div></div><p>Several months ago, we took a long look
+at Mason, a Web development environment that combines mod_perl,
+Apache and templates. One of the examples was that of a system for
+press releases, in which Mason components retrieve the latest press
+releases from a database. The style of programming demonstrated in
+this article could be characterized as &ldquo;two-tier&rdquo;, in which the
+Mason components speak directly with a database, using Perl's DBI
+mod_perl's Apache::DBI.
+</p><p>But as several people on the Mason e-mail list noted, this
+approach&mdash;in which the SQL statements are directly inside of Mason
+components&mdash;is often unwise. Modifying the database definitions, or
+even the brand of database server we use, forces us to change the
+components themselves. In addition, non-web programs must
+re-implement SQL calls within their own programs, rather than
+reusing a commonly maintained and tested library.</p><p>We can solve both of these problems by adding an extra layer
+of software, sometimes known as &ldquo;middleware&rdquo;, between the
+database and the Mason components. This increasingly popular
+architecture is known as a &ldquo;three-tiered&rdquo; approach, because it
+means that we must work with three different sets of software
+services: the database, a &ldquo;middleware&rdquo; abstraction layer, and the
+implementation/presentation layer.</p><p>This month and next, we will look at a simple web-based
+address book and appointment calendar that demonstrate this
+three-tier approach. Along the way, I hope that you'll learn the
+advantages and disadvantages of this approach and be able to weigh
+it alongside other approaches when creating a web site. Once we
+have looked into this general architecture, we will be well
+prepared to look into Java Server Pages with Jakarta-Tomcat, and
+application servers. We'll examine the pitfalls involved with this
+approach, as well as how it can make development easier and more
+scalable in the long run.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2523580.0x261b818"></a>The Database</h2></div></div><p>The first tier, and perhaps the most significant, is the
+relational database. I will use PostgreSQL for this example, but it
+would not matter much if we used something like Oracle or
+MySQL.</p><p>Before we design our database, we must have a specification
+describing what we want to do. After all, the design of a database
+depends in no small part on how we intend to use it.</p><p>For the purposes of this article, we will keep the
+specification relatively short and ambiguous: I want to have an
+addressbook that I can view, search and update via the Web. In
+addition, I would like to be able to add, view and modify
+appointments using my web browser.</p><p>In order to accomplish this, we will need at least two
+tables, one containing people and the other containing
+appointments. Here is an initial stab at a definition of the people
+table (see Listing 1).</p><p><a href="4406l1.html" target="_self">Listing 1. Defining the People
+Table</a></p><p>In other words, we will always store a person's first name,
+last name, country and e-mail address. Beyond that, we can store
+their address, city, state, postal code and some comments about
+them. This assumes that everyone we know has an e-mail address&mdash;an
+assumption that is increasingly true, but not necessarily a good
+attribute if you have friends and business contacts from outside of
+the computer industry.</p><p>Each of the entries in our people table will be uniquely
+identified by the person_id column, which is automatically
+incremented by PostgreSQL. In addition, we ensure that we only add
+each person once by checking for the uniqueness of their e-mail
+address. This allows us to have more than one friend named John
+Smith. It also means that we cannot store separate information
+about a couple with a shared e-mail address. There also is no good
+provision for handling people with multiple e-mail
+addresses.</p><p>Adding a new person into the people table is relatively
+easy:</p><pre     class="programlisting">
+INSERT INTO People
+        (first_name, last_name, address1, address2, email,
+        city, state, postal_code, country, comments)
+    VALUES
+        ('Shai', 'Re\'em', '10
+Helmonit', 'Apt. 7',
+        'shai@lerner.co.il',
+'Modi\'in', NULL,
+        71700, 'Israel', 'Six-year-old
+nephew')
+    ;
+</pre><p>Because most of the columns are NULL, I can even get away
+with entering a bare minimum of columns:
+<pre     class="programlisting">
+INSERT INTO People
+        (first_name, last_name, email, country)
+VALUES
+        ('Hadar', 'Re\'em',
+'hadar@lerner.co.il',
+        'Israel')
+    ;
+</pre>
+
+
+Now we will create an appointments table in which we will store
+appointments with members of the people table:
+<pre     class="programlisting">
+CREATE TABLE Appointments (
+     person_id    INT4       NOT NULL   REFERENCES People,
+     start_time   TIMESTAMP  NOT NULL,
+     end_time     TIMESTAMP  NOT NULL,
+     notes        TEXT       NULL       CHECK
+                (notes &lt;&gt;''),
+        UNIQUE(start_time)
+    );
+</pre>
+
+
+Once I have the appointments table defined, I can add a new
+appointment by inserting a new row into appointments:
+<pre     class="programlisting">
+INSERT INTO Appointments
+        (person_id, start_time, end_time, notes)
+    VALUES
+        (1, 'November 22, 2000 19:00',
+        'November 22, 2000 19:30', 'Read Dr. Seuss')
+    ;
+</pre>
+
+
+But because person_id is defined so as to be a foreign key from
+people, we can only add an appointment if we are meeting with
+someone already in the people table. This might be adequate for our
+purposes, but a more sophisticated (and well-specified) system
+would presumably give us more flexibility. And of course, this
+database will not let me indicate that I am meeting with more than
+one person at a time.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2523580.0x261bd98"></a>Middleware</h2></div></div><p>Now that we have created our initial database design, we will
+consider the design of our middleware layer, which insulates the
+web application from the database. If we ever decide to switch to
+another brand of database server, or even replace the database with
+flat ASCII files or DBM files, the object layer will remain the
+same.</p><p>In addition, non-web applications will be able to use this
+layer in order to access the database, making it possible, for
+instance, to write a set of routines that export our appointment
+calendar into XML, or to import it from another program.</p><p>This middle tier is often called the &ldquo;business logic&rdquo; of an
+application. The database makes it easy and safe for us to store
+and retrieve information, and the Mason components make it easy for
+us to create dynamic output for the end user. The middleware layer
+will try to force the database to do as much of the computation as
+possible, using built-in functions, views and stored procedures.
+But the actual logic that determines our application's
+functionality will reside in the middle tier.</p><p>Perl gives us at least two options when creating this layer.
+One possibility is to create a basic Perl module that provides
+subroutines and variables that can accomplish the tasks we need.
+Such a procedural interface is relatively easy to write and
+executes at the same speed as all other Perl subroutines.</p><p>But Perl also offers us the option of creating an object
+module. While Perl objects are slightly harder to write, and their
+methods execute more slowly than straight subroutines, they make it
+easier to conceptualize and write programs.</p><p>Before we can create our middleware layer, we have to answer
+some serious questions. What sorts of objects will we create? We
+could create a single database object that handles all of our
+queries for us, turning them into the appropriate SQL. But we will
+occasionally want to retrieve information about people without any
+regard for appointments, which means that we should have, if
+nothing else, a people object, as well as a separate appointments
+object. Because our database table definition forces us to
+associate each appointment with one person, we can only define our
+appointments object after the people object.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2523580.0x261c058"></a>People.pm</h2></div></div><p>Listing 2 contains a listing for People.pm, an object module
+that performs some basic tasks for the people table that we created
+earlier. The object is not complete and has some rough edges, but
+should suffice for demonstrating how to access a relational
+database via an object middleware layer.</p><p><a href="4406l2.html" target="_self">Listing 2. People.pm, a Perl Object
+Module That Communicates with the Package People</a></p><p>The basic idea is that you create a new instance of people,
+and then manipulate the people in your appointment book with that
+object. To retrieve all of the names of people in the database, you
+can use the get_all_full_names method, as in this code fragment
+(also see Listing 3):</p><pre     class="programlisting">
+use People;
+# Create a People object
+my $people = new People;
+# Retrieve all of the full names
+my @names = $people-&gt;get_all_full_names();
+# Print the names
+foreach my $name (@names)
+{
+    print "name\n";
+}
+</pre><p><a href="4406l3.html" target="_self">Listing 3. Retrieve-people.pl, a
+Program That Uses People.pm to Retrieve Information from the
+Database</a></p><p>To set or retrieve information about a particular person, you
+must first identify which person you're talking about. Because our
+middleware layer is meant to shield the user from having to think
+or worry about primary keys and other database-specific IDs, we
+will allow them to set the &ldquo;current person&rdquo; via either the first
+and last name, or via the e-mail address.</p><p>The e-mail address is guaranteed to be unique in the database
+layer, and thus using set_current_person_by_email is the most
+reliable method available. Nevertheless, it's often useful to
+identify people by first and last name, so we also offer the
+set_current_person_by_name method. In the current implementation,
+using the name to set the current person will match the first
+returned row from the database, which might not necessarily be what
+you want.</p><p>Once a program has set the current person, it can retrieve
+information about that person using the get_current_info
+method:</p><pre     class="programlisting">
+# Set the current person by name
+$people-&gt;set_current_person_by_name("Shai","Re'em")
+|| die "Error retrieving person.";
+# Print the information
+foreach my $key (sort keys %{$info})
+{
+        if (defined $info-&gt;{$key})
+        {
+                print "$key =&gt; $info-&gt;{$key}\n";
+        }
+}
+</pre><p>Each instance of people will keep only two pieces of state:
+the ID of the currently selected person
+($self-&gt;{current_person}) and the database handle ($dbh) that
+connects us to the database ($self-&gt;{dbh}). We keep the database
+handle around because connecting to a database is a relatively
+expensive operation. We can thus save ourselves some time by
+connecting to the database in the constructor, and then using that
+connection each time we invoke a method on this object.
+</p><p>Of course, this means that the database connection will have
+to be destroyed when the Perl object goes away&mdash;a somewhat tricky
+task, given that Perl does not have explicit destructors, since it
+is a garbage-collected language. The solution is to create a method
+called DESTROY, which is invoked by Perl whenever the object is
+destroyed. Our DESTROY method merely closes our connection to the
+database, allowing the object to be removed without potentially
+causing a memory leak in either the database client or
+server:</p><pre     class="programlisting">
+sub DESTROY
+{
+        # Get myself
+        my $self = shift;
+        # Get the database handle
+        my $dbh = $self-&gt;{dbh};
+        # Close the database handle
+        $dbh-&gt;disconnect;
+        return;
+}
+</pre><p>We can even create a new person, invoking the new_person
+method with a set of hash keys and values as arguments. These are
+then translated by the middleware layer into an appropriate SQL
+query:
+<pre     class="programlisting">
+# Now insert a new person
+my $success = $people-&gt;new_person
+        (first_name =&gt; "Reuven",
+        last_name =&gt; "Lerner",
+        country =&gt; "Israel"
+        email =&gt; 'reuven@lerner.co.il',
+        phone =&gt; '08-973-2225');
+print "Inserted successfully" if $success;
+</pre>
+
+
+Because Perl's undefined (&ldquo;undef&rdquo;) value is automatically
+translated into an SQL &ldquo;NULL&rdquo; value, the optional columns will be
+filled in with NULLs, as should be the case.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2523580.0x261c688"></a>Appointments</h2></div></div><p>Now that we have a class that handles the people in our
+database, we need to create an appointments class. For now, we will
+only concern ourselves with inserting new appointments and
+retrieving today's appointments.</p><p>The design of Appointments.pm (see Listing 4) is generally
+similar to People.pm, particularly in the way that it opens a
+database connection in the constructor and closes it in the
+automatically invoked DESTROY method. Beyond this, however,
+appointments keeps no state whatsoever. It merely acts as a conduit
+to the database, allowing us to create new appointments and find
+out with whom we are meeting today.</p><p><a href="4406l4.html" target="_self">Listing 4.
+Appointments.p</a></p><p>For example, Listing 5 contains a short program that uses
+Appointments.pm to create a new appointment. We must create an
+instance of people and another of appointments. Once we have these
+two objects, we can set the &ldquo;current person&rdquo; to be my niece
+(&ldquo;Hadar Re'em&rdquo;), dying with an error if
+set_current_person_by_name returns undef (indicating
+failure).</p><p><a href="4406l5.html" target="_self">Listing 5.
+Insert-appointment.pl</a></p><p>Once we have successfully set the current person, we can
+create an appointment with that person. The format of the date and
+time are dictated by PostgreSQL, which accepts a variety of
+formats.</p><p>We can similarly retrieve today's appointments using the
+program in Listing 6 (print-appointments.pl). This program uses the
+get_today method, which returns a list of hash references. Note
+that the implementation of get_today uses DBI's fetchrow_hashref
+method, which is known to be significantly slower than
+fetchrow_arrayref. However, it makes life much more convenient,
+allowing us to do print-appointments as seen in Listing 6.</p><p><a href="4406l6.html" target="_self">Listing 6.
+Print-appointments.pl</a></p><p>Finally, we can list all of today's appointments with a
+particular person with the get_today_with_person method. Of course,
+this means that we must create an instance of people and choose a
+current person using one of the methods described earlier. The
+implementation of get_today_with_person expects to receive an
+instance of people as its first user-passed parameter, allowing us
+to use the current person in our SQL query. The program in Listing
+7 demonstrates how I can find all of today's appointments that I
+have with my nephew Shai.</p><p><a href="4406l7.html" target="_self">Listing 7.
+Print-appointments-with-shai.pl</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2523580.0x261cc08"></a>Designing the Objects</h2></div></div><p>One of the major points of using objects in a middleware
+layer is the fact that they provide a layer of abstraction. So long
+as the interface is well defined and remains stable, the
+implementation can change.</p><p>However, as with all programming techniques, designing good
+objects can be difficult. Perl provides totally open access to an
+object's internals, meaning that without a good API, programmers
+using the object might be tempted to reach inside and work directly
+with the implementation. This might mean that software will break
+when the implementation changes&mdash;the very situation that using
+objects was supposed to prevent!</p><p>In addition, we want our objects' implementations to be
+relatively separate from each other. During my design of the people
+and appointments objects, I was sorely tempted to allow
+Appointments to get and use the numeric ID of the current person.
+But of course, doing so would violate the abstraction barrier that
+I created with my object. The solution, which is admittedly not as
+elegant as I would like, was to create the get_current_person
+method. This allows appointments to retrieve the current user,
+without having to know where it comes from. In the end, of course,
+the return value from get_current_person is placed in an SQL
+statement and is compared with People.person_id, breaking the
+abstraction somewhat.</p><p>Finally, notice how each of the objects here contains basic
+logic, but does not store any state. It would be relatively simple,
+for example, for our people object to retrieve all of the rows from
+the people table, and to make them available to invoking objects
+from within Perl. Indeed, such a solution would significantly
+reduce the overhead of going to a database, and would allow us to
+perform manipulations in Perl, rather than turning to SQL each
+time.</p><p>But this solution causes many more problems than it solves.
+For example, what happens if we create two instances of people? Now
+we have two objects, each of which contains the full set of rows
+from the people table. If one object modifies its state, that
+modification will never be reflected in the second object. Worse
+yet, what happens if both objects modify their state before storing
+those changes in the database? Perhaps the database is designed to
+resolve such locking issues, but our Perl objects are not.
+Furthermore, what happens when we have 100,000 people in our people
+table? Reading that much data into a database client is a waste of
+memory, and of the high-performance data selection and manipulation
+routines that a database server includes.</p><p>Our objects are thus pipelines to the database, giving our
+web application the ability to talk to a database without having to
+include any SQL or knowledge of the tables' layout. The objects, by
+providing a standard API, make it possible to change the underlying
+implementation without having to announce those changes to the
+world.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2523580.0x2a15118"></a>Conclusion</h2></div></div><p>This month, we looked at the reasons behind three-tiered
+architectures and started to look into a basic implementation of an
+application that uses this architecture. As you can see, we can
+already create small text-mode applications. Next month, we will
+complete our implementation, giving us the skeleton for a simple
+appointment book using mod_perl/Mason and PostgreSQL. We will also
+discuss issues regarding the scalability of three-tier solutions,
+as well as some of the pitfalls.</p><p><a href="4406s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="4406aa.jpg"></div>
+
+
+      <span   class="bold"><b>Reuven M. Lerner</b></span>
+      owns and manages a
+      small consulting firm specializing in Web and Internet
+      technologies. As you read this, he should (finally!) be
+      finishing Core Perl, to be published by Prentice-Hall
+      later this year. You can reach him at reuven@lerner.co.il, or at
+      the ATF home page,
+      <a href="http://www.lerner.co.il/atf" target="_self">http://www.lerner.co.il/atf/</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../081/toc081.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,296 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Hack and /
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Automate yourself out of a job with a few well placed MCollective&#10;commands.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xd75580.0xe6cac0"></a>
+Hack and /
+</h1></div><div><h3 class="subtitle"><i>
+Orchestration with MCollective, Part II
+</i></h3></div><div><div class="author"><h3 class="author">
+Kyle
+ 
+Rankin
+</h3></div><div class="issuemoyr">Issue #273, January 2017</div></div><div><p>
+Automate yourself out of a job with a few well placed MCollective
+commands.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd75580.0xe6d3b0"></a></h2></div></div><p>
+In my last article, I introduced how MCollective could be used for general
+orchestration tasks. Configuration management like Puppet and Chef can help
+you bootstrap a server from scratch and push new versions of configuration
+files, but normally, configuration management scripts run at particular
+times in no particular order. Orchestration comes in when you need to
+perform some kind of task, specifically something like a software upgrade,
+in a certain order and stop the upgrade if there's some kind of problem.
+With orchestration software like MCollective, Ansible or even an SSH for
+loop, you can launch commands from a central location and have them run on
+specific sets of servers. 
+</p><p>
+Although I favor MCollective because of its improved
+security model compared to the alternatives and its integration with
+Puppet, everything I discuss here should be something you can
+adapt to any decent orchestration tool. 
+</p><p>
+So in this article, I expand
+on the previous one on MCollective and describe how you can use it to stage all
+of the commands you'd normally run by hand to deploy an internal software
+update to an application server.
+</p><p>
+I ended part one on MCollective with describing how you could use it to
+push an OpenSSL update to your environment and then restart nginx:
+
+<pre     class="programlisting">
+mco package openssl update
+mco service nginx restart
+</pre>
+</p><p>
+In this example, I ran the commands against every server in my environment;
+however, you'd probably want to use some kind of MCollective filter to 
+restart nginx on only part of your infrastructure at a time. In my case, I've
+created a custom Puppet fact called hagroup and divided my servers into
+three different groups labeled a, b and c, split along fault-tolerance
+lines. With that custom fact in place, I can restart nginx on only one group
+of servers at a time:
+
+<pre     class="programlisting">
+mco service nginx restart -W hagroup=c
+</pre>
+</p><p>
+This approach is very useful for deploying OpenSSL updates, but hopefully
+those occur only a few times a year if you are lucky. What you more likely
+will run into as a common task ideal for orchestration is deploying your own
+in-house software to application servers. Although everyone does this in a
+slightly different way, the following pattern is pretty common. This pattern is
+based on the assumption that you have a redundant, fault-tolerant
+application and can take any individual server offline for software
+updates. This means you use some kind of load balancer that checks the
+health of your application servers and moves unhealthy servers out of
+rotation. In this kind of environment, a simple, serial approach to
+updates
+might look something like this:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Get a list of all of the servers running the application.
+</p></li><li><p>
+Start with the first server on the list.
+</p></li><li><p>
+Set a short maintenance window for the server in your monitoring system.
+</p></li><li><p>
+Tell your load balancers to drain any existing sessions to this server.
+</p></li><li><p>
+Update the list of available packages for the server.
+</p></li><li><p>
+Stop the service on that server.
+</p></li><li><p>
+Update the software on that server.
+</p></li><li><p>
+Start the service on that server.
+</p></li><li><p>
+Make sure the service started successfully.
+</p></li><li><p>
+Perform a health check to make sure the service is healthy.
+</p></li><li><p>
+Add the server back to the load balancer rotation.
+</p></li><li><p>
+Repeat for the rest of the servers on the list.
+</p></li></ul></div><p>
+If any of those steps fails, the administrator would stop the update and go
+investigate and fix the problem. Often if there is going to be a failure, it
+will be at the software-update or health-check phase, and the point of this
+process is to make sure that if an upgrade doesn't go well, you stop at the
+first server before pushing broken software to the rest of the environment.
+</p><p>
+Traditionally, administrators might perform all of the above steps
+manually by logging in to different servers and interacting with different
+web interfaces perhaps. The next step they follow generally involves
+wrapping a series of SSH commands that would perform these actions into a
+shell script and then maintain some local configuration file that defines
+lists of servers. 
+</p><p>
+With MCollective, the process is similar with the main
+difference being that MCollective doesn't need to have SSH root privileges
+on these machines. Instead, MCollective performs its tasks by putting a
+limited set of commands in a job queue that all of the servers check. The
+commands are restricted by what MCollective plugins you have installed on a
+particular server, and MCollective does a good job of sanitizing input from
+the plugins it includes by default.
+</p><p>
+Most of the above commands in that deploy list can be completed using the
+default plugins MCollective includes. I use Nagios for monitoring, and
+although MCollective does include a plugin that lets you perform NRPE commands
+(a Nagios agent that runs on each server that allows Nagios to run local
+commands to check disk space, RAM and so on), it doesn't include anything
+that could directly set a maintenance mode in Nagios.
+</p><p>
+Another missing piece in the above list of commands is the ability to
+interact with a load balancer. Many people might skip this step these days,
+as they are using something like nginx's internal load-balancing abilities
+and may not have an easy way to set something like a maintenance mode to
+drain existing connections to a host. In that case, you may just skip ahead
+to stopping the service and let the health check detect the failure. That
+approach risks dropping existing connections though, and because I use
+Haproxy as my load balancer, I can use its built-in command mode to set a
+maintenance mode on specific servers if I'm logged in to the load balancer.
+</p><p>
+Fortunately, MCollective has the ability to extend its existing set of
+commands with your own custom plugins to perform specific tasks.
+Unfortunately, writing, packaging and deploying even trivial MCollective
+plugins can be a bit complicated the first time you do it, and it's involved
+enough that it would require an article all of its own. MCollective's plugin
+documentation is a good place to start, and in particular, the
+documentation on writing plugins that use MCollective's RPC framework makes the
+code you have to write much more straightforward, even if you aren't
+familiar with Ruby.
+</p><p>
+When you write a custom MCollective plugin, you choose a new plugin name (say,
+haproxy) and then define a list of commands you want to pass that new
+plugin (such as <tt  >disable_server</tt> and
+<tt  >enable_server</tt>). If a command needs some
+kind of argument passed to it, you also define those. Then, you map those
+commands and arguments into basic command-line commands using their RPC
+framework, or you can dig in to using native Ruby libraries if you are familiar
+with that.
+</p><p>
+I wrote a custom Nagios plugin and an Haproxy plugin that would send my
+custom commands to their command file and command socket, respectively. So to
+set a maintenance mode on server1.example.com for Nagios and Haproxy, I
+would type these commands:
+
+<pre     class="programlisting">
+mco rpc nagios maintenance server=server1.example.com duration=5m
+mco rpc haproxy disable_server server="serverrole/server1"
+</pre>
+</p><p>
+Because I took advantage of MCollective's RPC framework, I have to type
+<tt  >rpc</tt>
+in front of my custom commands. 
+</p><p>
+Next I provide the name of my plugin, then
+the command I want to run, followed by any custom arguments. Then on the
+Nagios server side, I intercept that command and format it into a format I
+can write to Nagios' local command file so it can execute. In the case of the
+Haproxy plugin, this command goes out to any server that happens to be
+running Haproxy. If a particular Haproxy server doesn't have my server
+defined in its configuration, it doesn't do anything harmful, and
+otherwise,
+it sets it to maintenance mode.
+</p><p>
+With these plugins in place, you can replace the above generic list of steps
+to specific MCollective commands:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >mco find -S "domain=example.com and
+resource('Package[myapp]).managed=true"</tt>
+</p></li><li><p>
+<tt  >mco rpc nagios maintenance server=myapp1.example.com
+duration=5m</tt>
+</p></li><li><p>
+<tt  >mco rpc haproxy disable_server server="myapp/myapp1"</tt>
+</p></li><li><p>
+<tt  >mco rpc package apt_update -I myapp1.example.com</tt>
+</p></li><li><p>
+<tt  >mco service myapp stop -I myapp1.example.com</tt>
+</p></li><li><p>
+<tt  >mco package myapp update -I -I myapp1.example.com</tt>
+</p></li><li><p>
+<tt  >mco service myapp start -I myapp1.example.com</tt>
+</p></li><li><p>
+<tt  >mco service myapp status -I myapp1.example.com</tt>
+</p></li><li><p>
+<tt  >mco nrpe check_app_health -I myapp1.example.com</tt>
+</p></li><li><p>
+<tt  >mco rpc haproxy enable_server server="myapp/myapp1"</tt>
+</p></li></ul></div><p>
+I've ended up wrapping all of these commands inside a basic shell script
+that takes the name of a particular application as an argument, then
+performs the first <tt  >mco find</tt> command to get the list of servers that have
+that package installed. Then at that point, I just run the next set of
+commands in a basic <tt  >for</tt> loop. Where appropriate, I
+added a <tt  >sleep</tt> command
+here and there to give a service time to come up. If any of the commands
+fail, the script exits out and reports the error so the administrator can
+investigate. Otherwise, it runs through each server in order.
+</p><p>
+Of course, later versions of this script have become a bit more
+sophisticated, so it can accept some custom arguments, log the output to a
+known log file and be more efficient in how it sleeps between commands. But
+the end result for the sysadmin is a simple &ldquo;deployapp&rdquo; script they can run
+that properly updates the application the right way, every time, with no risk
+of skipping or forgetting a server or steps in the process.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd75580.0xe65be0"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Kyle Rankin is a Sr. Systems Administrator in the San Francisco Bay Area
+and
+the
+author of a number of books, including <span   class="emphasis"><em>The Official Ubuntu Server
+Book</em></span>,
+<span   class="emphasis"><em>Knoppix Hacks</em></span> and <span   class="emphasis"><em>Ubuntu Hacks</em></span>.
+He is currently the president of the North
+Bay Linux Users' Group.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../273/toc273.html">Issue Table of Contents</a>
+    <a class="link3" href="../273/12121.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,127 @@
+#!/usr/bin/perl
+#
+# Filename: timeout.pl
+#
+# Script (c) Feb 17, 1998 by FMP Computer Services
+# Terms of the GNU GENERAL PUBLIC LICENSE apply
+# see <http://www.gnu.org/copyleft/gpl.html>
+# Contact fmouse@fmp.com for details.
+#
+# Run out of cron every 5 minutes. Looks at /proc/net/dev 
+# to monitor packet traffic.  Requires setup of session file 
+# in ip-up.  Requires perl v5.
+# 
+# Run manually with -t option to force session length timeout
+# or with -i option to force inactivity timeout.
+# Syntax: timeout.pl -i|-t ifname
+# ifname = ppp0, ppp1, ppp2, etc.
+#
+# Things that can (or should) be modified ....
+#
+
+# Session and pid directory
+$piddir = "/var/run";
+
+# Shut down session after this many minutes of inactivity
+$itime = 25;
+
+# Shut down session unconditionally after this many minutes online
+$utime = 240;
+
+# Should I send email when a session gets killed?
+$notify = 1;	# Set to 1 to notify, 0 for no notification
+
+# If I notify, to whom should I send email when a session gets killed?
+$sysadmin = "root\@anyserver.com";
+
+# If I notify, what's my mailer?
+$mailer = "/usr/sbin/sendmail -t";
+
+# --------------------------------------------------------------------
+# Nothing below this should need modifying -- conditional on line 76
+# can be modified to select inactivity timeout criteria
+# --------------------------------------------------------------------
+use Getopt::Std;
+# Parse command line arguments
+getopts('it');
+$cmd_if = $ARGV[0];
+
+# Scan for session files.
+opendir (VARRUN, $piddir);
+@sessionfiles = grep (/^ppp[0-9]+\.session/, readdir(VARRUN));
+closedir (VARRUN);
+
+foreach $file (@sessionfiles) {
+	open (SESSION, "${piddir}/$file") || exit 1;
+	$session = <SESSION>;
+	($who, $pid, $stime, $ctime, $rspackets, $xspackets) = split /\t/, $session;
+	close SESSION;
+	
+	open (NETSTAT, "/proc/net/dev");
+	<NETSTAT>;	# toss out header lines
+	<NETSTAT>;
+	while (<NETSTAT>) {
+		($ifname, $rpackets, $rerrs, $rdrop, $rfifo, 
+$rframe, $xpackets, $xerrs, $xdrop, $xfifo, $xcolls, $xcarrier) = split;
+		last if $ifname eq $iface.":";
+	}
+	# It's decision time!
+	$curtime = time;			# Current time
+	$session_time = $curtime - $stime;	# Total time online
+	$check_time = $curtime - $ctime;	# Inactivity time
+
+	# Check to see if total time online has been exceeded
+	if ((($file eq $cmd_if.".session") && $opt_t) || 
+($session_time > ($utime * 60))) {
+		kill "INT", ($pid);
+		&notify("Overtime") if $notify;
+		exit 0;
+
+	# If still within total time, check for inactivity
+	# This expression can be changed to suit your needs.  Here,
+	# inactivity is indicated by a lack of both incoming and outgoing
+	# traffic.
+	} elsif ((($file eq $cmd_if.".session") && $opt_i) || 
+(($rspackets == $rpackets) && ($xspackets == $xpackets))) {
+		if ($check_time > ($itime * 60)) {
+			kill "INT", ($pid);
+			&notify("Inactivity") if $notify;
+		}
+		exit 0;
+	}
+	
+	else {
+		open (SESSION, ">${piddir}/$file");
+		print SESSION "$who\t$pid\t$stime\t$curtime\t$rpackets\t$xpackets";
+		close (SESSION);
+	}
+}
+
+sub notify {
+	local($message) = @_;
+	($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime $stime;
+	@months = ("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec");
+	@weekdays = ("Sun","Mon","Tue","Wed","Thu","Fri","Sat");
+	$thismonth = $months[(localtime $stime)[4]];
+	$thisday = $weekdays[(localtime $stime)[6]];
+	
+	open (MAILOUT, "| $mailer");
+	print MAILOUT <<EOF;
+To: $sysadmin
+From: PPP.Timeout.script
+Subject: Timeout Due to $message
+
+Timeout Due to $message
+
+Session Owner:    $who
+Session Started:  $thisday $thismonth $mday $hour:$min
+EOF
+	($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime;
+	$thismonth = $months[(localtime)[4]];
+	$thisday = $weekdays[(localtime)[6]];
+	print MAILOUT <<EOF;
+Session Ended:    $thisday $thismonth $mday $hour:$min
+
+EOF
+	close MAILOUT;
+}

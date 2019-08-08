@@ -1,0 +1,175 @@
+Installing Clusterd
+-------------------
+
+** Please read the doc/Clusterd-explained.txt file for a full understanding **
+
+Date: 24/02/1999
+
+Procedure for setting up a cluster node
+---------------------------------------
+
+1. Install the required clusterd software and associated utilities:
+
+  * Download and install ssh-1.2.26 (or later) and rsync-2.2.1 (or later)
+  * install 'sync-app', 'reach-count', 'clusterd', 'clusterd.functions' 
+    into /usr/local/bin and make executable.
+
+2. Configure the /etc/cluster.d/<nodename>.conf files with your selected
+   interfaces, IP, and MAC addresses. ( where '<nodename>' is the hostname
+   of your node).
+
+  * The node configuration files '/etc/cluster.d/<nodename>.conf' allows 
+    you to specify which ethernet NIC is used for which purpose on each 
+    node in the cluster. Here are my node configuration files:
+
+	[root@serv1 /root]# cat serv1.conf
+	# config for serv1 main interface & address
+	MAIN_IPADDR=203.1.2.1
+	MAIN_INTERFACE=eth0
+	MAIN_MACADDR=00:10:4B:63:1C:08
+	# Server's heartbeat interface & address
+	HEARTBEAT_IPADDR=192.168.111.1
+	HEARTBEAT_INTERFACE=eth1
+	# Server's redundant interface
+	REDUNDANT_INTERFACE=eth2
+	
+	[root@serv1 /root]# cat serv2.conf
+	# config for serv2 main interface & address
+	MAIN_IPADDR=203.1.2.2
+	MAIN_INTERFACE=eth0
+	MAIN_MACADDR=00:10:4B:31:46:0F
+	# Server's heartbeat interface & address
+	HEARTBEAT_IPADDR=192.168.111.2
+	HEARTBEAT_INTERFACE=eth1
+	# Server's redundant interface
+	REDUNDANT_INTERFACE=eth2 
+
+3. On each node use the RedHat netcfg tool to configure the addresses
+   of your three ethernet interfaces - make the first two (eth0 and eth1)
+   'activate at boot time' and the redundant interface (eth2) to remain
+   inactive. Configure the RedHat MACADDR variable as described below:
+
+   * To implement the MAC address takeover there is one important addition
+     to the RedHat ethernet configuration files. You must add a line to the
+     '/etc/sysconfig/network-scripts/ifcfg-eth2' file to set the MAC address.
+     eth2 is the redundant interface in my case so I need it to takeover the MAC
+     address of the main service interface on the other node in the cluster. In
+     other words, the MAC address of eth2 on serv2 must be the same as the MAC
+     address of eth0 on serv1. The line 'MACADDR=00:10:4B:63:1C:08' was appended
+     to this file on node serv2. The RedHat 'ifup' will use this variable when
+     bringing up an interface. A similar modification must be made to each node.
+
+4. Get ssh working as root user so that you may log in anywhere
+   between the nodes without requiring any password to be entered when using
+   any interface. You may want to use the '.shosts' file for this.
+
+5. Create a 'reachlist' which is made up of two or three normally reachable
+   hosts on the shared LAN. SNMP managed ethernet switches/hubs are ideal
+   candidates for this. The file should simply contain numerical IP
+   addresses, one address per line.
+
+6. Start the clusterd program from '/etc/inittab' using a line similar to 
+   below (assuming your system normally starts runlevel 5):
+
+   * On serv1:
+     lh:5:respawn:/usr/local/bin/clusterd serv1 serv2 >>/var/log/clusterd 2>>/var/log/clusterd
+
+   * On serv2:
+     lh:5:respawn:/usr/local/bin/clusterd serv2 serv1 >>/var/log/clusterd 2>>/var/log/clusterd
+
+
+Procedure of adding a service to a cluster
+------------------------------------------
+
+1. Install the service (eg. Samba) on each node as per normal.
+
+2. Configure the service as usual for a standalone server but only on one
+   primary node (i.e. the node where the service will normally run).
+
+3. Create a service mirror description file in the <primary_nodename> 
+   directory listing the directories and files you wish to be mirrored
+   between the nodes - be sure to include the configuration files
+   (eg. /etc/smb.conf) and the data directories (eg. /home/samba/ and 
+   /var/samba/). Make sure directories end with a '/'. Example file for
+   samba running on Serv1 as the primary node:
+	
+	[root@serv1 /root]# cat /etc/serv1/Fsmbd
+	/var/samba/
+	/var/spool/samba/
+	/etc/smb.conf
+	/etc/lmhosts
+	/etc/smbusers
+	/etc/smbpasswd
+	/mnt/sdb1/home/
+
+4. Create a sync-app crontab entry on the primary node for this service and
+   decide the mirroring frequency. The argument to 'sync-app' is the target
+   secondary node to send the files. Example for mirroring the Samba files
+   every 10 minutes ('serv2-hb' is the hostname of serv2's heartbeat
+   interface):
+
+	0,10,20,30,40,50 * * * * root /usr/local/bin/sync-app \
+		/etc/cluster.d/serv1/Fsmbd serv2-hb
+
+5. Remove the start script symbolic links which may be present in the
+   usual SysVinit runlevel directories (eg. /etc/rc.d/rc5.d/S??smbd).
+
+6. Create start/stop script symbolic links in the <primary_nodename> directory
+   for your service. Example listing of my <primary_nodename> directory:
+
+	[root@serv1 /root]# ls -al /etc/cluster.d/serv1/
+	drwxr-xr-x 2 root root 1024 Nov 16 20:30 .
+	drwxr-xr-x 4 root root 1024 Nov 15 22:39 ..
+	-rw-r--r-- 1 root root   23 Oct  8 19:39 Fauth
+	-rw-r--r-- 1 root root   16 Nov 16 20:30 Fclusterd
+	-rw-r--r-- 1 root root   34 Oct  8 19:39 Fdhcpd
+	-rw-r--r-- 1 root root   30 Oct  8 19:39 Flpd
+	-rw-r--r-- 1 root root   12 Nov 15 22:14 Fnamed
+	-rw-r--r-- 1 root root   19 Oct  8 19:39 Fradiusd
+	-rw-r--r-- 1 root root  102 Oct  8 19:39 Fsmbd
+	lrwxrwxrwx 1 root root   20 Oct 25 17:33 K30httpd -> /etc/rc.d/init.d/httpd
+	lrwxrwxrwx 1 root root   20 Oct 25 17:33 K40smb -> /etc/rc.d/init.d/smb
+	lrwxrwxrwx 1 root root   20 Oct 25 17:33 K60lpd -> /etc/rc.d/init.d/lpd
+	lrwxrwxrwx 1 root root   22 Oct 25 17:33 K70dhcpd -> /etc/rc.d/init.d/dhcpd
+	lrwxrwxrwx 1 root root   22 Oct 25 17:33 K80named -> /etc/rc.d/init.d/named
+	lrwxrwxrwx 1 root root   22 Oct 25 17:33 S20named -> /etc/rc.d/init.d/named
+	lrwxrwxrwx 1 root root   22 Oct 25 17:33 S30dhcpd -> /etc/rc.d/init.d/dhcpd
+	lrwxrwxrwx 1 root root   20 Oct 25 17:33 S40lpd -> /etc/rc.d/init.d/lpd
+	lrwxrwxrwx 1 root root   20 Oct 25 17:33 S50smb -> /etc/rc.d/init.d/smb
+	lrwxrwxrwx 1 root root   20 Oct 25 17:33 S60httpd -> /etc/rc.d/init.d/httpd
+
+7. Double check your settings.
+
+8. Manually start the service on its primary node. Synchronsation will start
+   as soon as you add the crontab entry.
+
+
+Procedure if a node fails:
+--------------------------
+
+If a node fails, it should go into a standby mode - default is single user
+mode. 
+
+Once you have determined why this happened and have rectified the problem,
+you must manually remove a standby lock file and start init runlevel 5. The
+default standby lock file is '/var/run/standby'. Without removing this file
+the server will automatically revert back to standby mode.
+
+When the node rejoins the cluster there will be complete cluster downtime
+for several minutes while the nodes resynchronise. This is unavoidable so it
+is suggested that recovery is done at an off-peak time or is planned in
+advance.
+
+
+Procedure for taking a node 'out-of-service'
+--------------------------------------------
+
+Simply shut down or remove the network interface cables and the cluster
+should failover. If, alternatively, you wish to prevent a failover yet still
+wish to take a node out-of-service, you must simply stop the clusterd
+process and therefore comment it out from the inittab (then 'init q').
+Don't forget to uncomment it later when the node is back in service...
+
+
+----------------------------------------------------------------------
+Please send bug reports to lewispj@email.com

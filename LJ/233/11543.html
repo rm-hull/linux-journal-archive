@@ -1,0 +1,277 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Work the Shell
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Dave explains how to add contextual memory to a script so it can keep track&#10;of trends in its environment. Then he explores why that's harder if the&#10;script stops and starts over time.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1b9e580.0x1c95ac0"></a>
+Work the Shell
+</h1></div><div><h3 class="subtitle"><i>
+Web Administration Scripts&mdash;Redux
+</i></h3></div><div><div class="author"><h3 class="author">
+Dave
+ 
+Taylor
+</h3></div><div class="issuemoyr">Issue #233, September 2013</div></div><div><p>
+Dave explains how to add contextual memory to a script so it can keep track
+of trends in its environment. Then he explores why that's harder if the
+script stops and starts over time.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b9e580.0x1c96358"></a></h2></div></div><p>
+It's been months, and I'm still dealing with a DDOS (distributed
+denial of service) attack on my server&mdash;an attack that I can see is coming
+from China, but there's not really much I can do about it other
+than try to tweak firewall settings and so on.
+</p><p>
+In my last article, I started describing analyzing Apache log files and system
+settings to try to create some scripts that can watch for DDOS 
+attacks and flag them before that inevitable e-mail from a customer about
+the site being down or incredibly slow.
+</p><p>
+Honestly, it's pretty disheartening dealing with these anonymous
+attacks, but that's another column. If you've had experience with
+this sort of long-term problem, I'd be interested in hearing about how
+you finally resolved it.
+</p><p>
+The first script I worked on simply tracks how many processes are running
+on the server. It's just a small step from monitoring the output of the
+<tt  >uptime</tt> program, which, of course, could be done as easily as:
+
+
+<pre     class="programlisting">
+load="$(uptime | cut -d\  -f14 | cut -d. -f1)"
+if [ $load -gt 4 ] ; then
+  echo "Uptime greater than threshold. What's going on?"
+  uptime
+fi
+</pre>
+</p><p>
+That's marginally interesting, but let's go back to analyzing the
+number of processes running, as that's a better indication that there
+might be a DDOS happening. Last time, I used a loop of <tt  >ps ;
+sleep</tt> and kept
+track of the min/max values. After running for a while, the script's
+output was something like this:
+
+
+<pre     class="programlisting">
+Current ps count=90: min=76, max=150, tally=70 and average=107
+</pre>
+</p><p>
+Interpret this as after running for 90 cycles, the minimum number of Apache
+(httpd) processes running at any given time was 76, max was 150 and average
+was 107.
+</p><p>
+Once you've run this script for a few hours, you'll have a pretty
+good idea of typical traffic load on your server, which is critical for you
+to be able to detect out-of-pattern variations. If my average Apache
+process count is 107 and the server has 917 processes, there's a
+problem. On the other hand, if the average load is 325 processes, 600 isn't
+too far out of band and could be representative of a spike in traffic
+rather than the beginnings of an actual attack.
+</p><p>
+I wrapped up last month's article by showing a script suitable for
+running from <tt  >cron</tt> that would look for abnormal traffic spikes.
+But it had some problems, as I highlighted at the end of the column, my
+nerd version of a cliffhanger&mdash;no murder unsolved, no car in the driveway,
+no police sirens, just some code that needs improvement. Hey, work with me
+here!
+</p><p>
+The core problem with the script was really a lack of context. That is,
+it's not the very first time that it sees abnormally high process counts
+that I want to be notified, but the third or fourth time in a row. And then
+once it has notified me, I want the script to be smart enough not
+to notify me again unless things settle down and then jump up again.
+</p><p>
+<span   class="emphasis"><em>Context.</em></span>
+</p><p>
+With some scripts, this sort of thing can be quite tricky, requiring
+temporary files and semaphores to ensure that the script doesn't step
+on another version of itself reading/writing the file simultaneously.
+It's doable, but you really have to think about worst-case situations,
+temporarily blocked I/O channels and so on.
+</p><p>
+Fortunately, that's not the situation here. In fact, you can accomplish
+the addition of context by adding a couple state variables. Let's
+start by pulling the monitoring script back in:
+
+<pre     class="programlisting">
+#!/bin/sh
+# DDOS - keep an eye on process count to 
+# detect a blossoming DDOS attack
+pattern="httpd"
+max=200   # avoid false positives
+admin="d1taylor@gmail.com"
+count="$(ps -C $pattern | wc -l)"
+if [ $count -gt $max ] ; then
+  echo "Warning: DDOS in process? Current httpd 
+  &#8618;count = $count" | sendmail
+$admin
+fi
+exit 0
+</pre>
+</p><p>
+Let's use a &ldquo;repeated&rdquo; variable and set it to send a
+notification after
+the fourth occurrence of too many processes. That's just a matter of
+changing the conditional statement:
+
+<pre     class="programlisting">
+if [ $count -gt $max ] ; then
+  repeated=$(( $repeated + 1 ))
+  if [ $repeated -eq 4 ] ; then
+    echo "Warning: DDOS in process? Current httpd count
+    = $count" | sendmail $admin
+  fi
+fi
+</pre>
+</p><p>
+Not too difficult. But, what happens when there's then an iteration
+where the count isn't greater than the max threshold? That's also
+easily handled if you're willing to keep redundantly setting
+<tt  >repeated</tt> to
+zero. The outer &ldquo;fi&rdquo; simply changes to:
+
+<pre     class="programlisting">
+else
+  repeated=0
+fi
+</pre>
+</p><p>
+These additions produce both of the desired updates actually, because
+<tt  >repeated</tt> ensures that it won't notify of a problem until
+it's happened a few times, and the conditional <tt  >$repeated -eq
+4</tt>
+rather than, say, <tt  >$repeated -gt 4</tt>, also means that
+if it's
+slammed for 15 iterations, you'll still see only one e-mail message.
+</p><p>
+Finally, visualize a sequence where you get a spike for a while, then it
+quiets down. Then another spike hits for a few seconds, then it quiets down for an
+hour or two, and then it spikes again. That scenario will work as desired too,
+sending e-mail twice, once for each sustained spike, but not for the
+one-iteration spike in the middle (because in that instance,
+<tt  >repeated</tt> never gets beyond 1).
+</p><p>
+If you've been looking closely at the script, you'll have noticed
+that what appears at first glance to be an innocuous &ldquo;echo&rdquo;
+statement is in fact producing an e-mail message to the administrator.
+It's the second half of the statement that's doing the heavy
+lifting:
+
+<pre     class="programlisting">
+echo "Warning: DDOS in process? Current httpd count
+    = $count" | sendmail $admin
+</pre>
+</p><p>
+I'm old-school, so I go straight to the MTA (mail transport agent), but
+in reality, a better way to do this, an approach that would have the e-mail
+include a subject line, is to do something more like this:
+
+<pre     class="programlisting">
+echo | mail -s "DDOS Warning" $admin
+</pre>
+</p><p>
+Because sendmail is designed to be used behind the scenes, it lacks the
+refinement of things like a <tt  >-s</tt> flag to specify the subject of the
+message.
+</p><p>
+In fact, you can make this even a bit more elegant by turning the entire
+command into a variable:
+
+<pre     class="programlisting">
+sendmsg="mail -s 'DDOS Warning' $admin"
+</pre>
+</p><p>
+Then you easily can tack it onto the end of the echo statement:
+
+<pre     class="programlisting">
+echo | $sendmsg
+</pre>
+</p><p>
+What's the biggest problem with this approach? That if there are any errors, the
+pipe is only for stdout, not stderr, and those errors will be lost.
+</p><p>
+If you were going to run the script every few minutes from
+<tt  >cron</tt>, you
+could use its capability of e-mailing stdout + stderr, but that would
+involve a more complex contextual tracking solution (as discussed earlier).
+</p><p>
+Well, I'm off to install this script on my server and see how it does
+for a while. And you? Your assignment, dear reader, is to shoot in some
+proposed topics for me to explore in my column. What scripts would you like
+to see created, doing what?
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b9e580.0x1c97698"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Dave Taylor has been hacking shell scripts for more than 30 years. Really.
+He's the author of the popular <span   class="emphasis"><em>Wicked Cool Shell
+Scripts</em></span> and
+can be found on Twitter as @DaveTaylor and more generally at
+<a href="http://www.DaveTaylorOnline.com" target="_self">www.DaveTaylorOnline.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../233/toc233.html">Issue Table of Contents</a>
+    <a class="link3" href="../233/11543.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

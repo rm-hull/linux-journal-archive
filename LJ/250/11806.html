@@ -1,0 +1,193 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Hack and /
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The cloud: where security isn't easy, but it's necessary.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x10cb580.0x11c2ac0"></a>
+Hack and /
+</h1></div><div><h3 class="subtitle"><i>
+Secure Server Deployments in Hostile Territory, Part II
+</i></h3></div><div><div class="author"><h3 class="author">Kyle Rankin</h3></div><div class="issuemoyr">Issue #250, February 2015</div></div><div><p>
+The cloud: where security isn't easy, but it's necessary.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10cb580.0x11c33b0"></a></h2></div></div><p>
+In my last article, I started a series on some of the challenges related to spawning
+secure servers on Amazon EC2. In that column, I discussed some of the overall
+challenges EC2 presents for security compared to a traditional infrastructure
+and elaborated on how I configure security groups and manage secrets. In
+this article, I finish up the topic with a few more practices I put
+in place when deploying servers to EC2. As with the previous article,
+although
+my examples are with EC2, most of these practices are something you easily could
+adapt to any cloud environment or even your own infrastructure in most
+cases.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10cb580.0x11c3568"></a>
+Puppet-Specific Practices</h2></div></div><p>
+I know that everyone has their own favorite configuration management system.
+Without getting into a holy war, we use Puppet for configuration management, so
+I thought it would be worthwhile to highlight a few security practices related
+to Puppet itself. I'll keep all of the Puppet-specific tips in this section, so
+you can skip ahead to the next section if this doesn't interest you.
+</p><p>
+The first thing to cover in a Puppet deployment is how to spawn servers.
+I'm a
+big fan of using vanilla off-the-shelf Amazon AMIs instead of rolling my
+own.
+Maintaining my own system images adds a lot of overhead, particularly as things
+change, and I'd much rather let the Debian team manage that workload. I take
+the official Debian AMIs and add a userdata script that installs Puppet, and
+that's it. 
+</p><p>
+In a client/server model, when the client first attempts to check in
+to the Puppetmaster, it will present a certificate it has generated and request
+that the Puppetmaster sign it. Once the Puppetmaster signs it, it will trust
+that the client who presents that certificate is who it says it is. Although
+Puppet allows for automatic signing of all certificate requests, that's
+generally regarded as an insecure practice. Instead, what I do is have my
+spawning script launch another simple script that just checks for a new
+certificate from the host I spawned for the next ten minutes. If the host
+checks in within that ten-minute window, it gets signed; otherwise, the script
+exits. In this way, I create a very small window for an attacker to impersonate
+a server, and even then, I'd see the duplicate certificate request that I didn't
+sign on the Puppetmaster. This gives me a lot of the benefits of auto-signing
+without the risks.
+</p><p>
+I know a lot of Puppet advocates favor Puppet deployments without a
+Puppetmaster. In that model, the Puppet configurations are shipped to the
+hosts,
+and they apply them directly. Although there can be benefits to this approach, it
+has a few drawbacks. First, you lose the ability to deploy something like
+hiera-gpg with ease. More important to me, you lose the handy feature that
+every Puppet client has generated a valid internal certificate that has been
+signed by an internal trusted CA (the Puppetmaster). I heavily re-use these
+certificates internally whenever I need to set up TLS on any server, and we
+require TLS on all external network services. When another non-root service
+needs access to the certificate (such as an Nginx server or Postgres), I just
+make a copy of it that the particular service can see and store it elsewhere on
+the filesystem. 
+</p><p>
+We also have modified Puppet so that certificates are
+generated with a Subject Alt Name of role.domainname in addition to the
+standard hostname.domain each certificate already would have. Because we cluster
+our internal services for fault tolerance, we refer to services by role, and
+that role actually could point to three or more servers, each with its own
+domain name. By adding the role name as a Subject Alt Name to the certificate,
+it's easy to re-use these certificates for all internal services.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10cb580.0x11c3828"></a>
+Manage Dynamic IPs</h2></div></div><p>
+I'll be honest, dynamic IPs are a pain. That said, if you are using public EC2
+services, you don't have much of a choice. All IPs are assigned dynamically and
+change whenever you halt the server. This adds an additional level of
+complexity to the environment, because you don't know ahead of time what IP a
+server will have. To combat this, I have set up an internal DNS server that has
+been configured to allow dynamic DNS updates. For a host to update its DNS
+record, however, it needs to have a shared secret that gets generated on the
+DNS server and exported to Puppet. Once Puppet starts configuring the server,
+it creates the local key file that contains the secret and builds a local
+nsupdate script that updates any records the host needs. From that point on,
+every time Puppet runs, the host confirms all of its dynamic DNS records are
+accurate. I've also added a hook so that when I decommission a host, Puppet will
+remove all of those records.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10cb580.0x11c3988"></a>
+Overall Best Practices</h2></div></div><p>
+There are a few other general security practices I put in place. First, as
+I mentioned before, because each host has a certificate signed by an internal
+trusted CA for Puppet, we take advantage of those certs to require TLS for all
+network communications between hosts. Given that you are sharing a network with
+other EC2 hosts, you want to make sure nobody can read your traffic as it goes
+over this network. In addition, the use of TLS helps us avoid man-in-the-middle
+attacks. 
+</p><p>
+We also take additional steps with package management. We host
+internal package repositories that mirror only upstream packages we actually
+use. We sign any internal packages we create, and hosts validate the signatures
+before they install packages. Finally, we go to extra steps to restrict access
+to our environments. Our production environment in particular is restricted to
+a small number of sysadmins and is accessed via a separate VPN. We require
+key-based SSH authentication and have an internal policy for sysadmins to
+password-protect their SSH keys (read my &ldquo;Secret Agent Man&rdquo;
+article in the December 2013 issue for some tips
+related to SSH agent and password-protected key management).
+</p><p>
+Although this isn't a complete list of security practices I use (or that you
+should use),
+hopefully it's enough to give you an overview of the sorts of considerations
+you should make if you want to host a secure environment in the cloud.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x10cb580.0x11c3bf0"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Kyle Rankin is a Sr. Systems Administrator in the San Francisco Bay Area
+and
+the
+author of a number of books, including <span   class="emphasis"><em>The Official Ubuntu Server
+Book</em></span>,
+<span   class="emphasis"><em>Knoppix Hacks</em></span> and <span   class="emphasis"><em>Ubuntu Hacks</em></span>.
+He is currently the president of the North
+Bay Linux Users' Group.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../250/toc250.html">Issue Table of Contents</a>
+    <a class="link3" href="../250/11806.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

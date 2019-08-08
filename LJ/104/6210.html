@@ -1,0 +1,523 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Playing with ptrace, Part II</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    In Part II of his series on ptrace, Pradeep tackles the more advanced topics of setting breakpoints and injecting code into running processes.&#10;    "><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1fdf580.0x20d6ab0"></a>Playing with ptrace, Part II</h1></div><div><div class="author"><h3 class="author">Pradeep Padala</h3></div><div class="issuemoyr">Issue #104, December 2002</div></div><div><p>
+    In Part II of his series on ptrace, Pradeep tackles the more advanced topics of setting breakpoints and injecting code into running processes.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fdf580.0x20d74a8"></a></h2></div></div><p>In Part I of this article
+[<i  >LJ</i>, November 2002], we saw how ptrace can be
+used to trace system calls and change system call arguments. In
+this article, we investigate advanced techniques like setting
+breakpoints and injecting code into running programs. Debuggers use
+these methods to set up breakpoints and execute debugging handlers.
+As with Part I, all code in this article is i386
+architecture-specific.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fdf580.0x20d7608"></a>Attaching to a Running Process</h2></div></div><p>In Part I, we ran the process to be traced as a child after
+calling ptrace(PTRACE_TRACEME, ..). If you simply wanted to see how
+the process is making system calls and trace the program, this
+would be sufficient. If you want to trace or debug a process
+already running, then ptrace(PTRACE_ATTACH, ..) should be
+used.</p><p>When a ptrace(PTRACE_ATTACH, ..) is called with the pid to be
+traced, it is roughly equivalent to the process calling
+ptrace(PTRACE_TRACEME, ..) and becoming a child of the tracing
+process. The traced process is sent a SIGSTOP, so we can examine
+and modify the process as usual. After we are done with
+modifications or tracing, we can let the traced process continue on
+its own by calling ptrace(PTRACE_DETACH, ..).</p><p>The following is the code for a small example tracing
+program:</p><pre     class="programlisting">
+int main()
+{   int i;
+    for(i = 0;i &lt; 10; ++i) {
+        printf("My counter: %d\n", i);
+        sleep(2);
+    }
+    return 0;
+}
+</pre><p>Save the program as dummy2.c. Compile and run it:
+<pre     class="programlisting">
+gcc -o dummy2 dummy2.c
+./dummy2 &amp;
+</pre>
+
+
+Now, we can attach to dummy2 by using the code below:
+<pre     class="programlisting">
+#include &lt;sys/ptrace.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;linux/user.h&gt;   /* For user_regs_struct
+                             etc. */
+int main(int argc, char *argv[])
+{   pid_t traced_process;
+    struct user_regs_struct regs;
+    long ins;
+    if(argc != 2) {
+        printf("Usage: %s &lt;pid to be traced&gt;\n",
+               argv[0], argv[1]);
+        exit(1);
+    }
+    traced_process = atoi(argv[1]);
+    ptrace(PTRACE_ATTACH, traced_process,
+           NULL, NULL);
+    wait(NULL);
+    ptrace(PTRACE_GETREGS, traced_process,
+           NULL, &amp;regs);
+    ins = ptrace(PTRACE_PEEKTEXT, traced_process,
+                 regs.eip, NULL);
+    printf("EIP: %lx Instruction executed: %lx\n",
+           regs.eip, ins);
+    ptrace(PTRACE_DETACH, traced_process,
+           NULL, NULL);
+    return 0;
+}
+</pre>
+
+
+The above program simply attaches to a process, waits for it to
+stop, examines its eip (instruction pointer) and detaches.
+</p><p>To inject code use ptrace(PTRACE_POKETEXT, ..) and
+ptrace(PTRACE_POKEDATA, ..) after the traced process has
+stopped.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fdf580.0x20d7978"></a>Setting Breakpoints</h2></div></div><p>How do debuggers set breakpoints? Generally, they replace the
+instruction to be executed with a trap instruction, so that when
+the traced program stops, the tracing program, the debugger, can
+examine it. It will replace the original instruction once the
+tracing program continues the traced process. Here's an
+example:</p><pre     class="programlisting">
+#include &lt;sys/ptrace.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;linux/user.h&gt;
+const int long_size = sizeof(long);
+void getdata(pid_t child, long addr,
+             char *str, int len)
+{   char *laddr;
+    int i, j;
+    union u {
+            long val;
+            char chars[long_size];
+    }data;
+    i = 0;
+    j = len / long_size;
+    laddr = str;
+    while(i &lt; j) {
+        data.val = ptrace(PTRACE_PEEKDATA, child,
+                          addr + i * 4, NULL);
+        memcpy(laddr, data.chars, long_size);
+        ++i;
+        laddr += long_size;
+    }
+    j = len % long_size;
+    if(j != 0) {
+        data.val = ptrace(PTRACE_PEEKDATA, child,
+                          addr + i * 4, NULL);
+        memcpy(laddr, data.chars, j);
+    }
+    str[len] = '\0';
+}
+void putdata(pid_t child, long addr,
+             char *str, int len)
+{   char *laddr;
+    int i, j;
+    union u {
+            long val;
+            char chars[long_size];
+    }data;
+    i = 0;
+    j = len / long_size;
+    laddr = str;
+    while(i &lt; j) {
+        memcpy(data.chars, laddr, long_size);
+        ptrace(PTRACE_POKEDATA, child,
+               addr + i * 4, data.val);
+        ++i;
+        laddr += long_size;
+    }
+    j = len % long_size;
+    if(j != 0) {
+        memcpy(data.chars, laddr, j);
+        ptrace(PTRACE_POKEDATA, child,
+               addr + i * 4, data.val);
+    }
+}
+int main(int argc, char *argv[])
+{   pid_t traced_process;
+    struct user_regs_struct regs, newregs;
+    long ins;
+    /* int 0x80, int3 */
+    char code[] = {0xcd,0x80,0xcc,0};
+    char backup[4];
+    if(argc != 2) {
+        printf("Usage: %s &lt;pid to be traced&gt;\n",
+               argv[0], argv[1]);
+        exit(1);
+    }
+    traced_process = atoi(argv[1]);
+    ptrace(PTRACE_ATTACH, traced_process,
+           NULL, NULL);
+    wait(NULL);
+    ptrace(PTRACE_GETREGS, traced_process,
+           NULL, &amp;regs);
+    /* Copy instructions into a backup variable */
+    getdata(traced_process, regs.eip, backup, 3);
+    /* Put the breakpoint */
+    putdata(traced_process, regs.eip, code, 3);
+    /* Let the process continue and execute
+       the int 3 instruction */
+    ptrace(PTRACE_CONT, traced_process, NULL, NULL);
+    wait(NULL);
+    printf("The process stopped, putting back "
+           "the original instructions\n");
+    printf("Press &lt;enter&gt; to continue\n");
+    getchar();
+    putdata(traced_process, regs.eip, backup, 3);
+    /* Setting the eip back to the original
+       instruction to let the process continue */
+    ptrace(PTRACE_SETREGS, traced_process,
+           NULL, &amp;regs);
+    ptrace(PTRACE_DETACH, traced_process,
+           NULL, NULL);
+    return 0;
+}
+</pre><p>Here we replace the three bytes with the code for a trap
+instruction, and when the process stops, we replace the original
+instructions and reset the eip to original location. Figures 1-4
+clarify how the instruction stream looks when above program is
+executed.
+<div class="table"><a name="N0x1fdf580.0x20d7b30"></a><p class="title"><b></b></p><table     summary="" border="1"><colgroup><col><col></colgroup><tbody><tr><td><p>
+<div      class="mediaobject"><img src="6210f1.jpg"></div>
+</p></td><td><p>
+<div      class="mediaobject"><img src="6210f2.jpg"></div>
+</p></td></tr><tr><td><p>Figure 1. After the Process Is Stopped</p></td><td><p>Figure 2. After the Trap Instruction Bytes Are
+Set</p></td></tr><tr><td><p>
+<div      class="mediaobject"><img src="6210f3.jpg"></div>
+</p></td><td><p>
+<div      class="mediaobject"><img src="6210f4.jpg"></div>
+</p></td></tr><tr><td><p>Figure 3. Trap Is Hit and Control Is Given to the
+Tracing Program</p></td><td><p>Figure 4. After the Original Instructions Are Replaced
+and eip Is Reset to the Original Location</p></td></tr></tbody></table></div>
+</p><p>Now that we have a clear idea of how breakpoints are set,
+let's inject some code bytes into a running program. These code
+bytes will print &ldquo;hello world&rdquo;.</p><p>The following program is a simple &ldquo;hello world&rdquo; program
+with modifications to fit our needs. Compile the following program
+with:</p><pre     class="programlisting">
+gcc -o hello hello.c
+void main()
+{
+__asm__("
+         jmp forward
+backward:
+         popl   %esi      # Get the address of
+                          # hello world string
+         movl   $4, %eax  # Do write system call
+         movl   $2, %ebx
+         movl   %esi, %ecx
+         movl   $12, %edx
+         int    $0x80
+         int3             # Breakpoint. Here the
+                          # program will stop and
+                          # give control back to
+                          # the parent
+forward:
+         call   backward
+         .string \"Hello World\\n\""
+       );
+}
+</pre><p>The jumping backward and forward here is required to find the
+address of the &ldquo;hello world&rdquo; string.
+</p><p>We can get the machine code for the above assembly from GDB.
+Fire up GDB and disassemble the program:</p><pre     class="programlisting">
+(gdb) disassemble main
+Dump of assembler code for function main:
+0x80483e0 &lt;main&gt;:       push   %ebp
+0x80483e1 &lt;main+1&gt;:     mov    %esp,%ebp
+0x80483e3 &lt;main+3&gt;:     jmp    0x80483fa &lt;forward&gt;
+End of assembler dump.
+(gdb) disassemble forward
+Dump of assembler code for function forward:
+0x80483fa &lt;forward&gt;:    call   0x80483e5 &lt;backward&gt;
+0x80483ff &lt;forward+5&gt;:  dec    %eax
+0x8048400 &lt;forward+6&gt;:  gs
+0x8048401 &lt;forward+7&gt;:  insb   (%dx),%es:(%edi)
+0x8048402 &lt;forward+8&gt;:  insb   (%dx),%es:(%edi)
+0x8048403 &lt;forward+9&gt;:  outsl  %ds:(%esi),(%dx)
+0x8048404 &lt;forward+10&gt;: and    %dl,0x6f(%edi)
+0x8048407 &lt;forward+13&gt;: jb     0x8048475
+0x8048409 &lt;forward+15&gt;: or     %fs:(%eax),%al
+0x804840c &lt;forward+18&gt;: mov    %ebp,%esp
+0x804840e &lt;forward+20&gt;: pop    %ebp
+0x804840f &lt;forward+21&gt;: ret
+End of assembler dump.
+(gdb) disassemble backward
+Dump of assembler code for function backward:
+0x80483e5 &lt;backward&gt;:   pop    %esi
+0x80483e6 &lt;backward+1&gt;: mov    $0x4,%eax
+0x80483eb &lt;backward+6&gt;: mov    $0x2,%ebx
+0x80483f0 &lt;backward+11&gt;:        mov    %esi,%ecx
+0x80483f2 &lt;backward+13&gt;:        mov    $0xc,%edx
+0x80483f7 &lt;backward+18&gt;:        int    $0x80
+0x80483f9 &lt;backward+20&gt;:        int3
+End of assembler dump.
+</pre><p>We need to take the machine code bytes from main+3 to
+backward+20, which is a total of 41 bytes. The machine code can be
+seen with the x command in GDB:
+<pre     class="programlisting">
+(gdb) x/40bx main+3
+&lt;main+3&gt;: eb 15 5e b8 04 00 00 00
+&lt;backward+6&gt;: bb 02 00 00 00 89 f1 ba
+&lt;backward+14&gt;: 0c 00 00 00 cd 80 cc
+&lt;forward+1&gt;: e6 ff ff ff 48 65 6c 6c
+&lt;forward+9&gt;: 6f 20 57 6f 72 6c 64 0a
+</pre>
+
+
+Now we have the instruction bytes to be executed. Why wait? We can
+inject them using the same method as in the previous example. The
+following is the source code; only the main function is given here:
+<pre     class="programlisting">
+int main(int argc, char *argv[])
+{   pid_t traced_process;
+    struct user_regs_struct regs, newregs;
+    long ins;
+    int len = 41;
+    char insertcode[] =
+"\xeb\x15\x5e\xb8\x04\x00"
+        "\x00\x00\xbb\x02\x00\x00\x00\x89\xf1\xba"
+        "\x0c\x00\x00\x00\xcd\x80\xcc\xe8\xe6\xff"
+        "\xff\xff\x48\x65\x6c\x6c\x6f\x20\x57\x6f"
+        "\x72\x6c\x64\x0a\x00";
+    char backup[len];
+    if(argc != 2) {
+        printf("Usage: %s &lt;pid to be traced&gt;\n",
+               argv[0], argv[1]);
+        exit(1);
+    }
+    traced_process = atoi(argv[1]);
+    ptrace(PTRACE_ATTACH, traced_process,
+           NULL, NULL);
+    wait(NULL);
+    ptrace(PTRACE_GETREGS, traced_process,
+           NULL, &amp;regs);
+    getdata(traced_process, regs.eip, backup, len);
+    putdata(traced_process, regs.eip,
+            insertcode, len);
+    ptrace(PTRACE_SETREGS, traced_process,
+           NULL, &amp;regs);
+    ptrace(PTRACE_CONT, traced_process,
+           NULL, NULL);
+    wait(NULL);
+    printf("The process stopped, Putting back "
+           "the original instructions\n");
+    putdata(traced_process, regs.eip, backup, len);
+    ptrace(PTRACE_SETREGS, traced_process,
+           NULL, &amp;regs);
+    printf("Letting it continue with "
+           "original flow\n");
+    ptrace(PTRACE_DETACH, traced_process,
+           NULL, NULL);
+    return 0;
+}
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fdf580.0x20d8aa8"></a>Injecting the Code into Free Space</h2></div></div><p>In the previous example we injected the code directly into
+the executing instruction stream. However, debuggers can get
+confused with this kind of behaviour, so let's find the free space
+in the process and inject the code there. We can find free space by
+examining the /proc/pid/maps file of the traced process. The
+following function will find the starting address of this
+map:</p><pre     class="programlisting">
+long freespaceaddr(pid_t pid)
+{
+    FILE *fp;
+    char filename[30];
+    char line[85];
+    long addr;
+    char str[20];
+    sprintf(filename, "/proc/%d/maps", pid);
+    fp = fopen(filename, "r");
+    if(fp == NULL)
+        exit(1);
+    while(fgets(line, 85, fp) != NULL) {
+        sscanf(line, "%lx-%*lx %*s %*s %s", &amp;addr,
+               str, str, str, str);
+        if(strcmp(str, "00:00") == 0)
+            break;
+    }
+    fclose(fp);
+    return addr;
+}
+</pre><p>Each line in /proc/pid/maps represents a mapped region of the
+process. An entry in /proc/pid/maps looks like this:
+<pre     class="programlisting">
+map start-mapend    protection  offset     device
+inode      process file
+08048000-0804d000   r-xp        00000000   03:08
+66111      /opt/kde2/bin/kdeinit
+</pre>
+
+
+The following program injects code into free space. It's similar to
+the previous injection program except the free space address is
+used for keeping our new code. Here is the source code for the main
+function:
+<pre     class="programlisting">
+int main(int argc, char *argv[])
+{   pid_t traced_process;
+    struct user_regs_struct oldregs, regs;
+    long ins;
+    int len = 41;
+    char insertcode[] =
+"\xeb\x15\x5e\xb8\x04\x00"
+        "\x00\x00\xbb\x02\x00\x00\x00\x89\xf1\xba"
+        "\x0c\x00\x00\x00\xcd\x80\xcc\xe8\xe6\xff"
+        "\xff\xff\x48\x65\x6c\x6c\x6f\x20\x57\x6f"
+        "\x72\x6c\x64\x0a\x00";
+    char backup[len];
+    long addr;
+    if(argc != 2) {
+        printf("Usage: %s &lt;pid to be traced&gt;\n",
+               argv[0], argv[1]);
+        exit(1);
+    }
+    traced_process = atoi(argv[1]);
+    ptrace(PTRACE_ATTACH, traced_process,
+           NULL, NULL);
+    wait(NULL);
+    ptrace(PTRACE_GETREGS, traced_process,
+           NULL, &amp;regs);
+    addr = freespaceaddr(traced_process);
+    getdata(traced_process, addr, backup, len);
+    putdata(traced_process, addr, insertcode, len);
+    memcpy(&amp;oldregs, &amp;regs, sizeof(regs));
+    regs.eip = addr;
+    ptrace(PTRACE_SETREGS, traced_process,
+           NULL, &amp;regs);
+    ptrace(PTRACE_CONT, traced_process,
+           NULL, NULL);
+    wait(NULL);
+    printf("The process stopped, Putting back "
+           "the original instructions\n");
+    putdata(traced_process, addr, backup, len);
+    ptrace(PTRACE_SETREGS, traced_process,
+           NULL, &amp;oldregs);
+    printf("Letting it continue with "
+           "original flow\n");
+    ptrace(PTRACE_DETACH, traced_process,
+           NULL, NULL);
+    return 0;
+}
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fdf580.0x23e3ad0"></a>Behind the Scenes</h2></div></div><p>So what happens within the kernel now? How is ptrace
+implemented? This section could be an article on its own; however,
+here's a brief description of what happens.</p><p>When a process calls ptrace with PTRACE_TRACEME, the kernel
+sets up the process flags to reflect that it is being
+traced:</p><pre     class="programlisting">
+Source: arch/i386/kernel/ptrace.c
+if (request == PTRACE_TRACEME) {
+    /* are we already being traced? */
+    if (current-&gt;ptrace &amp; PT_PTRACED)
+        goto out;
+    /* set the ptrace bit in the process flags. */
+    current-&gt;ptrace |= PT_PTRACED;
+    ret = 0;
+    goto out;
+}
+</pre><p>When a system call entry is done, the kernel checks this flag
+and calls the trace system call if the process is being traced. The
+gory assembly details can be found in arch/i386/kernel/entry.S.
+</p><p>Now, we are in the sys_trace() function as defined in
+arch/i386/kernel/ptrace.c. It stops the child and sends a signal to
+the parent notifying that the child is stopped. This wakes up the
+waiting parent, and it does the ptrace magic. Once the parent is
+done, and it calls ptrace(PTRACE_CONT, ..) or
+ptrace(PTRACE_SYSCALL, ..), it wakes up the child by calling the
+scheduler function wake_up_process(). Some other architectures can
+implement this by sending a SIGCHLD to child.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fdf580.0x23e3d38"></a>Conclusion</h2></div></div><p><span   class="bold"><b>ptrace</b></span> may appear to be
+magic to some people, because it can examine and modify a running
+program. It is generally used by debuggers and system call tracing
+programs, such as ptrace. It opens up interesting possibilities for
+doing user-mode extensions as well. There have been a lot of
+attempts to extend the operating system on the user level. See
+Resources to read about UFO, a user-level extension to filesystems.
+<span   class="bold"><b>ptrace</b></span> also is used to employ
+security mechanisms.</p><p>All example code from this article and from Part I is
+available as a tar archive on the <i  >Linux Journal</i> FTP site
+[<a href="../listings/104/6210.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue104/6210.tgz</a>].</p><p><a href="6210s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="6210aa.jpg"></div>
+
+       email: <a href="mailto:ppadala@cise.ufl.edu">ppadala@cise.ufl.edu</a>
+       </p><p><span   class="bold"><b>Pradeep Padala</b></span>
+      is currently working on his Master's degree at the University of
+      Florida. His research interests include Grid and distributed
+      systems. He can be reached via e-mail at
+      <a href="mailto:p_padala@yahoo.com">p_padala@yahoo.com</a>
+      or through his web site
+      (<a href="http://www.cise.ufl.edu/~ppadala" target="_self">www.cise.ufl.edu/~ppadala</a>).</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../104/toc104.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

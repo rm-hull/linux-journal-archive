@@ -1,0 +1,757 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Linux Advanced Routing Tutorial
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The Internet is a scarce resource on the remote Pacific island where I&#10;live. We can get slow, expensive connectivity, or fast bloody-expensive&#10;connectivity. Fast and cheap doesn't exist over here.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xc8c580.0xd83ac0"></a>
+Linux Advanced Routing Tutorial
+</h1></div><div><div class="author"><h3 class="author">
+Michal
+ 
+Ludvig
+</h3></div><div class="issuemoyr">Issue #231, July 2013</div></div><div><p>
+The Internet is a scarce resource on the remote Pacific island where I
+live. We can get slow, expensive connectivity, or fast bloody-expensive
+connectivity. Fast and cheap doesn't exist over here.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0xd84250"></a></h2></div></div><p>
+For years, we used to have a plain-old ADSL in the office&mdash;fast download
+speeds, slow upload, high latency&mdash;all that at the cost of $1/GB. We have
+had so many problems with performance and reliability that after a few
+years of struggling, we decided to get a second upstream link&mdash;SHDSL 5M/5M
+symmetric link&mdash;low latency, consistent speed during the day. It's simply
+awesome.
+</p><div       class="mediaobject"><a href="11235f1.large.jpg"><img src="11235f1.jpg"></a><div class="caption"><p>
+Figure 1. Network Overview
+</p></div></div><p>
+However, SHDSL is expensive! Although national traffic is free of
+charge, international traffic is $5/GB. Compare that with ADSL at $1/GB for both
+national and international (Table 1).
+</p><div class="table"><a name="N0xc8c580.0xd84618"></a><p class="title"><b>Table 1. ADSL vs. SHDSL</b></p><table     summary="Table 1. ADSL vs. SHDSL11235t1.qrk" border="1"><colgroup><col><col><col></colgroup><thead><tr><th>&nbsp;</th><th>ADSL</th><th>SHDSL</th></tr></thead><tbody><tr><td>Speed</td><td>7M down/1M up</td><td>5M down/5M up</td></tr><tr><td>Price national</td><td>$1/GB</td><td>Free</td></tr><tr><td>Price international</td><td>$1/GB</td><td>$5/GB</td></tr><tr><td>Public IP addresses</td><td>1</td><td>1 + /28</td></tr></tbody></table></div><p>
+There are clear pros and cons to both. That made me think (and I
+don't do that often), what if we kept ADSL for international traffic
+that's not that critical for us, and use SHDSL primarily for national
+traffic&mdash;fast and cheap?
+</p><div       class="mediaobject"><a href="11235f2.large.jpg"><img src="11235f2.jpg"></a><div class="caption"><p>
+Figure 2. Split Traffic between International and National
+</p></div></div><p>
+We also got a /28 subnet with the SHDSL to use for a DMZ, and obviously,
+we want all the traffic to and from the DMZ to go via the SHDSL link,
+regardless of whether it's national or international.
+</p><div       class="mediaobject"><a href="11235f3.large.jpg"><img src="11235f3.jpg"></a><div class="caption"><p>
+Figure 3. Traffic to/from the DMZ
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0xd85380"></a>
+Routing 101</h2></div></div><p>
+For my plan to work, the company core router needs some way to tell whether
+a packet from a workstation in the office to an IP.AD.DR.ES in the wild
+open Internet is international or national and send it
+accordingly through ADSL or SHDSL. Routers use their routing tables for
+deciding the fates and paths of the packets they forward. A simple routing
+table for an office workstation with an address of 192.168.130.100 may look
+like this:
+
+<pre     class="programlisting">
+[workstation] ~ # ip route show
+192.168.130.0/24 dev eth0 proto kernel  scope link  
+ &#8618;src 192.168.130.100
+default via 192.168.130.1 dev eth0
+</pre>
+</p><p>
+This says that all traffic to all other addresses in the 192.168.130.0/24
+range is
+to be sent straight to the local network segment attached to interface
+eth0. All other traffic follows the &ldquo;default&rdquo; route and is handed over to
+the router with IP 192.168.130.1 to handle it. Let's assume we're sending
+a packet to 8.8.4.4, Google's public DNS server. For starters, we're trying
+to &ldquo;ping 8.8.4.4&rdquo; and are observing the traffic on the workstation's eth0
+interface with tcpdump:
+
+
+<pre     class="programlisting">
+[workstation] ~ # tcpdump -i eth0 -n -s0 -e
+listening on eth0, link-type EN10MB (Ethernet), 
+ &#8618;capture size 65535 bytes
+[1] 17:53:59.615650 00:16:17:ec:5c:6c &gt; ff:ff:ff:ff:ff:ff, 
+ &#8618;ethertype ARP (0x0806), length 42:
+        Request who-has 192.168.130.1 tell 192.168.130.100, 
+        &#8618;length 28
+[2] 17:53:59.615775 00:14:c2:5b:4f:2c &gt; 00:16:17:ec:5c:6c, 
+ &#8618;ethertype ARP (0x0806), length 60:
+        Reply 192.168.130.1 is-at 00:14:c2:5b:4f:2c, length 46
+[3] 17:53:59.615796 00:16:17:ec:5c:6c &gt; 00:14:c2:5b:4f:2c, 
+ &#8618;ethertype IPv4 (0x0800), length 98:
+        192.168.130.100 &gt; 8.8.4.4: ICMP echo request, 
+        &#8618;id 3082, seq 1, length 64
+</pre>
+</p><p>
+My workstation consulted the routing table for the destination IP 8.8.4.4 and
+realized it should send the packet to the default router 192.168.130.1.
+For that, it needs the router's low-level Ethernet address (also known as
+a MAC address), and the first packet in the above tcpdump output, marked [1],
+is doing exactly that&mdash;asking for the MAC address of IP 192.168.130.1 by
+&ldquo;broadcasting&rdquo; the request to all nodes on the network segment. The second
+packet, marked [2], is a reply&mdash;IP 192.168.130.1 is at MAC address
+00:14:c2:5b:4f:2c. Finally, the PING packet can be dispatched, with the
+destination IP 8.8.4.4 to the router's MAC address 00:14:c2:5b:4f:2c (see
+the line marked [3]).
+</p><p>
+All good, so now we can assume our router got the packet and will forward it
+further toward the destination. Let's see what happens on the router.
+</p><p>
+We've got both the ADSL and the SHDSL links configured, but all traffic is,
+by default, sent through ADSL. The ADSL modem is at 192.168.128.254. For
+now, the SHDSL link 203.0.113.36/30 sits idle. Here is the routing table:
+
+<pre     class="programlisting">
+[router] ~ # ip route show
+[1] 203.0.113.36/30 dev vlan-shdsl  proto kernel  
+ &#8618;scope link  src 203.0.113.38
+[2] 192.168.128.0/24 dev vlan-adsl  proto kernel  
+ &#8618;scope link  src 192.168.128.1
+[3] 192.168.130.0/24 dev vlan-office  proto kernel  
+ &#8618;scope link  src 192.168.130.1
+[4] default via 192.168.128.254 dev vlan-adsl
+</pre>
+</p><p>
+The first line [1] is the SHDSL link&mdash;our router's IP on that link is
+203.0.113.38. The second line is the link to the ADSL modem; the third
+line [3] is the network segment with my workstation, and finally, the fourth
+line [4] is the default route. All packets that don't match any of the
+local subnets on lines 1, 2 or 3 are sent down to the ADSL modem at
+192.168.128.254 that then will forward them to the ISP 2. That's also the
+fate of our packet to 8.8.4.4. Let's quickly verify what is going to
+happen to it by calling <tt  >ip route get</tt>:
+
+
+<pre     class="programlisting">
+[router] ~ # ip route get 8.8.4.4 from 192.168.130.100 
+ &#8618;iif vlan-office
+8.8.4.4 from 192.168.130.100 via 192.168.128.254 dev vlan-adsl
+</pre>
+</p><p>
+As you can see, it will be sent &ldquo;via 192.168.128.254&rdquo;, which is the ADSL
+modem. A simple way to check the full network path from my workstation to
+any given destination address is the traceroute command. It shows all
+the routers (&ldquo;hops&rdquo;) along the way to the destination:
+
+
+<pre     class="programlisting">
+[workstation] ~ $ /usr/sbin/traceroute 8.8.4.4
+traceroute to 8.8.4.4 (8.8.4.4), 30 hops max, 
+ &#8618;40 byte packets using UDP
+ 1  gw-vlan-office.e-it.co.nz (192.168.130.1)  
+    &#8618;0.156 ms  0.126 ms  0.124 ms
+ 2  gw-vlan-adsl.e-it.co.nz (192.168.128.254)  
+    &#8618;0.853 ms  0.831 ms  0.830 ms
+ 3  core-adsl.isp2 (218.101.x.y)  
+    &#8618;11.765 ms  19.173 ms  19.066 ms
+ 4  core-xyz.isp2 (203.98.x.y)  
+    &#8618;16.052 ms  15.515 ms  17.153 ms
+[... some more hops ...]
+13  64.233.x.y (64.233.x.y)  193.826 ms  194.230 ms  194.412 ms
+14  * * *
+15  google-public-dns-b.google.com (8.8.4.4)  
+    &#8618;196.086 ms  195.909 ms  195.816 ms
+</pre>
+</p><p>
+As you can see, the first hop is our router 192.168.130.1. The second
+hop is the ADSL modem 192.168.128.254. The third hop is one of the
+ISP2's core routers, and so on and on, passing 11 more routers before the
+packet finally reaches the destination 8.8.4.4, aka
+google-public-dns-b.google.com.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0xd85bc0"></a>
+National vs. International Traffic</h2></div></div><p>
+Google's public DNS server B is clearly an off-shore international
+destination. However, one of the root DNS servers, namely
+f.root-servers.net with IP 192.5.5.241, is present here in New Zealand. At
+the moment, the traceroute to f.root-servers.net still shows the ADSL path:
+
+
+<pre     class="programlisting">
+[workstation] ~ $ /usr/sbin/traceroute f.root-servers.net
+traceroute to f.root-servers.net (192.5.5.241), 30 hops max, 
+ &#8618;40 byte packets using UDP
+ 1  gw-vlan-office.e-it.co.nz (192.168.130.1)  
+    &#8618;0.175 ms  0.126 ms  0.125 ms
+ 2  gw-vlan-adsl.e-it.co.nz (192.168.128.254)  
+    &#8618;0.861 ms  0.840 ms  0.825 ms
+ 3  core-adsl.isp2 (218.101.x.y)  22.456 ms  22.298 ms  23.501 ms
+ 4  isp2.ape.net.nz (192.203.154.x)  21.035 ms  20.928 ms  21.268 ms
+ 5  isc2.ape.net.nz (192.203.154.y)  20.689 ms  21.724 ms  24.187 ms
+ 6  f.root-servers.net (192.5.5.241)  26.680 ms  26.059 ms  25.427 ms
+</pre>
+</p><p>
+This is clearly national traffic, and it should go out via the SHDSL
+link as per our plan. We can do that manually and set the appropriate
+route on our core router:
+
+<pre     class="programlisting">
+[router] ~ # ip route add 192.5.5.241 via 203.0.113.37 
+ &#8618;dev vlan-shdsl
+</pre>
+</p><p>
+A side note about NAT'ing:
+we also need to translate (or &ldquo;masquerade&rdquo; or NAT) the office address
+range 192.168.130.0/24 to our SHDSL public IP 203.0.113.38. If we didn't,
+the packet's source IP would be 192.168.130.100, and the replies would
+never find their way back to my workstation, as this address range is not
+routable in the public Internet. Discussing firewalls and NATs is out of
+scope of this article, but to get you going, here's the simplest magic
+command:
+
+
+<pre     class="programlisting">
+[router] ~ # iptables -t nat -A POSTROUTING -s 192.168.128.0/20 
+ &#8618;-o vlan-shdsl -j DNAT --to 203.0.113.38
+</pre>
+</p><p>
+All packets with a source address from the 192.168.128.0/20 range leaving
+through the interface vlan-shdsl will get the source rewritten to
+203.0.113.38. We didn't need to set up any masquerading for the ADSL path,
+because there the ADSL router NATs all our outgoing traffic.
+</p><p>
+Now, let's check the new network path:
+
+
+<pre     class="programlisting">
+[workstation] ~ $ /usr/sbin/traceroute f.root-servers.net
+traceroute to f.root-servers.net (192.5.5.241), 30 hops max, 
+ &#8618;40 byte packets using UDP
+ 1  gw-vlan-office.e-it.co.nz (192.168.130.1)  
+    &#8618;0.190 ms  0.129 ms  0.125 ms
+ 2  rt-shdsl.isp1 (203.0.113.37)  2.676 ms  2.599 ms  2.632 ms
+ 3  rt3.isp1 (121.98.ab.cd)  2.715 ms  2.680 ms  2.591 ms
+ 4  isc2.ape.net.nz (192.203.154.z)  2.919 ms  3.033 ms  3.088 ms
+ 5  f.root-servers.net (192.5.5.241)  3.007 ms  2.670 ms  2.864 ms
+</pre>
+</p><p>
+That's lot better. The first hop remains the same, that's my
+workstation's router, but the second hop is no longer the ADSL modem.
+Instead, it's the SHDSL ISP1's core router. It also clearly shows the
+latency improvement&mdash;from 26ms over ADSL to 3ms over SHDSL.
+</p><p>
+Let's remove the manual route again to avoid any confusion down the road
+and query the routing table:
+
+
+<pre     class="programlisting">
+[router] ~ # ip route get 192.5.5.241 from 
+ &#8618;192.168.130.100 iif vlan-office
+192.5.5.241 from 192.168.130.100 via 203.0.113.37 
+ &#8618;dev vlan-shdsl        # SHDSL
+
+[router] ~ # ip route delete 192.5.5.241 via 203.0.113.37 
+ &#8618;dev vlan-shdsl
+
+[router] ~ # ip route get 192.5.5.241 from 
+ &#8618;192.168.130.100 iif vlan-office
+192.5.5.241 from 192.168.130.100 via 192.168.128.254 
+ &#8618;dev vlan-adsl      # ADSL
+</pre>
+</p><p>
+So all we need now is a list of all national IP addresses, put them in the
+routing table, and we're done. But how? Manually? Even in a small country
+like New Zealand there are hundreds of local IP addresses and prefixes,
+and the list is dynamic and changes daily. There is no way such a list
+could be managed manually. We need a better tool.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0xd7cb88"></a>
+Feeding the Bird</h2></div></div><p>
+BGP is <span   class="emphasis"><em>the</em></span> routing protocol of today's Internet. Each and every ISP on the
+planet tells all other ISPs on the planet what IP addresses it has in its
+network and what other IP addresses can be reached through that ISP's
+network. The protocol to exchange this kind of information is called BGP (Border
+Gateway Protocol). 
+</p><p>
+I'm not going to dive in to the details of BGP. All we need to know is
+that our ISP1 can use BGP to send us the list of all the national
+prefixes. Instead of entering them manually, we will listen to the &ldquo;BGP
+feed&rdquo; and update our routing table from it. This part needs coordination
+with the Internet provider, so I asked our ISP1 to &ldquo;please assign us a
+private ASN and send us a BGP feed with national prefixes&rdquo;. BGP usually
+runs between Autonomous Systems identified by ASN (Autonomous System
+Number). Any big enough organization can apply and pay for its own
+official ASN, but for our purpose, it's enough to use an ASN from a private
+range assigned by the ISP.
+Table 2 shows the information I received from them.
+</p><div class="table"><a name="N0xc8c580.0xd7cdf0"></a><p class="title"><b>Table 2. Info from ISP1</b></p><table     summary="Table 2. Info from ISP111235t2.qrk" border="1"><colgroup><col><col><col></colgroup><thead><tr><th>&nbsp;</th><th>ISP</th><th>Company</th></tr></thead><tbody><tr><td>ASN</td><td>177XY</td><td>6452X</td></tr><tr><td>Router IP</td><td>203.0.113.37</td><td>203.0.113.38</td></tr><tr><td>Prefixes advertised</td><td>all national ones</td><td>none</td></tr></tbody></table></div><p>
+Now we have the routers' IPs on both sides of the link, both ASNs and
+confirmation of what prefixes they will send us (&ldquo;all national ones&rdquo;).
+That's all the info we need.
+</p><p>
+A number of BGP d&aelig;mons are available for Linux. I chose Bird
+(at the time, the most recent version was 1.3.4) and installed it from an RPM.
+</p><p>
+Bird's configuration is very simple. The config file is at
+/etc/bird/bird.conf and may look like this:
+
+
+<pre     class="programlisting">
+log syslog all;
+protocol kernel {
+        import none;
+        export all;
+}
+protocol device {
+        scan time 10;
+}
+protocol bgp {
+        description "ISP1 National Routes";
+        local as 64526;
+        neighbor 203.0.113.37 as 17746;
+        source address 203.0.113.38;
+        import all;     # Accept all prefixes from our neighbor
+        export none;    # Don't send the neighbor any prefixes
+}
+</pre>
+</p><p>
+Essentially, the Bird process talks to the BGP neighbor and imports all the
+advertised prefixes into its internal routes list. It also talks with the
+kernel and &ldquo;exports to the kernel&rdquo; all the routes it
+knows&mdash;that is, all
+the ones learned over BGP. That way, it feeds the kernel routing table from
+the BGP.
+</p><p>
+With the BGP routes imported, the kernel routing table now has more than 4,000
+records:
+
+
+<pre     class="programlisting">
+[router] ~ # ip route show
+   [1] 203.0.113.36/30 dev vlan-shdsl  proto kernel 
+   &#8618;scope link  src 203.0.113.38
+   [2] 192.168.128.0/24 dev vlan-adsl  proto kernel  
+   &#8618;scope link  src 192.168.128.1
+   [3] 192.168.130.0/24 dev vlan-office  proto kernel  
+   &#8618;scope link  src 192.168.130.1
+   [4] default via 192.168.128.254 dev vlan-adsl
+   [5] 14.1.32.0/19 via 203.0.113.37 dev vlan-shdsl  proto bird
+   [6] 27.252.0.0/16 via 203.0.113.37 dev vlan-shdsl  proto bird
+   [7] 58.28.0.0/16 via 203.0.113.37 dev vlan-shdsl  proto bird
+ ....
+[4509] 203.97.0.0/17 via 203.0.113.37 dev vlan-shdsl  proto bird
+[4510] 222.153.128.0/18 via 203.0.113.37 dev vlan-shdsl  proto bird
+[4511] 222.155.96.0/19 via 203.0.113.37 dev vlan-shdsl  proto bird
+</pre>
+</p><p>
+Lines [1] to [4] are the same that you've seen before&mdash;all of the 
+directly connected subnets and the default route. Lines [5] to [4511]
+are the routes received over BGP.
+</p><p>
+Now, let's query the newly populated routing for a path to our favourite
+f.root-servers.net:
+
+<pre     class="programlisting">
+[router] ~ # ip route get 192.5.5.241 from 
+ &#8618;192.168.130.100 iif vlan-office
+192.5.5.241 from 192.168.130.100 via 
+ &#8618;203.0.113.37 dev vlan-shdsl        # SHDSL
+</pre>
+</p><p>
+Excellent, that's what we wanted! A couple traceroute runs from the
+workstation to both national and international destinations verifies that
+the new path is used as expected.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0xd7db00"></a>
+The DMZ Challenge</h2></div></div><p>
+One of the requirements for our second Internet link was the possibility
+to get a block of public IP addresses for our DMZ (DeMilitarized Zone)
+where we plan to host some externally accessible services. From the ISP, we
+got block 203.0.113.208/28, and we want all the traffic to and from the
+DMZ to use the SHDSL link, regardless of whether it's national or international
+traffic. Routing the inbound traffic is the ISP's responsibility, but 
+outbound is our job.
+</p><p>
+Let's see what happens with our current setup. On a test DMZ box,
+203.0.113.222, the routing table looks like this:
+
+<pre     class="programlisting">
+[dmz-box] ~ # ip route show
+203.0.113.208/28 dev eth0  proto kernel  
+ &#8618;scope link  src 203.0.113.222
+default via 203.0.113.209 dev eth0
+</pre>
+</p><p>
+All the traffic goes to the router's IP 203.0.113.209, and the router then
+decides what to do. Let's traceroute to the Google's public DNS server
+again and see how it goes:
+
+
+<pre     class="programlisting">
+[dmz-box] ~ # traceroute 8.8.4.4
+traceroute to 8.8.4.4 (8.8.4.4), 30 hops max, 60 byte packets
+ 1  gw-dmz.e-it.co.nz (203.0.113.209)  0.175 ms  0.110 ms  0.110 ms
+ 2  gw-vlan-adsl.e-it.co.nz (192.168.128.254)  
+    &#8618;8.707 ms  9.080 ms  9.522 ms
+ 3  core-adsl.isp2 (218.101.x.y)  11.899 ms  13.555 ms  15.585 ms
+ 4  core-xyz.isp2 (203.98.x.y)  15.114 ms  16.332 ms  17.142 ms
+[... some more hops ...]
+13  64.233.x.y (64.233.x.y) 195.061 ms  198.098 ms  197.589 ms
+14  * * *
+15  google-public-dns-b.google.com (8.8.4.4)  
+    &#8618;203.621 ms  204.588 ms  205.792 ms
+</pre>
+</p><p>
+That's not quite what we wanted. The traffic flows through the ADSL link
+instead of the SHDSL link. But, it's understandable. Our router 
+selects the network paths based only on the destination IP, disregarding the
+source IP. As soon as it sees a packet for 8.8.4.4, it sends it down the
+ADSL path, regardless of whether it comes from my workstation at 192.168.130.100 or
+from the DMZ box at 203.0.113.222.
+</p><p>
+Fortunately, the Linux kernel can have up to 255 independent routing tables
+and up to 32,768 different rules specifying which routing table to look up
+for each packet. The standard ruleset on a recent Linux machine looks like
+this:
+
+<pre     class="programlisting">
+[router] ~ # ip rule show
+0:      from all lookup local
+32766:  from all lookup main
+32767:  from all lookup default
+</pre>
+</p><p>
+There are no constraints for the rules. All three rules may be consulted
+for packets &ldquo;from all&rdquo; addresses until a matching route is found.
+According to the rules, the &ldquo;local&rdquo; table is looked up first. The
+&ldquo;local&rdquo;
+table is maintained by the kernel and contains rules for broadcast
+addresses and similar special destinations. You can list its contents, but
+unless you know exactly what you're doing, you better not change it:
+
+
+<pre     class="programlisting">
+[router] ~ # ip route show table local
+broadcast 192.168.130.0 dev vlan-office  proto kernel  
+ &#8618;scope link  src 192.168.130.1
+local 192.168.130.1 dev vlan-office  proto kernel  
+ &#8618;scope host  src 192.168.130.1
+local 203.0.113.38 dev vlan-shdsl  proto kernel  
+ &#8618;scope host  src 203.0.113.38
+broadcast 203.0.113.39 dev vlan-shdsl  proto kernel  
+ &#8618;scope link  src 203.0.113.38
+broadcast 127.0.0.0 dev lo  proto kernel  
+ &#8618;scope link  src 127.0.0.1
+local 127.0.0.1 dev lo  proto kernel  scope host  src 127.0.0.1
+[... a lot more routes ...]
+</pre>
+</p><p>
+If no match is found in the &ldquo;local&rdquo; table, the kernel moves on the the next
+rule that says &ldquo;lookup main&rdquo;. The &ldquo;main&rdquo; table is the standard table where
+all the &ldquo;normal&rdquo; routes end up&mdash;all the routes for directly connected
+subnets, manually added static routes and also the routes from BGP. The
+command <tt  >ip route show</tt> works by default with the
+&ldquo;main&rdquo; table and is
+equivalent to <tt  >ip route show table main</tt>. If still no match
+is found, the
+last rule says &ldquo;lookup default&rdquo;. The &ldquo;default&rdquo; table is seldom used and is
+usually empty.
+</p><p>
+In fact, the kernel tables have numerical IDs, and the words &ldquo;main&rdquo;,
+&ldquo;local&rdquo;
+and &ldquo;default&rdquo; are just convenient verbose names defined in
+/etc/iproute2/rt_tables:
+
+<pre     class="programlisting">
+[router] ~ # cat /etc/iproute2/rt_tables
+#
+# reserved values
+#
+255     local
+254     main
+253     default
+0       unspec
+</pre>
+</p><p>
+So, to recap our current situation, we've got the &ldquo;main&rdquo; table with a list
+of all national routes for SHDSL and one default route for ADSL for all
+international traffic. And, we've got a default rule that says &ldquo;for all
+source addresses consult the main table&rdquo;.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0xd7e760"></a>
+Solving the DMZ Challenge</h2></div></div><p>
+What we need now is to set up a special routing table for all DMZ traffic
+and create a rule that will plug it in to the routing decision process.
+</p><p>
+The first step is to create and populate the new table and name it
+&ldquo;dmz&rdquo;. We
+can choose any non-reserved table ID and add one line into the rt_table file
+to map the ID to our desired name:
+
+<pre     class="programlisting">
+[router] ~ # echo "121 dmz" &gt;&gt; /etc/iproute2/rt_tables
+[router] ~ # ip route show table dmz
+[router] ~ #
+</pre>
+</p><p>
+The dmz table is empty for now. Let's populate it. Apparently, we need
+just the default route&mdash;everything should be sent to ISP1's gateway:
+
+<pre     class="programlisting">
+[router] ~ # ip route add default via 203.0.113.37 
+ &#8618;dev vlan-shdsl table dmz
+[router] ~ # ip route show table dmz
+default via 203.0.113.37 dev vlan-shdsl
+</pre>
+</p><p>
+All we need to do now is activate the table by adding a lookup rule to
+the routing decision process. The lookup rules can be based on many
+different parameters&mdash;the source and/or destination address or address
+range, the incoming interface, the TOS (Type Of Service) or an arbitrary
+&ldquo;fwmark&rdquo; value that is used in conjunction with iptables rules. For our
+purpose, the source IP and incoming network interface are the
+&ldquo;selectors&rdquo;
+that we need:
+
+<pre     class="programlisting">
+[router] ~ # ip rule add pri 1000 from 203.0.113.208/28 
+ &#8618;iif vlan-dmz lookup dmz
+[router] ~ # ip rule show
+0:      from all lookup local
+1000:   from 203.0.113.208/28 iif vlan-dmz lookup dmz
+32766:  from all lookup main
+32767:  from all lookup default
+</pre>
+</p><p>
+All the packets coming from interface vlan-dmz with source address
+203.0.113.208/28 will consult the dmz table. And the dmz table says to
+send them all to the SHDSL link by default. Let's see if it works:
+
+
+<pre     class="programlisting">
+[dmz-box] ~ # traceroute 8.8.4.4
+traceroute to 8.8.4.4 (8.8.4.4), 30 hops max, 60 byte packets
+ 1  gw-dmz.e-it.co.nz (203.0.113.209)  
+    &#8618;0.200 ms  0.124 ms  0.110 ms
+ 2  rt-shdsl.isp1 (203.0.113.37)  2.676 ms  2.599 ms  2.632 ms
+ 3  rt3.isp1 (121.98.ab.cd)  2.715 ms  2.680 ms  2.591 ms
+[... some more hops ...]
+10  216.239.xx.yy (216.239.xx.yy)  
+    &#8618;172.955 ms  172.398 ms  172.339 ms
+11  * * *
+12  google-public-dns-b.google.com (8.8.4.4)  
+    &#8618;171.703 ms  171.621 ms  170.554 ms
+</pre>
+</p><p>
+That looks good. The international traffic from the box in DMZ goes over
+the SHDSL link, while at the same time, we can re-check that from the
+workstation in the internal LAN, it still goes over ADSL:
+
+
+<pre     class="programlisting">
+[workstation] ~ # traceroute 8.8.4.4
+traceroute to 8.8.4.4 (8.8.4.4), 30 hops max, 
+ &#8618;40 byte packets using UDP
+ 1  gw-vlan-office.e-it.co.nz (192.168.130.1)  
+    &#8618;0.170 ms  0.128 ms  0.125 ms
+ 2  gw-vlan-adsl.e-it.co.nz (192.168.128.254)  
+    &#8618;0.861 ms  0.846 ms  0.825 ms
+ 3  core-adsl.isp2 (218.101.x.y)  22.718 ms  22.109 ms  21.931 ms
+ 4  core-xyz.isp2 (203.98.x.y)  20.417 ms  20.222 ms  19.769 ms
+[... some more hops ...]
+13  64.233.x.y (64.233.x.y)  198.456 ms  197.824 ms  197.189 ms
+14  * * *
+15  google-public-dns-b.google.com (8.8.4.4)  
+    &#8618;194.318 ms  194.153 ms  194.159 ms
+</pre>
+</p><p>
+Magic, isn't it! It all looks good, and we're done, right? Well, not quite.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0x10910b8"></a>
+More Work for DMZ Routing</h2></div></div><p>
+What happens when pinging the DMZ box from my workstation? First, the
+ping packet goes from 192.168.130.100 to the router. The router consults
+the &ldquo;main&rdquo; routing table, sees that the destination 203.0.113.222 is on a
+directly connected vlan-dmz and sends the ping request there. The DMZ box
+replies with a packet from 203.0.113.222 to 192.168.130.100&mdash;that's my
+workstation on vlan-office&mdash;and sends it to the router. The router sees
+that it arrived from the DMZ address range and consults the &ldquo;dmz&rdquo; table!
+The only record in there is the default route, so it takes it and
+dispatches the packet with destination IP 192.168.130.100 to the ISP where
+it eventually gets discarded. Oops!
+</p><div       class="mediaobject"><a href="11235f4.large.jpg"><img src="11235f4.jpg"></a><div class="caption"><p>
+Figure 4. Broken Traffic between DMZ and the Office
+</p></div></div><p>
+There are a number of solutions. Either we can copy all the non-BGP routes
+from the &ldquo;main&rdquo; table to the &ldquo;dmz&rdquo; table&mdash;that's indeed possible but not
+very elegant. A better option is to add a new routing entry to the
+&ldquo;dmz&rdquo;
+table that, when matched, will make the kernel move on to the next rule
+on the list:
+
+<pre     class="programlisting">
+[router] ~ # ip rule show
+0:      from all lookup local
+1000:   from 203.0.113.208/28 iif vlan-dmz lookup dmz
+32766:  from all lookup main
+32767:  from all lookup default
+
+[router] ~ # ip route add throw 192.168.128.0/20 table dmz
+
+[router] ~ # ip route show table dmz
+throw 192.168.128.0/20
+default via 203.0.113.37 dev vlan-shdsl
+</pre>
+</p><p>
+What happens now with the ping reply packet is this: the kernel sees a
+matching rule 1000 and looks up the &ldquo;dmz&rdquo; table. There it finds that the
+best matching route for a destination of 192.168.130.100 is &ldquo;throw&rdquo;. That
+tells it to choose the next available rule&mdash;in our case, &ldquo;32766: from all
+lookup main&rdquo; and looks up the &ldquo;main&rdquo; table. Here it finds a path to the
+192.168.130.0/24 subnet and sends the ping reply to vlan-office. Problem
+fixed.
+</p><p>
+Another way, equally as good if not even better, is to go straight to the
+&ldquo;main&rdquo; table for all packets that arrive from the DMZ and are destined for our
+company's internal address range. Let's add a rule for it:
+
+<pre     class="programlisting">
+[router] ~ # ip rule add pri 999 from 203.0.113.208/28 
+ &#8618;iif vlan-dmz to 192.168.128.0/20 table main
+
+[router] ~ # ip rule show
+0:      from all lookup local
+999:    from 203.0.113.208/28 to 192.168.128.0/20 
+        &#8618;iif vlan-dmz lookup main
+1000:   from 203.0.113.208/28 iif vlan-dmz lookup dmz
+32766:  from all lookup main
+32767:  from all lookup default
+</pre>
+</p><p>
+With this rule in place, the router will see that the ping reply packet
+matches the rule &ldquo;from 203.0.113.208/28 to 192.168.128.0/20&rdquo; and will look
+up the &ldquo;main&rdquo; table instead of the &ldquo;dmz&rdquo; table right
+away. Personally, I
+like this solution the most as it explicitly says &ldquo;lookup main&rdquo; instead of
+a more vague &ldquo;go to the next rule&rdquo;, whatever it may be, that the former
+solution does.
+</p><div       class="mediaobject"><a href="11235f5.large.jpg"><img src="11235f5.jpg"></a><div class="caption"><p>
+Figure 5. DMZ traffic works as expected.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0x1091c68"></a>
+Making the Changes Permanent</h2></div></div><p>
+Many of the changes we have done so far are only in the router's memory
+and will disappear after a reboot. Let's make them permanent. Our core
+router is CentOS 6.2, and the following steps should work on any recent
+Red Hat Enterprise Linux or Fedora-based system.
+</p><p>
+A permanent name already has been given to the &ldquo;dmz&rdquo; table:
+
+<pre     class="programlisting">
+[router] ~ # cat /etc/iproute2/rt_tables
+# reserved values
+255     local
+254     main
+253     default
+0       unspec
+# local
+121     dmz
+</pre>
+</p><p>
+To add the new ip rules, edit the file
+/etc/sysconfig/network-scripts/rule-&lt;interface&gt;. As soon as the given
+interface is configured, the rules will be loaded. The logical place is to
+load our rules once the DMZ interface vlan-dmz is configured:
+
+
+<pre     class="programlisting">
+[router] ~ # cat /etc/sysconfig/network-scripts/rule-vlan-dmz
+# ip rule add ...
+pri 999 from 203.0.113.208/28 to 192.168.128.0/20 
+ &#8618;iif vlan-dmz lookup main
+pri 1000 from 203.0.113.208/28 iif vlan-dmz lookup dmz
+</pre>
+</p><p>
+Finally, populate the &ldquo;dmz&rdquo; table on reboot. This is done in
+the route-&lt;interface&gt; file in the same directory:
+
+
+<pre     class="programlisting">
+[router] ~ # cat /etc/sysconfig/network-scripts/route-vlan-dmz
+# ip route add ...
+default via 203.0.113.37 dev vlan-shdsl table dmz
+# throw 192.168.128.0/20 table dmz ## unless the rule 999 is in place
+</pre>
+</p><p>
+That's it. The routing now works as designed and survives a reboot.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0x1092138"></a>
+Networking 201?</h2></div></div><p>
+The topics I explained in this article&mdash;multiple routing tables,
+rules for selecting them and a hint of BGP&mdash;should give you enough
+knowledge to build moderately complex Linux-based routers. In this trade,
+you will come across a lot more concepts&mdash;from OSPF through firewalls and
+NATs to VPNs and high-availability networks. None of these topics are within
+the scope of this article; however, in the end, the core thing that makes all
+this networking fun possible is routing. If you
+learn the few simple concepts of how IP routing works, you will know half
+of what networking is all about. Happy experimenting!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xc8c580.0x1092240"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Michal Ludvig works for Enterprise IT Ltd in New Zealand
+as a senior Linux engineer. He's got root access to some
+of the largest New Zealand corporations, but since he tends
+to forget his passwords, he is, in general, pretty harmless.
+Michal welcomes your comments or questions at
+<a href="mailto:mludvig@logix.net.nz">mludvig@logix.net.nz</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../231/toc231.html">Issue Table of Contents</a>
+    <a class="link3" href="../231/11235.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,82 @@
+Listing 1. chat_client.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#include <netinet/sctp.h>
+
+#define SIZE 1024
+char buf[SIZE];
+#define STDIN 0
+char *msg = "hello\n";
+#define ECHO_PORT 2013
+
+int main(int argc, char *argv[]) {
+        int sockfd;
+        int nread, nsent;
+        int flags, len;
+        struct sockaddr_in serv_addr;
+        struct sctp_sndrcvinfo sinfo;
+        fd_set readfds;
+
+        if (argc != 2) {
+                fprintf(stderr, "usage: %s IPaddr\n", argv[0]);
+                exit(1);
+        }
+        /* create endpoint using  SCTP */
+        sockfd = socket(AF_INET, SOCK_SEQPACKET,
+                        IPPROTO_SCTP);
+        if (sockfd < 0) {
+                perror("socket creation failed");
+                exit(2); }
+        /* connect to server */
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = inet_addr(argv[1]);
+        serv_addr.sin_port = htons(ECHO_PORT);
+
+        if (connect(sockfd,
+                    (struct sockaddr *) &serv_addr,
+                    sizeof(serv_addr)) < 0) {
+                perror("connect to server failed");
+                exit(3);
+        }
+        printf("Connected\n");
+
+        while (1) {
+                /* we need to select between messages FROM the user
+                   on the console and messages TO the user from the
+                   socket
+                */
+                FD_CLR(sockfd, &readfds);
+                FD_SET(sockfd, &readfds);
+                FD_SET(STDIN, &readfds);
+                printf("Selecting\n");
+                select(sockfd+1, &readfds, NULL, NULL, NULL);
+
+                if (FD_ISSET(STDIN, &readfds)) {
+                        printf("reading from stdin\n");
+                        nread = read(0, buf, SIZE);
+                        if (nread <= 0 )
+                                break;
+                        sendto(sockfd, buf, nread, 0,
+                               (struct sockaddr *) &serv_addr,
+                               sizeof(serv_addr));
+                } else if (FD_ISSET(sockfd, &readfds)) {
+                        printf("Reading from socket\n");
+                        len = sizeof(serv_addr);
+                        nread = sctp_recvmsg(sockfd, buf, SIZE,
+                                     (struct sockaddr *) &serv_addr,
+                                     &len,
+                                     &sinfo, &flags);
+                        write(1, buf, nread);
+                }
+        }
+        close(sockfd);
+        exit(0);
+}
+

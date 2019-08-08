@@ -1,0 +1,323 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>A Look at the Buffer-Overflow Hack</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Mr. Harari disects the buffer-overflow hack, thereby giving&#10;    us the necessary information to avoid this problem.&#10;    "><meta name="keywords" content="buffer, programming"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x15a2580.0x1699ab0"></a>A Look at the Buffer-Overflow Hack</h1></div><div><div class="author"><h3 class="author">Eddie Harari</h3></div><div class="issuemoyr">Issue #61, May 1999</div></div><div><p>
+    Mr. Harari disects the buffer-overflow hack, thereby giving
+    us the necessary information to avoid this problem.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15a2580.0x169a450"></a></h2></div></div><p>The best system administrator is not
+always enough to take care of site security. Sometimes a nice
+program such as <span   class="bold"><b>mount</b></span> can be
+exploited by a user to gain a higher system permission or remote
+access to an unauthorized location on the World Wide Web.
+</p><p>This article explains the logic behind a popular hack to
+exploit a program's code so it executes different code then was
+intended. This hack is known as the buffer-overflow hack and can be
+used to exploit a program with <b  >suid</b> set to gain
+better permissions on a Linux machine&mdash;sometimes even root or
+remote access. (The examples are taken from &ldquo;aleph-one&rdquo; with his
+permission and have been somewhat modified by me.)</p><div       class="mediaobject"><img src="2902f1.jpg"><div class="caption"><p>
+Figure 1. Virtual Memory Layout
+</p></div></div><p>First, let's have a look at Figure 1 and see how a process
+organizes its virtual memory. The TEXT area is where the actual
+code of the program resides. The DATA area is where the initialized
+and uninitialized data of the program resides.</p><p>The STACK area is a dynamic area which becomes bigger as data
+is pushed into it and smaller as data is popped from it. It is
+called a stack because it works in the LIFO way (last in, first
+out). The stack is used to hold temporary data for the process and
+helps the processor in its implementation of high-level functional
+programming. To understand exactly how the processor makes use of
+the stack, look at the following example:</p><pre     class="programlisting">
+void func(int a, int b)
+{
+  /* This function does nothing */
+}
+main()
+{
+ int num1;
+ int num2;
+ func(num1,num2);
+ printf("This is the next instruction after " .
+   "the function ...");
+}
+</pre><p>The instructions of the <span   class="bold"><b>main</b></span>
+function are executed until the processor needs to &ldquo;break&rdquo; the
+normal flow of the program and go to the
+<span   class="bold"><b>func</b></span> instructions. When this step
+of &ldquo;jumping&rdquo; to func is executed, the parameters to func,
+<b  >num1</b> and <b  >num2</b> are transferred
+with the help of the stack. That is, they are pushed to the stack,
+and func can pop them from the stack and use them. Immediately
+after pushing these values on the stack, main should push the
+address to which func will return on completion. (In our example,
+this is the address of the <span   class="bold"><b>printf</b></span>
+instruction.) When func is finished, it knows to read this return
+address from the stack and go back to the &ldquo;normal&rdquo; flow of the
+program.
+</p><p>One other value on the stack is called a frame-pointer, since
+the processor refers to values on the stack by their offset from
+the stack pointer (SP). Whenever the SP value changes, the
+processor saves the current value on the stack. (The Intel does not
+have a dedicated frame pointer (FP), so it does it with the help of
+the <b  >ebp</b> register.) The frame pointer is pushed
+to the stack following the return address.</p><p>To clarify this, let's look at another example:</p><pre     class="programlisting">
+void func(int a, int b)
+{
+ int *p;
+}
+main()
+{
+ int num;
+ num = 0;
+ func(num);
+ num = 1;
+ printf("num is now %d \n",num);
+}
+</pre><p>Let's compile it with the <b  >-S</b> option to get
+assembly output using this <span   class="bold"><b>gcc</b></span>
+command:
+<pre     class="programlisting">
+gcc -S -o ex2.S ex2.c
+</pre>
+
+
+We see that main's code is actually:
+<pre     class="programlisting">
+main:
+pushl %ebp
+movl %esp,%ebp    /* Save the SP before changing
+                   * its value */
+subl $4,%esp      /* SP should subtract 4 so it
+                   * points to num on the stack */
+movl $0,-4(%ebp)  /* Push num on the stack with
+                   * value 0*/
+pushl $2          /* Push 2 on the stack*/
+pushl $1          /* Push 1 on the stack*/
+call func         /* Push return address on the
+                   * stack and jump to the first
+                   * instruction of func*/
+...
+</pre>
+
+
+The main code pushes the arguments for func, then calls it. The
+call instruction puts the return address on the stack, then moves
+on to the func code. <span   class="bold"><b>func</b></span> puts the
+four-byte frame pointer immediately following the return address,
+then pushes the <b  >p</b> pointer onto the stack. Thus,
+if we dump the stack's status now, we get the structure shown in
+Figure 2.
+<div       class="mediaobject"><a href="2902f2.large.jpg"><img src="2902f2.jpg"></a><div class="caption"><p>
+Figure 2. Stack Structure
+</p></div></div>
+
+</p><p>We can use func to print the addresses of
+<b  >a</b> and <b  >b</b> in a hexadecimal
+format; to do this, we simply add printf instructions:</p><pre     class="programlisting">
+void func(int a, int b)
+{
+ int *p;
+ printf("The address of a on the stack is %x\n",
+   &amp;a);
+ printf("The address of b on the stack is %x\n",
+   &amp;b);
+}
+</pre><p>When we run the modified program, we get the following
+output:
+<pre     class="programlisting">
+The address of a on the stack is bffff7ac
+The address of b on the stack is bffff7b0
+</pre>
+
+
+Integer <b  >b</b> is four bytes from integer
+<b  >a</b>. Looking at Figure 2, we see that integer
+<b  >b</b> is followed by the four-byte frame pointer,
+then the four-byte return address.
+</p><p>We can look at the return address using the
+<b  >disassemble</b> option of
+<span   class="bold"><b>gdb</b></span>. (See
+<a href="2902l1.html" target="_self"><span   class="bold"><b>Listing
+1</b></span></a>.) The call instruction in
+<b  >&lt;main+17&gt;</b> is at address 0x80484b1, which
+means the next instruction in 0x80484b6 is the return address. As
+we just calculated, when this address is pushed on the stack, it is
+offset eight bytes from <b  >b</b> and 12 bytes from
+<b  >a</b>.</p><p>Since the stack is writable, we can use the pointer to the
+return address, then change its value. By doing so, we manipulate
+the normal flow of the program so we can, for example, skip some
+instructions. In
+<a href="2902l2.html" target="_self"><span   class="bold"><b>Listing
+2</b></span></a>, we have changed the return address so our
+program skips an instruction. Compile and execute:</p><pre     class="programlisting">
+gcc -o ex4 ex4.c
+ex4
+</pre><p>This output is returned:
+<pre     class="programlisting">
+The return address is 80484d2
+The new return address is 80484dc
+Num is now 0
+</pre>
+
+
+In the Listing 2 code, we point to the address of integer
+<b  >b</b> with the help of a pointer
+<b  >p</b>, then subtract eight bytes down from
+<b  >p</b> so it points at the return address printed in
+the first output line. Next, we add ten bytes to the return
+address, so it skips the <b  >num=1;</b> assembly code.
+(<b  >disassemble&nbsp;main</b> shows the exact offset of
+the instructions, so I used it to know how many bytes to skip.)
+</p><p>In this way, a programmer can regulate the normal flow of his
+program from within. The big question is, can someone change this
+return address from the outside? The answer is
+<span   class="emphasis"><em>sometimes</em></span>. Not only can this address be
+changed, but it can also be changed to point to code not within the
+program.</p><p><a href="2902l3.html" target="_self"><span   class="bold"><b>Listing
+3</b></span></a> is a very simple program that can be exploited
+from the outside. On first execution, the output looks like
+this:</p><pre     class="programlisting">
+bash# ex5
+Please enter your input string:
+short
+This is the next instruction
+</pre><p>On second execution, the output is:
+<pre     class="programlisting">
+bash# ex5
+Please enter your input string:
+long string
+This is the next instruction
+Segmentation fault (core dumped)
+</pre>
+
+
+Since <b  >strcpy</b> does not check the length of the
+string it copies, we inserted the 12-byte string <b  >long
+string\n</b> to a buffer which is eight bytes long. The first
+eight characters from my input completely filled the buffer, then
+the remaining four characters <span   class="emphasis"><em>overflowed</em></span> the
+buffer. That is, these four characters overwrote the adjacent
+address in the buffer --the return address. Thus, when func tried
+to go back to main, a segmentation fault occurred, since the return
+address contained the four-character string
+<b  >ing\n</b>, most likely an illegal memory address.
+</p><p>The strcpy function is the classical example for buffer
+overflow since it does not check the copied string size to ensure
+it is within the buffer limits. Note strcpy is not the only way to
+exploit a program with a buffer-overflow hack.</p><p>The actual buffer-overflow hack works like this:</p><div class="itemizedlist"><ul type="disc"><li><p>Find code with overflow potential.</p></li><li><p>Put the code to be executed in the buffer, i.e., on
+the stack.</p></li><li><p>Point the return address to the same code you have
+just put on the stack.</p></li></ul></div><p>Since this is not the Linux &ldquo;hack.HOWTO&rdquo;, I will not go
+into details on these three stages.
+</p><p>The first stage is very easy, especially in a Linux system,
+since a huge amount of open-source code applications are available
+for Linux. Some of these applications are in use on almost every
+Linux system. Good examples of such programs were
+<span   class="bold"><b>mount</b></span> and some early versions of
+<span   class="bold"><b>innd</b></span>.
+<span   class="bold"><b>mount</b></span> did not check the length of
+the command-line arguments the user entered and its permissions set
+to 4555. <span   class="bold"><b>innd</b></span> did not check all of
+the news message headers, so by sending a specific header, a user
+could get a remote shell on the server.</p><p>The second stage has two parts. The first one is to find how
+to represent the code to be executed; this can be done using a
+simple disassembler. The second part depends on where the program
+reads the buffer: in some cases, a mail header; in others, an
+environment variable whose length goes unchecked; in still others,
+some alternate means.</p><p>The third stage is not so simple, as one cannot know the
+exact address of the code to be executed. Basically, it is done by
+guessing the address until the correct address is found. Several
+ways can be used to make this guessing more efficient; thus, after
+only a few guesses, we can specify the right address and the code
+gets executed.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15a2580.0x1692cd8"></a>Conclusions</h2></div></div><p>The fact that an application is used all over the Web does
+not mean it is secure, so take care when installing a new
+application on your machine. In fact, WWW applications are more
+likely to be searched deeply for security holes by crackers with
+bad intent. System administrators should read the security
+newsgroup and related web pages in order to keep applications known
+to have security holes off the system and to upgrade them when
+patches become available. Application programmers should take care
+to write tight code containing proper checks for array and variable
+lengths in order to foil this type of hack.</p><p>Finally, I would like to briefly mention three other things.
+One, a kernel patch is available that makes the stack memory area a
+non-executable one. I have never tested it, since applications do
+exist which count on the fact that the stack is executable, and
+these applications will most likely have problems with this patched
+kernel. Two, a special mode to the Intel processor is available
+that has the stack grow from the lower memory addresses to the
+higher memory addresses, thus making a buffer overflow almost
+impossible. Three, a set of libraries available on some systems
+helps the programmer write code with no such errors. All the
+programmer has to do is tell the library functions the assumptions
+about a variable and these functions will verify that the variable
+meets the specified criteria.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="2902aa.jpg"></div>
+
+      <span   class="bold"><b>Eddie Harari</b></span>
+      works for Sela Systems in Israel as
+      a lecturer and a consultant. He is currently involved in networking
+      security projects and can be reached via e-mail at
+      eddie@sela.co.il.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../061/toc061.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

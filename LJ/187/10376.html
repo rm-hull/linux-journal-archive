@@ -1,0 +1,577 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+IPv4 Anycast with Linux and Quagga
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Ease configuration headaches and improve availability with anycast.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2a9e580.0x2b95ac0"></a>
+IPv4 Anycast with Linux and Quagga
+</h1></div><div><div class="author"><h3 class="author">
+Philip
+ 
+Martin
+</h3></div><div class="issuemoyr">Issue #187, November 2009</div></div><div><p>
+Ease configuration headaches and improve availability with anycast.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2b96300"></a></h2></div></div><p>
+&ldquo;DNS is down and nothing is working!&rdquo; is not something anyone ever wants
+to hear at 3am. Virtually every service on a modern network depends
+on DNS to function. When DNS goes down, you can't send mail, you can't
+get to the Web, you can't do much&mdash;hopefully, your coffeemaker is not
+Web-enabled! Administrators do a lot of things to mitigate this risk.
+The traditional safeguard is to establish multiple DNS servers for a
+given site. Each DNS client on the network is configured with each
+of those servers' IP addresses. The chances of all of those servers
+failing in a catastrophic way are fairly small, so you have a margin
+of safety.
+</p><p>
+On the other hand, many stub resolvers will take only two DNS
+servers, making it nearly impossible to have any meaningful geographical
+dispersion in your DNS topology. DNS stub resolvers generally use the
+first of two configured DNS servers exclusively. Consequently, you end up
+with one server taking the entire query load and one idling, waiting for
+a failure. Not optimal, but hey, that's the price of redundancy...right?
+It doesn't have to be.
+</p><p>
+DNS redundancy and failover is a classic use case for anycast. Anycast is
+the concept of taking one IP address and sharing it between multiple
+servers, each unaware of the others. The DNS root nameservers make
+extensive use of anycast. There are currently 16 root nameserver
+IP addresses, only eight of which make use of anycast. There are
+167 servers that respond to those 16 IP addresses.
+</p><p>
+Of course,
+anycast is not limited to DNS. It can be used to provide redundancy
+and failover for any number of stateless protocols and applications.
+Anycast might sound a little like multicast, but aside from the one-to-many,
+IP-to-endpoint relationship, they have very little in common. Multicast
+takes packets from one sender and delivers them to multiple endpoints,
+all of which subscribe to a single multicast address using a number of
+multicast-specific routing technologies. Anycast takes packets from
+one sender and delivers those packets to the &ldquo;closest&rdquo; of a number of
+possible endpoints using nothing more than standard unicast routing.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2b966c8"></a>
+How Does It All Work?</h2></div></div><p>
+Let's start with some terminology:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+An endpoint (also known as a node) is a server that responds to an
+anycast address and, by extension, provides services on that address.
+</p></li><li><p>
+An anycast address is an IP address that has multiple endpoints
+associated with it. Anycast addresses can be from any part of the normal
+IPv4 address space.
+</p></li><li><p>
+A service address is a unique IP address on a physical device on the
+system. Service addresses are used for administrative or monitoring
+access to anycast endpoints.
+</p></li><li><p>
+IGP anycast refers to an anycast scheme confined to a single network
+(typically a larger network with multiple physical sites). I
+cover IGP anycast in this article.
+</p></li><li><p>
+BGP anycast refers to an anycast scheme that spans multiple networks
+and can span the entire Internet. The DNS root servers use BGP anycast.
+</p></li></ul></div><p>
+Anycast endpoints participate in whatever internal routing protocol is
+being run on your network. All endpoints for a given anycast IP advertise
+a host route (also known as a /32) for the anycast IP to the router.
+In other words, each endpoint announces that the anycast IP can be
+reached through it. Your routers will see the advertisements coming
+from the various servers and determine the best path to that IP address.
+Therein lies the magic. Because the IP address is advertised from multiple
+locations, your router ends up choosing the best path to that IP address,
+according to the metric in use by that routing protocol&mdash;meaning
+either the path with the fewest hops (RIP), the highest bandwidth path
+(OSPF) or some other measurement of network goodness. When you send a
+request to an anycast IP address, it will be routed to the single server
+with the best metric according to the routers between you and the server.
+</p><p>
+What if that server fails? If the host fails, it will stop sending out
+routing advertisements. The routing protocol will notice and remove
+that route. Traffic then will flow along the next best path. Now,
+the fact that the host is up does not necessarily mean that the service is up.
+For that, you need some sort of service monitoring in place and the
+capability to remove a host from the anycast scheme on the fly.
+</p><p>
+Naturally, myriad other details need to be worked out when
+designing an anycast scheme. The general concept is pretty simple, and
+small implementations are easy to set up. However, no matter what size
+implementation you're dealing with, proper IP address architecture is
+a must. Your anycast address should be on its own subnet, separate
+from any other existing subnets. The anycast subnet must never, ever,
+be included in a summary.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2b96cf8"></a>
+Implementation Details</h2></div></div><p>
+Many projects provide routing protocol d&aelig;mons
+for Linux, any number of which would be usable for this scenario.
+For this article, I use Quagga, which is a fork of GNU Zebra.
+Quagga is available both on the install media and from the standard
+package repositories of pretty much every enterprise-oriented Linux
+distribution.
+</p><p>
+For the following examples, I also use a
+network populated with Cisco routers, running OSPF version 2, for IPv4.
+Quagga also supports BGP, RIP, RIPng and OSPFv3. The remainder of this
+article assumes at least a basic familiarity with OSPF theory and
+configuration. (See Resources for links to basic primers.) Cisco also
+publishes a ton of very good reference material (again, see Resources). I cover the
+required configuration on the router side, but not in extensive detail.
+</p><p>
+Now, let's get down to the good stuff: setting up Quagga on Linux.
+To begin, I describe how to install Quagga, set up a loopback alias to hold the anycast IP
+address and configure Quagga to talk to your local routers. Then, I
+go over a few optional configuration extras.
+</p><p>
+First, install Quagga. For example, on Red Hat Enterprise Linux (RHEL),
+run <tt  >yum install quagga</tt>. Substitute the appropriate package-management
+command for your distribution, as needed.
+</p><p>
+Next, create a loopback interface alias on the system. Configure the
+anycast IP address on this loopback interface. Using a loopback interface
+alias instead of a physical interface alias allows you to do a number
+of cool things. You could segment your service traffic from your
+administrative traffic. You could add some redundancy by responding
+to the anycast address on two physical interfaces, each attached to
+a different router or switch (although I won't go into that kind of
+configuration here). You also could take down the anycast interface (and,
+therefore, remove that interface from the anycast scheme) without affecting
+your ability to administer the system remotely. On RHEL, the interface
+configuration files are located in /etc/sysconfig/networking-scripts/.
+Create a file in that directory named ifcfg-lo:0 with the following
+contents:
+
+<pre     class="programlisting">
+# cat /etc/sysconfig/networking-scripts/ifcfg-lo:0
+DEVICE=lo:0
+IPADDR=10.0.0.1
+NETMASK=255.255.255.255
+BOOTPROTO=none
+ONBOOT=yes
+</pre>
+</p><p>
+That file's format is fairly self-explanatory. You can control the lo:0
+interface with your normal interface control commands (ifup, ifdown,
+ifconfig and so on).
+</p><p>
+Some versions of Fedora use NetworkManager to control
+eth0 by default. This may cause strange things to happen when you
+try to bring up a loopback alias. If that happens to you, add the line
+<tt  >NM_CONTROLLED=no</tt> to
+/etc/sysconfig/networking-scripts/ifcfg-eth0, and
+restart your network. At this point, you should be able to bring up your
+new interface with <tt  >ifup lo:0</tt>.
+</p><p>
+Now, you need to configure Quagga. By default, the Quagga configuration
+files are in /etc/quagga and /etc/sysconfig/quagga. There are a number of
+example configuration files in /etc/quagga: one for each routing protocol
+that Quagga supports; one for zebra, the main process; and one for the
+vtysh configuration. We primarily are interested in the ospfd.config and
+zebra.config files. The syntax in those files is similar to the standard
+Cisco configuration syntax, but with important differences. Also note
+that, by default, all routing processes bind to a d&aelig;mon-specific port
+on 127.0.0.1. If you configure a password for that routing process
+and Telnet to that port, you can monitor and configure the process on
+the fly using the same Cisco-like syntax. In these files, ! is the
+comment character:
+
+<pre     class="programlisting">
+# cat zebra.conf
+hostname Endpoint1
+!
+interface eth0
+  ip address 10.0.1.2/24
+!
+interface lo:0
+  ip address 10.0.0.1/32
+</pre>
+</p><p>
+The above file is pretty quick and easy. It contains the IP addresses and
+netmasks of the physical adapters and the loopback adapter that has the
+anycast address. This file is much more complex:
+
+<pre     class="programlisting">
+# cat ospfd.conf
+hostname Endpoint1
+!
+interface eth0
+  ip ospf authentication message-digest
+  ip ospf message-digest-key 1 md5 foobar
+  ip ospf priority 0
+!
+router ospf
+  log-adjacency-changes
+  ospf router-id 10.0.1.2
+  area 10.0.1.2 authentication message-digest
+  area 10.0.1.2 nssa
+  network 10.0.1.0/24 area 10.0.1.2
+  redistribute connected metric-type 1
+  distribute-list ANYCAST out connected
+!
+access-list ANYCAST permit 10.0.0.1/32
+</pre>
+</p><p>
+Let's go over the above section by section,
+starting with the following:
+
+<pre     class="programlisting">
+interface eth0
+  ip ospf authentication message-digest
+  ip ospf message-digest-key 1 md5 foobar
+</pre>
+</p><p>
+The first thing in the file is the OSPF MD5 authentication configuration.
+Always configure MD5 authentication on your OSPF sessions. Replace
+<tt  >foobar</tt> with the appropriate key for your environment.
+</p><p>Next, we have:
+
+<pre     class="programlisting">
+ip ospf priority 0
+</pre>
+</p><p>
+Also set the OSPF priority to 0, which prevents the server from being
+elected as the Designated Router on that link.
+</p><p>
+Next come the router configuration directives:
+
+<pre     class="programlisting">
+router ospf
+  log-adjacency-changes
+</pre>
+</p><p>
+log-adjacency-changes is a great configuration directive that gives you
+more details when there is a change in neighbor relationships between
+your server and any other OSPF-speaking device.
+</p><p>Then:
+
+<pre     class="programlisting">
+ospf router-id 10.0.1.2
+</pre>
+</p><p>
+Here the router ID is set to the server's service address. Router IDs must
+be unique within the routing domain.
+</p><p>We then configure this server to be in its own Not So Stubby Area
+(NSSA):
+
+<pre     class="programlisting">
+area 10.0.1.2 authentication message-digest
+area 10.0.1.2 nssa
+redistribute connected metric-type 1
+distribute-list 5 out connected
+</pre>
+</p><p>
+NSSA areas are a form of stub area that limits the routes sent
+into the area to summary routes, but still allows external routes to come
+from that area. We need to allow external routes because we advertise our
+anycast IP address by redistributing our connected interfaces and running
+that through a distribute list to confine our advertised interfaces to
+just the anycast IP address. However, we don't want this server to have
+to deal with all the routes in area 0.0.0.0.
+</p><p>The following statement selects the interfaces that will participate in
+OSPF:
+
+<pre     class="programlisting">
+network 10.0.1.0/24 area 10.0.1.2
+</pre>
+</p><p>
+We want our eth0 interface to participate in OSPF, so we specify
+10.0.1.0/24, and we put those interfaces in area 10.0.1.1.
+</p><p>The following line defines the access list that will allow route
+advertisements out:
+
+<pre     class="programlisting">
+access-list ANYCAST permit 10.0.0.1/32
+</pre>
+</p><p>
+Now that Quagga is configured, we need to open up the proper IP protocol
+number on our firewall. OSPF uses protocol number 89. The details of
+opening that particular protocol number will vary significantly
+with the firewall configuration you're using.
+</p><p>
+In general, you'll use a command like this:
+
+<pre     class="programlisting">
+# iptables -I INPUT -p 89 -j ALLOW
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2b97b68"></a></h2></div></div><p>
+which inserts the rule permitting IP protocol 89 at the start of the
+INPUT chain. That command will work with most any standard firewall
+configuration. After all of this, you finally can get Quagga going.
+Start it with <tt  >service zebra start</tt> and
+<tt  >service ospfd start</tt>.
+Your system now should be participating in your OSPF routing scheme.
+</p><p>
+You can confirm that with a quick look at your router's routing table:
+
+
+<pre     class="programlisting">
+R1&gt;show ip route 10.0.0.1
+Routing entry for 10.0.0.1/32
+  Known via "ospf 1", distance 110, metric 21, type NSSA extern 1
+  Last update from 10.0.1.2 on FastEthernet0/0, 00:00:14 ago
+  Routing Descriptor Blocks:
+  * 10.0.1.2, from 10.0.1.2, 00:00:14 ago, via FastEthernet0/0
+      Route metric is 21, traffic share count is 1
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2f90078"></a>
+Optional Quagga Configuration Extras</h2></div></div><p>
+To enable remote administration, you must set a password in ospfd.conf
+as follows:
+
+<pre     class="programlisting">
+password YOUR-PASSWORD
+enable password YOUR-ENABLE-PASSWORD
+</pre>
+</p><p>
+If you are feeling paranoid about your server establishing neighbor
+relationships with devices other than your router, you can disable OSPF
+automatic neighbor discovery on your server with the following additional
+commands in ospfd.conf:
+
+<pre     class="programlisting">
+interface eth0
+  ip ospf network non-broadcast
+
+router ospf
+  neighbor ROUTER-ID-OF-ROUTER
+</pre>
+</p><p>
+This configuration has each endpoint in its own OSPF NSSA area.
+You just as easily could have the endpoints become part of whatever area
+is already in existence, as long as that area allows external routes.
+Having each server in its own area gives you a little more control over
+what kind of routes propagate to and from each endpoint. It is a bit more
+work, both initially and when you move a server to a different router.
+It also means your servers have to be able to connect directly to an ABR
+with access to area 0, which may or may not be possible in your network.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2f902e0"></a>
+Sample Anycast Layout</h2></div></div><p>
+Anycast with one endpoint is fairly useless, so let's take a look at a
+simple deployment scenario. Each endpoint is configured exactly like the
+endpoint we just configured, with the exception of the service address
+and the OSPF area number.
+</p><p>
+In this scenario, let's say we have anycast running between two sites (for instance,
+a main office and a satellite office) connected over a WAN. There is
+one anycast endpoint at each site. The main office is 10.0.1.0/24,
+the satellite office is 10.0.2.0/24, and our anycast address is 10.0.0.1,
+from our anycast subnet, 10.0.0.0/25 (Figure 1).
+</p><div       class="mediaobject"><a href="10376f1.large.jpg"><img src="10376f1.jpg"></a><div class="caption"><p>
+Figure 1. Two-Site, Two-Server Environment
+</p></div></div><p>
+OSPF on R1 is configured as follows:
+
+
+<pre     class="programlisting">
+router ospf 1
+ log-adjacency-changes
+ network 10.0.1.0 0.0.0.255 area 10.0.1.2
+ network 10.0.0.128 0.0.0.128 area 0.0.0.0
+ area 10.0.1.2 nssa no-summary default-information-originate
+ area 10.0.1.2 authentication message-digest
+ area 0.0.0.0 authentication message-digest
+</pre>
+</p><p>
+OSPF on R2 is configured as follows:
+
+
+<pre     class="programlisting">
+router ospf 1
+ log-adjacency-changes
+ network 10.0.2.0 0.0.0.255 area 10.0.2.2
+ network 10.0.0.128 0.0.0.128 area 0.0.0.0
+ area 10.0.2.2 nssa no-summary default-information-originate
+ area 10.0.2.2 authentication message-digest
+ area 0.0.0.0 authentication message-digest
+
+R1&gt;show ip route 10.0.0.1
+Routing entry for 10.0.0.1/32
+  Known via "ospf 1", distance 110, metric 21, type NSSA extern 1
+  Last update from 10.0.1.2 on FastEthernet0/0, 00:00:14 ago
+  Routing Descriptor Blocks:
+  * 10.0.1.2, from 10.0.1.2, 00:00:14 ago, via FastEthernet0/0
+      Route metric is 21, traffic share count is
+
+R2&gt;show ip route 10.0.0.1
+Routing entry for 10.0.0.1/32
+  Known via "ospf 1", distance 110, metric 21, type NSSA extern 1
+  Last update from 10.0.2.2 on FastEthernet0/0, 00:05:07 ago
+  Routing Descriptor Blocks:
+  * 10.0.2.2, from 10.0.2.2, 00:05:07 ago, via FastEthernet0/0
+      Route metric is 21, traffic share count is 1
+</pre>
+</p><p>
+Traffic from each of the sites is flowing to the local anycast endpoint.
+Here's what happens if we take out the main office endpoint:
+
+
+<pre     class="programlisting">
+Endpoint1# ifdown lo:0
+Endpoint1#
+
+R1&gt;show ip route 10.0.0.1
+Routing entry for 10.0.0.1/32
+  Known via "ospf 1", distance 110, metric 85, type extern 1
+  Last update from 10.0.0.130 on Serial0/0, 00:00:21 ago
+  Routing Descriptor Blocks:
+  * 10.0.0.130, from 10.0.2.2, 00:00:21 ago, via Serial0/0
+      Route metric is 85, traffic share count is 1
+
+R2&gt;show ip route 10.0.0.1
+Routing entry for 10.0.0.1/32
+  Known via "ospf 1", distance 110, metric 21, type NSSA extern 1
+  Last update from 10.0.2.2 on FastEthernet0/0, 00:05:07 ago
+  Routing Descriptor Blocks:
+  * 10.0.2.2, from 10.0.2.2, 00:05:07 ago, via FastEthernet0/0
+      Route metric is 21, traffic share count is 1
+</pre>
+</p><p>
+All traffic starts to flow to the remaining endpoint, as designed and desired.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2f90968"></a>
+Monitoring and Automatic Route Withdrawal</h2></div></div><p>
+As I mentioned previously, the fact that a host is up does not mean that
+the service that host provides is up. When a host running Quagga goes
+down, any routes that host inserted into OSPF will be withdrawn. We need
+to do the same thing when a service does down. Any piece of monitoring
+software that can run a handler script in response to a monitoring
+event can be used for this task. The basic idea is to execute a test
+against the anycast IP from each anycast endpoint. If a test fails, you
+need to run <tt  >ifdown lo:0</tt> on the failed endpoint. Quagga will detect
+the downed interface and withdraw the route to that interface from OSPF.
+Administrators then can fix the box at their leisure and place the box
+back into service with a simple <tt  >ifup lo</tt>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2f90b20"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Application/Router Configuration Notes</b></p><p>
+1. Adjusting the cost of a link can be a great way to prepare
+an endpoint for removal gracefully. Using any other method, especially in a
+high-traffic environment, can result in dropped connections and other
+transient issues until OSPF reconverges. Setting the link cost very
+high before removal, on the other hand, avoids any transient problems
+during the brief reconvergence period. Once the endpoint in question
+is no longer receiving traffic, you can disable the anycast loopback
+and do whatever work needs to be done. Adjust the cost of a link on
+the router connected to your server with the following commands (in the
+example above that would be R1 or R2):
+
+
+<pre     class="programlisting">
+interface WHATEVER-INTERFACE-CONNECTS-THE-ROUTER-TO-QUAGGA
+  ip ospf cost NUMBER
+</pre>
+</p><p>
+Replace {number} with some large number that is greater than
+the cost of the replacement anycast endpoint.
+</p><p>
+2. Make sure nonresponse traffic is not sourced from the anycast address.
+One example is in configuring DNS. You want DNS replies to come from the
+anycast IP address, but you do not want DNS zone transfers to come from
+or go to anycast IP addresses. In the case of a caching nameserver,
+you also don't want recursive queries originated from the server to be
+sourced from the anycast address.
+</p><p>
+3. Applications that maintain state in some way are not good candidates
+for anycast addressing, even if the underlying transport protocol
+is stateless. The exception to that rule would be if all the anycast
+endpoints got their application-level state information from the same
+place.
+</p><p>
+4. UDP is the de facto standard for the anycast transport-layer protocol.
+Use any other transport-layer protocol at your own risk. See Resources for
+a detailed review of issues associated with using other transport-layer
+protocols.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2f90f40"></a>
+Conclusion</h2></div></div><p>
+Anycast is a great technique to enhance the reliability and
+fault tolerance of applications and services on your network.
+When designing your anycast topology, keep several rules and
+guidelines in mind. I've shown a very basic use case and deployment
+of anycast here. You can take the same concepts covered in this article, along
+with a fair bit of networking knowledge, and scale them to a worldwide
+deployment. If you do it right, you can have redundancy without nearly
+as many idle machines sitting around.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a9e580.0x2f91048"></a></h2></div></div><div class="sidebar"><p class="title"><b>Resources</b></p><p>
+root-servers.org: <a href="http://www.root-servers.org" target="_self">www.root-servers.org</a>
+</p><p>
+OpenBGPD: <a href="http://www.openbgpd.org" target="_self">www.openbgpd.org</a>
+</p><p>
+GNU Zebra: <a href="http://www.zebra.org" target="_self">www.zebra.org</a>
+</p><p>
+&ldquo;IP Routing Primer, Part One&rdquo;: <a href="http://www.networkcomputing.com/netdesign/1122ipr.html" target="_self">www.networkcomputing.com/netdesign/1122ipr.html</a>
+</p><p>
+&ldquo;Cisco administration 101: What you need to know about OSPF&rdquo;:
+<a href="http://articles.techrepublic.com.com/5100-10878_11-6132046.html" target="_self">articles.techrepublic.com.com/5100-10878_11-6132046.html</a>
+</p><p>
+&ldquo;Open Shortest Path First (OSPF)&rdquo;: <a href="http://www.cisco.com/en/US/docs/internetworking/technology/handbook/OSPF.html" target="_self">www.cisco.com/en/US/docs/internetworking/technology/handbook/OSPF.html</a>
+</p><p>
+&ldquo;Architectural Considerations of IP Anycast&rdquo;: <a href="http://tools.ietf.org/html/draft-mcpherson-anycast-arch-implications-00" target="_self">tools.ietf.org/html/draft-mcpherson-anycast-arch-implications-00</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Philip Martin has been working and playing with Linux for about ten
+years and is currently a Systems Engineer for a large on-line retailer.
+When he is not working with computers, he spends his days trying to be
+more like Alton Brown and in an ongoing quest to get invited to an <span   class="emphasis"><em>Iron
+Chef America</em></span> filming. He can be reached at
+<a href="mailto:phillip.martin@gmail.com">phillip.martin@gmail.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../187/toc187.html">Issue Table of Contents</a>
+    <a class="link3" href="../187/10376.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

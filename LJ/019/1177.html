@@ -1,0 +1,325 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Porting Linux to the DEC Alpha</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Last month, Jim narrated the development of the basic&#10;    infrastructure needed to port Linux to the Alpha. In this&#10;    second of three parts, he describes the task of porting the&#10;    kernel and basic environment needed to get to the shell&#10;    prompt.&#10;    "><meta name="keywords" content="porting, kernel, programming"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x24c7580.0x25beab0"></a>Porting Linux to the DEC Alpha</h1></div><div><div class="author"><h3 class="author">Jim Paradis</h3></div><div class="issuemoyr">Issue #19, November 1995</div></div><div><p>
+    Last month, Jim narrated the development of the basic
+    infrastructure needed to port Linux to the Alpha. In this
+    second of three parts, he describes the task of porting the
+    kernel and basic environment needed to get to the shell
+    prompt.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24c7580.0x25bf3a0"></a></h2></div></div><p>With all of the infrastructure in place,
+I was now able to turn my attention to the task of porting the
+kernel itself. My experience with previous Unix ports has been that
+the greatest number of system dependencies are found in the virtual
+memory subsystem, the process scheduler, the system call interface,
+the device drivers, and the trap handlers. In this particular case,
+I wasn't worried about the device drivers because I was prepared to
+write a few trivial drivers to interface to the console devices
+anyway.
+</p><p>My own approach to software development and porting is to
+consider the data structures central to the operation of the
+program. Accordingly, I used the kernel include files as my
+starting point for understanding the code's structure and system
+dependencies. I combed through the include files, making notations
+as to where I thought there would be system dependencies and where
+algorithms might need to be modified for the new environment.
+Frequently I'd go back and forth between the include files, the C
+code, and my porting notes. Eventually a (relatively) coherent
+approach to the port emerged, which I began implementing.</p><p>One change that I made everywhere&mdash;and later
+regretted&mdash;involved the <b  >cli()</b> and <b  >sti()</b>
+routines. On Intel, <b  >cli()</b> and
+<b  >sti()</b> disable and enable interrupts,
+respectively. The Digital Unix PALcode on Alpha, however,
+implements a seven-level prioritized interrupt scheme. At the time
+that I started the port, I was not certain whether it would be
+necessary to preserve the interrupt hierarchy.</p><p>I laboriously replaced all instances of
+<b  >cli()</b> with calls to the <b  >ipl()</b>
+routine, setting the current IPL (interrupt priority level) to the
+maximum and preserving the previous IPL. I replaced calls to
+<b  >sti()</b> with calls to <b  >ipl()</b> to
+restore the previously-saved level. I did this because I was not
+certain what the IPL might be when a particular piece of code is
+run, and it would be a mistake to implement
+<b  >sti()</b> as <b  >ipl(0)</b> if the code
+in fact had been entered at a non-zero IPLl; it turned out that
+this was largely unnecessary.</p><p>Linux implements two-stage interrupt handling, where
+interrupt service routines are divided into a &ldquo;top half&rdquo; and a
+&ldquo;bottom half&rdquo;. The top half is what runs at nonzero IPL when the
+interrupt is received. Generally, the top half performs the minimum
+amount of work necessary to acknowledge the interrupt, and queues
+subsequent actions to be run by the bottom half. This means that
+the interrupt handlers themselves are pretty much self-contained,
+and the bulk of the kernel code runs at IPL 0 unless explicitly
+raised. For Alpha, I could just as easily implement
+<b  >cli()</b> as <b  >ipl(IPLMAX)</b> and
+<b  >sti()</b> as <b  >ipl(0)</b>, without ill
+effects. This is exactly what we did for the device driver
+work.</p><p>The virtual memory subsystem was one of those places where I
+had to implement Alpha-specific versions of Intel-specific
+routines. In many ways, the Alpha memory-mapping scheme is similar
+to the Intel scheme: Intel uses a two-level page table to map a
+32-bit virtual address space, while Alpha uses a three- level page
+table to map a 64-bit virtual address space. However, if one is
+only mapping 32 bits of virtual address, Alpha only requires a
+single first-level page table entry and a single second-level page
+table. Therefore, on a 32-bit system the Alpha scheme essentially
+collapses into a two-level scheme. The upshot of all this is that
+similar algorithms could be used to manipulate both Intel and Alpha
+page tables.</p><p>The Alpha Level 1 page table is set up once at boot time and
+is never heard from again; the Level 2 page table corresponds to
+the Page Directory on Intel; the Level 3 page tables correspond to
+the actual Intel page tables. In fact, to save memory, I
+implemented only a single system-wide Level 2 page table. It turns
+out that with the addressing scheme that I outlined above, I could
+map the entire address space using only the first 256 Level 2 page
+table entries, 128 of which can map the entire user address space.
+Therefore, I maintained a single Level 2 page table, kept the
+kernel entries continually mapped, and copied in new user entries
+for each context switch. The contents of the user entries were kept
+in the <b  >pcb_struct</b> (an Alpha-specific structure
+not present in the Intel version), which was attached to the
+<b  >task_struct</b>.</p><p>Unfortunately, the Intel Linux memory-management code took
+advantage of some fortuitous features of the Intel paging model.
+For instance, to obtain the physical memory address of a virtual
+memory page on Intel, you can simply obtain the corresponding page
+table entry and mask out the low bits. Page table entries on Alpha
+are not so accommodating&mdash;they are 64 bits wide. If I had 64-bit
+computation available to me at the beginning, I could do a mask and
+a shift. As it was, I had to treat a page table entry as a struct
+of two integers, extract the page frame number from one member, and
+shift it to obtain the physical address.</p><p>Because I ended up changing virtually every line of memory.c
+to accommodate the slightly different page frame traversal and
+parsing semantics, I instead produced two versions of every routine
+in memory.c&mdash;one for i386, and one for alpha. Context switching
+was another area requiring significant change, and one of the more
+difficult to debug. Much of the context switching and system call
+handling code had to be rewritten, as it was originally implemented
+in Intel assembly language. Intel code saves some process state on
+the stack, but relies on the native task-switching mechanism of the
+Intel CPU to save and restore other process state to and from the
+Task State Segment (TSS). While the Digital Unix PALcode supports
+the concept of a &ldquo;process context&rdquo; structure, this structure
+contains relatively little of the <span   class="emphasis"><em>actual</em></span>
+process context. Instead, it contains the vital pointers (kernel
+stack pointer, user stack pointer, page table base register) needed
+to allow a process to save and restore its <span   class="emphasis"><em>own</em></span>
+context.</p><p>Most of the process context for a Linux/Alpha process resides
+on the process's kernel stack. Six items (<b  >PS</b>,
+<b  >PC</b>, <b  >GP</b>,
+<b  >A0</b>, <b  >A1</b>, and
+<b  >A2</b>) are pushed onto the kernel stack by the
+PALcode upon entry into kernel mode (i.e. any time a trap or
+interrupt is taken). The remainder of the processor's register
+state is either pushed onto the kernel stack by the trap handler,
+or stored in the process's <b  >task_struct</b>.</p><p>In my 32-bit port, I decided to play it safe by always
+pushing the <span   class="emphasis"><em>entire</em></span> register state onto the
+stack, including the floating-point registers. This is needlessly
+wasteful, of course, especially if the process in question has
+never used the floating-point registers. I had hoped eventually to
+optimize the register save/restore path, but our development group
+switched to version 1.2 before I got around to it.</p><p>I also had to update the Level 2 page table area on every
+context switch. There were 128 Level 2 page table entries per
+process, of which at most two or three were typically used. For
+ease of implementation, I simply saved and restored all 128 entries
+on every context switch. Again, this was something I had hoped to
+be able to optimize but didn't get a chance to implement before
+cutting over to 1.2.</p><p>Re-implementing the system call and trap handlers was not too
+difficult. For the system call handler, I had to figure out the
+Intel system call semantics for passing arguments in registers, and
+use the analogous Alpha registers to pass arguments. As for trap
+handling: while Alpha implements a different set of traps than
+Intel, it was relatively straightforward to figure out where to
+vector the various Alpha traps.</p><p>The only pieces of the file system that required extensive
+attention were the buffer cache and the <b  >exec()</b>
+code. The buffer cache had to be reviewed to verify that it would
+work with a different hardware page size (8KB on Alpha as opposed
+to 4KB on Intel). The <b  >exec()</b> code had to be made
+aware of the executable file format generated by gcc and the GNU
+binutils (in this case, it was a COFF variant).</p><p>After several weeks of reviewing and modifying code, I was
+ready to try to compile it. Not surprisingly, getting a clean
+compile was itself an iterative process. I would encounter an
+error, decide whether it represented an error on my part or an
+attempt to compile code that I did not yet want to support, and
+take appropriate action.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24c7580.0x25c0318"></a>Hello, World!</h2></div></div><p>After much effort, I finally had an executable file named
+&ldquo;linux&rdquo; full of Alpha code. The next step was to try to boot
+it.</p><p>Not surprisingly, I did not get very far the first time...or
+the second...or the third. So I put a <b  >printk</b>
+statement early in the boot sequence so that I could show some
+early success to my management, and added many additional
+<b  >printk</b>'s to track the progress of the kernel
+through the initialization sequences. Most of the problems I
+encountered over the succeeding weeks were due to errors on my part
+in not attending to all the ramifications of certain code changes.
+What was amazing was that the code I didn't touch frequently worked
+perfectly the first time. For example, I would spend several days
+debugging <b  >init()</b>, then when it came time to
+mount the root file system it would just work.</p><p>Once I had mounted the root file system and completed all of
+the kernel initializations, the next step was to run a user-mode
+executable. Since I did not yet have a C runtime library or any gcc
+support for anything but the kernel, I decided to hand-craft a
+program that, though extremely simple, would nonetheless show some
+outward sign of functioning. I wrote a variant of the ever-popular
+&ldquo;hello, world&rdquo; program in assembly language. Instead of using
+printf(), I hand-crafted a system call in assembly which called the
+<b  >write()</b> system call, passing it the address and
+length of the string. Attempting to run this program provided me
+with much opportunity to debug the <b  >exec()</b> code
+in the file system and the virtual memory page-fault handler.
+Eventually, though, Linux/Alpha did indeed say &ldquo;hello, world&rdquo; to
+me.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24c7580.0x25c0688"></a>The C Runtime Library</h2></div></div><p>At this point, I needed more executables both to test
+Linux/Alpha and to transform it from a kernel into a useful system.
+Since I had not designed my 32-bit port to be binary- compatible
+with anything else (such as Digital Unix), I had to produce any
+executables I was going to use from scratch. In order to compile
+anything other than specially hand-crafted programs, I was going to
+need a C runtime library. At this point the project had grown
+larger than one person could handle. (Actually, it had passed that
+point long before, but at this point I could no longer deny
+it.)</p><p>Fortunately, help arrived in the person of Brian Nelson.
+Brian had been working for our group for some time already,
+supporting the VEST VAX-to-Alpha binary translator. At this point
+VEST's support requirements had diminished somewhat and Brian found
+himself with some time on his hands. Although he knew very little
+Unix at the time, his enthusiasm for the Linux project more than
+made up for any lack of specific knowledge. I tutored him in the
+arcana of gcc, make, and libraries, and set him off porting the GNU
+libc from the InfoMagic CD-ROM to Alpha. I handled some of the
+system- dependent portions while Brian handled the rest.</p><p>Porting libc turned out to be less than trivial, mainly
+because we could not get libc's <b  >symbol_alias</b>
+macro to work properly for the life of us. This macro essentially
+creates a symbol in the object file's symbol table which is an
+exact synonym for another symbol, and stdio uses it heavily. We
+finally managed to build a &ldquo;Frankenstein-style&rdquo; libc by stitching
+together pieces from various sources. Most of it was GNU libc 4.1,
+but stdio came from BSD, and a few miscellaneous routines came from
+wherever I could scare them up. Nevertheless, we managed (after a
+fashion) to get clean builds of various GNU utilities using this
+library.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24c7580.0x25c0898"></a>Porting Some Utilities</h2></div></div><p>We started out porting some Slackware packages, but soon
+realized that a smaller distribution would get us to a usable
+system more quickly. I poked around and decided that MCC would be a
+better choice.</p><p>One problem we had compiling virtually any package had to do
+with configuration. The auto-configure scripts with several
+packages did not understand the concept of cross-compilation. Since
+we were doing our development on a Digital Unix system, attempts to
+configure packages would either fail or produce a Digital Unix
+version when I wanted a Linux version. Finally I suggested to Brian
+that he log into an Intel Linux system, configure the packages
+there, hand-edit the makefile to reference the cross-tool suite,
+then compile the package on the Digital Unix system using the
+Linux/Alpha cross tools. This rather baroque strategy actually
+worked, and he was finally able to get clean builds of some of the
+smaller utilities. One of the first things I needed was a shell.
+Brian started off porting <span   class="bold"><b>bash</b></span>,
+but ran into troubles. I scoured the net and found a bunch of
+freeware shells. Brian and I then started porting like mad until we
+could get one that would compile cleanly with the cross tools. We
+finally were able to compile the Plan-9
+<span   class="bold"><b>rc</b></span> shell.</p><p>Brian then went off to continue porting other utilities while
+I tried to boot Linux and run the
+<span   class="bold"><b>rc</b></span> shell.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24c7580.0x25c0b58"></a>Getting to the Shell Prompt</h2></div></div><p>Often, code that works in the trivial case can fail in subtle
+ways when presented with a more complicated case&mdash;such was the
+situation with the shell. While the COFF image-loading code that I
+was using worked for loading a one-page &ldquo;hello, world&rdquo;
+executable, bugs showed themselves when I attempted to use it on a
+larger file. Once these problems were resolved, I had to debug the
+various system calls that rc was attempting to use.</p><p>When debugging a newly-ported utility that uses a newly-
+ported library and runs on a newly-ported system, one needs to keep
+an open mind as to where potential problems might be. While
+debugging rc, I ran into problems in all areas. In one case I was
+not propagating system call error status correctly from the kernel
+to the user; this caused an erroneous success condition to be
+returned to the program. In another case, I found that the kernel
+<b  >init()</b> function was not correctly opening
+/dev/tty0, so that even if rc had been running correctly, it could
+not have read from or written to the console.</p><p>Late one afternoon, I was working from home, using the ISP
+Alpha simulator and several <span   class="bold"><b>nm</b></span>
+listings to debug yet another rc problem. I'd just fixed a
+virtual-memory bug when I sent a mail message to my colleagues
+stating that I was well on my way and would probably have a shell
+prompt by the end of the week. Then I tried One More Fix, rebooted,
+watched the initialization messages scroll by, and then saw the
+screen freeze. On closer inspection, I saw a prompt at the bottom
+of the screen! Pressing <b  >return</b> had the desired
+effect. I had very few tools to work with, but I could simulate a
+crude <b  >ls</b> by typing <b  >echo</b> ; I
+did that, and was greeted with the names of the few files on the
+root file system.</p><p>Achieving the shell prompt is one of the major achievements
+of any operating system porting project. I informed my colleagues,
+and we knocked off and had a beer, proud of our achievement. Next
+month, we'll cover debugging and further development.</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Jim Paradis</b></span>
+      works as a Principal Software
+      Engineer for Digital Equipment Corporation as a member of the Alpha
+      Migration Tools group. Ever since a mainframe system administrator
+      yelled at him in college, he's wanted to have a multiuser,
+      multitasking operating system on his own desktop system. To this
+      end, he has tried nearly every Unix variant ever produced for PCs,
+      including PCNX, System V, Minix, BSD, and Linux. Needless to say,
+      he likes Linux best. Jim currently lives in Worcester,
+      Massachusetts with his wife, eleven cats, and a house forever under
+      renovation.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../019/toc019.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

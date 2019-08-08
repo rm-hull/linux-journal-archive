@@ -1,0 +1,612 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The Devil's in the Details</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    This article, the third of five on writing&#10;    character device drivers, introduces concepts of&#10;    reading, writing, and using ioctl-calls.&#10;    "><meta name="keywords" content="device, driver, kernel, programming, system, admin, development"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2487580.0x257eab0"></a>The Devil's in the Details</h1></div><div><div class="authorgroup"><div class="author"><h3 class="author">Georg V. Zezschwitz</h3></div><div class="author"><h3 class="author">Alessandro Rubini</h3></div><div class="issuemoyr">Issue #25, May 1996</div></div></div><div><p>
+    This article, the third of five on writing
+    character device drivers, introduces concepts of
+    reading, writing, and using ioctl-calls.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2487580.0x257f818"></a></h2></div></div><p>Starting from the clean code environment
+of the two <a href="../024/1220.html" target="_self">previous</a> articles, we
+now turn to all the nasty interrupt stuff. Astonishingly, Linux
+hides most of this from us, so we do not need a single line of
+assembler...
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2487580.0x257f978"></a>Reading and writing</h2></div></div><p>Right now, our magic <b  >skel</b>-machine driver
+can load and even unload (painlessly, unlike in DOS), but it has
+neither read nor written a single character. So we will start
+fleshing out the <b  >skel_read()</b> and
+<b  >skel_write()</b> functions introduced in the
+previous article (under <span   class="bold"><b>fops and
+filp</b></span>). Both functions take four arguments:</p><pre     class="programlisting">
+Static int skel_read (struct inode *inode,
+                      struct file *file,
+                      char *buf, int count)
+Static int skel_write (struct inode *inode,
+                       struct file *file,
+                       const char *buf,
+                       int count)
+</pre><p>The <b  >inode</b> structure supplies the functions
+with information used already during the
+<b  >skel_open()</b> call. For example, we determined
+from <b  >inode-&gt;i_rdev</b> which board the user wants
+to open, and transferred this data&mdash;along with the board's base
+address and interrupt to the <b  >private_data</b> entry
+of the file descriptor. We might ignore this information now, but
+if we did not use this hack, <b  >inode</b> is our only
+chance to find out to which board we are talking.</p><p>The <b  >file</b> structure contains data that is
+more valuable. You can explore all the elements in its definition
+in <b  >&lt;linux/fs.h&gt;</b>. If you use the
+<b  >private_data</b> entry, you find it here, and you
+should also make use of the <b  >f_flags</b>
+entry&mdash;revealing to you, for instance, if the user wants blocking
+or non-blocking mode. (We explain this topic in more detail later
+on.)</p><p>The <b  >buf</b> argument tells us where to put the
+bytes read (or where to find the bytes written) and
+<b  >count</b> specifies how many bytes there are. But
+you must remember that every process has its own private address
+space. In kernel code, there is an address space common to all
+processes. When system calls execute on behalf of a specific
+process, they run in kernel address space, but are still able to
+access the user space. Historically, this was done through
+assembler code using the <b  >fs</b> register; current
+Linux kernels hide the specific code within functions called
+<b  >get_user_byte()</b> for reading a byte from user
+address space, <b  >put_user_byte()</b> for writing one,
+and so on. They were formerly known as
+<b  >get_fs_byte</b>, and only
+<b  >memcpy_tofs()</b> and
+<b  >memcpy_fromfs()</b> reveal these old days even on a
+DEC Alpha. If you want to explore, look in
+<b  >&lt;asm/segment.h&gt;</b>.</p><p>Let us imagine ideal hardware that is always hungry to
+receive data, reads and writes quickly, and is accessed through a
+simple 8-bit data-port at the base address of our interface.
+Although this example is unrealistic, if you are impatient you
+might try the following code:</p><pre     class="programlisting">
+Static int skel_read (struct inode *inode,
+                      struct file *file,
+                      char *buf, int count) {
+    int n = count;
+    char *port = PORT0 ((struct Skel_Hw*)
+                        (file-&gt;private_data));
+    while (n--) {
+        <span   class="emphasis"><em>Wait till device is ready</em></span>
+        put_user_byte (inb_p (port), buf);
+        buf++;
+    }
+    return count;
+}
+</pre><p>Notice the <b  >inb_p()</b> function call, which is
+the actual I/O read from the hardware. You might decide to use its
+fast equivalent, <b  >inb()</b>, which omits a minimal
+delay some slow hardware might need, but I prefer the safe
+way.</p><p>The equivalent <b  >skel_write()</b> function is
+nearly the same. Just replace the
+<b  >put_user_byte()</b> line by the following:</p><pre     class="programlisting">
+        outb_p (get_user_byte (buf), port);
+</pre><p>However, these lines have a lot of disadvantages. What using
+them causes Linux to loop infinitely while waiting for a device
+that never becomes ready? Our driver should dedicate the time in
+the waiting loop to other processes, making use of all the
+resources in our expensive CPU, and it should have an input and
+output buffer for bytes arriving while we are not in
+<b  >skel_read()</b> and corresponding
+<b  >skel_write()</b> calls. It should also contain a
+time-out test in case of errors, and it should support blocking and
+non-blocking modes.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2487580.0x25807e8"></a>Blocking and Non-Blocking Modes</h2></div></div><p>Imagine a process that reads 256 bytes at a time.
+Unfortunately, our input buffer is empty when
+<b  >skel_read()</b> is called. So what should it
+do&mdash;return and say that there is no data yet, or wait until at
+least <span   class="emphasis"><em>some</em></span> bytes have arrived?</p><p>The answer is <span   class="bold"><b>both</b></span>.
+<span   class="emphasis"><em>Blocking</em></span> mode means the user wants the driver
+to wait till some bytes are read. <span   class="emphasis"><em>Non-blocking</em></span>
+mode means to return as soon as possible&mdash;just read all the bytes
+that are available. Similar rules apply to writing:
+<span   class="emphasis"><em>Blocking</em></span> mode means &ldquo;Don't return till you
+can accept some data,&rdquo; while <span   class="emphasis"><em>non-blocking</em></span>
+mode means: &ldquo;Return even if nothing is accepted.&rdquo; The
+<b  >read()</b> and <b  >write()</b>calls
+usually return the number of data bytes successfully read or
+written. If, however, the device is non-blocking and no bytes can
+be transferred, <b  >-EAGAIN</b> is typically returned
+(meaning: <span   class="emphasis"><em>&ldquo;Play it again, Sam&rdquo;</em></span>).
+occasionally, old code may return <b  >-EWOULDBLOCK</b>,
+which is the same as <b  >-EAGAIN</b> under Linux.</p><p>Maybe now you are smiling as happily as I did when I first
+heard about these two modes. If these concepts are new for you, you
+might find the following hints helpful. Every device is opened by
+default in blocking mode, but you may choose non-blocking mode by
+setting the <b  >O_NONBLOCK</b> flag in the
+<b  >open()</b> call. You can even change the behaviour
+of your files later on with the <b  >fcntl()</b> call.
+The <b  >fcntl()</b> call is an easy one, and the man
+page will be sufficient for any programmer.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2487580.0x2577808"></a>Sleeping Beauty</h2></div></div><p>Once upon a time, a beautiful princess was sent by a witch
+into a long, deep sleep, lasting for a hundred years. The world
+nearly forgot her and her castle, twined about by roses, until one
+day, a handsome prince came, kissed her, and awakened her --and all
+the other nice things happened that you hear about in fairy
+tales.</p><p>Our driver should do what the princess did while it is
+waiting for data: sleep, leaving the world spinning around. Linux
+provides a mechanism for that, called
+<b  >interruptible_sleep_on()</b>. Every process reaching
+this call will fall asleep and contribute its time slices to the
+rest of the world. It will stay in this function till another
+process calls <b  >wake_up_interruptible()</b>, and this
+&ldquo;prince&rdquo; usually takes the form of an interrupt handler that has
+successfully received or sent data, or Linux itself, if a time-out
+condition has occurred.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2487580.0x2577a18"></a>Installing an Interrupt Handler</h2></div></div><p>The previous article in this series showed a minimal
+interrupt handler, which was called
+<b  >skel_trial_fn()</b>, but its workings were not
+explained. Here, we introduce a &ldquo;complete&rdquo; interrupt handler,
+which will handle both input to and output from the actual hardware
+device. <a href="1221f1.html" target="_self">Figure 1</a> shows a simple
+version of its concept: When the driver is waiting for the device
+to get ready (blocking), it goes to sleep by calling
+<b  >interruptible_sleep_on()</b>. A valid interrupt ends
+this sleep, restarting <b  >skel_write()</b>.</p><p><a href="1221f1.html" target="_self">Figure 1</a> does not include
+the double-nested loop structure we need when working with an
+internal output buffer. The reason is that if we can perform only
+writing within the <b  >skel_write()</b> function there
+is no need for an internal output buffer. But our driver should
+catch data even while not in <b  >skel_read()</b> and
+should write the data in the background even when not in
+<b  >skel_write()</b>. Therefore, we will change the
+hardware writing in <b  >skel_write()</b> to write to an
+output buffer and let the <span   class="emphasis"><em>interrupt handler</em></span>
+perform the real writing to the hardware. The interrupt and
+<b  >skel_write()</b> will now be linked by the
+&ldquo;Sleeping Beauty&rdquo; mechanism and the output buffer.</p><p>The interrupt handler is installed and uninstalled during the
+<b  >open()</b> and <b  >close()</b> calls to
+the device, as suggested in the previous article. This task is
+handled by the following kernel calls:</p><pre     class="programlisting">
+#include &lt;linux/sched.h&gt;
+int request_irq(unsigned int irq,
+                void (*handler)
+                     (int, struct pt_regs *),
+                unsigned long flags,
+                const char *device);
+void free_irq(unsigned int irq);
+</pre><p>The <b  >handler</b> argument is the actual
+interrupt handler we wish to install. The role of the
+<b  >flags</b> argument is to set a few features of the
+handler, the most important being its behaviour as a
+<span   class="emphasis"><em>fast</em></span> handler (<b  >SA_INTERRUPT</b>
+is set in <b  >flags</b>) or as a
+<span   class="emphasis"><em>slow</em></span> handler ( <b  >SA_INTERRUPT</b>
+is <span   class="emphasis"><em>not</em></span> set). A fast handler is run with all
+interrupts disabled, while a slow one is executed with all
+interrupts except itself enabled.</p><p>Finally, the <b  >device</b> argument is used to
+identify the handler when looking at /proc/interrupts.</p><p>The handler function installed by
+<b  >request_irq()</b> is passed only the interrupt
+number and the (often useless) contents of the processor
+registers.</p><p>Therefore, we'll first determine which board the calling
+interrupt belongs to. If we can't find any boards, a situation
+called a <span   class="emphasis"><em>spurious</em></span> interrupt has occurred, and
+we should ignore it. Typically interrupts are used to tell whether
+the device is ready either for reading <span   class="emphasis"><em>or</em></span>
+writing, so we have to find out by one or more hardware tests what
+the device wants us to do.</p><p>Of course, we should leave our interrupt handler quickly.
+Strangely enough, <b  >printk()</b> (and thus the
+<b  >PDEBUG</b> line) is allowed even within fast
+interrupt handlers. This is a very useful feature of the linux
+implementation. If you look at kernel/printk.c you'll discover that
+its implementation is based on wait queues, as the actual delivery
+of messages to log files is handled by an external process (usually
+klogd).</p><p>As shown in <a href="1221f2.html" target="_self">figure 2</a>, Linux
+can handle a timeout when in
+<b  >interruptible_sleep_on()</b>. For example, if you
+have are using a device to which you send an answer, and it is
+expected to reply within a limited time, causing a time-out to
+signal an I/O error (<b  >-EIO</b>) in the return value
+to the user process might be a good choice.</p><p>Certainly the user process could care for this, too, using
+the alarm mechanism. But it is definitely easier to handle this in
+the driver itself. The timeout criteria is specified by
+<b  >SKEL_TIMEOUT</b>, which is counted in
+<span   class="emphasis"><em>jiffies</em></span>. Jiffies are the steady heartbeat of a
+Linux system, a steady timer incremented every few milliseconds.
+The frequency, or number of jiffies per second, is defined by
+<b  >HZ</b> in <b  >&lt;asm/param.h&gt;</b>
+(included in <b  >&lt;linux/sched.h&gt;</b>) and varies
+on different architectures (100 Hz Intel, 1 kHz Alpha). You simply
+have to set</p><pre     class="programlisting">
+#define SKEL_TIMEOUT <span   class="emphasis"><em>timeout_seconds</em></span> * HZ
+/* ... */
+current-&gt;timeout = jiffies + SKEL_TIMEOUT
+</pre><p>and if <b  >interruptible_sleep_on</b> timed out,
+<b  >current-&gt;timeout</b> will be cleared after
+return.</p><p>Be aware that interrupts might happen within
+<b  >skel_read()</b> and <b  >skel_write()</b>.
+Variables that might be changed within the interrupt should be
+declared as <b  >volatile</b>. They also need to be
+protected to avoid race conditions. The classic code sequence to
+protect a critical region is the following:</p><pre     class="programlisting">
+unsigned long flags;
+save_flags (flags);
+cli ();
+<span   class="emphasis"><em>critical region</em></span>
+restore_flags (flags);
+</pre><p>Finally, the code for the &ldquo;complete&rdquo; error handler:</p><pre     class="programlisting">
+#define SKEL_IBUFSIZ 512
+#define SKEL_OBUFSIZ 512
+/* for 5 seconds timeout */
+#define SKEL_TIMEOUT (5*HZ)
+/* This should be inserted in the <span   class="emphasis"><em>Skel_Hw</em></span>-structure */
+typedef struct Skel_Hw {
+    /* write position in input-buffer */
+    volatile int ibuf_wpos;
+    /* read position in input-buffer */
+    int ibuf_rpos;
+    /* the input-buffer itself */
+    char *ibuf;
+    /* write position in output-buffer */
+    int obuf_wpos;
+    /* read position in output-buffer */
+    volatile int buf_rpos;
+    char *obuf;
+    struct wait_queue *skel_wait_iq;
+    struct wait_queue *skel_wait_oq;
+    <span   class="emphasis"><em>[...]</em></span>
+}
+#define SKEL_IBUF_EMPTY(b) \
+ ((b)-&gt;ibuf_rpos==(b)-&gt;ibuf_wpos)
+#define SKEL_OBUF_EMPTY(b) \
+ ((b)-&gt;obuf_rpos==(b)-&gt;obuf_wpos)
+#define SKEL_IBUF_FULL(b) \
+ (((b)-&gt;ibuf_wpos+1)%SKEL_IBUFSIZ==(b)-&gt;ibuf_rpos)
+#define SKEL_OBUF_FULL(b) \
+ (((b)-&gt;obuf_wpos+1)%SKEL_OBUFSIZ==(b)-&gt;obuf_rpos)
+Static int skel_open (struct inode *inode,
+                      struct file *filp) {
+    /* .... */
+    /* First we allocate the buffers */
+    board-&gt;ibuf = (char*) kmalloc (SKEL_IBUFSIZ,
+                                   GFP_KERNEL);
+    if (board-&gt;ibuf == NULL)
+        return -ENOMEM;
+    board-&gt;obuf = (char*) kmalloc (SKEL_OBUFSIZ,
+                                   GFP_KERNEL);
+    if (board-&gt;obuf == NULL) {
+        kfree_s (board-&gt;ibuf, SKEL_IBUFSIZ);
+        return -ENOMEM;
+    }
+    /* Now we clear them */
+    ibuf_wpos = ibuf_rpos = 0;
+    obuf_wpos = obuf_rpos = 0;
+    board-&gt;irq = board-&gt;hwirq;
+    if ((err=request_irq(board-&gt;irq&gt;
+                         skel_interrupt,
+                         SA_INTERRUPT, "skel")))
+        return err;
+}
+Static void skel_interrupt(int irq,
+                    struct pt_regs *unused) {
+    int i;
+    Skel_Hw *board;
+    for (i=0, board=skel_hw; i&lt;skel_boards;
+         board++, i++)
+         /* spurious */
+        if (board-&gt;irq==irq) break;
+    if (i==skel_boards) return;
+    if (<span   class="emphasis"><em>board_is_ready_for_input</em></span>)
+        skel_hw_write (board);
+    if (<span   class="emphasis"><em>board_is_ready_for_output</em></span>)
+        skel_hw_read (board);
+}
+Static inline void skel_hw_write (Skel_Hw *board){
+    int rpos;
+    char c;
+    while (! SKEL_OBUF_EMPTY (board) &amp;&amp;
+        <span   class="emphasis"><em>board_ready_for_writing</em></span>) {
+        c = board-&gt;obuf [board-&gt;obuf_rpos++];
+        <span   class="emphasis"><em>write_byte_c_to_device</em></span>
+        board-&gt;obuf_rpos %= SKEL_OBUF_SIZ;
+    }
+    /* Sleeping Beauty */
+    wake_up_interruptible (board-&gt;skel_wait_oq);
+}
+Static inline void skel_hw_read (Skel_Hw *board) {
+    char c;
+    /* If space left in the input buffer &amp; device ready: */
+    while (! SKEL_IBUF_FULL (board) &amp;&amp;
+        <span   class="emphasis"><em>board_ready_for_reading</em></span>) {
+        <span   class="emphasis"><em>read_byte_c_from_device</em></span>
+        board-&gt;ibuf [board-&gt;ibuf_wpos++] = c;
+        board-&gt;ibuf_wpos %= SKEL_IBUFSIZ;
+    }
+    wake_up_interruptible (board-&gt;skel_wait_iq);
+}
+Static int skel_write (struct inode *inode,
+                       struct file *file,
+                       char *buf, int count) {
+    int n;
+    int written=0;
+    Skel_Hw board =
+        (Skel_Hw*) (file-&gt;private_data);
+    for (;;) {
+        while (written&lt;count &amp;&amp;
+               ! SKEL_OBUF_FULL (board)) {
+            board-&gt;obuf [board-&gt;obuf_wpos] =
+                get_user_byte (buf);
+            buf++; board-&gt;obuf_wpos++;
+            written++;
+            board-&gt;obuf_wpos %= SKEL_OBUFSIZ;
+        }
+        if (written) return written;
+        if (file-&gt;f_flags &amp; O_NONBLOCK)
+            return -EAGAIN;
+        current-&gt;timeout = jiffies + SKEL_TIMEOUT;
+        interruptible_sleep_on (
+            &amp;(board-&gt;skel_wait_oq));
+        /* Why did we return? */
+        if (current-&gt;signal &amp; ~current-&gt;blocked)
+        /* If the signal is not not being
+           blocked */
+            return -ERESTARTSYS;
+        if (!current-&gt;timeout)
+            /* no write till timout: i/o-error */
+            return -EIO;
+    }
+}
+Static int skel_read (struct inode *inode,
+                      struct file *file,
+                      char *buf, int count) {
+    Skel_Hw board =
+        (Skel_Hw*) (file-&gt;private_data);
+    int bytes_read = 0;
+    if (!count) return 0;
+    if (SKEL_IBUF_EMPTY (board)) {
+        if (file-&gt;f_flags &amp; O_NONBLOCK)
+            /* Non-blocking */
+            return -EAGAIN;
+        current-&gt;time_out = jiffies+SKEL_TIMEOUT;
+        for (;;) {
+            <span   class="emphasis"><em>skel_tell_hw_we_ask_for_data</em></span>
+            interruptible_sleep_on (
+                &amp;(board-&gt;skel_wait_iq));
+            if (current-&gt;signal
+                &amp; ~current-&gt;blocked)
+                return -ERESTARTSYS;
+            if (! SKEL_IBUF_EMPTY (board))
+                break;
+            if (!current-&gt;timeout)
+                /* Got timeout: return -EIO */
+                return -EIO;
+        }
+    }
+    /* if some bytes are here, return them */
+    while (! SKEL_IBUF_EMPTY (board)) {
+        put_user_byte (board-&gt;ibuf
+                          [board-&gt;ibuf_rpos],
+                       buf);
+        buf++; board-&gt;ibuf_rpos++;
+        bytes_read++;
+        board-&gt;ibuf_rpos %= SKEL_IBUFSIZ;
+        if (--count == 0) break;
+    }
+    if (count) /* still looking for some bytes */
+        <span   class="emphasis"><em>skel_tell_hw_we_ask_for_data</em></span>
+    return bytes_read;
+}
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2487580.0x2579280"></a>Handling <b  >select()</b></h2></div></div><p>The last important I/O function to be shown is
+<b  >select()</b>, one of the most interesting parts of
+Unix, in our opinion.</p><p>The <b  >select()</b> call is used to wait for a
+device to become ready, and is one of the most scary functions for
+the novice C programmer. While its use from within an application
+is not shown here, the driver-specific part of the system call is
+shown, and its most impressive feature is its compactness.</p><p>Here's the full code:</p><pre     class="programlisting">
+Static int skel_select(struct inode *inode,
+                       struct file *file,
+                       int sel_type,
+                       select_table *wait) {
+    Skel_Clientdata *data=filp-&gt;private_data;
+    Skel_Board *board=data-&gt;board;
+    if (sel_type==SEL_IN) {
+        if (! SKEL_IBUF_EMPTY (board))
+            /* readable */
+            return 1;
+        <span   class="emphasis"><em>skel_tell_hw_we_ask_for_data</em></span>;
+        select_wait(&amp;(hwp-&gt;skel_wait_iq), wait);
+        /* not readable */
+        return 0;
+    }
+    if (sel_type==SEL_OUT) {
+        if (! SKEL_OBUF_FULL (board))
+            return 1;  /* writable */
+        /* hw knows */
+        select_wait (&amp;(hwp-&gt;skel_wait_oq), wait);
+        return 0;
+    }
+    /* exception condition: cannot happen */
+    return 0;
+}
+</pre><p>As you can see, the kernel takes care of the hassle of
+managing wait queues, and you have only to check for
+readiness.</p><p>When we first wrote a <b  >select()</b> call for a
+driver, we didn't understand the <b  >wait_queue</b>
+implementation, and you don't need to either. You only have to know
+that the code works. <b  >wait_queue</b>s
+<span   class="emphasis"><em>are</em></span> challenging, and usually when you write a
+driver you have no time to accept the challenge.</p><p>Actually, <b  >select</b> is better understood in
+its relationships with read and write: if
+<b  >select()</b> says that the file is readable, the
+next read must not block (independently of
+<b  >O_NONBLOCK</b>), and this means you have to tell the
+hardware to return data. The interrupt will collect data, and
+awaken the queue. If the user is selecting for writing, the
+situation is similar: the driver must tell if
+<b  >write()</b> will block or not. If the buffer is full
+it will block, but you don't need to tell the hardware about it,
+since <b  >write()</b> has already told it (when it
+filled the buffer). If the buffer is not full, the write won't
+block, so you return 1.</p><p>This way to think of selecting for write may appear strange,
+as there are times when you need to write synchronously, and you
+may expect that a device is writable when it has already accepted
+pending input. Unfortunately, this way of doing things will break
+the blocking/nonblocking machinery, and thus an extra call is
+provided: if you need to write synchronously, the driver must offer
+(within its <b  >fops</b>) the
+<b  >fsync()</b>call. The application invokes
+<b  >fops-&gt;fsync</b> through the
+<b  >fsync()</b> system call, and if the driver doesn't
+support it, <b  >-EINVAL</b> is returned.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2487580.0x288e110"></a><b  >ioctl()</b>--Passing Control
+Information</h2></div></div><p>Imagine that you want to change the baud-rate of a serial
+multiport card you have built. Or tell your frame grabber to change
+the resolution of an image. Or whatever else... You could wrap
+these instructions into a series of escape sequences, such as, for
+example, the screen positioning in ANSI emulation. But, the normal
+method for this is to make an <b  >ioctl()</b>
+call.</p><p><b  >ioctl()</b> calls as defined in
+<b  >&lt;sys/ioctl.h&gt;</b> have the form</p><pre     class="programlisting">
+ioctl (int <span   class="emphasis"><em>file_handle</em></span>, int <span   class="emphasis"><em>command</em></span>, ...)
+</pre><p>where <span   class="emphasis"><em>...</em></span> is considered to be one
+argument of the type <b  >char *</b> (according to the
+<b  >ioctl</b> man page). Strange as it may be, the
+kernel receives these arguments in <b  >fs/ioctl.c</b> in
+the form:</p><pre     class="programlisting">
+int sys_ioctl (unsigned int fd, unsigned int cmd,
+               unsigned long arg);
+</pre><p>To add to the confusion,
+<b  >&lt;linux/ioctl.h&gt;</b> gives detailed rules how
+the commands in the second parameter should be built, but nobody in
+all the drivers is actually following these ideas yet.</p><p>In any case, rather than cleaning up the Linux source tree,
+let's concentrate on the general <span   class="emphasis"><em>idea</em></span> of
+<b  >ioctl()</b> calls. As the user, you pass the file
+handle and a command in the first two arguments and pass as the
+third parameter a pointer to a data structure the driver should
+read and/or write.</p><p>A few commands are interpreted by the kernel itself&mdash;for
+example, <b  >FIONBIO</b>, which changes the
+blocking/non-blocking flag of the file. The rest is passed to our
+own, driver-specific <b  >ioctl()</b> call, and arrives
+in the form:</p><pre     class="programlisting">
+int skel_ioctl (struct inode *inode,
+                struct file *file,
+                unsigned int cmd,
+                unsigned long arg)
+</pre><p>Before we show a small example of a
+<b  >skel_ioctl()</b> implementation, the commands you
+define should obey the following rules:</p><div class="orderedlist"><ol type="1"><li><p>Pick up a free MAGIC number from
+/usr/src/linux/MAGIC and make this number the upper eight bits of
+the 16-bit command word.</p></li><li><p>Enumerate commands in the lower eight bits.</p></li></ol></div><p>Why this? Imagine &ldquo;Silly Billy&rdquo; starts his favorite
+terminal program minicom to connect to his mailbox. &ldquo;Silly Billy&rdquo;
+accidentally changed the serial line minicom uses from /dev/ttyS0
+to /dev/skel0 (he is quite silly). The next thing minicom does is
+initialize the &ldquo;serial line&rdquo; with an <b  >ioctl()</b>
+using <b  >TCGETA</b> as command. Unfortunately, your
+device driver, hidden behind /dev/skel0, uses that number to
+control the voltage for a long-term experiment in the lab...</p><p>If the upper eight bits in the commands for
+<b  >ioctl()</b> differ from driver to driver, every
+<b  >ioctl()</b> to an inappropriate device will result
+in an <b  >-EINVAL</b> return, protecting us from
+extremely unexpected results.</p><p>Now, to finish this section, we will implement an
+<b  >ioctl()</b> call reading or changing the timeout
+delay in our driver. If you want to use it, you have to introduce a
+new variable</p><pre     class="programlisting">
+unsigned long skel_timeout = SKEL_TIMEOUT;
+</pre><p>right after the definition of <b  >SKEL_TIMEOUT</b>
+and replace every later occurrence of
+<b  >SKEL_TIMEOUT</b> with
+<b  >skel_timeout</b>.</p><p>We choose the <b  >MAGIC</b> <b  >'4'</b>
+(the ASCII character 4) and define two commands:</p><pre     class="programlisting">
+# define SKEL_GET_TIMEOUT 0x3401
+# define SKEL_SET_TIMEOUT 0x3402
+</pre><p>In our user process, these lines will double the time-out
+value:</p><pre     class="programlisting">
+/* ... */
+unsigned long timeout;
+if (ioctl (skel_hd, SKEL_GET_TIMEOUT,
+           &amp;timeout) &lt; 0) {
+    /* an error occurred (<span   class="emphasis"><em>Silly billy?</em></span>) */
+    /* ... */
+}
+timeout *= 2;
+if (ioctl (skel_hd, SKEL_SET_TIMEOUT,
+           &amp;timeout) &lt; 0) {
+    /* another error */
+    /* ... */
+}
+</pre><p>And in our driver, these lines will do the work:</p><pre     class="programlisting">
+int skel_ioctl (struct inode *inode,
+                struct file *file,
+                unsigned int cmd,
+                unsigned long arg) {
+    switch (cmd) {
+    case SKEL_GET_TIMEOUT:
+        put_user_long(skel_timeout, (long*) arg);
+        return 0;
+    case SKEL_SET_TIMEOUT:
+        skel_timeout = get_user_long((long*) arg);
+        return 0;
+    default:
+        return -EINVAL; /* for Silly Billy */
+    }
+}
+</pre></div></div>
+<div class="authorblurb"><p>
+          <span   class="bold"><b>Georg V. Zezschwitz</b></span>
+          a 27-year-old Linuxer with a taste for the practical side of Computer Science and a tendency to avoid sleep.
+        </p><p>
+          <span   class="bold"><b>XXXXXXXXXXXXXXXX</b></span>
+          (<a href="mailto:XXXXXXXXXXXXXX">XXXXXXXXXXXXXX</a>)
+          Like Georg, is also 27-years-old and has the same interest in the practical side of Computer Science and the same tendency to avoid sleep.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../025/toc025.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

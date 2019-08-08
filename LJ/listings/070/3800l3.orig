@@ -1,0 +1,112 @@
+Listing 3: index-files.pl, which indexes all of the words in
+the HTML and text files under a directory.
+
+#!/usr/bin/perl -w
+# filename: index-files.pl
+
+use strict;
+use diagnostics;
+use File::Find;
+use HTML::Entities;
+use Fcntl;
+use MLDBM qw(DB_File);
+
+# In what file should the index be stored?
+my $index_file = "/tmp/lj.db";
+
+# Create the word index hash
+my %data = ();
+tie %data, "MLDBM", $index_file, O_RDWR|O_CREAT
+    or die "Error tying %data: $! ";
+
+# Which directory should start the search?
+my $search_root = "/usr/local/apache/htdocs";
+
+# What is the beginning of every URL?
+my $url_origin = "http://localhost";
+
+# Slurp up files in one fell swoop
+undef $/;
+
+# What words should we ignore?
+my %IGNORE = ("the" => 1, "in" => 1, "on" => 1,
+	      "a" => 1, "at" => 1, "to" => 1,
+	      "this" => 1, "and" => 1, "or" => 1);
+
+# What directories should we avoid?
+my %ignore_directory = ();
+
+# Index the words in each file
+find(\&find_matches, $search_root);
+
+# Close the tie
+untie %data;
+
+# End the search
+exit;
+
+# ------------------------------------------------------------
+# Subroutine that searches through files for matches
+sub find_matches
+{
+    # Return if we have already marked this directory as ignorable
+    return if ($ignore_directory{$File::Find::dir});
+
+    # Mark the directory as ignorable ...
+    $ignore_directory{$File::Find::dir} = 1
+	if (($_ eq ".nosearch") || # ... if this file is .nosearch
+	    (-e ".nosearch") ||	# ... if there is .nosearch in this dir 
+	    (-e "../.nosearch")); # ... if there is .nosearch up one dir
+
+    # Make sure that this contains HTML or text
+    return unless (m/\.html?$/i or m/\.te?xt$/i);
+
+    # Get the filename
+    my $filename = $_;
+
+    # Open the file, and search through its contents
+    if (open FILE, $filename)
+    {
+	print "Reading $filename";
+
+	# Turn the filename into a viable URL
+	my $url = "$File::Find::dir/$filename";
+	$url =~ s/$search_root/$url_origin/;
+
+	# Get the file
+	my $contents = (<FILE>);
+
+	# Turn entities into text
+	decode_entities($contents);
+
+	# Turn HTML tags into whitespace
+	$contents =~ s|<.+?>| |sg;
+
+	# Get a list of words in the document
+	my @found = 
+	    grep {!$IGNORE{$_}} map {lc $_} ($contents =~ m/\b\S+\b/g);
+
+	# Index each word that was found
+	foreach my $word (@found)
+	{
+	    # Print a heartbeat
+	    print ".";
+
+	    # Get around a problem with the tie interface
+	    # by dereferencing and assigning in stages
+	    my $hashref = $data{$word};
+	    $hashref->{$url}++;
+
+	    $data{$word} = $hashref;
+	}
+
+	print "\n";
+
+	close FILE;
+    }
+    else 
+    {
+	warn qq{Unable to open "$filename": $! };
+	return;
+    }
+}

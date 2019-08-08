@@ -1,0 +1,165 @@
+#!/usr/bin/perl -wT
+# Listing 1: add-thread.pl
+
+use strict;
+use diagnostics;
+use CGI;
+use CGI::Carp qw(fatalsToBrowser);
+use DBI;
+
+# This is add-thread.pl, which allows people to add a thread.
+
+my $database = "atf";
+my $server = "localhost";
+my $port = "3306";
+my $username = "reuven";
+my $password = "SETME";
+
+my @values = qw(subject text name email);
+my %values = ();
+
+# Remove buffering
+$| = 1;
+
+# ------------------------------------------------------------
+# Create an instance of CGI
+my $query = new CGI;
+
+# ------------------------------------------------------------
+# If the user tried to invoke this with a non-POST, give an error message
+if ($query->request_method ne "POST")
+{
+    print $query->start_html(-title => "Invalid invocation",
+			     -bgcolor => "#FFFFFF");
+
+    print "<H1>Invalid invocation</H1>\n";
+    print "<P>This program should only be invoked from an HTML form. ";
+    print "Try <a
+href=\"/cgi-bin/add-thread-form.pl\">here</a>.</P>\n";
+
+    print $query->end_html;
+    exit;
+}
+
+# Get the realname and username, and stick them in cookies
+my $namecookie = $query->cookie(-name => "name",
+				-value => $query->param("name"),
+				-expires => "+1y");
+
+my $emailcookie = $query->cookie(-name => "email",
+				 -value => $query->param("email"),
+				 -expires => "+1y");
+
+# Send a MIME header, with the cookies
+print $query->header(-type => "text/html",
+		     -cookie => [$namecookie, $emailcookie]);
+
+# ------------------------------------------------------------
+# Connect to the database
+my $dbh = 
+    DBI->connect("DBI:mysql:$database:$server:$port",$username,$password);
+die "DBI error from connect:", $DBI::errstr unless $dbh;
+
+# Get the form parameters, and quote them
+foreach my $element (@values)
+{
+    $values{$element} = $dbh->quote($query->param($element));
+}
+
+# Check that we received a subject
+if ($values{"subject"} !~ /\w/)
+{
+    print $query->start_html(-title => "Try again",
+			     -bgcolor => "#FFFFFF");
+
+    print "<H1>Try again!</H1>\n";
+    print "<P>You need to enter a subject to create a thread.  Press ";
+    print "the \"back\" button in your Web browser,
+and try again.</P>\n";
+
+    print "<P>subject =
+\"$values{subject}\"</P>\n";
+
+    print $query->end_html;
+    exit;
+}
+
+# ------------------------------------------------------------
+# Perform some processing on $values{text}: Remove HTML tags,
+# and insert paragraphs instead of blank lines
+$values{text} =~ s/<.*?>//sg;
+$values{text} =~ s/\r\n/\n/g;
+$values{text} =~ s/\r/\n/g;
+$values{text} =~ s|\n\n|</P>\n<\P>|gi;
+
+# Create the query
+my $sql = "INSERT INTO ATFThreads ";
+$sql   .= " (subject, text, author, email, date) ";
+$sql   .= "VALUES ";
+$sql   .= " ($values{subject},$values{text},$values{name},$values{email},NOW()) ";
+
+# Send the query
+my $sth = $dbh->prepare($sql);
+die "DBI error with prepare: ", $sth->errstr unless $sth;
+
+# Execute the query
+my $result = $sth->execute;
+
+# If execute succeeded, print a success message
+if ($result)
+{
+
+    print $query->start_html(-title => "Thread added!",
+			     -bgcolor => "#FFFFFF");
+
+    print "<H1>Thread added</H1>\n";
+    print "<P>The new thread has been created.</P>\n";
+
+    # ------------------------------------------------------------
+    # Menu bar
+    print "<P>\n";
+
+    # Send the user to the posting form
+    print "<a
+href=\"/cgi-bin/view-thread.pl?",
+$sth->{"insertid"}, "\">[View this thread]";
+    print "</a>\n";
+
+    # Send the user to the thread list
+    print "<a
+href=\"/cgi-bin/list-threads.pl\">[View all
+threads]</a>\n";
+
+    # Send the user to the search
+    print "<a
+href=\"/atf/search-form.shtml\">[Search]</a>\n";
+
+    # Allow the user to create a new thread
+    print "<a
+href=\"/cgi-bin/add-thread-form.pl\">[Add
+a new thread]</a>\n";
+
+    # Give a plug for the ATF home page
+    print "<a href=\"/atf/\">[ATF home]</a>\n";
+
+    print "</P>\n";
+
+    print $query->end_html;
+}
+# If the execute did not succeed, print an appropriate error message
+else
+{
+    print $query->start_html(-title => "Thread not added",
+			     -bgcolor => "#FFFFFF");
+
+    print "<H1>Thread not added</H1>\n";
+    print "<P>The new thread has not been created.</P>\n";
+    print "<P>The error message
+\"$DBI::errstr\"</P>\n";
+
+
+    print $query->end_html;
+}
+
+# Disconnect from the database
+$dbh->disconnect;

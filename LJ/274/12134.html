@@ -1,0 +1,875 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Managing Docker Instances with Puppet
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Docker provides a powerful tool for creating lightweight images and&#10;containerized services, while Puppet provides the means to deploy and manage&#10;those same images and containers as a standard part of the configuration&#10;management lifecycle. Whether you're working in the cloud or the data center,&#10;this one-two punch is a real knockout!&#10; &#10;In this in-depth article, you'll learn how to use Puppet roles and profiles to&#10;assign Docker images and containers to an unlimited number of nodes based on&#10;standardized naming conventions. If you're not careful, you also might learn a&#10;few tips and tricks about Vagrant, Linux hostnames and SSH along the way.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1443580.0x153aac0"></a>
+Managing Docker Instances with Puppet
+</h1></div><div><div class="author"><h3 class="author">
+Todd
+ A. 
+Jacobs
+</h3></div><div class="issuemoyr">Issue #274, February 2017</div></div><div><p>
+Docker provides a powerful tool for creating lightweight images and
+containerized services, while Puppet provides the means to deploy and manage
+those same images and containers as a standard part of the configuration
+management lifecycle. Whether you're working in the cloud or the data center,
+this one-two punch is a real knockout!
+</p><p>
+In this in-depth article, you'll learn how to use Puppet roles and profiles to
+assign Docker images and containers to an unlimited number of nodes based on
+standardized naming conventions. If you're not careful, you also might learn a
+few tips and tricks about Vagrant, Linux hostnames and SSH along the way.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x153b300"></a></h2></div></div><p>
+
+My previous article, &ldquo;Provisioning Docker with Puppet&rdquo; in the December
+2016 issue, covered one of the ways
+you can install the Docker service onto a new system with Puppet. By
+contrast, this article focuses on how to manage Docker images and
+containers with Puppet.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x153b510"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Reasons for Integrating Docker with Puppet</b></p><p>
+There are three core use cases for integrating Docker with Puppet or
+with another configuration management tool, such as Chef or Ansible:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Using configuration management to provision the Docker service on a
+host, so that it is available to manage Docker instances.
+</p></li><li><p>
+Adding or removing specific Docker instances, such as a containerized
+web server, on managed hosts.
+</p></li><li><p>
+Managing complex or dynamic configurations inside Docker
+containers using configuration management tools (for example, Puppet agent)
+baked into the Docker image.
+</p></li></ol></div><p>
+&ldquo;Provisioning Docker with Puppet&rdquo;, in the December 2016 issue
+of <span   class="emphasis"><em>LJ</em></span>, covered the first use case. This article is
+primarily concerned with the second.
+</p></div><p>
+Container management with Puppet allows you to do a number of things that
+become ever more important as an organization scales up its systems,
+including the following:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Leveraging the organization's existing configuration management
+framework, rather than using a completely separate process just to
+manage Docker containers.
+</p></li><li><p>
+Treating Docker containers as &ldquo;just another resource&rdquo; to converge in
+the configuration management package/file/service lifecycle.
+</p></li><li><p>
+Installing Docker containers automatically based on hostname, node
+classification or node-specific facts.
+</p></li><li><p>
+Orchestrating commands inside Docker containers on multiple hosts.
+</p></li></ol></div><p>
+Although there certainly are other ways to achieve those goals (see
+the Picking a Toolchain sidebar), it takes very little work to extend
+your existing Puppet infrastructure to handle containers as part of a
+node's role or profile. That's the focus for this article.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x153beb0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Picking a Toolchain</b></p><p>
+Why focus on container management with Puppet? There certainly are other
+ways to manage Docker instances, containers and clusters, including
+some native to Docker itself. As with any other IT endeavor, your chosen
+toolchain both provides and limits your capabilities. For a home system,
+your choice of toolchain is largely a matter of taste, but in the
+data center, it's often better to leverage existing tools and in-house
+expertise whenever possible.
+</p><p>
+Puppet was chosen for this series of articles because it is a strong
+enterprise-class solution that has been widely deployed for more than a
+decade. However, you could do much the same thing with Chef or Ansible
+if you choose.
+</p><p>
+Puppet also was selected over other container orchestration tools
+because many large organizations already make use of at least one
+configuration management tool. In many cases, it's advantageous to
+include container management within the existing toolchain rather than
+climbing the learning curve of a more specialized tool, such as
+Kubernetes.
+</p><p>
+If you already use Puppet, Chef or Ansible in your data center, getting
+started with container management by extending your current toolset is
+probably smart money. However, if you find yourself bumping up against
+the limitations of your configuration management tool, you may want
+to evaluate other enterprise-class solutions, such as Apache Mesos,
+Kubernetes or DC/OS.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x153c1c8"></a>
+Creating a Test Environment</h2></div></div><p>
+To follow along with the code listings and examples in the
+remainder of this article, ensure that Vagrant and VirtualBox are
+already installed. Next, you'll prepare a set of provisioning scripts to
+configure a test environment on an Ubuntu virtual machine.
+</p><p><span   class="bold"><b>
+Preparing Your Provisioning Scripts</b></span>
+</p><p>
+Create a directory to work in, such as ~/Documents/puppet-docker. Place
+the Vagrantfile and docker.pp manifest within this directory (see Listings 1 and 2).
+</p><p>
+The Vagrantfile is a Ruby-based configuration file that Vagrant uses to
+drive one or more &ldquo;providers&rdquo;. Vagrant supports VirtualBox, Hyper-V and
+Docker by default, but it also supports many other providers, such as
+VMware Fusion, DigitalOcean, Amazon AWS and more. Because the goal is to
+simulate the management of the Docker d&aelig;mon, images and containers on
+a full-fledged OS, let's focus on the cross-platform VirtualBox
+provider.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x153c488"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 1. Vagrantfile</b></p><pre     class="programlisting">
+
+Vagrant.configure(2) do |config|
+  # Install the official Ubuntu 16.04 Vagrant guest.
+  config.vm.box = 'ubuntu/xenial64'
+
+  # Forward port 8080 on the Ubuntu guest to port
+  # 8080 on the VirtualBox host. Set the host value
+  # to another unused port if 8080 is already in
+  # use.
+  config.vm.network 'forwarded_port',
+                    guest: 8080,
+                    host:  8080
+
+  # Install the puppet agent whenever Vagrant
+  # provisions the guest. Note that subsequent
+  # releases have renamed the agent package from
+  # "puppet" to "puppet-agent".
+  config.vm.provision 'shell', inline: &lt;&lt;-SHELL
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -y install puppet
+  SHELL
+end
+
+</pre></div><p>
+Note that this particular Vagrantfile (Listing 1) installs Puppet 3.8.5, which is
+the currently supported version for Ubuntu 16.04.1 LTS. Different
+versions are available as Puppet Enterprise packages or Ruby gems, but
+this article focuses on the version provided by Ubuntu for its
+current long-term support release.
+</p><p>
+Docker.pp is a Puppet manifest that uses a declarative syntax to bring a
+node into a defined state. The docker.pp manifest (Listing 2) makes use of an
+officially supported Puppet Forge module that takes care of a great deal
+of low-level work for you, making the installation and management of the
+Docker d&aelig;mon, images and containers easier than rolling your own.
+</p><p>
+On some systems, a Puppet manifest can enable a basic Docker setup with
+only a simple <tt  >include 'docker'</tt> statement. However for this
+article, you will
+override specific settings, such as your user name on the guest OS, so that
+the right user is added to the group that can communicate with the
+Docker d&aelig;mon. You also will override the name of the Docker package to
+install, as you want to use the Ubuntu-specific &ldquo;docker.io&rdquo; package
+rather than the upstream &ldquo;docker-engine&rdquo; package the Puppet module uses
+by default.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x153c8a8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 2. docker.pp</b></p><pre     class="programlisting">
+# Most Vagrant boxes use 'vagrant' rather than
+# 'ubuntu' as the default username, but the Xenial
+# Xerus image uses the latter.
+class { 'docker':
+  package_name =&gt; 'docker.io',
+  docker_users =&gt; ['ubuntu'],
+}
+
+# Install an Apache2 image based on Alpine Linux.
+# Use port forwarding to map port 8080 on the
+# Docker host to port 80 inside the container.
+docker::run { 'apache2':
+  image   =&gt; 'httpd:alpine',
+  ports   =&gt; ['8080:80'],
+  require =&gt; Class['docker'],
+}
+</pre></div><p>
+When placing docker.pp into the same directory as the Vagrantfile,
+Vagrant will make the Puppet manifest available inside the virtual
+machine automagically using its synced folder feature. As you will see
+shortly, this seemingly minor step can pay automation-friendly dividends
+when provisioning the guest OS.
+</p><p><span   class="bold"><b>
+Provisioning with Puppet Apply</b></span>
+</p><p>
+With the Vagrantfile and docker.pp stored in your working directory,
+you're ready to launch and configure the test environment. Since this
+article is all about automation, let's go ahead and script those
+activities too.
+</p><p>
+Create the shell script shown in Listing 3 in the same directory as the
+Vagrantfile. You can name it anything you like, but a sensible name, such
+as vagrant_provisioning.sh, makes it clear what the script does.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x153cc70"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 3. vagrant_provisioning.sh</b></p><pre     class="programlisting">
+#!/usr/bin/env bash
+
+# Provision an Ubuntu guest using VirtualBox.
+vagrant up --provider virtualbox
+
+# Install the officially-supported Docker module
+# from the Puppet Forge as a non-root user.
+vagrant ssh -c \
+    'puppet module install \
+     puppetlabs-docker_platform --version 2.1.0'
+
+# Apply our local Docker manifest using the Puppet
+# agent. No Puppet Master required!
+#
+# Note that the modulepath puppet installs to can
+# vary on different Ubuntu releases, but this one is
+# valid for the image defined in our Vagrantfile.
+vagrant ssh -c \
+    'sudo puppet apply \
+     --modulepath ~/.puppet/modules \
+     /vagrant/docker.pp'
+
+# After adding the "ubuntu" user as a member of the
+# "docker" group to enable non-root communications
+# with the Docker daemon, we deliberately close the
+# SSH control connection to avoid unhelpful Docker
+# errors such as "Cannot connect to the Docker
+# daemon. Is the docker daemon running on this
+# host?" on subsequent connection attempts.
+vagrant ssh -- -O exit
+</pre></div><p>
+Make the script executable with <tt  >chmod 755
+vagrant_provisioning.sh</tt>,
+then run it with <tt  >./vagrant_provisioning.sh</tt>. This will start and
+configure the virtual machine, but it may take several minutes (and a
+great deal of screen output) before you're returned to the command
+prompt. Depending on the horsepower of your computer and the speed of
+your internet connection, you may want to go make yourself a cup of
+coffee at this point.
+</p><p>
+When you're back with coffee in hand, you may see a number of
+deprecation warnings caused by the Puppet Forge module, but those can be
+safely ignored for your purposes here. As long as the docker.pp manifest
+applies with warnings and not errors, you're ready to validate the
+configuration of both the guest OS and the Docker container you just
+provisioned.
+</p><p>
+Believe it or not, with the docker.pp Puppet manifest applied by the
+Puppet agent, you're already done! You now have a Docker container
+running Apache, and serving up the default &ldquo;It works!&rdquo;
+document. You can
+test this easily on your top-level host with <tt  >curl
+localhost:8080</tt> or
+at http://localhost:8080/ in your desktop browser.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1935390"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Applying Local Manifests with Puppet Agent</b></p><p>
+By using <tt  >puppet apply</tt> as shown here, you're able to perform the same
+process that you'd employ in a more traditional client/server Puppet
+configuration, but without the need to do the following:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Configure a Puppet Master first.
+</p></li><li><p>
+Manage SSL client certificates.
+</p></li><li><p>
+Install server-side modules into the correct Puppet environment.
+</p></li><li><p>
+Specify a Puppet environment for the node you want to manage.
+</p></li><li><p>
+Define roles, profiles or nodes that will use the manifest.
+</p></li></ol></div><p>
+This is actually one of the key techniques for Puppet testing and an
+essential skill for running a masterless Puppet infrastructure. Although a
+discussion of the pros and cons of masterless Puppet is well outside the
+scope of this article, it's important to know that Puppet does not
+actually <span   class="emphasis"><em>require</em></span> a Puppet Master to function.
+</p></div><p>
+Don't be fooled. Although you haven't really done anything yet that couldn't
+be done with a few lines at the command prompt, you've <span   class="emphasis"><em>automated</em></span> it in
+a consistent and repeatable way. Consistency and repeatability are the
+bedrock of automation and really can make magic once you extend the
+process with roles and profiles.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1935b20"></a>
+Controlling Docker with Puppet Roles and Profiles</h2></div></div><p>
+It may seem like a lot of work to automate the configuration of a single
+machine. However, even when dealing with only a single machine, the
+consistency and repeatability of a managed configuration is a big win.
+In addition, this work lays the foundation for automating an unlimited
+number of machines, which is essential for scaling configuration
+management to hundreds or thousands of servers. Puppet makes this
+possible through the &ldquo;roles and profiles&rdquo; workflow.
+</p><p>
+In the Puppet world, roles and profiles are just special cases of Puppet
+manifests. It's a way to express the desired configuration through
+composition, where profiles are composed of component modules and then
+one or more profiles comprise a role. Roles are then assigned to nodes dynamically or
+statically, often through a site.pp file or an
+External Node Classifier (ENC).
+</p><p>
+Let's walk through a simplified example of what a roles-and-profiles
+workflow looks like. First, you'll create a new manifest in the same
+directory as your Vagrantfile named roles_and_profiles.pp. Listing 4 shows a useful
+example.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1935d88"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 4. roles_and_profiles.pp</b></p><pre     class="programlisting">
+####################################################
+# Profiles
+####################################################
+# The "dockerd" profile uses a forge module to
+# install and manage the Docker daemon. The only
+# difference between this and the "docker" class
+# from the earlier docker.pp example is that we're
+# wrapping it inside a profile.
+class profile::dockerd {
+    class { 'docker':
+      package_name =&gt; 'docker.io',
+      docker_users =&gt; ['ubuntu'],
+    }
+}
+
+# The "alpine33" profile manages the presence or
+# absence of the Alpine 3.3 Docker image using a
+# parameterized class. By default, it will remove
+# the image.
+class profile::alpine33 ($status = 'absent') {
+    docker::image { 'alpine_33':
+        image     =&gt; 'alpine',
+        image_tag =&gt; '3.3',
+        ensure    =&gt; $status,
+    }
+}
+
+# The "alpine34" profile manages the presence or
+# absence of the Alpine 3.4 Docker image. By
+# default, it will remove the image.
+class profile::alpine34 ($status = 'absent') {
+    docker::image { 'alpine_34':
+        image     =&gt; 'alpine',
+        image_tag =&gt; '3.4',
+        ensure    =&gt; $status,
+    }
+}
+
+####################################################
+# Roles
+####################################################
+# This role combines two profiles, passing
+# parameters to add or remove the specified images.
+# This particular profile ensures the Alpine 3.3
+# image is installed, and removes Alpine 3.4 if
+# present.
+class role::alpine33 {
+    class { 'profile::alpine33':
+        status =&gt; 'present',
+    }
+
+    class { 'profile::alpine34':
+        status =&gt; 'absent',
+    }
+}
+
+# This role is the inverse of role::alpine33. It
+# calls the same parameterized profiles, but
+# installs Alpine 3.4 and removes Alpine 3.3.
+class role::alpine34 {
+    class { 'profile::alpine33':
+        status =&gt; 'absent',
+    }
+
+    class { 'profile::alpine34':
+        status =&gt; 'present',
+    }
+}
+
+####################################################
+# Nodes
+####################################################
+# Apply role::alpine33 to any host with "alpine33"
+# in its hostname.
+node /alpine33/ {
+    include ::role::alpine33
+}
+
+# Apply role::alpine34 to any host with "alpine34"
+# in its hostname.
+node /alpine34/ {
+    include ::role::alpine34
+}
+</pre></div><p>
+Note that all the profiles, roles and nodes are placed into a single
+Puppet manifest. On a production system, those should all be separate
+manifests located in appropriate locations on the Puppet Master. Although
+this example is illustrative and extremely useful for working with
+masterless Puppet, be aware that a few rules are broken here
+for the sake of convenience.
+</p><p>
+Let me briefly discuss each section of the manifest. Profiles are the
+reusable building blocks of a well organized Puppet environment. Each
+profile should have exactly one responsibility, although you can allow
+the profile to take optional arguments that make it more flexible. In
+this case, the Alpine profiles allow you to add or remove a given Docker
+image depending on the value of the <tt  >$status</tt> variable you pass in as an
+argument.
+</p><p>
+A role is the &ldquo;reason for being&rdquo; that you're assigning to a node. A node
+can have more than one role at a time, but each role should describe a
+singular purpose regardless of how many component parts are needed to
+<span   class="emphasis"><em>implement</em></span> that purpose. In the wild, some common roles assigned to a
+node might include:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >role::ruby_on_rails</tt>
+</p></li><li><p>
+<tt  >role::jenkins_ci</tt>
+</p></li><li><p>
+<tt  >role::monitored_host</tt>
+</p></li><li><p>
+<tt  >role::bastion_host</tt>
+</p></li></ul></div><p>
+Each role is composed of one or more profiles, which together describe
+the purpose or function of the node as a whole. For this example, you
+define the alpine34 role as the presence of the Docker d&aelig;mon with
+Alpine 3.4 <span   class="emphasis"><em>and</em></span> the absence of an Alpine 3.3 image, but you could just
+as easily have described a more complex role composed of profiles for
+NTP, SSH, Ruby on Rails, Java and a Splunk forwarder.
+</p><p>
+This separation of concerns is borrowed from object-oriented
+programming, where you try to define nodes through composition in order
+to isolate the implementation details from the user-visible behavior. A
+less programmatic way to think of this is that profiles generally
+describe the <span   class="emphasis"><em>features</em></span> of a node, such as its packages, files or
+services, while roles describe the node's <span   class="emphasis"><em>function</em></span> within your
+data center.
+</p><p>
+Nodes, which are generally defined in a Puppet Master's site.pp file
+or an external node classifier, are where roles are statically or
+dynamically assigned to each node. This is where the real scaling power
+of Puppet becomes obvious. In this example, you define two different types
+of nodes. Each node definition uses a string or regular expression that
+is matched against the hostname (or <tt  >certname</tt> in a client/server
+configuration) to determine what roles should be applied to that node.
+</p><p>
+In the node section of the example manifest, you tell Puppet to assign
+<tt  >role::alpine33</tt> to any node that includes
+&ldquo;alpine33&rdquo; as part of its
+hostname. Likewise, any node that includes &ldquo;alpine34&rdquo; in the hostname
+gets <tt  >role::alpine34</tt> instead. Using pattern-matching in this way means
+that you could have any number of hosts in your data center, and each will
+pick up the correct configuration based on the hostname that it's been
+assigned. For example, say you have five hosts with the following names:
+</p><div class="orderedlist"><ol type="1"><li><p>
+foo-alpine33
+</p></li><li><p>
+bar-alpine33
+</p></li><li><p>
+baz-alpine33
+</p></li><li><p>
+abc-alpine34
+</p></li><li><p>
+xyz-alpine34
+</p></li></ol></div><p>
+Then, the first three will pick up the Alpine 3.3 role when they contact
+the Puppet Master, and the last two will pick up the Alpine 3.4 role
+instead. This is almost magical in its simplicity. Let's see how this
+type of dynamic role assignment works in practice.
+</p><p><span   class="bold"><b>
+Dynamic Role Assignments</b></span>
+</p><p>
+Assuming that you've already placed roles_and_profiles.pp into the
+directory containing your Vagrantfile, you're able to access the manifest
+within the Ubuntu virtual machine. Let's log in to the VM and test it
+out (Listing 5).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1936fc0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 5. Logging in to the Ubuntu Virtual Machine</b></p><pre     class="programlisting">
+# Ensure we're in the right directory on our Vagrant
+# host.
+cd ~/Documents/puppet-docker
+
+# Ensure that the virtual machine is active. There's
+# no harm in running this command multiple times,
+# even if the machine is already up.
+vagrant up
+
+# Login to the Ubuntu guest.
+vagrant ssh
+</pre></div><p>
+Next, run the roles_and_profiles.pp Puppet manifest to see what
+happens. Hint: it's going to fail, and then you're going to explore why
+that's a <span   class="emphasis"><em>good</em></span> thing. Here's what happens:
+
+
+<pre     class="programlisting">
+ubuntu@ubuntu-xenial:~$ sudo puppet apply --modulepath 
+ &#8618;~/.puppet/modules /vagrant/roles_and_profiles.pp
+Error: Could not find default node or by name with 
+ &#8618;'ubuntu-xenial.localdomain, ubuntu-xenial' on node 
+ &#8618;ubuntu-xenial.localdomain
+Error: Could not find default node or by name with 
+&#8618;'ubuntu-xenial.localdomain, ubuntu-xenial' on node 
+ &#8618;ubuntu-xenial.localdomain
+</pre>
+</p><p>
+Why did the manifest fail to apply? There are actually several reasons
+for this. The first reason is that you did not define any nodes that
+matched the current hostname of &ldquo;ubuntu-xenial&rdquo;. The second reason is
+that you did not define a default to be applied when no other match is
+found. Puppet allows you to define a default, but in many cases, it's
+better to raise an error than to get a configuration you weren't
+expecting.
+</p><p>
+In this test environment, you want to show that Puppet is able to
+assign roles dynamically based on the hostname of the node where the
+Puppet agent is running. With that in mind, let's modify the hostname of
+the Ubuntu guest to see how a site manifest can be used to configure
+large clusters of machines appropriately based solely on each machine's
+hostname.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1ac5b10"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Changing a Linux Hostname</b></p><p>
+When changing the hostname on a Linux system, it's important to
+understand that the <tt  >sudo</tt> utility will complain loudly and often if a
+number of information sources don't agree on the the current hostname.
+In particular, on an Ubuntu system, the following should all agree:
+</p><div class="orderedlist"><ol type="1"><li><p>
+The hostname stored in /etc/hostname.
+</p></li><li><p>
+The hostname defined for 127.0.1.1 in /etc/hosts.
+</p></li><li><p>
+The hostname reported by /bin/hostname.
+</p></li></ol></div><p>
+If they don't all match, you may see errors such as:
+
+<pre     class="programlisting">
+&gt; sudo: unable to resolve host quux
+</pre>
+</p><p>
+And in extreme cases, you even may lose the ability to run the
+<tt  >sudo</tt> command.
+It's best to avoid the situation by ensuring that you update all three
+data sources to the same value when changing your hostname.
+</p></div><p>
+In order to avoid errors with the <tt  >sudo</tt> command, you actually need to
+change the hostname of your virtual machine in several places. In
+addition, the hostname reported by the <tt  >PS1</tt> prompt will not be updated
+until you start a new shell. The following commands, when run inside the
+Ubuntu guest, will make the necessary changes:
+
+<pre     class="programlisting">
+# Must be exported to use in sudo's environment.
+export new_hostname="foo-alpine33"
+
+# Preserve the environment or sudo will lose the
+# exported variable. Also, we must explicitly
+# execute on localhost rather than relying on
+# whatever sudo thinks the current hostname is to
+# avoid "sudo: unable to resolve host" errors.
+sudo \
+    --preserve-env \
+    --host=localhost \
+    -- \
+    sed --in-place \
+        "s/${HOSTNAME}/${new_hostname}/g" \
+        /etc/hostname /etc/hosts
+sudo \
+    --preserve-env \
+    --host=localhost \
+    -- \
+    hostname "$new_hostname"
+
+# Replace the current shell in order to pick up the
+# new hostname in the PS1 prompt.
+exec "$SHELL"
+</pre>
+</p><p>
+Your prompt now should show that the hostname has changed. When you
+re-run the Puppet manifest, it will match the node list because you've
+defined a rule for hosts that include &ldquo;alpine33&rdquo; in the hostname. Puppet
+then will apply <tt  >role::alpine33</tt> for you, simply because the hostname
+matches the node definition! For example:
+
+<pre     class="programlisting">
+# Apply the manifest from inside the Ubuntu guest.
+sudo puppet apply \
+    --modulepath ~/.puppet/modules \
+    /vagrant/roles_and_profiles.pp
+
+# Verify that the role has been correctly applied.
+docker images alpine
+
+REPOSITORY   TAG       IMAGE ID        CREATED         SIZE
+alpine       3.3       6c2aa2137d97    7 weeks ago     4.805MB
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1ac6400"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Ignore &ldquo;update_docker_image.sh&rdquo; Errors</b></p><p>
+When running the Puppet manifest in the example, you may see several
+errors that contain the following substring:
+
+<pre     class="programlisting">
+&gt; update_docker_image.sh alpine:3.4 returned 3 instead of one of [0,1]
+</pre>
+</p><p>
+These errors currently are caused by upstream bugs in the Puppet Docker
+modules used in the examples. Bugs have been filed upstream, but can
+safely be ignored for the immediate purposes of this article. Despite the reported
+error, the Docker images actually still are being properly installed,
+which you can verify yourself inside the virtual machine with <tt  >docker
+images alpine</tt>.
+</p><p>
+If you want to track the progress of these bugs, please see:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<a href="https://github.com/garethr/garethr-docker/issues/607" target="_self">https://github.com/garethr/garethr-docker/issues/607</a>
+</p></li><li><p>
+<a href="https://github.com/garethr/garethr-docker/issues/608" target="_self">https://github.com/garethr/garethr-docker/issues/608</a>
+</p></li></ul></div></div><p>
+To apply this role to an entire cluster of machines, all you need to do
+is ensure they have hostnames that match your defined criteria. For
+example, say you have five hosts with the following names:
+</p><div class="orderedlist"><ol type="1"><li><p>
+foo-alpine33
+</p></li><li><p>
+bar-alpine33
+</p></li><li><p>
+baz-alpine33
+</p></li><li><p>
+abc-alpine33
+</p></li><li><p>
+xyz-alpine33
+</p></li></ol></div><p>
+Then, the single node definition for <tt  >/alpine33/</tt> would apply to all of them,
+because the regular expression matches each of their hostnames. By
+assigning roles to <span   class="emphasis"><em>patterns</em></span> of hostnames, you can configure large
+segments of your data center simply by setting the proper hostnames!
+What could be easier?
+</p><p><span   class="bold"><b>
+Reassigning Roles at Runtime</b></span>
+</p><p>
+Well, now you have a way to assign a role to thousands of boxes at a
+time. That's impressive all by itself, but the magic doesn't stop there.
+What if you need to reassign a system to a different role?
+</p><p>
+Imagine that you have a box with the Alpine 3.3 image installed,
+and you want to upgrade that box so it hosts the Alpine 3.4 image
+instead. In reality, hosting multiple images isn't a problem, and these
+images aren't mutually exclusive. However, it's illustrative to show how
+you can use Puppet to add, remove, update and replace images and
+containers.
+</p><p>
+Given the existing node definitions, all you need to do is update the
+hostname to include &ldquo;alpine34&rdquo; and let Puppet pick up the new role:
+
+<pre     class="programlisting">
+# Define a new hostname that includes "alpine34"
+# instead of "alpine33".
+export new_hostname="foo-alpine34"
+
+sudo \
+    --preserve-env \
+    --host=localhost \
+    -- \
+    sed --in-place \
+        "s/${HOSTNAME}/${new_hostname}/g" \
+        /etc/hostname /etc/hosts
+sudo \
+    --preserve-env \
+    --host=localhost \
+    -- \
+    hostname "$new_hostname"
+exec "$SHELL"
+
+# Rerun the manifest using the new node name.
+sudo puppet apply \
+    --modulepath ~/.puppet/modules \
+    /vagrant/roles_and_profiles.pp
+
+# Show the Alpine images installed.
+docker images alpine
+
+REPOSITORY   TAG       IMAGE ID        CREATED         SIZE
+alpine       3.4       baa5d63471ea    7 weeks ago     4.803MB
+</pre>
+</p><p>
+As you can see from the output, Puppet has removed the Alpine 3.3 image,
+and installed Alpine 3.4 instead! How did this happen? Let's break it
+down into steps:
+</p><div class="orderedlist"><ol type="1"><li><p>
+You renamed the host to include the substring &ldquo;alpine34&rdquo; in the
+hostname.
+</p></li><li><p>
+Puppet matched the substring using a regular expression in its node
+definition list.
+</p></li><li><p>
+Puppet applied the Alpine 3.4 role (<tt  >role::alpine34</tt>) assigned to
+nodes that matched the &ldquo;alpine34&rdquo; substring.
+</p></li><li><p>
+The Alpine 3.4 role called its component profiles (which are actually
+parameterized classes) using &ldquo;present&rdquo; and &ldquo;absent&rdquo; arguments to
+declare the intended state of each image.
+</p></li><li><p>
+Puppet applied the image management declarations inside the Alpine
+3.3 and Alpine 3.4 profiles (<tt  >profile::alpine33</tt> and
+<tt  >profile::alpine34</tt>,
+respectively) to install or remove each image.
+</p></li></ol></div><p>
+Although hostname-based role assignment is just one of the many ways to manage
+the configuration of multiple systems, it's a very powerful one, and certainly
+one of the easiest to demonstrate. Puppet supports a large number of ways to
+specify what configurations should apply to a given host. The ability to
+configure systems dynamically based on discoverable criteria makes Puppet a
+wonderful complement to Docker's versioned images and containerization.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1ac7950"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Other Puppet Options for Node Assignment</b></p><p>
+Puppet can assign roles, profiles and classes to nodes in a number of
+ways, including the following:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Classifying nodes with the Puppet Enterprise Console.
+</p></li><li><p>
+Defining nodes in the main site manifest&mdash;for example, site.pp.
+</p></li><li><p>
+Implementing an External Node Classifier (ENC), which is an external
+tool that replaces or supplements the main site manifest.
+</p></li><li><p>
+Storing hierarchical data in a Hiera YAML configuration file.
+</p></li><li><p>
+Using Puppet Lookup, which merges Hiera information with environment
+and module data.
+</p></li><li><p>
+Crafting conditional configurations based on facts known to the server
+or client at runtime.
+</p></li></ul></div><p>
+Each option represents a set of trade-offs in expressive power,
+hierarchical inheritance and maintainability. A thorough discussion of
+these trade-offs is outside the scope of this article. Nevertheless, it's
+important to understand that Puppet gives you a great deal of
+flexibility in how you classify and manage nodes at scale. This article
+focuses on the common use case of name-based classification, but there
+are certainly other valid approaches.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1aca5e0"></a>
+Conclusion</h2></div></div><p>
+In this article, I took a close look at managing Docker images and
+containers with <tt  >docker::image</tt> and
+<tt  >docker::run</tt>, but the Puppet Docker
+module supports a lot more features that I didn't have room to cover
+this time around. Some of those additional features include:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Building images from a Dockerfile with the <tt  >docker::image</tt> class.
+</p></li><li><p>
+Managing Docker networks with the <tt  >docker::networks</tt> class.
+</p></li><li><p>
+Using Docker Compose with the <tt  >docker::compose</tt> class.
+</p></li><li><p>
+Implementing private image registries using the
+<tt  >docker::registry</tt>
+class.
+</p></li><li><p>
+Running arbitrary commands inside containers with the
+<tt  >docker::exec</tt>
+class.
+</p></li></ul></div><p>
+When taken together, this powerful collection of features allows you to
+compose extremely powerful roles and profiles for managing Docker
+instances across infrastructure of almost any scale. In addition, by
+leveraging Puppet's declarative syntax and its ability to automate role
+assignment, it's possible to add, remove and modify your Docker
+instances on multiple hosts without having to manage each instance
+directly, which is typically a huge win in enterprise automation. And
+finally, the standardization and repeatability of Puppet-driven
+container management makes systems more reliable when compared to
+hand-tuned, hand-crafted nodes that can &ldquo;drift&rdquo; from the ideal state
+over time.
+</p><p>
+In short, Docker provides a powerful tool for creating
+lightweight golden images and containerized services, while Puppet
+provides the means to orchestrate those images and containers in
+the cloud or data center. Like strawberries and chocolate, neither is
+&ldquo;better&rdquo; than the other; combine them though, and you get something
+greater than the sum of its parts.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1acae78"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Key Files from This Article, Available on GitHub:
+<a href="https://github.com/CodeGnome/MDIWP-Examples" target="_self">https://github.com/CodeGnome/MDIWP-Examples</a>
+</p><p>
+Docker: <a href="https://www.docker.com" target="_self">https://www.docker.com</a>
+</p><p>
+Puppet Home Page (Docs and Commercial Versions):
+<a href="https://puppet.com" target="_self">https://puppet.com</a>
+</p><p>
+Puppet Ruby Gem (Open-Source Version):
+<a href="https://rubygems.org/gems/puppet" target="_self">https://rubygems.org/gems/puppet</a>
+</p><p>
+Puppet Labs docker_platform Module:
+<a href="https://forge.puppet.com/puppetlabs/docker_platform" target="_self">https://forge.puppet.com/puppetlabs/docker_platform</a>
+</p><p>
+The garethr-docker Module Wrapped by docker_platform:
+<a href="https://github.com/garethr/garethr-docker" target="_self">https://github.com/garethr/garethr-docker</a>
+</p><p>
+Official Apache HTTP Server Docker Images:
+<a href="https://hub.docker.com/_/httpd" target="_self">https://hub.docker.com/_/httpd</a>
+</p><p>
+Oracle VirtualBox: <a href="https://www.virtualbox.org" target="_self">https://www.virtualbox.org</a>
+</p><p>
+Vagrant by HashiCorp:
+<a href="https://www.vagrantup.com" target="_self">https://www.vagrantup.com</a>
+</p><p>
+Ubuntu Images on HashiCorp Atlas:
+<a href="https://atlas.hashicorp.com/ubuntu" target="_self">https://atlas.hashicorp.com/ubuntu</a>
+</p><p>
+Puppet Documentation on the &ldquo;Roles and Profiles&rdquo; Pattern:
+<a href="https://docs.puppet.com/pe/2016.4/r_n_p_intro.html" target="_self">https://docs.puppet.com/pe/2016.4/r_n_p_intro.html</a>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1443580.0x1acb818"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Todd A. Jacobs is a frequent contributor to <span   class="emphasis"><em>Linux Journal</em></span>, a Stack
+Exchange enthusiast, and an industry leader in DevOps transformations
+that incorporate automated security and IT governance. He currently
+lives in Baltimore with his beautiful wife, toddler-aged son and two
+geriatric but lovable dogs.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../274/toc274.html">Issue Table of Contents</a>
+    <a class="link3" href="../274/12134.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

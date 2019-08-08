@@ -1,0 +1,327 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The tty Layer</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    In the first of a series of articles on device-driver development, we'll start with how the kernel handles the system console and serial ports.&#10;    "><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1f78580.0x206fab0"></a>The tty Layer</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #100, August 2002</div></div><div><p>
+    In the first of a series of articles on device-driver development, we'll start with how the kernel handles the system console and serial ports.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f78580.0x20703a0"></a></h2></div></div><p>Welcome to a new column called Driving Me
+Nuts. Here we are going to explore the different Linux kernel
+driver subsystems and try to understand the wide range of different
+interfaces they provide and expect a driver to provide. If there
+are any specific subsystems that anyone would like explained,
+please drop me an e-mail.
+</p><p>There are a number of very good references on Linux kernel
+programming and Linux driver programming (see Resources). This
+column assumes you have at least skimmed these in the past or have
+them handy as a reference.</p><p>To start things off, let's look into the kernel's tty layer.
+This layer is used by all Linux users whenever they type at a
+command prompt or use a serial port connection.</p><p>Every tty driver needs to create a struct tty_driver that
+describes itself and registers that structure with the tty layer.
+The struct tty_driver is defined in the include/linux/tty_driver.h
+file. Listing 1 [available at
+<a href="../listings/100/5896.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue100/5896.tgz</a>]
+shows what the structure looks like as of the 2.4.18 kernel
+version. This is a rather large and imposing structure, so let's
+try to break it into smaller pieces.</p><p>The &ldquo;magic&rdquo; field should always be set to TTY_DRIVER_MAGIC.
+It's used by the tty layer to verify that it is really dealing with
+a tty driver.</p><p>The driver_name and name fields are used to describe your
+driver, and driver_name should be set to something descriptive, as
+it will show up in the /proc/tty/drivers file. The name field is
+used to specify what the /dev or devfs name base is for your
+driver. As an example, the kernel serial driver sets the
+driver_name field to serial, the name field to ttyS if devfs is not
+enabled, and tts/%d if devfs is enabled. If devfs is enabled, it
+will use the name field when creating new device nodes for your
+driver. The %d portion of the name will be filled in with the minor
+number of the device when it is registered in the tty
+subsystem.</p><p>The name_base field is only necessary if your device does not
+start at minor number 0. For almost all drivers, this should be set
+to 0.</p><p>The major, minor_start and num fields are used to describe
+what major/minor numbers are assigned to your driver to the tty
+layer. The major field should be set to the major number assigned
+to your driver. If you are creating a new driver, read the file
+Documentation/devices.txt on getting a new major number for your
+driver. This file is also good reading for anyone who wants to see
+what major/minor number pair is used by what driver. The
+minor_start field is used to specify where the first minor number
+is for your device. If you have an entire major number assigned to
+your driver, then this should be set to 0. The num field describes
+how many different minor numbers you have assigned to your
+driver.</p><p>So if you have all of major 188 assigned to your driver, then
+your driver should set these fields to:</p><div class="itemizedlist"><ul type="disc"><li><p>major: 188,</p></li><li><p>minor_start: 0,</p></li><li><p>num: 255,</p></li></ul></div><p>The type and subtype fields describe what kind of tty driver
+your driver is to the tty layer. The type field can be set to the
+following values:</p><div class="itemizedlist"><ul type="disc"><li><p>TTY_DRIVER_TYPE_SYSTEM: used internally by the tty
+subsystem to notify itself that it is dealing with an internal tty
+driver. If this value is used, then subtype should be set to
+SYSTEM_TYPE_TTY, SYSTEM_TYPE_CONSOLE, SYSTEM_TYPE_SYSCONS or
+SYSTEM_TYPE_SYSPTMX. This type should not be used by any normal tty
+driver.</p></li><li><p>TTY_DRIVER_TYPE_CONSOLE: only used by the console
+driver. Do not use it for any other driver.</p></li><li><p>TTY_DRIVER_TYPE_SERIAL: used by any serial type
+driver. If this value is used, then subtype should be set to
+SERIAL_TYPE_NORMAL or SERIAL_TYPE_CALLOUT, depending on which type
+your driver is. This is one of the most common settings for the
+type field.</p></li><li><p>TTY_DRIVER_TYPE_PTY: used by the pseudo-terminal
+interface (pty). If this value is used, then subtype needs to be
+set to either PTY_TYPE_MASTER or PTY_TYPE_SLAVE.</p></li></ul></div><p>The init_termios field is used to set up the initial termios
+(the line settings and speeds) for the device when it is first
+created.</p><p>The flags field is set to a mixture of the following bit
+values, depending on the needs of the driver:</p><div class="itemizedlist"><ul type="disc"><li><p>TTY_DRIVER_INSTALLED: if this bit is set, the
+driver cannot register itself with the tty layer, so do not use
+this value.</p></li><li><p>TTY_DRIVER_RESET_TERMIOS: if this bit is set, the
+tty layer will reset the termios setting whenever the last process
+has closed the device. This is useful for the console and pty
+drivers.</p></li><li><p>TTY_DRIVER_REAL_RAW: if this bit is set, it
+indicates that the driver guarantees to set notifications of parity
+or break characters up to the line driver if the line driver has
+not asked to be notified of them. This is usually set for all
+drivers, as it allows the line driver to be optimized a little
+better.</p></li><li><p>TTY_DRIVER_NO_DEVFS: if this bit is set, then the
+call to tty_register_driver() will not create any devfs entries.
+This is useful for any driver that dynamically creates and destroys
+the minor devices, depending on whether the physical device is
+present. Examples of drivers that set this are the USB to serial
+drivers, the USB modem driver and the USB Bluetooth tty
+driver.</p></li></ul></div><p>The refcount field is a pointer to an integer within the tty
+driver. It is used by the tty layer to handle proper reference
+counting of the driver and should not be touched by the tty
+driver.</p><p>The proc_entry field should not be set by the tty driver
+itself. If the tty driver implements the write_proc or read_proc
+functions, then this field will contain the driver's proc_entry
+field that will have been created for it.</p><p>The other field is only used by the pty driver and should not
+be used by any other tty driver.</p><p>Now we have some pointers to different tty structures. The
+table field is a pointer to an array of tty_struct pointers. The
+termios and termios_locked fields are pointers to an array of
+struct termios pointers. All of these arrays should have the same
+number of entries as you have set the minor field to above. They
+are used by the tty layer to handle the different minor devices
+properly and should not be touched by your tty driver.</p><p>The driver_state field is only used by the pty driver and
+should not be used by any other tty driver.</p><p>There is a large list of different function pointers in the
+tty_driver structure. These function pointers are used by the tty
+layer to call into the tty driver when it wants to do something.
+Not all of them have to be defined by a tty driver, but a few of
+them are required.</p><p>The open function is called by the tty layer when open(2) is
+called on the device node to which your tty driver is assigned. The
+tty layer calls this with a pointer to the tty_struct structure
+assigned to this device and a file pointer. This field must be set
+by a tty driver for it to work properly (otherwise, -ENODEV is
+returned to the user when open(2) is called).</p><p>The close function is called by the tty layer when release(2)
+is called on the file pointer that was previously created with a
+call to open(2). This means that the device should be
+closed.</p><p>The write function is called by the tty layer when data is to
+be sent to your tty device. The data may come from user space or
+kernel space (the field from_user will be set if the data comes
+from user space). This function should return the number of
+characters that are actually written to the device. This function
+must be set for a tty driver.</p><p>The put_char function is called by the tty layer when a
+single character is to be written to the device. If there is no
+room in the device for the character to be sent, the character may
+be ignored. If a tty driver does not define this function, then the
+write function will be called when the tty layer wants to send a
+single character.</p><p>The flush_chars function is called when the tty layer has
+sent a number of characters to the tty driver using the put_char
+function. The tty driver should tell the device to send all of the
+data remaining in it out of the serial line.</p><p>The write_room function is called when the tty layer wants to
+know how much room the tty driver has available in the write
+buffer. This number will change over time as characters empty out
+of the write buffers.</p><p>The chars_in_buffer function is called when the tty layer
+wants to know how many characters are still remaining in the tty
+driver's write buffer to be sent out.</p><p>The ioctl function is called by the tty layer when ioctl(2)
+is called on the device node. It allows the tty driver to implement
+device-specific ioctls. If the ioctl requested is not supported by
+the driver, it should return -ENOIOCTLCMD. This allows the tty
+layer to implement a generic version of the ioctl, if
+possible.</p><p>The set_termios function is called by the tty layer when the
+device's termios settings have been changed. The tty driver should
+then change the physical settings of the device, depending on the
+different fields of the termios structure. A tty driver should be
+able to handle the fact that the old variable might be set to NULL
+when this function is called.</p><p>The throttle and unthrottle functions are used to help
+control overruns of the tty layer's input buffers. The throttle
+function is called when the tty layer's input buffers are getting
+full. The tty driver should try to signal the device that no more
+characters are to be sent to it. The unthrottle function is called
+when the tty layer's input buffers have been emptied out, and it
+now can accept more data. The tty driver should then signal to the
+device that data can be received.</p><p>The stop and start functions are much like the throttle and
+unthrottle functions, but they signify that the tty driver should
+stop sending data to the device and then later resume sending
+data.</p><p>The hangup function is called when the tty driver should hang
+up the tty device.</p><p>The break_ctrl function is called when the tty driver is to
+turn on or off the BREAK status on the RS-232 port. If state is set
+to -1, then the BREAK status should be turned on. If state is set
+to 0, then BREAK should be turned off. If this function is
+implemented by the tty driver, then the tty layer will handle the
+TCSBRK, TCSBRKP, TIOCSBRK and TIOCCBRK ioctls. Otherwise these
+ioctls will be sent to the tty driver's ioctl function.</p><p>The flush_buffer function is called when the tty driver is to
+flush all of the data still in its write buffers. This means any
+data remaining in them will be lost and not sent to the
+device.</p><p>The set_ldisc function is called when the tty layer has
+changed the line discipline of the tty driver. This function is
+generally not used anymore and should not be set.</p><p>The wait_until_sent function is called when the tty layer
+wants all of the pending data in the tty driver's write buffers to
+be sent to the device. The function should not return until this is
+finished and is allowed to sleep in order to achieve this.</p><p>The send_xchar function is used to send a high-priority XON
+or XOFF character to the tty device.</p><p>The read_proc and write_proc functions are used if the driver
+wants to implement a
+/proc/tty/driver/&lt;<span   class="emphasis"><em>name</em></span>&gt; entry;
+&lt;<span   class="emphasis"><em>name</em></span>&gt; will be set to the name field
+described above. If either of these functions are set, then the
+entry will be created and any read(2) or write(2) calls will be
+passed to the appropriate function.</p><p>And finally, the next and prev fields are used by the tty
+layer to chain all of the different tty drivers together and should
+not be touched by the tty driver.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f78580.0x2071aa8"></a>No Read?</h2></div></div><p>One thing that might stand out in the above list of functions
+is the lack of a read function to be implemented by the tty driver.
+The tty layer contains a buffer that it uses to send data to user
+space when read(2) is called on a tty device node. This buffer
+needs to be filled up by the tty driver whenever it receives any
+data from the device. Because tty data does not show up whenever a
+user asks for it, or wants it, this model is necessary. That way
+the tty layer buffers any received data and the individual tty
+driver does not have to worry about blocking until data shows up on
+the tty line.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f78580.0x2071bb0"></a>The Tiny tty Driver</h2></div></div><p>Now that we have gone over all of the different fields, which
+ones are actually necessary to get a basic tty driver up and
+running? Listing 2 is an example of the most minimal tty driver
+possible. Once the steps shown there are completed, create the
+tiny_open, tiny_close, tiny_write and tiny_write_room functions and
+you are finished with a tiny tty driver.</p><p><a href="5896l2.html" target="_self">Listing 2. Minimal TTY
+Driver</a></p><p>For an example implementation of a tiny tty driver, see
+Listing 3 [available at
+<a href="../listings/100/5896.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue100/5896.tgz</a>].
+This tty driver creates a timer to place data into the tty layer
+every two seconds in order to emulate real hardware. It also
+properly handles locking the device structures when it is run on an
+SMP machine.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f78580.0x20686a8"></a>Flow of Data</h2></div></div><p>When the tty driver's open function is called, the driver is
+expected to save some data within the tty_struct variable that is
+passed to it. This is so the tty driver will know which device is
+being referenced when the later close, write and other functions
+are called. If this is not done, the driver can key off of the
+MINOR(tty-&gt;device) function, which returns the minor number for
+the device.</p><p>If you look at the tiny_open function, the tiny_serial
+structure is saved within the tty driver. This allows the
+tiny_write, tiny_write_room and tiny_close functions to retrieve
+the tiny_serial structure and manipulate it properly.</p><p>The open and close functions of a tty driver can be called
+multiple times for the same device as different user programs
+connect to the device. This could allow one process to read data
+and another to write data. To handle everything correctly, you
+should keep a count of how many times the port has been opened or
+closed. When the port is opened for the first time you can do the
+necessary hardware initialization and memory allocation. When the
+port is closed for the last time you can do the proper hardware
+shutdown and free any allocated memory. See the tiny_open() and
+tiny_close() functions for examples of how the number of times the
+port is opened can be accounted for.</p><p>When data is received from the hardware, it needs to be
+placed into the tty device's flip buffer. This can be done with the
+following bit of code:</p><pre     class="programlisting">
+for (i = 0; i &lt; data_size; ++i) {
+        if (tty-&gt;flip.count &gt;= TTY_FLIPBUF_SIZE)
+                tty_flip_buffer_push(tty);
+        tty_insert_flip_char(tty, data[i], 0);
+}
+tty_flip_buffer_push(tty);
+</pre><p>This example makes sure there are no buffer overflows in the
+tty flip buffer as the data is being added. For drivers that accept
+data at very high rates, the tty-&gt;low_latency flag should be
+set, which will cause the last call to tty_flip_buffer_push() to be
+executed immediately when called. In the example driver, the
+tty_timer function inserts one byte of data into the tty's flip
+buffer and then resubmits the timer to be called again. This
+emulates a slow stream of characters being received from a hardware
+device.
+</p><p>When data is to be sent to the hardware, the write function
+is called. It is important that the write call checks the from_user
+flag to prevent it from accidentally trying to copy a user-space
+buffer directly into kernel space. The write function is allowed to
+return a short write. This means that the device was not able to
+send all of the data requested. It is up to the user-space program
+that is calling the write(2) function to check the return value
+properly to determine if all of the data was really sent. It is
+much easier for this check to be done in user space than it is for
+a kernel driver to sleep until all of the requested data is able to
+be sent out.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f78580.0x20689c0"></a>The tty Interface over Time</h2></div></div><p>The tty layer has been very stable from the 2.0, 2.2 and 2.4
+kernel versions, with only a very minor amount of functionality
+added over time. So a tty driver written for 2.0 will successfully
+work on 2.4 with almost no changes. Throughout the 2.5 kernel
+series, the tty layer has been marked for a rewrite, so this
+article may describe things that are no longer true. When in doubt,
+read the include/tty_driver.h file of the kernel version for which
+you wish to develop. Also, take a look at any of the tty drivers in
+the driver/char kernel directory for examples of how to implement
+some of the functions that are not covered here.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f78580.0x2068ac8"></a>Conclusion</h2></div></div><p>We have covered the basics of the tty layer, explaining all
+of the different fields in the tty_driver structure for the 2.4
+kernel tree and pointing out which ones are necessary for a driver
+to implement. The tiny_tty.c driver, see Listing 3 [available at
+<a href="../listings/100/5896.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue100/5896.tgz</a>],
+is a good example of a very minimal tty driver that successfully
+works. Feel free to use this code as an example for your own tty
+drivers in the future.</p><p><a href="5896s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="5896aa.jpg"></div>
+
+        <span   class="bold"><b>Greg
+      Kroah-Hartman</b></span> is currently the Linux USB and PCI Hot
+      Plug kernel maintainer. He works for IBM, doing various Linux
+      kernel-related things and can be reached at
+      <a href="mailto:greg@kroah.com">greg@kroah.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../100/toc100.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

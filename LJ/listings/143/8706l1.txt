@@ -1,0 +1,184 @@
+Listing 1. firewall.pl
+
+#!/usr/bin/perl
+
+$default_policy = "DROP";
+
+$iptables = "/sbin/iptables";
+$work_dir = "/root/fw";
+
+set_ip_forwarding(0);
+
+load_interfaces();
+
+$protocols{tcp}++; $protocols{udp}++; $protocols{icmp}++;
+
+init();
+
+set_default_policy();
+
+add_good_hosts();
+add_bad_hosts();
+
+build_chains();
+add_rules();
+
+set_default_action();
+
+set_ip_forwarding(1);
+
+exit;
+
+###################################################
+
+sub    load_interfaces {
+    my($int, $name);
+    local(*FILE);
+
+    open FILE, "$work_dir/interfaces.conf";
+    while (<FILE>) {
+        chomp($_);
+        if ($_ eq "") { next; }
+
+        ($name, $int) = split(/\s*=\s*/, $_);
+        $interface{$name} = $int;
+    }
+}
+
+sub    init {
+    iptables("-F");  # flush rules
+    iptables("-t nat -F");
+    iptables("-X");  # delete chains
+    iptables("-Z");  # zero counters
+
+    iptables("-t nat -A POSTROUTING -j MASQUERADE");
+    iptables("-A INPUT -m conntrack --ctstate ESTABLISHED
+        -j ACCEPT");
+}
+
+sub    set_default_policy {
+    iptables("-P INPUT $default_policy");
+
+    iptables("-P OUTPUT ACCEPT");
+    iptables("-P FORWARD ACCEPT");
+
+    return;
+}
+
+sub    build_chains {
+    my($interface, $protocol, $chain);
+
+    foreach $interface (keys %interface) {
+        foreach $protocol (keys %protocols) {
+            $chain = "$interface-$protocol";
+
+            iptables("-N $chain");
+            iptables("-A INPUT -i $interface{$interface}
+                -p $protocol -j $chain");
+        }
+    }
+}
+
+sub    add_rules {
+    local(*FILE);
+
+    open FILE, "$work_dir/ports.conf";
+    while (<FILE>) {
+        chomp($_);
+        $_ =~ s/#.?//;
+        if ($_ eq "") { next; }
+
+        ($int, $proto, $port) = split(/\t/, $_);
+
+        $i = $interface{$int};
+        $chain = "$int-$proto";
+
+        if ($proto eq "all") {
+            foreach $proto (keys %protocols) {
+                $chain = "$int-$proto";
+                iptables("-A $chain -i $i -p $proto -j ACCEPT");
+            }
+            next;
+        }
+
+        if ($proto eq "udp") {
+            iptables("-A $chain -i $i -p udp --dport $port
+                -j ACCEPT");
+            iptables("-A $chain -i $i -p udp --sport $port
+                -j ACCEPT");
+        }
+
+        if ($proto eq "tcp") {
+            iptables("-A $chain -i $i -p tcp --dport $port --syn
+                -j ACCEPT");
+            iptables("-A $chain -i $i -p tcp --dport $port
+                -j ACCEPT");
+        }
+    }
+}
+
+sub    set_default_action {
+    my($interface, $protocol, $chain);
+
+    foreach $interface (keys %interface) {
+        foreach $protocol (keys %protocols) {
+            $chain = "$interface-$protocol";
+            iptables("-A $chain -j LOG
+                --log-prefix DEFAULT_$default_policy-$chain-");
+            iptables("-A $chain -j $default_policy");
+        }
+    }
+}
+
+sub    iptables {
+    my($line) = @_;
+    print "$iptables $line > /dev/null\n" if ($debug);
+    $result = system("$iptables $line > /dev/null");
+    if ($result != 0) {
+        print "X: ($result) iptables $line\n";
+    }
+}
+
+sub    set_ip_forwarding {
+    my($value) = @_;
+    local(*FILE);
+
+    print "Setting IP forwarding to $value.\n";
+    open FILE, ">/proc/sys/net/ipv4/ip_forward";
+    print FILE $value;
+    close FILE;
+}
+
+sub    add_good_hosts {
+    my($host, $comment);
+    local(*FILE);
+
+    open FILE, "$work_dir/good_hosts.conf";
+    while (<FILE>) {
+        ($host, $comment) = split(/\t/, $_);
+
+        iptables("-A INPUT -s $host -j ACCEPT");
+        iptables("-A OUTPUT -d $host -j ACCEPT");
+    }
+
+}
+
+sub    add_bad_hosts {
+    my($host, $comment);
+    local(*FILE);
+
+    open FILE, "$work_dir/bad_hosts.conf";
+    while (<FILE>) {
+        chomp($_);
+        ($host, $comment) = split(/\t/, $_);
+
+        iptables("-A INPUT -s $host -j LOG
+             --log-prefix $comment");
+        iptables("-A OUTPUT -d $host -j LOG
+             --log-prefix $comment");
+
+        iptables("-A INPUT -s $host -j DROP");
+        iptables("-A OUTPUT -d $host -j DROP");
+    }
+}
+

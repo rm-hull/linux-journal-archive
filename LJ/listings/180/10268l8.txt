@@ -1,0 +1,941 @@
+#!/usr/bin/perl -w
+
+## zonetool.pl -- Solaris Zone automation tool.
+##
+##  Description:
+##
+##   When used within its ability this tool will build a fully functioning
+##   and running zone from scratch thereby saving many manual steps required
+##   to produce the same results.
+##
+##   This tool outputs three files in /tmp/. See the code for their exact names.
+##     file1   - custom shell script that does the actual zone building
+##     file2   - zonecfg input file that describes the zone being created.
+##     file3   - sysidcfg file placed in the zones /etc directory to help
+##               the new zone self configure during its first boot.
+##
+##  Example: (See POD for more information)
+##   ./zonetool [ -debug ] -c -z zone01 -h zone01.your.dom  \
+##     -n 'ce0=192.168.29.2/23,ce1=192.168.21.2/23' -p /zones \
+##     -a [ true | false ] -i '/opt,/zpools/tools' \
+##     -f '/export/home,/export/disk0' -t US/Central \
+##     -r timeserver -s 'name_service=NONE'
+##
+##  Author: Victor Burns
+##   EMAIL: v-burns@ti.com
+##    Date: 2007-March
+##
+##  Releases:
+##    2009-Jan-19  (VICB) - Sent to Linux Journal by permission. May be used for any
+##                          purpose as long as user takes full responsibility.
+##
+##  Changes:
+##    2008-Dec-10  (VICB) - Corrected problem with defining more than one IP for
+##                          the same physical interface.
+##
+##    2008-Oct-13  (VICB) - Added support for zone clone option
+##
+##    2008-Aug-28  (VICB) - Added ability to define sysidcfg file
+##                          name_service option.
+##
+##    2007-Nov-29  (VICB) - Misc editing of header and POD etc.
+##
+
+use strict;
+use Carp;
+use Getopt::Long;
+use Data::Dumper;
+
+my $opts = {};
+
+GetOptions(
+  ## Create
+    'c'			=> \$opts->{create},
+    'create'		=> \$opts->{create},
+
+  ## Delete
+    'd'			=> \$opts->{delete},
+    'delete'		=> \$opts->{delete},
+
+  ## zonename
+    'z=s'		=> \$opts->{zonename},
+    'zonename=s'	=> \$opts->{zonename},
+
+  ## BrandZ
+    'b=s'		=> \$opts->{brand},
+    'brand=s'		=> \$opts->{brand},
+
+  ## Clone
+    'e=s'		=> \$opts->{clone},
+    'clone=s'		=> \$opts->{clone},
+
+  ## Media
+    'm=s'		=> \$opts->{media},
+    'media=s'		=> \$opts->{media},
+
+  ## Hostname
+    'h=s'		=> \$opts->{hostname},
+    'hostname=s'	=> \$opts->{hostname},
+
+  ## zone path
+    'p=s'		=> \$opts->{zonepath},
+    'zonepath=s'	=> \$opts->{zonepath},
+
+  ## Autoboot [ true | false ]
+    'a=s'		=> \$opts->{autoboot},
+    'autoboot=s'	=> \$opts->{autoboot},
+
+  ## Networks
+    'n=s'		=> \$opts->{network},
+    'network=s'		=> \$opts->{network},
+
+  ## inherit-pkg-dir
+    'i=s'		=> \$opts->{inherit},
+    'inherit=s'		=> \$opts->{inherit},
+
+  ## fs
+    'f=s'		=> \$opts->{fs},
+    'filesystem=s'	=> \$opts->{fs},
+
+  ## Timezone
+    't=s'		=> \$opts->{timezone},
+    'timezone=s'	=> \$opts->{timezone},
+
+  ## Time server
+    'r=s'		=> \$opts->{timeserv},
+    'timeserv=s'	=> \$opts->{timeserv},
+
+  ## Name Service
+    's=s'		=> \$opts->{nameserv},
+    'nameserv=s'	=> \$opts->{nameserv},
+
+  ## Debug
+    'debug'		=> \$opts->{debug},
+
+  ## Help
+    'help'		=> \$opts->{help}
+);
+
+###############################################################################
+###  HELP
+###############################################################################
+
+my @opts = grep(defined $_, values %$opts );
+if( defined $opts->{help} and $opts->{help} or scalar @opts == 0 )
+{
+  system("perldoc $0");
+  exit 0;
+}
+
+# print Dumper $opts;
+
+###############################################################################
+###  Collect Definition
+###############################################################################
+
+  my $zone = Solaris::zone->new( $opts->{zonename} );
+
+  $zone->clone   ( $opts->{clone}    )  if defined $opts->{clone};
+  $zone->brand   ( $opts->{brand}    )  if defined $opts->{brand};
+  $zone->media   ( $opts->{media}    )  if defined $opts->{media};
+  $zone->hostname( $opts->{hostname} )	if defined $opts->{hostname};
+  $zone->zonepath( "/zone"           ); ## Default
+  $zone->zonepath( $opts->{zonepath} )	if defined $opts->{zonepath};
+  $zone->autoboot( $opts->{autoboot} )	if defined $opts->{autoboot};
+  $zone->network ( $opts->{network}  )	if defined $opts->{network};
+  $zone->inherit ( $opts->{inherit}  )	if defined $opts->{inherit};
+  $zone->paths   ( $opts->{fs}       )	if defined $opts->{fs};
+  $zone->timezone( $opts->{timezone} )	if defined $opts->{timezone};
+  $zone->timeserv( $opts->{timeserv} )	if defined $opts->{timeserv};
+  $zone->nameserv( $opts->{nameserv} )  if defined $opts->{nameserv};
+
+  unless( defined $zone->timezone )
+  {
+    print " WARN -- A timezone was not defined or could not be discovered.\n";
+    print "         aborting run\n";
+    exit 0;
+  }
+
+# print Dumper $zone;
+# print Dumper $zone->zone_definition;
+# exit 0;
+
+###############################################################################
+###  Misc Vars
+###############################################################################
+
+my $line="";		# Used for file enum
+my $pid=$$;		# Processid (used for uniq tmp files)
+
+
+###############################################################################
+###	CREATE 
+###############################################################################
+
+if( defined $opts->{create} and $opts->{create} )
+{
+  my $zname         = $zone->zonename;
+  my $media         = $zone->media;
+  my $cluster       = $zone->cluster;
+  my $temp_zone_def = "/tmp/${zname}.cfg";
+  my $temp_sysidcfg = "/tmp/${zname}.sysidcfg";
+  my $temp_build    = "/tmp/zcrea.$pid";
+
+  # Option sanity check
+  ##################################################
+
+  # Non Native zone creation must provide installation media
+  #  or clone from existing installed zone
+  if( defined $zone->clone and $zone->media )
+  {
+    print " ERR  -- Clone operation selected and media path defined. Could not\n";
+    print "         determine proper installation type. Clone and media options\n";
+    print "         are exclusive. Aborting run.\n";
+    exit 0;
+  }
+
+  if( ! $zone->is_native && ! ( defined $zone->media || defined $zone->clone )||
+      ! $zone->is_native &&   defined $zone->media && ! -d $zone->media )
+  {
+    printf("\n");
+    print("  Option error: Creation and Installation of Non Native BrandZ zones\n");
+    print("    require installation media. Please define the path of the ISO\n");
+    print("    installation media of a supported brand or use the clone option.\n");
+    print("\n");
+    exit(1);
+  }
+
+  # Collect Root password if we dont have one
+  ##################################################
+  unless( defined $zone->password )
+  {
+    my @SHADOW=();	# Elements of the root shadow entry
+
+    if( open(SHAD,"/etc/shadow"))
+    {
+      while($line=<SHAD>)
+      {
+        if ($line =~ /^root:/)
+        {
+          @SHADOW=split(/:/,$line);
+          last;
+        }
+      }
+      close(SHAD);
+    }
+    else
+    {
+      print(" ERR  - Could get get root's encrypted passwd to place in non-global zone\n");
+      print("        using [ changeme ] as the password.");
+      @SHADOW = ( '', 'ir9Ru048IlDPs' );
+    }
+
+    $zone->password( $SHADOW[1] );
+  }
+
+
+  # Create the zone config file
+  ##################################################
+  if(open(A,"> ${temp_zone_def}"))
+  {
+    my $zconfig = $zone->zone_definition;
+
+    foreach my $l ( @$zconfig )
+    {
+      printf(A "%s\n", $l );
+    }
+    close(A);
+  }
+
+
+  # Create the sysidcfg 
+  ##################################################
+  if( $zone->is_native and open(C,"> ${temp_sysidcfg}"))
+  {
+    my $sysidcfg = $zone->sysidcfg;
+
+    foreach my $line ( @$sysidcfg )
+    {
+      printf( C "%s\n", $line );
+    }
+    close(C);
+  }
+
+
+  # Script Build
+  ##################################################
+  if( open(B,"> ${temp_build}"))
+  {
+    my $zoneroot = $zone->zonepath . '/' . $zname;
+
+    printf( B "#!/bin/ksh\n");
+
+    printf( B "# Define the zone\n" );
+    printf( B "echo \"(/usr/sbin/zonecfg -z %s -f %s)\"\n", $zname, $temp_zone_def );
+    printf( B "       /usr/sbin/zonecfg -z %s -f %s\n",     $zname, $temp_zone_def );
+    printf( B "\n" );
+
+    my $install_t = 'install';
+
+    if( $zone->clone )
+    {
+      print " INFO - The defined source zone clone was not verified. Cloning will\n";
+      print "        fail unless the source zone is in the \"installed\" state.\n";
+      $install_t = sprintf("clone %s", $zone->clone );
+    }
+
+    if( $zone->is_native )
+    {
+      printf( B "# Install/Build the zone\n" );
+      printf( B "echo \"(/usr/sbin/zoneadm -z %s %s)\"\n", $zname, $install_t );
+      printf( B "       /usr/sbin/zoneadm -z %s %s\n",     $zname, $install_t );
+      printf( B "\n" );
+
+      printf( B "# Prep the zone before first boot\n" );
+      printf( B "/bin/cp %s %s/root/etc/sysidcfg\n", $temp_sysidcfg, $zoneroot );
+      printf( B "/bin/touch %s/root/etc/.NFS4inst_state.domain\n",   $zoneroot );
+#     printf( B "/bin/ls -al %s %s/root/etc/sysidcfg\n", $temp_sysidcfg, $zoneroot );
+      printf( B "\n" );
+    }
+    else
+    {
+      $cluster = ''             unless( defined $cluster );
+      $cluster = ' ' . $cluster unless( length( $cluster ) == 0 );
+      if( $zone->clone )
+      {
+        $install_t = sprintf("clone %s", $zone->clone );
+      }
+      else
+      {
+        $install_t = sprintf("install -d %s%s", $media, $cluster );
+      }
+      printf( B "# Install/Build the zone\n" );
+      printf( B "echo \"(/usr/sbin/zoneadm -z %s %s)\"\n", $zname, $install_t );
+      printf( B "       /usr/sbin/zoneadm -z %s %s\n",     $zname, $install_t );
+      printf( B "\n" );
+    }
+
+    printf( B "# Boot the zone\n" );
+    printf( B "echo \"(/usr/sbin/zoneadm -z %s boot)\"\n", $zname );
+    printf( B "       /usr/sbin/zoneadm -z %s boot\n",     $zname );
+
+    close(B);
+
+    if( defined $opts->{debug} )
+    {
+      print "\n";
+      print "INFO -- Debug mode\n";
+      print "\n";
+      print "The following script would have been executed using the data that follows.\n";
+      print "# -- $temp_build\n";
+      system("cat $temp_build");
+      print "\n";
+
+      print "# -- $temp_zone_def\n";
+      system("cat $temp_zone_def");
+      print "\n";
+
+      if( $zone->is_native )
+      {
+        print "# -- $temp_sysidcfg\n";
+        system("cat $temp_sysidcfg");
+        print "\n";
+      }
+    }
+    else
+    {
+      system("sh  $temp_build");
+    }
+  }
+
+  unlink $temp_zone_def if -f $temp_zone_def;
+  unlink $temp_sysidcfg if -f $temp_sysidcfg;
+  unlink $temp_build    if -f $temp_build;
+
+  exit 0;
+}
+
+
+###############################################################################
+###	DELETE
+###############################################################################
+
+if( defined $opts->{delete} and $opts->{delete} )
+{
+  printf "Delete operation not yet supported - remove it yourself\n";
+  exit 0;
+}
+
+
+###############################################################################
+###  No valid option provided
+###############################################################################
+
+printf "No valid operation selected. (exiting)\n";
+
+exit 0;
+
+
+## Packages
+
+##
+## PACKAGE Property( )
+##
+##  Implements a simple property Object.
+##  Any unique property may be saved or restored
+##  using the set and get methods. All properties
+##  are stored under the {PROPS} hash.
+##
+## Other classes should inherit property behaviors
+##  from this class.
+##
+
+package Property;
+
+use Carp;
+
+##
+##  new( )
+##
+##  Create empty set of properties
+##
+##  post: result = set{ }
+##
+
+sub new
+{
+  my $package = shift(@_);
+  my $self    = { };
+
+  $self->{PROPS} = { };
+
+  bless( $self, $package );
+  return( $self );
+}
+
+sub DESTROY { }
+
+
+##
+##  getPropertyList( )
+##  getPropertyListSorted( )
+##
+##  Create and return a sequence (array) of property
+##   names.
+##
+##  post: result == sequence{ properties }
+##
+
+sub getPropertyList
+{
+  my $self = shift(@_);
+
+  return( [ keys %{$self->{PROPS}} ] );
+}
+
+sub getPropertyListSorted
+{
+  my $self = shift(@_);
+
+  return( [ sort keys %{$self->{PROPS}} ] );
+}
+
+
+##
+##  getProperty( $prop )
+##
+##  Return the value of a given property.
+##
+##  post: result == if set->includes( $prop ) then value
+##                  else undef
+##
+
+sub getProperty
+{
+  my $self = shift(@_);
+  my $prop = shift(@_);
+
+  return( defined $self->{PROPS}{$prop} ? $self->{PROPS}{$prop} : undef );
+}
+
+
+##
+##  setProperty( $prop, $valu )
+##
+##  Save the property and value pair. Existing matching
+##   property is replaced with new value.
+##
+##  pre:  $prop defined
+##  post: set->including( $prop => $valu )
+##
+
+sub setProperty
+{
+  my $self = shift(@_);
+  my $prop = shift(@_);
+  my $valu = shift(@_);
+
+  if( defined( $prop ) )
+  {
+    $self->{PROPS}{$prop} = $valu;
+  }
+
+  return( undef );
+}
+
+##
+##  delProperty( $prop )
+##
+##  Delete the property if it exists
+##
+##  pre:  $prop defined
+##  post: set = set@pre->excluding( $prop )
+##
+
+sub delProperty
+{
+  my $self = shift(@_);
+  my $prop = shift(@_);
+
+  if( defined( $prop ) && defined $self->{PROPS}{$prop} )
+  {
+    delete $self->{PROPS}{$prop};
+  }
+
+  return( undef );
+}
+
+##
+##  toString( )
+##
+##  Creates a string description of this object.
+##
+##  post: result = string description
+##
+
+sub toString
+{
+  my $self = shift;
+  my $props = $self->getPropertyListSorted();
+  my $prop;
+  my $result;
+
+  foreach $prop ( @$props )
+  {
+    $result .= sprintf("  %-15s : %s\n", $prop, $self->{PROPS}{$prop} );
+  }
+
+  return $result;
+}
+
+sub _setget
+{
+  my( $self, $prop, $val ) = @_;
+  $self->setProperty( $prop, $val ) if( defined $val );
+  return $self->getProperty( $prop );
+}
+
+
+##
+## PACKAGE solaris::zone;
+##
+##  Implements simplified zone creation and deletion interface
+##
+
+package Solaris::zone;
+
+use strict;
+use Data::Dumper;
+use Carp;
+
+## Inherit from Property Class
+use base qw{Property};
+
+sub new
+{
+  my $package  = shift(@_);
+  my $zonename = shift(@_);
+  my $self     = $package->SUPER::new();
+
+  unless( defined $zonename )
+  {
+    croak "no defined zone-name";
+  }
+
+  $self->zonename( $zonename );
+  $self->autoboot( 'false'   );
+
+  ## TimeZone Default to local
+  if( -f '/etc/TIMEZONE' and open(TZ,"< /etc/TIMEZONE" ))
+  {
+    my $tz = (grep(/^TZ=/,<TZ>))[0];
+       $tz =~ s/^TZ=//;
+    chomp( $tz );
+    $self->timezone( $tz );
+    ## print " INFO: Default TZ = $tz\n";
+    close(TZ);
+  }
+
+  return $self;
+}
+
+sub zonename    { $_[0]->_setget('ZONE___', $_[1] );}
+sub clone       { $_[0]->_setget('CLONE__', $_[1] );}
+sub media       { $_[0]->_setget('MEDIA__', $_[1] );}
+sub _hostname   { $_[0]->_setget('HOST___', $_[1] );}
+sub zonepath    { $_[0]->_setget('ZPTH___', $_[1] );}
+sub _autoboot   { $_[0]->_setget('ABOOT__', $_[1] );}
+sub _network    { $_[0]->_setget('NETS___', $_[1] );}
+sub _paths      { $_[0]->_setget('DIRS_WR', $_[1] );}
+sub _inherit    { $_[0]->_setget('DIRS_RO', $_[1] );}
+sub timezone    { $_[0]->_setget('TZ_____', $_[1] );}
+sub password    { $_[0]->_setget('PW_____', $_[1] );}
+sub timeserv    { $_[0]->_setget('NTP____', $_[1] );}
+sub nameserv    { $_[0]->_setget('NAMSRV_', $_[1] );}
+sub _brandz     { $_[0]->_setget('BRANDZ_', $_[1] );}
+sub cluster     { $_[0]->_setget('CLUSTR_', $_[1] );}
+
+sub brand
+{
+  my $self = shift(@_);
+  my $info = shift(@_);
+
+  return $self->_brandz unless( defined $info );
+
+  my( $brand, $cluster ) = split( ',', $info );
+
+  $self->cluster( $cluster );
+  $self->_brandz( $brand   );
+}
+
+sub hostname
+{
+  my $self = shift(@_);
+  my $name = shift(@_);
+
+  $self->_hostname( $name ) if( defined $name );
+
+  $name = $self->_hostname;
+  $name = $self->zonename  unless defined $name;
+
+  return $name;
+}
+
+sub paths
+{
+  my $self = shift(@_);
+  my $dirs = shift(@_);
+
+  return $self->_paths unless( defined $dirs );
+
+  ## Define Dirs
+  my $dirpaths = [ split(',', $dirs ) ];
+
+  $self->_paths( $dirpaths );
+}
+
+sub is_native
+{
+  my $self = shift(@_);
+  return ( ! defined $self->brand ) unless defined $self->brand;
+  return (   defined $self->brand and lc($self->brand) eq 'native' );
+}
+
+sub inherit
+{
+  my $self = shift(@_);
+  my $dirs = shift(@_);
+
+  return $self->_inherit unless( defined $dirs );
+
+  ## Define Dirs
+  my $dirpaths = [ split(',', $dirs ) ];
+
+  $self->_inherit( $dirpaths );
+}
+
+sub network
+{
+  my $self = shift(@_);
+  my $netw = shift(@_);
+
+  return $self->_network unless( defined $netw );
+
+  ## Define Networks
+  my $networks = [];
+  my $netdata  = [ split(',', $netw ) ];
+
+  foreach my $ent ( @$netdata )
+  {
+    my( $interface, $network ) = split('=', $ent, 2 );
+
+    ## Should test sanaty of this information (but we dont)
+    ##  does /dev/${interface} exist?
+    ##  does $network "look like" xxx.xxx.xxx.xxx/xx
+    ##  zonecfg will do some checking for us
+
+    push @$networks, [ $interface, $network ];
+#   $networks->{$interface} = $network;
+  }
+
+  $self->_network( $networks );
+}
+
+sub autoboot
+{
+  my $self = shift(@_);
+  my $auto = shift(@_);
+
+  $auto = lc($auto) if( defined $auto );
+
+  if( defined $auto and $auto =~ /^(true|false)$/ )
+  {
+    $self->_autoboot( $auto );
+  }  
+
+  return $self->_autoboot;
+}
+
+
+sub zone_definition
+{
+  my $self = shift(@_);
+  my $rslt = [];
+
+  if( $self->is_native )
+  {
+    push( @$rslt, "create -F" );
+  }
+  else
+  {
+    push( @$rslt, sprintf("create -F -t %s", $self->brand ));
+  }
+  push( @$rslt, sprintf("set zonepath=%s/%s", $self->zonepath, $self->zonename ));
+  push( @$rslt, sprintf("set autoboot=%s",    $self->autoboot ));
+
+  ## Read-Write Filesystems
+  ##  (assumption: (global):/export/home -> (non-global):/export/home
+  my $readwrite= $self->paths;
+
+  foreach my $dir ( @$readwrite )
+  {
+    push( @$rslt, "add fs" );
+    push( @$rslt, sprintf("set dir=%s", $dir ));
+    push( @$rslt, sprintf("set special=%s", $dir ));
+    push( @$rslt, 'set type=lofs' );
+    push( @$rslt, 'add options [rw,nodevices]' );
+    push( @$rslt, "end" );
+  }
+
+  ## Inherited Readonly-paths
+  my $inherited= $self->inherit;
+
+  foreach my $dir ( @$inherited )
+  {
+    push( @$rslt, "add inherit-pkg-dir" );
+    push( @$rslt, sprintf("set dir=%s", $dir ));
+    push( @$rslt, "end" );
+  }
+
+  ## Network interfaces
+  my $networks = $self->network;
+
+# foreach my $net ( sort keys %$networks )
+  foreach my $net ( 0..$#$networks )
+  {
+    push( @$rslt, "add net" );
+    push( @$rslt, sprintf("set physical=%s", $networks->[$net][0] ));
+    push( @$rslt, sprintf("set address=%s",  $networks->[$net][1] ));
+    push( @$rslt, "end" );
+  }
+
+# ## Debug - can /dev/ip be used in non-global-zone?
+# ## (it appears that /dev/ip is prohibited from use in a non-global-zone)
+# push( @$rslt, "add device" );
+# push( @$rslt, "set match=/dev/ip" );
+# push( @$rslt, "end" );
+
+  return $rslt;
+}
+
+
+sub sysidcfg
+{
+  my $self = shift(@_);
+  my $conf = [];
+
+  push( @$conf, sprintf("timezone=%s", $self->timezone ));
+  push( @$conf, "system_locale=C" );
+  push( @$conf, sprintf("root_password=%s", $self->password ));
+  push( @$conf, "name_service=NONE" ) unless defined $self->nameserv;
+  push( @$conf, $self->nameserv )         if defined $self->nameserv;
+  push( @$conf, sprintf("network_interface=primary {hostname=%s}", $self->hostname ));
+  push( @$conf, "security_policy=NONE" );
+  push( @$conf, "terminal=vt100" );
+  push( @$conf, sprintf("timeserver=%s", $self->timeserv )) if defined $self->timeserv;
+  push( @$conf, "nfs4_domain=dynamic" );
+
+  return $conf;
+}
+
+__END__
+
+##
+## Documentation
+##
+
+=pod
+
+=head1 NAME
+
+zonetool.pl - A Solaris zone building tool
+
+=head1 SYNOPSYS
+
+The zonetool.pl controls and configures many aspects of the zone
+building process from a single command line operation.
+
+=head1 USAGE
+
+ (native Solaris example)
+ $ zonetool.pl -c [ -b native ] -z zonename \
+    -h myhost.company.dom.com -p /zones \
+    -n 'ce0=192.168.120.22,ce1=192.168.192.22' \
+    -a ( true | false ) [ -i '/opt,/example/blah' ] \
+    [ -f '/export/home,/export/disk0' ] -t US/Central \
+    -r timeserver -s 'name_service=NONE'
+
+ (Linux lx branded example)
+  note: options not shown in example are ignored for lx brand
+ $ zonetool.pl -c -b SUNWlx[,development] -z zonename -p /zones \
+    -m /zone/compatable/installation/media \
+    -n 'ce0=192.168.120.23,ce1=192.168.192.23' \
+    -a ( true | false )
+
+ (Zone Removal Unsupported)
+ $ ./zonetool -d -z zonename (unsupported)
+
+=head1 OPTIONS
+
+=over 4
+
+=item -c | --create
+
+This option designates a create zone operation. By default a native
+Solaris zone is created. The "brand" of the zone can be explicitly defined
+as an argument to the brand option.
+
+=item -d | --delete
+
+The automatic removal of a zone is unsupported at this time. I am
+currently not sure that automatic removal of a zone is a good idea.
+
+=item -b | --brand [ native | SUNWlx[,cluster] ]
+
+By default a native Solaris zone is created. The "brand" of the zone is
+explicitly defined as an argument to the brand option. When the brand
+option is used an argument is required. The argument must be "native"
+or a currently known BrandZ template of the zonecfg tool.
+
+There was some confusion about the keywords to be used to select an
+installation cluster for lx brand zones. Most documented lists include
+[ core, server, desktop, developer, all ]; however during testing the
+"developer" cluster was selected by using the "development" keyword.
+
+=item -z | --zonename
+
+Defines the name of the zone.
+
+=item -e | --clone
+
+The installation of the new zone will take place by cloning an exiting,
+installed, non-running zone. The zones *MUST* be the same BrandZ. No
+checking is done by zonetool.pl. The operator is expected to ensure
+that both zones are the same type, the source zone exists and is
+in the "installed" state.
+
+=item -h | --hostname
+
+Defines the primary hostname of this zone.
+
+=item -n | --network
+
+Define one or more interfaces. The form for each interface is 'interface=IP'.
+Do not be concerned with the final alias name to be assigned this is automatic.
+Provide an interface name that is plumed and working in the global zone and an
+IP that is intended for the private use of this zone.
+
+=item -p | --zonepath
+
+Define the path where the zone will be created. The final path used will be
+the combination of ( -p )/( -z ). When the options '-z myzone1' and '-p /zones'
+are used the zone will be created at the path /zones/myzone1.
+
+=item -a | --autoboot
+
+Define if the zone should autoboot. true=autoboot false=no-autoboot. To turn
+on autobooting the option is specified as "-a true". Example: -a true
+
+=item -i | --inherit
+
+Define one or more paths that will be mounted read-only and defined as zone
+inherit-pkg-dir from the global zone. Example: -i '/opt'
+
+=item -f | --filesystem
+
+Define one or more paths that will be read-write file-systems to be mounted in this
+zone from the global. Example -f '/export/home,/export/disk1'
+
+=item -t | --timezone
+
+Define the timezone this zone should be configured to use. Example: -t US/Central
+
+=item -r | --timeserv
+
+Define the IP address of the time server. Used in the sysidcfg file.
+
+=item -s | --nameserv
+
+Define the name_service configuration entry to place in the sysidcfg file. The
+argument is not tested or checked. The value provided is placed in the sysidcfg
+as-is and must include the complete and full syntax expected by the Solaris
+system configuration startup activity. The default value when this option is
+not used is "name_service=NONE".
+
+=item -m | --media
+
+Define the path that contains installation media for a non native zone.
+
+=item --debug
+
+Run without actually building the zone. The zone building files are created and
+available for review.
+
+=item --help
+
+Display this documentation.
+
+=back
+
+=head1 AUTHOR
+
+Victor M. Burns (v-burns@ti.com)
+
+=head1 BUGS
+
+None Known (Okay many, but who's looking)
+
+=head1 SEE ALSO
+
+N/A
+
+=head1 COPYRIGHT
+
+LICENSE 2009, Released by permission to Linux Journal for inclusion in publication and/or electronic downloading by the public from LINUX Journal servers. The end-user takes full responsibility for the use of this script/tool/utility. Texas Instruments and the Author take no responsibility for its use.
+
+Copyright 2007-2008, Texas Instruments Incorporated. All rights reserved as an unpublished work.
+
+=cut
+
+
+## END

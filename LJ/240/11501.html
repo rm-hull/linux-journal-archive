@@ -1,0 +1,499 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Using MySQL's Built-in Replication
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;See the benefits MySQL replication can bring to your environment.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xbf6580.0xcedac0"></a>
+Using MySQL's Built-in Replication
+</h1></div><div><div class="author"><h3 class="author">
+Brian
+ 
+Trapp
+</h3></div><div class="issuemoyr">Issue #240, April 2014</div></div><div><p>
+See the benefits MySQL replication can bring to your environment.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0xcee1f8"></a></h2></div></div><p>
+My first Linux-based project at work was a Web-based LAMP
+(Linux/Apache/MySQL/Perl) stack that provided engineering reports
+and analysis for my department. Over time, that evolved into
+Tomcat/MySQL/Java (which doesn't acronym nicely at all) and moved
+past my department to the whole facility, and eventually to several
+different manufacturing locations. As my user count increased, so
+grew the expectation of 24x7 uptime, and I needed to get serious about
+redundancy for my single database instance.
+</p><p>
+MySQL's built-in replication option seemed like a logical choice,
+as it seemed easy to configure and would provide an additional level
+of redundancy. I was pleasantly surprised at how easy it was to enable
+replication, and after two years of use in production, my only regret
+is that I didn't implement it sooner.
+</p><p>
+This article is written based on the 5.5 version of MySQL, but it also will work
+for 5.6. Although 5.6 reached &ldquo;generally available&rdquo; status in February
+2013, there are still a <span   class="emphasis"><em>lot</em></span> of 5.5 installations out there in
+production. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0xcee510"></a>
+What Is Replication?</h2></div></div><p>
+MySQL's replication is a way for one or more slave servers to stay in
+sync with a single master server. At a high level, this is accomplished
+by having the master log all database changes to a local file. Each
+slave knows its master log filename and position within that file,
+and routinely queries the master for any new changes. As changes are
+found, the slave modifies its copy of the database and moves its master
+log file pointer accordingly. This means the slaves will process
+changes in the same order as executed on the master, although each slave
+may be at a slightly different position in the change log.
+</p><p>
+Replication is quite different from clustering. Replication can be
+enabled in the standard MySQL server installation (&ldquo;MySQL Community
+Edition&rdquo;) by enabling a few control file options, but clustering
+requires installing an entirely different product (&ldquo;MySQL Cluster&rdquo;).
+In clustering, a set of machines synchronize reads and writes across
+all the machines in the cluster&mdash;all machines in the cluster are
+essentially identical. In replication, all writes occur solely on the
+master. Reads can be performed on any machine, with the understanding
+that a slave may be slightly behind the master. In my experience,
+slave machine delays are typically less than a second.
+</p><div       class="mediaobject"><a href="11501f1.large.jpg"><img src="11501f1.jpg"></a><div class="caption"><p>
+Figure 1. Example Replication Flow
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0xcee930"></a>
+Benefits of Replication</h2></div></div><p>
+<span   class="bold"><b>Impact-Free Database Backups:</b></span>
+</p><p>
+Replication alone is <span   class="emphasis"><em>not</em></span> a backup strategy. From personal
+experience, I can assure you that silly SQL mistakes on the master will
+propagate to your slaves faster than you ever thought possible, but
+replication <span   class="emphasis"><em>can</em></span> ensure that the process of making backups won't
+affect your master server. Creating a quality database backup is a
+resource-intensive operation, and it usually requires a write lock for
+the duration of the backup in order to ensure consistency. Prior to
+configuring replication on our system, our production server would
+use MySQL's mysqldump tool to create backups at 6am and 6pm.
+This worked well at first, but as users requested more types of data
+and longer retention windows, the amount of backup time passed the
+point where users would accept write interruption. The increased I/O
+load during backups also would degrade normal application performance,
+further annoying our users.
+</p><p>
+After introducing clustering, the entire backup process can be moved onto
+one of the slaves. The slave can be write-locked for the whole backup
+process with no write or I/O impact to the master. Once the slave is
+finished creating the backup, it releases the write lock and quickly
+catches back up to the master.
+</p><p><span   class="bold"><b>
+Batch Reporting and Load Balancing:</b></span>
+</p><p>
+With the rising popularity of data-mining techniques, it's entirely
+possible that you may want to start using your operational, near real-time
+database to do some hefty batch reporting. Though these types of reports
+typically don't require write locks during processing, enough of them can
+degrade performance while they're crunching data. Prior to implementing
+replication, we manually scheduled batch jobs to run at traditionally
+low usage time slots, but this was error-prone and became significantly
+more complex as we started supporting users from other time zones.
+</p><p>
+After implementing replication, we have offloaded all of these batch
+reports to a data-mining server with its own MySQL slave instance.
+Batch reports and data mining now can be scheduled at the user's
+convenience, not just when the server is idle.
+</p><p><span   class="bold"><b>
+Direct End-User Access:</b></span>
+</p><p>
+One of the downsides of making a really awesome database is that
+eventually other folks will want to get their fingers into that database
+too. Each additional user increases the base system load and the risk
+that their queries may misbehave. You could develop a bunch of Web
+services and insist that they use those instead of directly querying
+the database, but that is a lot of extra work, even more maintenance
+and slows down innovation. On the other hand, giving even the most
+experienced users direct access could lead to SQL mistakes that stress
+the database. MySQL has a nice facility for limiting user queries with
+resource limits, but even that doesn't guarantee zero impacts to your
+coveted production database.
+</p><p>
+After replication, you can offload this read-only traffic to one of
+your slaves. It's even possible to let the end users create their own
+MySQL with very little input required on your end.
+</p><p><span   class="bold"><b>
+Hot Failover Capability:</b></span>
+</p><p>
+Once you have replication configured, you can start to leverage the
+hot failover capabilities built in to MySQL's Connector/J JDBC driver.
+With a properly structured URL, the JDBC infrastructure automatically
+can sense that the master database is down and failover to the slave in
+read-only mode. Once the master database comes back up, connections
+automatically will start using the master again&mdash;no application
+outage required. For applications where the bulk of operations are
+reads, this can be a real lifesaver! Enabling this failover option
+is incredibly simple, as shown in the following JDBC URL example:
+jdbc:mysql://master.mydomain.org,slave1.mydomain.org:3306/MYDATABASE.
+</p><p>
+Although the default options probably are sufficient for most cases, there
+are plenty of more advanced options for fine-tuning. See the Connector/J
+documentation for more information.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0xcef0c0"></a>
+Configuring Replication</h2></div></div><p>
+Hopefully, you're sold on the benefits that replication can provide and
+are ready to start.
+</p><p><span   class="bold"><b>
+Replication Types:</b></span>
+</p><p>
+The first important configuration decision is choosing between the three
+main replication strategies offered by MySQL: statement-based (SBR),
+row-based (RBR) or mixed-based replication (MBR). In MySQL 5.5,
+SBR is the default.
+</p><p>
+At a high level, you can think of statement-based replication as simply
+copying any SQL statements that modify content on the master (insert,
+update, delete and so on) to a log file. For example, if the master sees
+<tt  >DELETE FROM ME.FOO WHERE BAR=1</tt>, it puts that SQL in the replication
+command logs. This logging style has been in use the longest and
+usually will result in smaller log files than RBR. It is possible,
+however, to write non-deterministic SQL that will cause RBR to fail.
+Some obvious examples would be updating a field to a random number
+(<tt  >UPDATE ME.FOO SET BAR=RAND();</tt>) or deleting the first X rows of a table
+with no order specified.
+</p><p>
+Row-based logging takes a very different approach. Instead of logging
+the raw SQL, the master instead will log changes to specific rows.
+For example, an <tt  >UPDATE ME.FOO SET BAR=1 WHERE BAR&gt;5;</tt> on the master
+actually would be logged as many different unique row-level change
+events (imagine commands like: <tt  >set BAR=1 where ROW_ID=4</tt>,
+<tt  >set BAR=1 where
+ROW_ID=14</tt> and so on). This technique protects you from ambiguous SQL
+like the RAND() and unordered delete examples above but at the cost of
+larger log files.
+</p><p>
+In mixed-based mode, the server will switch between statement or
+row-based logging based on the type of statement. For example, <tt  >DELETE
+FROM FOO</tt> is best done as an SBR type command, while row-level updates
+or non-deterministic statements would be more efficient as RBRs.
+</p><p>
+This article has more of the gory details:
+<a href="http://dev.mysql.com/doc/refman/5.5/en/replication-sbr-rbr.html" target="_self">dev.mysql.com/doc/refman/5.5/en/replication-sbr-rbr.html</a> (and some
+additional pros and cons). I chose SBR because it's easier to understand;
+I didn't have any of the weird conditions where SBR doesn't work well,
+and the smaller log size was appealing.
+</p><p>
+<span   class="bold"><b>Master Configuration:</b></span>
+</p><p>
+If you're setting up MySQL from scratch, install the rpm or debs as usual. 
+(Be sure to run <tt  >mysql_secure_installation</tt> to make your installation a bit more secure. 
+While writing this article, I used the Employees test database and creation
+script from this url: <a href="https://launchpad.net/test-db" target="_self">https://launchpad.net/test-db</a>. The employees-db-full file has both the data and the database creation scripts. 
+Don't forget to uncomment the bind-address line to make the database server
+listen to more than just localhost.)
+</p><p>
+Adding replication to the master is pretty basic: the only required
+entries are the server-id (a unique, nonzero integer&mdash;1 is a good
+choice) and the binary log name pattern. I've included two lines to
+help auto-expire old replication logs and two additional lines suggested
+for the InnoDB table type.
+</p><p>
+Here's an example of configuring the master's [mysqld] section of my.cnf:
+
+
+<pre     class="programlisting">
+[mysqld]
+...
+#Assign a unique server-id non-zero integer to each machine. 
+server-id=1 
+log-bin=mysql-bin.log		#Enables the log
+#Log size/time limits
+expire_logs_days = 14		
+max_binlog_size = 100M
+#These next 2 lines are recommended for InnoDB tables 
+#(now the default)
+innodb_flush_log_at_trx_commit=1
+sync_binlog=1 
+</pre>
+</p><p>
+It's probably a good idea to have replication use a dedicated ID and
+password, so create an ID and give it &ldquo;REPLICATION SLAVE&rdquo; authority:
+
+
+<pre     class="programlisting">
+you@master:~$ mysql -u $SQLID -p
+mysql&gt; CREATE USER 'replid'@'%.mydomain.org' IDENTIFIED BY 'replpw';
+mysql&gt; GRANT REPLICATION SLAVE ON *.* TO 'replid'@'%.mydomain.org';
+mysql&gt; FLUSH PRIVILEGES;
+</pre>
+</p><p>
+That's it! Once configured, restart the master, and you should start
+to see mysql-bin.### files being created as changes are made to
+the tables.
+</p><p>
+<span   class="bold"><b>Creating a Master Snapshot:</b></span>
+</p><p>
+If you have existing data on the master (a likely situation), you'll
+need to make a one-time snapshot for a known master log file and log
+file position, so that the slaves will have a precise point from which to start.
+</p><p>
+Warning: this will lock all writes while mysqldump is creating the backup,
+so perform this step during an acceptable maintenance window!
+</p><p>
+Step 1: open up a MySQL client connection to the master, write-lock the
+database, and get the master log position. Leave this client connection
+open until the backup is complete:
+
+
+<pre     class="programlisting">
+mysql&gt; FLUSH TABLES WITH READ LOCK;
+mysql&gt; SHOW MASTER STATUS;
++------------------+----------+--------------+------------------+
+| File             | Position | Binlog_Do_DB | Binlog_Ignore_DB |
++------------------+----------+--------------+------------------+
+| mysql-bin.000274 | 43891079 |              |                  |
++------------------+----------+--------------+------------------+
+</pre>
+</p><p>
+Note both the file and position somewhere safe, and leave this client
+connection open until the database dump is complete.
+</p><p>
+Step 2: from a different terminal on the master, use mysqldump to create a
+database backup: 
+
+<pre     class="programlisting">
+you@master~:$ time mysqldump -u $SQLID -p --events
+ &#8618;--all-databases --master-data &gt; masterdump.sql
+</pre>
+</p><p>
+The <tt  >--master-data</tt> option automatically records the master log file
+and position from the master and will set these values on the slave when
+imported. If you create a snapshot without this option, you'll need
+to record the master filename and position via <tt  >SHOW MASTER
+STATUS</tt>
+in the MySQL client connection from step 1. The <tt  >--events</tt> flag is needed
+to suppress a relatively new warning in MySQL 5.5.30 and up.
+</p><p>
+Step 3: once the database backup is complete, exit the MySQL client connection
+from step 1 to release the read lock.
+</p><p><span   class="bold"><b>
+Slave Configuration:</b></span>
+</p><p>
+Perform a normal MySQL installation on the slave machine, but add the
+following to the mysqld section of my.cnf:
+
+
+<pre     class="programlisting">
+[mysqld]
+...
+server-id=2 #Use a UNIQUE ID for each slave. Don't repeat server-ids
+</pre>
+</p><p>
+Restart the MySQL server on the slave, then open a MySQL client connection
+to the slave and set the master hostname, user ID and password:
+
+
+<pre     class="programlisting">
+you@slave1:~$ mysql -u $SQLID -p
+mysql&gt; CHANGE MASTER TO MASTER_HOST='master.mydomain.org';
+mysql&gt; CHANGE MASTER TO MASTER_USER='replid';
+mysql&gt; CHANGE MASTER TO MASTER_PASSWORD='replpw';
+</pre>
+</p><p>
+<span   class="bold"><b>Importing the Master Snapshot:</b></span>
+</p><p>
+If you have data to import from the master, you either can copy the SQL
+dump to the slave and import it there:
+
+<pre     class="programlisting">
+
+you@slave1:~$ mysql --user=$SQLID -p &lt; masterdump.sql
+
+</pre>
+</p><p>
+Or, if your user ID has remote access, you could load it over the network,
+saving a file copy step:
+
+
+<pre     class="programlisting">
+
+you@master~$ mysql --user=$SQLID -p -h slave1 &lt; masterdump.sql
+
+</pre>
+</p><p>
+This will take a while. If you haven't used mysqldump before, importing
+a backup into a new database takes significantly longer than creating
+the backup in the first place. For my database, creating a backup takes
+around ten minutes, while creating a new database from that same backup
+takes about 75 minutes.
+</p><p>
+<span   class="bold"><b>Starting Replication:</b></span>
+</p><p>
+Once the master and each slave are configured, and you've imported any
+existing data, open a MySQL client connection to each slave and start
+replication:
+
+
+<pre     class="programlisting">
+mysql&gt; START SLAVE;
+mysql&gt; SHOW SLAVE STATUS \G
+*************************** 1. row ***************************
+               Slave_IO_State: Waiting for master to send event
+                  Master_Host: master.mydomain.org
+                  Master_User: replid
+                  Master_Port: 3306
+                Connect_Retry: 60
+              Master_Log_File: mysql-bin.000274
+          Read_Master_Log_Pos: 44915942
+               Relay_Log_File: slavename-relay-bin.000263
+                Relay_Log_Pos: 44916088
+        Relay_Master_Log_File: mysql-bin.000274
+             Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes
+...snip...
+        Seconds_Behind_Master: 0
+...snip...
+             Master_Server_Id: 1
+1 row in set (0.00 sec)
+</pre>
+</p><p>
+If <tt  >Master_log_file</tt> or
+<tt  >Read_Master_Log_Pos</tt> is not specified, you
+may have forgotten the <tt  >--master-data</tt> option to
+<tt  >mysqldump</tt>.
+The <tt  >Read_Master_Log_Pos</tt> should match or be larger than the position you
+recorded when creating the initial dump.
+</p><p>
+The most important lines above are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >Slave_IO_Running: Yes</tt>
+</p></li><li><p>
+<tt  >Slave_SQL_Running: Yes</tt>
+</p></li><li><p>
+<tt  >Seconds_Behind_Master: 0</tt>
+</p></li></ul></div><p>
+If either <tt  >Slave_IO</tt> or <tt  >Slave_SQL</tt> are
+<tt  >No</tt>, something went wrong with
+replication. Check the MySQL logs. <tt  >Seconds_Behind_Master</tt> can fluctuate,
+but in my experience, it's almost always zero once you reach steady state.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0x10e91a8"></a>
+Replication Tips and Tricks</h2></div></div><div class="itemizedlist"><ul type="disc"><li><p>
+<span   class="bold"><b>Temporary tables:</b></span> temporary tables created using the
+<tt  >TEMPORARY</tt>
+keyword are excluded from replication automatically. If your application
+has pseudo-temporary tables that you don't want replicated, you'll have
+to use a configuration option to exclude them by a table name pattern.
+As an example, my application has many large user datasets that are just
+inputs to data-mining queries. Although they need to stay around longer
+than the length of just one session, they don't need to be present in
+any backups or even for hot failover. To exclude tables like TMPTBL_1,
+TMPTBL_FOO from replication, update the master's my.cnf file with the
+following option:
+<tt  >replicate-wild-ignore-table=MYSCHEMA.TMPTBL%</tt>.
+</p></li><li><p>
+<span   class="bold"><b>Don't modify the slaves:</b></span> if you alter the slave tables in a way
+that would make a subsequent SQL command on the master fail on the slave,
+replication will <span   class="emphasis"><em>stop</em></span>. For example, if the master gets the SQL
+statement <tt  >DROP TABLE MYSCHEMA.FOO</tt> and table FOO doesn't exist on
+the slave, replication will fail. In my two years of using replication,
+this type of self-inflicted error has been the only thing I've seen that
+breaks replication.
+</p></li><li><p>
+<span   class="bold"><b>Monitoring the slaves:</b></span> write a script to monitor the response
+of <tt  >SHOW SLAVE STATUS</tt> on each of your slaves, checking to make
+sure <tt  >Slave_IO_Running</tt> and
+<tt  >Slave_SQL_Running</tt> are both <tt  >Yes</tt> and that
+<tt  >Seconds_Behind_Master</tt> is something you're comfortable with.
+</p></li><li><p>
+<span   class="bold"><b>Monitoring the master:</b></span> Connector/J's hot failover capability is a
+great feature. Don't forget to disable that for any monitoring scripts
+though. At my first planned outage, all my database health-monitoring
+scripts happily failed over to the slave machine!
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0x10e99e8"></a>
+What's Coming Next?</h2></div></div><p>
+Although this article was written using MySQL 5.5, version 5.6.10 reached
+generally available (GA) status in February 2013. Version 5.6 brings
+some interesting new choices, including Delayed Replication: a slave can
+now be told to stay a deliberate amount of time behind the master. This
+could be interesting and provide a chance to recover quickly from an
+accidental delete or update. It also includes Global Transaction Identifiers (GTIDs):
+GTIDs would eliminate the need to tell each slave the master log file and
+log file position. Instead, the server assigns each modifying statement
+a time-ordered ID so the slave just needs to know the ID of the last
+transaction it processed. This should simplify slave setup and
+snapshot synchronization further.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0x10e9af0"></a>
+Conclusion</h2></div></div><p>
+MySQL enterprise-level replication features are easy to configure and can
+help solve a wide range of performance, reliability and data security
+problems. Although each application's database needs are different, I hope
+that covering the benefits I've seen will encourage you to give it a
+try on a database of your own.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbf6580.0x10e9bf8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Brian Trapp serves up a spicy gumbo of Web-based yield reporting
+and analysis tools for hungry semiconductor engineers at one of the
+leading semiconductor research and development consortiums. His signature
+dish has a Java base with a dash of JavaScript, Perl, Bash and R, and
+his kitchen has been powered by Linux ever since 1998. He works from
+home in Buffalo, New York, which is a shame only because that doesn't really
+fit the whole chef metaphor.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../240/toc240.html">Issue Table of Contents</a>
+    <a class="link3" href="../240/11501.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,150 @@
+#include <stdio.h>
+#include <math.h>
+#include <sys/time.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <string.h>
+#include <unistd.h>
+#define SAMPLE_RATE 44100
+#define BLOCKS_PER_SECOND 50
+#if defined(LINUX)
+#include <sys/soundcard.h>
+int SoundFD;
+#elif  defined(IRIX)
+#include <audio.h>
+ALconfig Irix_AL_config;
+ALport   SoundFD;
+#elif defined(CYGWIN)
+#include <windows.h>
+#define NONAMELESSUNION
+#define _stdcall STDCALL
+typedef HANDLE HTASK;
+#include <semaphore.h>
+#include <mmsystem.h>
+static HWAVEOUT WaveDevice = NULL;
+static sem_t WavBufSema;
+static void CALLBACK WaveCallBack(HWAVE hWave,
+  UINT uMsg, DWORD dwInstance,
+  DWORD dwParam1, DWORD dwParam2) {
+  if (uMsg == WOM_DONE) {
+    WAVEHDR * wh = (WAVEHDR *) dwParam1;
+    HGLOBAL hg;
+    waveOutUnprepareHeader(WaveDevice, wh,
+                           sizeof(WAVEHDR));
+    hg = GlobalHandle(wh->lpData);
+    GlobalUnlock(hg); GlobalFree(hg); 
+    hg = GlobalHandle(hg); GlobalUnlock(hg);
+    GlobalFree(hg);
+    sem_post (& WavBufSema);
+} }
+#endif
+int InitSoundSystem(int SampleRate) {
+  int OK = -1;
+#if defined(LINUX)
+  if ((SoundFD=open("/dev/dsp", O_WRONLY)) >=0) {
+    int OSS_format = AFMT_S16_LE;
+    int OSS_speed  = SampleRate;
+    ioctl(SoundFD, SNDCTL_DSP_RESET, 0);
+    if ((ioctl(SoundFD, SNDCTL_DSP_SETFMT,
+               &OSS_format) != -1)  &&
+        (OSS_format == AFMT_S16_LE) &&
+        (ioctl(SoundFD, SNDCTL_DSP_SPEED,
+               &OSS_speed ) != -1)  &&
+        (OSS_speed  == SampleRate)) {
+      OK = SoundFD;
+  } }
+#elif defined(IRIX)
+  long PV [10] = {
+    AL_LEFT_SPEAKER_GAIN,        10,
+    AL_RIGHT_SPEAKER_GAIN,       10,
+    AL_OUTPUT_RATE,              
+  };
+  PV [5] = AL_RATE_44100;
+  if ((ALsetparams(AL_DEFAULT_DEVICE,PV,6)==0) &&
+      ((Irix_AL_config = ALnewconfig()) != NULL)){
+    ALsetchannels  (Irix_AL_config, AL_STEREO);
+    ALsetqueuesize (Irix_AL_config, SAMPLE_RATE);
+    ALsetwidth     (Irix_AL_config, AL_SAMPLE_16);
+    if (((SoundFD=ALopenport("Speaker","w",
+            Irix_AL_config)) != NULL)) OK = 0;
+  }
+#elif defined(CYGWIN)
+  WaveDevice = NULL;
+  sem_init (& WavBufSema, 0, BLOCKS_PER_SECOND);
+  if (waveOutGetNumDevs() > 0) {
+    WAVEFORMATEX outFormatex;
+    outFormatex.wFormatTag      = WAVE_FORMAT_PCM;
+    outFormatex.wBitsPerSample  =              16;
+    outFormatex.nChannels       =               1;
+    outFormatex.nSamplesPerSec  =     SAMPLE_RATE;
+    outFormatex.nBlockAlign   = sizeof(short int);
+    outFormatex.nAvgBytesPerSec =
+  outFormatex.nSamplesPerSec * sizeof(short int);
+    if (waveOutOpen(&WaveDevice, WAVE_MAPPER,
+          &outFormatex, (DWORD) WaveCallBack, 0,
+          CALLBACK_FUNCTION) == MMSYSERR_NOERROR)
+      OK = 0;
+  }
+#endif
+  return OK;
+}
+void SoundOutAndWait(short int * Sample,
+                           int HowMany) {
+  int HowManyBytes = HowMany * sizeof(short int);
+#if defined(LINUX)
+  write(SoundFD, Sample, HowManyBytes);
+#elif defined(IRIX)
+  ALwritesamps (SoundFD, Sample, HowMany);
+#elif defined(CYGWIN)
+  HGLOBAL HGheader = GlobalAlloc (GMEM_MOVEABLE |
+    GMEM_ZEROINIT, sizeof(WAVEHDR));
+  HGLOBAL HGdata   = GlobalAlloc (GMEM_MOVEABLE,
+                      HowManyBytes);
+  LPWAVEHDR WaveHeaderPtr = GlobalLock(HGheader);
+  WaveHeaderPtr->dwBufferLength =   HowManyBytes;
+  WaveHeaderPtr->lpData   =   GlobalLock(HGdata);
+  CopyMemory(WaveHeaderPtr->lpData, Sample,
+                                   HowManyBytes);
+  waveOutPrepareHeader(WaveDevice, WaveHeaderPtr,
+                                sizeof(WAVEHDR));
+  waveOutWrite        (WaveDevice, WaveHeaderPtr,
+                                sizeof(WAVEHDR));
+  sem_wait (& WavBufSema);
+#endif
+}
+int main (int argc, char *argv[]) {
+  double k=0.05, B=7.5, x1=3.0, dx=4.0,
+         dt=M_PI/100.0, ddt, x0, x2;
+  int i, j = 0;
+  if (InitSoundSystem(SAMPLE_RATE) < 0) exit(0);
+  ddt = dt * dt; x0 = x1 - dx*dt;
+  while (1) {
+    short int SampleBuffer[SAMPLE_RATE /
+                           BLOCKS_PER_SECOND];
+    fd_set stdin_set;
+    struct timeval timeout = { 0, 0 };
+    FD_ZERO(& stdin_set); /* non-blocking read */
+    FD_SET(fileno(stdin), & stdin_set);
+    if (select(fileno(stdin)+1, & stdin_set,
+               NULL, NULL, & timeout) > 0) {
+      char line[128], Name[128];
+      float Value;
+      fgets(line, sizeof(line), stdin);
+      sscanf (line, "%s %f", Name, &Value);
+      if (strcmp(Name,"k")==0) k=(double) Value;
+      if (strcmp(Name,"B")==0) B=(double) Value;
+    }
+    for (i=0; i<(SAMPLE_RATE/BLOCKS_PER_SECOND);
+         i++, j++) {
+      SampleBuffer[i] = 4096 * x1;
+      x2 = (ddt*B * cos(j*dt) + (2+dt*k)*x1 -
+            x0 - ddt*x1*x1*x1) / (1 + dt * k);
+      if ((j%1000) == 0)  /* Poincare section */
+        printf("%f %f\n", x2, (x2-x1)/dt);
+      x0=x1; x1=x2;
+    }
+    SoundOutAndWait(SampleBuffer,
+      SAMPLE_RATE / BLOCKS_PER_SECOND);
+  }
+  return 0;
+}

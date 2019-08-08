@@ -1,0 +1,227 @@
+#!/bin/bash
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+# $Header: /var/log/sar/RCS/swap,v 1.2 1997/06/19 04:01:39 dgavin Exp dgavin $
+#
+# swap - display swapping activity
+#
+# input - /var/log/sar/data/swap.Mondd.yy
+# output- two charts
+#         swap in and out operations per second
+#         total/used/free swap space utilization
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+trap '/bin/rm /tmp/gnuplot.swap* 2>/dev/null;exit' SIGHUP SIGINT SIGQUIT SIGTERM
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Function definitions
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+function checkForEmpty {
+if [ ! -f ${1} ] ; then echo "0 0" >${1} ; fi
+return
+}
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Mainline code
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Variable initialization
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+HARDCOPY=""
+GHOSTVIEW=""
+CMDNAME=`basename $0`
+#
+HELP="${CMDNAME} generates X11 or hardcopy graph of swap activity."
+USAGE="${CMDNAME} [-DHLVhPp] [MonDD[.YY]]
+  -D turns on execution tracing
+  -H displays help info and exits
+  -L displays RCS log and exits
+  -V display Revision info and exits
+  -h displays help info and exits
+  -P Print without display
+  -p display and offer print option
+
+  MonDD.YY - day to work with, defaults to today
+   i.e. Jun12.97 -the year will default to this year
+
+"
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Parse options
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+while getopts DHLVhPp c ; do
+  case ${c} in
+    h|H) echo -e "\n${HELP}\n\n${USAGE}\n"
+       exit 1
+       ;;
+    p) HARDCOPY="YES"
+       GHOSTVIEW="YES"
+       ;;
+    P) HARDCOPY="YES"
+       GHOSTVIEW=""
+       ;;
+    D) echo "DEBUG ON"
+       DEBUG="yes"
+       set -x
+       ;;
+    L) echo '
+$Log: swap,v $
+Revision 1.2  1997/06/19 04:01:39  dgavin
+cleanup
+dgavin
+
+Revision 1.1  1997/06/12 03:37:33  dgavin
+Initial revision
+
+'
+       exit 1
+       ;;
+    V) echo '$Revision: 1.2 $'
+       exit 1
+       ;;
+    ?) echo -e "\n${USAGE}\n"
+       exit 3
+       ;;
+  esac
+done
+# re-align the positional parameters as $1, $2,...
+shift `expr ${OPTIND} - 1`
+#
+cd /var/log/sar/data
+if [ $# -eq 0 ] ; then
+ FN="swap.`date +%b%d.%y`"
+else
+ l=`echo ${1} | wc -c`
+ l=`expr ${l} + 0`
+ case ${l} in
+  6) FN="swap.${1}.`date +%y`";;
+  9) FN="swap.${1}";;
+  *) echo -e "\n${CMDNAME}: Invalid date  - ${1}\n"
+     exit
+     ;;
+ esac
+fi
+if [ ! -f ${FN} ] ; then
+  echo "No such file: ${FN}"
+  exit
+fi
+if [ ! -r ${FN} ] ; then
+  echo "File not readable: ${FN}"
+  exit
+fi
+if [ ! -s ${FN} ] ; then
+  echo "File empty: ${FN}"
+  exit
+fi
+#
+#HHMM swap in swap out
+#0940 1044752 617081
+#0945 1047033 617720
+#
+awk '
+BEGIN{
+r=0;
+}
+{
+ # Swap ins, outs per second
+ if (NF == 3) {
+   r++;
+   if (r == 1) {
+     mm=substr($1,3,2) * .016;
+     tim=substr($1,1,2)+mm;
+     old_time = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+     old_swpin = $2; old_swpout = $3;
+   } else {
+     mm=substr($1,3,2) * .016;
+     tim=substr($1,1,2)+mm;
+     now = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+     delta_tim = now - old_time;
+   
+     if ( swpin > $2 ) { swpin = 0; swpout = 0;
+     } else { swpin = $2 - old_swpin; swpout = $3 - old_swpout; }
+     if ( delta_tim < 1 ) { inv = swpin / delta_tim; outv = swpout / delta_tim;
+     } else { inv = swpin; outv = swpout; }
+     printf("%5.2f %7.2f %7.2f\n",tim,inv,outv) >"/tmp/gnuplot.swap";
+     old_swpin = $2; old_swpout = $3; old_time = now;
+   }
+ }
+ # Total, Used, Free swap pages
+ if (NF == 4) {
+   mm=substr($1,3,2) * .016;
+   tim=substr($1,1,2)+mm;
+   printf("%5.2f %7.2f %7.2f %7.2f\n",
+         tim,$2/1048576,$3/1048576,$4/1048576) >"/tmp/gnuplot.swapSp";
+ }
+}
+END{}' ${FN}
+#
+# Get system name and date of report into variables...
+system=`hostname -s | /usr/bin/tr "[A-Z]" "[a-z]"`
+#sysdate=`/bin/date`
+sysdate=`echo ${FN} | cut -c 6-`
+echo "Generating plot for $system $sysdate"
+#
+# Set up for output requested or defaulted
+#
+if [ -z ${HARDCOPY} ]; then
+  TERMINAL="set terminal X11"
+  PAUSE="pause 10"
+  YLABEL=""
+else
+  TERMINAL='set terminal postscript landscape monochrome dashed "Times-Roman" 18
+set output "/tmp/gnuplot.swap.ps"'
+  PAUSE=""
+  YLABEL=""
+fi
+#
+# Generate the plot
+#
+gnuplot  <<EOF
+${TERMINAL}
+set data style lines
+set nogrid
+set key
+set title "Swap Activity - $system On $sysdate"
+set xlabel "Time of Day"
+set xrange [00:24]
+set xtics 0,1,24
+${YLABEL}
+set autoscale y
+plot \
+"/tmp/gnuplot.swap" u 1:2 title "Swaps/Sec In" with line 1, \
+"/tmp/gnuplot.swap" u 1:3 title "Swaps/Sec Out" with line 2
+${PAUSE}
+set title "Swap Space Utilization - $system On $sysdate"
+plot \
+"/tmp/gnuplot.swapSp" u 1:2 title "Total" with line 1, \
+"/tmp/gnuplot.swapSp" u 1:3 title "Megabytes Used" with line 2, \
+"/tmp/gnuplot.swapSp" u 1:4 title "Megabytes Free" with line 3
+${PAUSE}
+quit
+EOF
+#
+if [ .${HARDCOPY} = ".YES" ]; then
+  if [ -z ${GHOSTVIEW} ] ; then
+    lpr  /tmp/gnuplot.swap.ps
+  else
+    ghostview -upsidedown -magstep 3  /tmp/gnuplot.swap.ps
+    echo "Print ?"
+    read ans
+    if [ ${ans} = "y" ] ; then
+      lpr  /tmp/gnuplot.swap.ps
+    fi
+  fi
+fi
+# clean up the junk
+if [ ${DEBUG}. = "." ]; then
+  rm /tmp/gnuplot.swap* 2>/dev/null
+fi
+exit

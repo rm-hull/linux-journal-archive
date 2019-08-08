@@ -1,0 +1,58 @@
+  1 struct dentry *
+  2 __d_lookup(struct dentry * parent,
+  3            struct qstr * name)
+  4 {
+  5   unsigned int len = name->len;
+  6   unsigned int hash = name->hash;
+  7   const unsigned char *str = name->name;
+  8   struct hlist_head *head = d_hash(parent,hash);
+  9   struct dentry *found = NULL;
+ 10   struct hlist_node *node;
+ 11 
+ 12   rcu_read_lock();
+ 13   hlist_for_each (node, head) { 
+ 14     struct dentry *dentry; 
+ 15     unsigned long move_count;
+ 16     struct qstr * qstr;
+ 17 
+ 18     smp_read_barrier_depends();
+ 19     dentry = hlist_entry(node, struct dentry,
+ 20                          d_hash);
+ 21     if (unlikely(dentry->d_bucket != head))
+ 22       break;
+ 23     move_count = dentry->d_move_count;
+ 24     smp_rmb();
+ 25     if (dentry->d_name.hash != hash)
+ 26       continue;
+ 27     if (dentry->d_parent != parent)
+ 28       continue;
+ 29     qstr = dentry->d_qstr;
+ 30     smp_read_barrier_depends();
+ 31     if (parent->d_op &&
+ 32         parent->d_op->d_compare) {
+ 33       if (parent->d_op->d_compare(parent, qstr,
+ 34                                   name))
+ 35         continue;
+ 36     } else {
+ 37       if (qstr->len != len)
+ 38         continue;
+ 39       if (memcmp(qstr->name, str, len))
+ 40         continue;
+ 41     }
+ 42     spin_lock(&dentry->d_lock);
+ 43     /*
+ 44      * If dentry is moved, fail the lookup
+ 45      */ 
+ 46     if (likely(move_count ==
+ 47                dentry->d_move_count)) {
+ 48       if (!d_unhashed(dentry)) {
+ 49         atomic_inc(&dentry->d_count);
+ 50         found = dentry;
+ 51       }
+ 52     }
+ 53     spin_unlock(&dentry->d_lock);
+ 54     break;
+ 55   }
+ 56   rcu_read_unlock();
+ 57   return found;
+ 58 }

@@ -1,0 +1,247 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Letters</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x159e580.0x1695ac0"></a>Letters</h1></div></div><div class="qandaset"><a name="N0x159e580.0x1695fe8"></a><h4 class="title"><a name="N0x159e580.0x1695fe8"></a>
+Upload.cgi Code</h4><p>
+Regarding Charles Fisher's &ldquo;Secure File Transfer&rdquo; article in
+the January 2016 issue: 
+I was surprised to see in his article on securing FTP the use of an
+ancient and insecure piece of software, upload.c, which is more than 15
+years old, and has no protection against trivial stack corruption. strcat,
+strcpy, sprintf and the like are dangerous and should be avoided unless
+in completely straightforward cases. The standard replacements for these
+are strncat, strncpy and snprintf, which are all three POSIX. upload.c
+is simply no longer from this time and should in my opinion never be
+used without an almost complete rewrite.
+
+<br><br>&mdash;<br> 
+Mischa Salle  <br><br>
+</p><p>
+<span   class="bold"><b>Charles Fisher replies:</b></span>
+I agree that Kessels' upload.c is of questionable quality due to its age
+and (lack of) security. It was, however, the only publicly available C
+code for complete handling of RFC-1867 as of 2015. I have since written
+the following prototype to replace it, coded for compactness over clarity,
+intended as a starting point for discussion&mdash;not as a fully featured
+server. It uses modern libraries (including BSD strlcat/cpy, which are
+safer for C string handling). Note that Conte's sha256 functions do
+not appear to work properly on big-endian architectures. This code is
+(hopefully) some improvement over the predecessor:
+
+<pre     class="programlisting">
+
+#include &lt;stdio.h&gt;    /*xmit.c *prototype* RFC-1867 file transfer with:*/
+#include &lt;string.h&gt;   /* http://libccgi.sourceforge.net - cgi by Losen */
+#include &lt;stdlib.h&gt;   /* http://bradconte.com/sha256_c  - sha by Conte */
+#include &lt;unistd.h&gt;   /* Copyright 2015 Charles Fisher. Distributed    */
+#include &lt;sys/types.h&gt;/* under the terms of the GNU Lesser General     */
+#include &lt;sys/stat.h&gt; /* Public License (LGPL 2.1)                     */
+#include "ccgi.h"
+
+/* Compile with: gcc -static -Wall -I. -O2 -o xmit.cgi xmit.c ccgi.c \
+                   strlcpy.c strlcat.c sha256.c
+##BEWARE:
+http://www.slideshare.net/phdays/chw00t-breaking-unices-chroot-solutions
+*/
+
+#define UPL_PATH "/upload/" /* Trailing slash or filename prefix.      */
+#define TMP_PATH "/upload/cgi-upload" /* Must point to same filesystem.*/
+#define uchar unsigned char /* 8-bit byte                              */
+#define uint unsigned int /* 32-bit word                               */
+
+typedef struct { uchar data[64];  uint datalen;  uint bitlen[2];
+ uint state[8]; } SHA256_CTX;
+
+void sha256_init(SHA256_CTX *);
+void sha256_update(SHA256_CTX *, uchar *, uint len);
+void sha256_final(SHA256_CTX *, uchar *hash);
+size_t strlcat(char *, const char *, size_t);
+size_t strlcpy(char *, const char *, size_t);
+
+int main(int argc, char **argv)
+{CGI_varlist *vl;  const char *name;  int mask_len = strlen(TMP_PATH);
+ char prefix[BUFSIZ] = UPL_PATH, dst[BUFSIZ], *p = getenv("SCRIPT_NAME");
+
+ /* Removing write and execute should constrain uploads to 400.        */
+ umask(umask((mode_t)0)|S_IWUSR|S_IWGRP|S_IWOTH|S_IXUSR|S_IXGRP|S_IXOTH);
+
+ printf("Content-type: text/plain\r\n\r\n");
+
+ if(p != NULL) /* Use the SCRIPT_NAME as a filename local prefix.      */
+ {char genbuf[BUFSIZ];
+
+  if(strlcpy(dst, p, BUFSIZ) &gt;= BUFSIZ) return 1;
+  if((p = strrchr(dst, '/')) != NULL) p++; else p = dst;
+  if(strlcpy(genbuf, p, BUFSIZ) &gt;= BUFSIZ) return 1;
+  if((p = strchr(genbuf, '.')) != NULL) *p = '\0';
+  if(strlcat(prefix, genbuf, BUFSIZ) &gt;= BUFSIZ ||
+   strlcat(prefix, "-", BUFSIZ) &gt;= BUFSIZ) return 1;
+ } else if(strlcat(prefix, "IN-", BUFSIZ) &gt;= BUFSIZ) return 1;
+
+ if((vl = CGI_get_all(TMP_PATH "-XXXXXX")) == 0)
+ { printf("CGI_get_all() failed\r\n"); return 1; }
+
+ sync(); /* Rather: sync &amp;&amp; echo 3 &gt; /proc/sys/vm/drop_caches          */
+
+ for(name = CGI_first_name(vl); name != 0; name = CGI_next_name(vl))
+ {FILE *fp;  CGI_value *val;  struct stat junk_buf;  int i, j;
+
+  if(!(val = CGI_lookup_all(vl, 0))) continue;
+  for(i = 0; val[i]; i++)
+  { /* Does filename match TMP_PATH, and does it exist?                */
+   if(!strncmp(val[i], TMP_PATH, mask_len) &amp;&amp; !stat(val[i], &amp;junk_buf))
+   { /* Abort if sent an empty|malicious|oversized filename.           */
+    j = i++;
+    if(!strlen(val[i]) || strchr(val[i], '/') || strchr(val[i], '\\') ||
+     strlcpy(dst, prefix, BUFSIZ) &gt;= BUFSIZ ||
+     strlcat(dst, val[i], BUFSIZ) &gt;= BUFSIZ) {printf("error");return 1;}
+
+    if(link(val[j], dst))
+    { /* On link failure, try our best to keep this data.              */
+      if(strlcat(dst, val[j] + mask_len, BUFSIZ) &gt;= BUFSIZ ||
+       link(val[j], dst)) /* mkstemp suffix appended to filename.      */
+      { printf("name_error\t%s\r\n", val[i]); continue; }
+    }
+
+    if(unlink(val[j])) { printf("tmp_error\t%s\r\n", val[i]); }
+
+    if((fp = fopen(dst, "r")))
+    {SHA256_CTX ctx;  uchar buf[BUFSIZ];
+
+     sha256_init(&amp;ctx);
+     while((j = fread(buf, 1, BUFSIZ, fp))) sha256_update(&amp;ctx, buf, j);
+     sha256_final(&amp;ctx, buf); fclose(fp);
+     for(j = 0; j &lt; 32; j++) printf("%02x", buf[j]);
+     printf("\t%s\r\n", val[i]);
+ }}}}
+ CGI_free_varlist(vl); return 0;
+}
+
+</pre>
+</p><a name="N0x159e580.0x1696510"></a><h4 class="title"><a name="N0x159e580.0x1696510"></a>
+Dave Taylor and Scripts</h4><p>
+I've followed Dave's column for many years, and I must say his
+scripting skills are without equal. I thought I would pass along an
+idea for a future column. I've been in IT for 47 years, and what
+amazes me is parallel tasking. Start a script that starts many
+programs and monitors the PID, plus use interrupt to put you back into
+a menu to control those tasks. To me, that is bang-for-the-buck in
+scripting.
+I'd be interested in a generic version where you could just drop those tasks in a list or
+keep track of one starting a series of scripts&mdash;just an idea.
+
+<br><br>&mdash;<br> 
+Larry Dalton  <br><br>
+</p><p>
+<span   class="bold"><b>Dave Taylor replies:</b></span>
+That's a cool idea, Larry, and thanks so much for writing in! I don't have a
+column due to the boss for a few weeks yet, so let me keep this on the proverbial
+drawing board and see if I can work it into my next column.
+</p><p>
+And, you've been in IT for 47 years. Did you start with punch cards or paper tape?
+I remember visiting my Dad's workplace back in the early '70s and they had
+paper tape as a storage medium. I was quite impressed. Now I have more storage on my
+watch.
+</p><a name="N0x159e580.0x1696930"></a><h4 class="title"><a name="N0x159e580.0x1696930"></a>
+Security?</h4><p>
+In Shawn Powers' Editors' Choice article recommending Team Viewer (see
+&ldquo;Help Me, Uncle Shawn&rdquo; in the January 2016 Upfront section), he fails
+to mention the major problem with this type of solution in that the
+data path goes through a third-party server and, thus, poses an unknown
+security risk.
+</p><p>
+It is much better, in my opinion, to use something like RealVNC that
+provides a direct point-to-point encrypted link between the two
+computers. It is a simple, one-off job to put port 5900 through the
+router.
+
+<br><br>&mdash;<br> 
+Ian   <br><br>
+</p><p>
+<span   class="bold"><b>Shawn Powers replies:</b></span> Your security and privacy concerns are valid, and perhaps I should have
+pointed them out. Unfortunately, most folks needing the sort of help I can
+offer over Team Viewer don't know what a port is, much less how to forward
+TCP port 5900 through their router to whatever private IP their computer
+might have. In the case of my daughter at college, she doesn't even have
+that option. (She uses the university's Wi-Fi.) It would be possible to set
+up SSH keys and an automatic outgoing SSH tunnel to a server I own with a
+public IP address, and then reverse-tunnel port 5900 through that. But,
+for simple help with formatting a college paper or installing a printer,
+it's not worth the effort to guarantee privacy&mdash;at least not for me. You
+are correct, however, that it would have been good to include that information
+in my article. Thanks for pointing out the potential privacy
+issue.
+</p></div><div class="sidebar"><p class="title"><b>Write <span   class="emphasis"><em>LJ</em></span> a Letter</b></p><p>
+We love hearing from our readers. Please send us your comments and
+feedback
+via
+<a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a>.
+</p></div><div class="sidebar"><p class="title"><b>Photo of the Month</b></p><p>
+Remember, send your Linux-related photos to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>!
+</p></div></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../263/toc263.html">Issue Table of Contents</a>
+    <a class="link3" href="../263/11974.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

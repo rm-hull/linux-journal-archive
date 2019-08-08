@@ -1,0 +1,190 @@
+4882l2
+
+Listing 2. scanmail Script
+
+#!/bin/sh
+
+### Variable declarations----------------------
+tstamp=`date`
+export date=`date '+%m%d%Y'`
+export METAMAIL_TMPDIR="."
+mailto="admin@domain.com"
+quarantine="/var/spool/smtpd/quarantine"
+outgoing="/var/spool/smtpd/outgoing"
+matchesbad="/var/spool/smtpd/etc/matches.bad"
+matchesdoc="/var/spool/smtpd/etc/matches.doc"
+export etc="/var/spool/smtpd/etc"
+outqthresh=25
+maxsize=35000000	# Maximum email size to allow through
+
+export email_total=`cat $etc/email-log.$date`
+export virus_total=`cat $etc/virus-log.$date`
+
+
+### See if there's any mail to scan------------
+pushd . > /dev/null
+cd /var/spool/smtpd/incoming
+echo "The time is $tstamp"
+count=`ls --ignore=smtpd*_d -1 | wc -l`  # See how many email there are
+export email_total=$((email_total+count))   # Increment the total daily email counter
+if [ $count -eq 0 ]; then	# Only continue if there is mail to scan
+  echo ""
+  echo "No e-mails to scan."
+  echo ""
+  echo "There have been $email_total e-mails processed today."
+  echo "There have been $virus_total viruses found today."
+  echo ""
+  exit 0
+fi
+
+
+emails=(`ls --ignore=smtpd*_d *`)    # Load email list into an array
+
+echo "Scanning ${emails[*]} for viruses..."
+echo ""
+
+max=$count	# Set the max amount for our while loop
+count=0
+while [ $count -lt $max ]	# The main loop. One iteration per email
+  do
+    echo "+------------------------------------------------------------------+"
+    echo "Scanning ${emails[$count]} now..."
+    echo "+------------------------------------------------------------------+"
+    echo ""
+
+    ### Check and make sure email isn't too big----
+    filesize=`ls -lap ${emails[$count]} | awk '{print $5}'`	# Check filesize
+    echo "This email is $filesize bytes long"
+    echo "The maximum allowable email size is $maxsize bytes."
+    if [ $filesize -gt $maxsize ]; then
+      echo "File ${emails[$count]} exceeds the email size limit of $maxsize bytes."
+      echo "Moving it to $quarantine."
+      mv ${emails[$count]} $quarantine
+      mail -s "OVERSIZED E-MAIL ALERT" $mailto <<endofinput0
+    File ${emails[$count]} exceeded the maximum allowable email size of $maxsize bytes
+and has been quarantined in $quarantine for your inspection.  The time is $tstamp.
+endofinput0
+    break	# If email is too large, break and don't scan it
+    fi
+
+    ### Load up email specific information----
+    respondto=`/bin/awk '/^FROM.*/ {print $2}' ${emails[$count]}`	# Get sender address
+    goingto=`/bin/awk '/^RCPT.*/ {print $2}' ${emails[$count]}`		# Get recipient address
+    attachment=`/bin/awk '/filename=.*/ {print $1}' ${emails[$count]}`	# Get attachment name
+
+    ### First scanning pass----
+    echo "First pass scans for obvious bad stuff like script attachments..."
+    echo ""
+    if infected=`grep -slf $matchesbad ${emails[$count]}`; then
+      results=`grep -nsf $matchesbad $infected`
+      mv -v $infected $quarantine
+      echo "Found a virus in file $infected and moved it to $quarantine."
+      echo ""
+      mail -s "VIRUS INFECTED E-MAIL ALERT" $mailto <<endofinput
+    At $tstamp, the e-mail "$infected" going to <$goingto> from <$respondto> was 
+quarantined in "$quarantine" due to a suspicious attachment named $attachment.
+The trigger was $results.
+endofinput
+      export virus_total=$((virus_total+1))	# Increment our daily virus counter
+      break
+    else 
+      echo "Okay."
+      echo "There is nothing obviously wrong with $infected "
+      echo ""
+    fi
+
+    ### Second scanning pass----
+    echo "Second pass scans for attachments with embedded viruses like macros..."
+    echo ""
+    if infected=`grep -slf $matchesdoc ${emails[$count]}`; then
+      results=`grep -nsf $matchesdoc $infected`
+      echo "Found an attached document.  Decoding and scanning it now."
+      mkdir $infected"_d"		# Make a temp directory for the attachment
+      mv $infected $infected"_d"	# Move the email into it
+      cd $infected"_d"
+      /usr/bin/metamail -w -r -q $infected	# Decode the attachment
+      if scanresults=`/usr/local/bin/uvscan --noboot --secure --norename -v --summary .`; then
+	echo ""
+        mv $infected ..
+        cd ..
+        rm -rf $infected"_d"
+        mv -v ${emails[$count]} $outgoing
+        echo "Okay. No viruses found in $attachment."
+        echo ""
+      else
+	echo ""
+        cd ..
+        mv $infected"_d" $quarantine
+        echo "Found an infected file named $infected and moved it to $quarantine."
+        echo ""
+	mail -s "VIRUS INFECTED E-MAIL ALERT" $mailto <<endofinput2
+    At $tstamp, the e-mail "$infected" going to <$goingto> from <$respondto> was 
+quarantined in "$quarantine" because the attached document named $attachment 
+had a virus.  The results were:
+
+	$scanresults.
+
+An alert message was sent to <$respondto> letting them know about the virus.
+endofinput2
+	mail -s "VIRUS INFECTED E-MAIL ALERT" $respondto <<endofinput3
+   At $tstamp, an e-mail sent by $respondto to $goingto was found to contain a virus 
+and was quarantined.  You should check your system with antivirus software to make 
+sure it is clean.  The virus was found in $attachment.  This e-mail was 
+automatically generated.  Please do not reply to it directly.  
+Send all responses to ($mailto).
+
+Best Regards,
+   System Administrator($mailto)
+
+endofinput3
+	export virus_total=$((virus_total+1))
+      fi
+    else
+      mv -v ${emails[$count]} $outgoing
+      echo "No attached documents to scan."
+      echo ""
+    fi
+    echo "+------------------------------------------------------------------+"
+    echo "Finished scanning ${emails[$count]}."
+    echo "+------------------------------------------------------------------+"
+    echo ""
+    count=$((count+1))
+  done
+
+/bin/chown uucp.uucp $outgoing/*	# Make sure permissions and owner are correct
+/bin/chmod 750 $outgoing/*		# so that smtpfwdd won't stall
+
+echo "Finished."
+echo ""
+
+popd > /dev/null	# Go back to where we came from
+
+
+### Give a brief summary for command line use----
+echo "There have been $email_total e-mails processed today."
+echo "There have been $virus_total viruses found today."
+
+
+### Check and make sure mail isn't stacking up in the outqueue----
+outqcount=`ls -1 $outgoing/* | wc -l`
+echo "There are $outqcount e-mails in the outgoing queue."
+echo ""
+
+if [ $outqcount -gt $outqthresh ]; then
+    mail -s "MAIL BACKING UP IN OUT-QUEUE" $mailto <<endofinput4
+  There are $outqcount e-mails waiting to be delivered in $outgoing.  You may
+need to check and make sure there isn't a problem with the forwarding agent.
+
+endofinput4
+fi
+
+
+### Update the daily email and virus log files----
+echo $email_total > $etc/email-log.$date
+echo $virus_total > $etc/virus-log.$date
+
+
+### Flush out the local sendmail queue----
+/usr/sbin/sendmail -q
+
+exit 0

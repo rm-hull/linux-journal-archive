@@ -1,0 +1,342 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Anthony Lineberry on /dev/mem Rootkits
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Rootkits using /dev/mem could attack your system and&#10;leave virtually no trace&mdash;it even could be happening now!&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xebb580.0xfb2ac0"></a>
+Anthony Lineberry on /dev/mem Rootkits
+</h1></div><div><div class="author"><h3 class="author">
+Mick
+ 
+Bauer
+</h3></div><div class="issuemoyr">Issue #184, August 2009</div></div><div><p>
+Rootkits using /dev/mem could attack your system and
+leave virtually no trace&mdash;it even could be happening now!
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xebb580.0xfb33b0"></a></h2></div></div><p>
+At Black Hat Europe in mid-April 2009, Anthony Lineberry presented an
+interesting paper on how attackers with root privileges might use a
+/dev/mem rootkit, hiding their attacks by directly altering kernel memory.
+Although not a completely new technique, Anthony's BHE presentation put it
+back in the spotlight. In addition, Lineberry described proof-of-concept
+tools he's developing to demonstrate how this technique could be exploited
+in the real world.
+</p><p>
+On the one hand, once attackers have gained root privileges on your
+system, it's game over&mdash;the attackers have complete control, and all hope
+for further defense and mitigation on your part is gone. Looked at from
+that viewpoint, the attackers' ability to write directly to kernel memory
+isn't too radically different from, or worse than, other things they can do as
+root.
+</p><p>
+But, on the other hand, even if your system suffers root compromise, you
+still want <span   class="emphasis"><em>some</em></span> chance of at least
+<span   class="emphasis"><em>detecting</em></span> the compromise in
+order to do something about it. Because the purpose of rootkits is to prevent
+that, it behooves you to take whatever precautions you can against them. So
+in this sense, new rootkit techniques actually are very worthy of our
+attention and concern.
+</p><p>
+In this article, I provide some background on rootkits and
+/dev/mem, and Anthony Lineberry sheds further light on
+/dev/mem rootkits, in the form of a conversation we recently had.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xebb580.0xfb3778"></a>
+Rootkit Refresher</h2></div></div><p>
+So, what exactly is a rootkit? Simply put, a rootkit is hostile code that
+conceals or misrepresents a system's state, as presented to its
+administrator.
+</p><p>
+The &ldquo;kit&rdquo; part of the term reflects the fact that early UNIX rootkits took
+the form of collections of one-for-one replacements of system commands,
+such as
+ls and ps. The replacement commands behaved, for the most part, like the
+commands they replaced, except they were selectively blind. A rootkit's
+ls command, for example, might omit the attacker's directory
+/...my_evil_tools in file listings it displays, and a rootkit's ps
+command might omit the attacker's program erase_recent_logs from process
+listings.
+In other words, rootkits are designed to conceal the activities of system
+attackers once they've achieved a foothold on a target system.
+</p><p>
+One problem with first-generation rootkits was that their functionality was
+limited to those specific commands replaced by rootkit versions. What if
+the system administrator used some command or utility rather than ls to
+view the contents of a directory containing attack evidence?
+</p><p>
+Another problem was detectability. If a system is protected with system
+integrity software like Tripwire, which detects and reports on authorized
+changes to system files, it can be difficult to replace system commands
+without being detected.
+</p><p>
+Both these problems were largely &ldquo;solved&rdquo; with the advent of Loadable
+Kernel Module (LKM) rootkits. An LKM rootkit, as the name implies, consists
+of one or more kernel modules loaded by attacks. An LKM rootkit
+re-maps the actual <span   class="emphasis"><em>system calls</em></span> (also known as kernel symbols)
+accessed by system utilities, leaving the system commands themselves
+unchanged. Needless to say, this is a very powerful technique.
+</p><p>
+As powerful as LKM rootkits still are, they nonetheless can be detected,
+for example, by comparing the kernel's system map (a file showing the
+correct memory addresses of all supported system calls) with the actual
+system call addresses in memory. On a non-LKM-infested system, those
+addresses should be the same as in the system map.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xebb580.0xfb3b40"></a>
+/dev/mem and /dev/kmem</h2></div></div><p>
+That, then, is the problem space in which rootkits operate&mdash;concealing attack
+activity and results in a way that is not itself conspicuous. But, what is
+/dev/mem, and how is this particular kernel interface different from an
+LKM?
+</p><p>
+/dev/mem is a character device that provides root-privileged processes in
+userspace (that is, programs other than the kernel or kernel modules)
+direct access to physical memory. /dev/kmem is the same thing, but it uses
+&ldquo;virtual&rdquo; memory addresses like the kernel uses rather than
+the &ldquo;raw&rdquo;
+addresses of physical memory. Unlike /proc/kcore, which serves a similar
+function to developers and kernel hackers, /dev/mem and /dev/kmem grant not
+only read access, but also write access to memory.
+</p><p>
+You might be forgiven for assuming that, like /dev/eth0, /dev/hda and
+other special files in /dev, /dev/mem is an essential interface for
+userspace applications that need to communicate with the kernel. As it
+happens, this isn't necessarily the case. Besides kernel developers,
+historically, the other major user of /dev/mem is the X Window System, parts
+of which still use /dev/mem to access video adapters' memory and control
+registers.
+</p><p>
+At least in the case of /dev/kmem, some people think these particular
+devices are of greater use to attackers than for more legitimate purposes.
+As far back as 2005, Jonathan Corbet of lwn.net said, &ldquo;It has been suggested
+that rootkits are the largest user community for this kind of
+access&rdquo; (see
+Resources for the full context; he was speaking specifically of
+/dev/kmem).
+</p><p>
+Hopefully, I'm not overstating this case, because being neither a kernel
+developer nor an X Windows System expert, I would not presume to argue for
+abolishing /dev/mem or /dev/kmem myself. Rather, I'm trying to put all of
+this into a useful context&mdash;which brings us to Anthony Lineberry.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xebb580.0xfb3eb0"></a>
+The Interview</h2></div></div><p>
+Anthony Lineberry is a security software engineer and Linux security
+researcher. The concept of using /dev/kmem to rootkit Linux systems
+was first written about by Silvio Cesare in 1998 and by devik in
+<span   class="emphasis"><em>Phrack</em></span>
+magazine in 2001. Besides bringing this seldom-discussed attack vector back
+to people's attention, Anthony Lineberry has uncovered some new ways of
+tricking the kernel to allocate memory for injected code.
+Anthony and I chatted via e-mail immediately before and after his Black Hat
+Europe presentation.
+</p><p>
+<span   class="bold"><b>MB:</b></span> Hi, Anthony. Thanks for taking the
+time to talk to <span   class="emphasis"><em>Linux Journal</em></span>! It
+looks like this attack has ramifications very similar to those of the
+Loadable Kernel Module rootkit. Obviously, this isn't the best forum
+for a detailed dissertation, but could you describe your /dev/mem attack for
+our readers?
+</p><p>
+AL: We are essentially using the mem device to inject code
+directly into the kernel. /dev/mem is just a character device that provides
+an interface to physically addressable memory. Seeking to an offset and
+performing a read will read from that physical location in memory.
+Translating virtual addresses in the kernel to the physical addresses they
+map to, you can use simple reads and writes to this device to hot-patch code
+directly into the kernel. Using various heuristics, you can locate various
+important structures in the kernel and manipulate them. At that point, you
+are able to control behavior and manipulate almost anything inside the
+kernel,
+including system call tables, process lists, network I/O and so on.
+</p><p>
+<span   class="bold"><b>MB:</b></span> Does the attacker have to be root to locate and manipulate these
+structures in memory?
+</p><p>
+AL: Yes, you would definitely have to be root to be able to read/write to
+this device and manipulate any structures inside the kernel.
+</p><p>
+<span   class="bold"><b>MB:</b></span> How does this differ from LKM rootkits?
+</p><p>
+AL: LKMs, in general, will create a lot of &ldquo;noise&rdquo; when loaded into the
+kernel. Using these techniques, we avoid all of that because of the fact
+that we are injecting directly into physical memory. Using an LKM does make
+it much easier to develop a rootkit. All of the effort can go into the
+actual code, rather than having to determine reliably where everything is
+inside the kernel. Although we can read/parse the export table inside
+kernel memory to locate almost all exported symbols.
+</p><p>
+The general suggested way to mitigate kernel rootkits for Linux is to
+configure a non-modular kernel and have all devices being used compiled
+in. In this scenario, we are still able to get code into kernel space.
+</p><p>
+<span   class="bold"><b>MB:</b></span> Have you tested the attack in virtualized environments? Does
+virtualized memory behave any differently?
+</p><p>
+AL: Yes, these methods will work in a virtualized environment. The main
+difference I ran into was that some special instructions handled by
+hypervisors behaved differently. Specifically in this case, the lidt
+instruction I used for locating the IDT/System Call Table in memory would
+return a bogus virtual address, but these problems were mostly trivial to
+overcome.
+</p><p><span   class="bold"><b>MB:</b></span>
+What are the best defenses against /dev/mem attacks?
+</p><p>
+AL: The best defense is to enable CONFIG_STRICT_DEVMEM (originally called
+CONFIG_NONPROMISC_DEVMEM in 2.6.26) in the kernel, which limits all
+operations on the mem device to the first 256 pages (1MB) of physical
+memory. This limitation will allow things like X and DOSEMU, which use this
+device legitimately to still function properly, but keep anyone else from
+reading outside of those low areas of memory. Unfortunately, the default
+configuration leaves this protection disabled.
+</p><p><span   class="bold"><b>MB:</b></span> Have you contacted any of the major Linux distributors (Red Hat,
+Novell and so forth)? Have any of them committed to enabling this setting in
+their default kernels?
+</p><p>
+AL: No, [although] many major distros do enable this setting by default in
+their releases. I would like to plan on compiling a list of who
+does/doesn't enable this.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xebb580.0xfb47a0"></a>
+Some Notes on Mitigation</h2></div></div><p>
+As Anthony said, short of ripping /dev/mem and /dev/kmem out of your kernel
+(which almost certainly would break things, especially in the X Window
+System), the best defense is to compile CONFIG_STRICT_DEVMEM=y in your
+kernel. The default kernels for Fedora and Ubuntu systems already have this
+option compiled in. RHEL goes a step further, by using an SELinux policy
+that also restricts access to /dev/mem.
+</p><p>
+If you don't know whether your system's kernel was compiled with
+CONFIG_STRICT_DEVMEM=y, there are several different ways to find
+out.
+Depending on your Linux distribution, your system's running kernel's
+configuration file may be stored in /boot, with a name like
+config-2.6.28-11-generic. If so, you can grep that file for DEVMEM. If
+not, your kernel may have a copy of its configuration in the form of a file
+called /proc/config.gz, in which case you can use the command:
+
+<pre     class="programlisting">
+zcat /proc/config.gz | grep DEVMEM
+</pre>
+</p><p>
+Otherwise, you need to obtain source code for your running kernel, do a
+<tt  >make oldconfig</tt> (which actually extracts your running kernel's
+configuration), and check the resulting .config file. In any of these
+cases, if CONFIG_STRICT_DEVMEM is set to n rather than
+y, you need to
+compile a custom kernel.
+</p><p>
+To do so, after having done <tt  >make oldconfig</tt>, which even if you already
+knew your kernel lacked CONFIG_STRICT_DEVMEM enablement is a good idea,
+because you're probably interested in only changing CONFIG_STRICT_DEVMEM
+and leaving the rest of the kernel the same, you can do either <tt  >make
+menuconfig</tt> or <tt  >make xconfig</tt>. In the resulting menu, select kernel
+hacking, look for the option Filter access to /dev/mem, set it to
+y, exit, save your configuration, and re-compile.
+</p><p>
+If this entire kernel-compiling process is new to you, refer
+to your Linux distribution's official documentation for more detailed
+instructions. The process of compiling a custom kernel is, nowadays, rather
+distribution-specific, especially if you want to generate a custom RPM or
+deb package (which is the least disruptive way to actually
+<span   class="emphasis"><em>install</em></span> a
+custom kernel on RPM- and deb-package-based systems).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xebb580.0xfb4c70"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+&ldquo;Malicious
+Code Injection via /dev/mem&rdquo; by Anthony Lineberry:
+<a href="http://dtors.org/papers/malicious-code-injection-via-dev-mem.pdf" target="_self">dtors.org/papers/malicious-code-injection-via-dev-mem.pdf</a>
+</p><p>
+&ldquo;Alice in Kernel Land:
+Malicious Code Injection via /dev/mem&rdquo; (slides to Anthony Lineberry's Black
+Hat Europe 2009 presentation):
+<a href="http://dtors.org/papers/injection-via-dev-mem.pdf" target="_self">dtors.org/papers/injection-via-dev-mem.pdf</a>
+</p><p>
+&ldquo;Runtime Kernel kmem Patching&rdquo; by Silvio Cesare:
+<a href="http://doc.bughunter.net/rootkit-backdoor/kmem-patching.html" target="_self">doc.bughunter.net/rootkit-backdoor/kmem-patching.html</a>
+</p><p>
+&ldquo;Linux on-the-fly kernel patching without LKM&rdquo; by sd and
+devik, <span   class="emphasis"><em>Phrack</em></span> 58
+(December 28, 2001): <a href="http://www.trust-us.ch/phrack/show.php@p=58&amp;a=7" target="_self">www.trust-us.ch/phrack/show.php@p=58&amp;a=7</a>
+</p><p>
+&ldquo;Linux Kernel Rootkits&rdquo; by Rainer Wichmann:
+<a href="http://www.la-samhna.de/library/rootkits/index.html" target="_self">www.la-samhna.de/library/rootkits/index.html</a>
+</p><p>
+&ldquo;Who needs /dev/kmem?&rdquo; by Jonathan Corbet:
+<a href="http://lwn.net/Articles/147901" target="_self">lwn.net/Articles/147901</a>
+</p><p>
+&ldquo;The details on loading rootkits via /dev/mem&rdquo; by Jonathan
+Corbet:
+<a href="http://lwn.net/Articles/328695" target="_self">lwn.net/Articles/328695</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Mick Bauer (<a href="mailto:darth.elmo@wiremonkeys.org">darth.elmo@wiremonkeys.org</a>) is Network
+Security
+Architect for one of the US's largest banks. He is the author of
+the O'Reilly book <span   class="emphasis"><em>Linux Server Security</em></span>, 2nd edition
+(formerly called
+<span   class="emphasis"><em>Building Secure Servers With Linux</em></span>), an occasional
+presenter at
+information security conferences and composer of the &ldquo;Network
+Engineering Polka&rdquo;.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../184/toc184.html">Issue Table of Contents</a>
+    <a class="link3" href="../184/10505.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

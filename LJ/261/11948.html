@@ -1,0 +1,645 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Transferring Conserver Logs to Elasticsearch
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Review and search serial console logs using Elasticsearch,&#10;Riemann and syslog-ng.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1a2f580.0x1b26ac0"></a>
+Transferring Conserver Logs to Elasticsearch
+</h1></div><div><div class="author"><h3 class="author">
+Fabien
+ 
+Wernli
+</h3></div><div class="issuemoyr">Issue #261, January 2016</div></div><div><p>
+Review and search serial console logs using Elasticsearch,
+Riemann and syslog-ng.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b271f8"></a></h2></div></div><p>
+If your organization manages Linux, AIX, HP-UX or Solaris servers
+in-house, chances are your system administrators at least
+occasionally need low-level access to those devices. Typically,
+administrators use some kind of serial console&mdash;for example, traditional
+serial port, Serial-over-LAN or Intelligent Platform Management Interface
+(IPMI). Managing and auditing console access is not trivial, so
+many organizations rely on the Conserver application to create session logs
+when accessing these servers via the serial console. These logs can be
+useful for various reasons&mdash;for example, maintenance or troubleshooting (to
+review why something crashed), security (to find out who did what&mdash;connecting user names to actual users) or compliance (to provide detailed
+session logs).
+
+</p><p>
+This article covers the following:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+How to parse and process serial console logs using syslog-ng Open Source
+Edition (Balabit).
+</p></li><li><p>
+How to send the logs to Elasticsearch (Elastic), so you get a complete, searchable
+audit trail of the console access.
+</p></li><li><p>
+How to integrate the console logs into a real-time monitoring system using
+Riemann.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b276c8"></a>
+Conserver</h2></div></div><p>
+Conserver is a wonderful piece of software that lets you manage your
+infrastructure's serial
+consoles, whether they be old-style hardware serial
+ports or state-of-the-art Serial-over-LAN (SOL) baseboards. Its distributed
+design permits a decentralized user experience using a secure,
+TLS-encrypted protocol. The straightforward workflow consists of the user
+connecting to any conserver master node, which then forwards the traffic to
+the node that manages the console you want to access. As all masters share
+the same configuration file, it is very straightforward to 
+redistribute consoles among servers automatically (provided they are virtual SOL devices,
+like IPMI) using configuration management (for example, using the Puppet
+module we developed at CC-IN2P3).
+</p><p>
+So where is the catch? As far as we are concerned at the Computing Centre
+of the National Institute of Nuclear Physics and Particle Physics
+(CC-IN2P3), the logging mechanism could be greatly improved, because
+conserver's design is quite ancient now. For example, it does not support
+logging to syslog. From a user perspective, logging is awesome, as you can
+use a keystroke to access the logs of the console, and the console logs
+contain the complete session. From an architecture perspective though,
+things are not so great, as every conserver master stores the logs of the
+consoles it manages locally in a file.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b27880"></a>
+syslog-ng</h2></div></div><p>
+This is where syslog-ng Open Source Edition comes into play. The idea is to
+transport the logfiles of the conserver masters to our favorite event store
+back ends, which are Riemann and Elasticsearch. They provide powerful
+real-time stream processing and long-term indexed storage capabilities,
+respectively. In addition, with syslog-ng, you simply can send the logs to
+Riemann and Elasticsearch directly; there is no need for any additional
+agents (like Logstash). To see how this system works before going into
+configuration details, watch this video:
+<a href="https://webcast.in2p3.fr/videos-syslog_ng_conserver" target="_self">https://webcast.in2p3.fr/videos-syslog_ng_conserver</a>.
+</p><p>
+The video shows what the user does in the console (in the
+top-right section of the screen), its effect on the real-time Riemann-dash
+dashboard (bottom-right) and the near-real-time Elasticsearch front end
+(Kibana|Elastic, on the left).
+</p><p>
+As you can see, the user activities and events of the session are
+transported to the back ends, including useful metadata like
+<tt  >conserver.is_attached: true</tt>. This tells you whether
+or not someone
+was attached to the console (which is obviously the case in this
+example).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b27ae8"></a>
+Requirements</h2></div></div><p>
+To create the system shown in the demo video, you need the following
+software:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+syslog-ng Open Source Edition 3.7.2 or newer.
+</p></li><li><p>
+conserver (tested with 8.2.1).
+</p></li><li><p>
+Riemann (tested with 0.2.10).
+</p></li><li><p>
+Elasticsearch (tested with 1.6.0).
+</p></li></ul></div><p>
+Note that this article does not cover how to install, configure (in
+general) and get the above software working. You can find plenty of related
+tutorials on-line. If you need help with these tasks, check the documentation,
+mailing lists or on-line forums for the software you need help with. The
+following sections of this article explain how to configure the components of
+this infrastructure for the specific needs of our scenario as an example.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b27f60"></a>
+Configuring Conserver</h2></div></div><p>
+The conserver configuration in our setup is nothing special. It creates a
+unified logfile, which will serve as the glue between conserver and
+syslog-ng. You can activate the unified logfile using either of the
+following methods:
+</p><p>
+1) Run the conserver executable with the <tt  >-U
+/var/log/console.log</tt> flag.
+</p><p>
+2) Use the following configuration block in conserver.cf: 
+
+<pre     class="programlisting">
+
+&lt;config * { unifiedlog * /var/log/console.log; }
+
+</pre>
+</p><p>
+You also can set the server's general logfile (where conserver stores
+the global messages that are unrelated to individual consoles)&mdash;for
+example, to <tt  >/var/log/conserver.log</tt>.
+</p><p>
+Both <tt  >/var/log/conserver.log</tt> and 
+<tt  >/var/log/console.log</tt> will be inputs for syslog-ng.
+You might want to take special care of the log rotation of these files. As
+you are sending them to Elasticsearch, there is no need to keep them for
+too long.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b28380"></a>
+Configuring syslog-ng Open Source Edition</h2></div></div><p>
+You need to install syslog-ng locally on each conserver master and on a
+central host (that is, your logserver) that will gather all the events from
+the conserver hosts. The local instances will parse, process and enrich
+the console output, while the central host will collect them and send them
+over to the two back-end systems, Riemann and Elasticsearch. Note that you
+could get the same results using only local instances, but most people
+prefer to centralize first, for various reasons.
+</p><p><span   class="bold"><b>
+Configuring syslog-ng on the Conserver Hosts:</b></span>
+</p><p>
+The following is an example configuration file for running syslog-ng on the
+conserver hosts. As you can see, it has three sources:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >s_internal</tt> tracks the internal messages of
+syslog-ng (very handy for troubleshooting, stored only locally).
+</p></li><li><p>
+<tt  >s_console</tt> reads the logs of the individual
+consoles.
+</p></li><li><p>
+<tt  >s_conserver</tt> reads the global messages of the
+conserver master.
+</p></li></ul></div><p>
+The <tt  >s_console</tt> and <tt  >s_conserver</tt>
+sources process conserver's unified logfile. Since
+the format of the console and conserver messages is different, we have to
+configure syslog-ng to parse them differently, then forward them to the
+central syslog-ng server (you can add any other sources as needed for your
+environment):
+
+<pre     class="programlisting">
+@version: 3.7
+
+@include scl.conf
+
+options {
+    threaded(yes);
+};
+
+source s_conserver {
+  channel {
+    source {
+      file(
+        '/var/log/conserver.log',
+        flags(no-parse)
+      );
+    };
+    parser {
+      csv-parser(
+        columns(tmp.date,PROGRAM,PID,MESSAGE)
+        delimiters(' :')
+        quote-pairs('[]()')
+        flags(greedy)
+      );
+    };
+    rewrite {
+      set('$(strip $MESSAGE)', value(MESSAGE));
+    };
+  };
+};
+
+source s_console {
+  channel {
+    source {
+      file('/var/log/console.log');
+    };
+    junction {
+      channel {
+        filter{
+          program('\*/div&gt;);
+        };
+        rewrite {
+          subst('\*/div&gt;, '', value(PROGRAM));
+          set(
+            'true',
+            value('.SDATA.console.is_attached')
+          );
+        };
+        flags(final);
+      };
+      channel {
+        rewrite {
+          set(
+            'false',
+            value('.SDATA.console.is_attached')
+          );
+        };
+        flags(fallback);
+      };
+    };
+    rewrite {
+      set('$PROGRAM', value(HOST));
+      set('console', value(PROGRAM));
+    };
+  };
+};
+
+source s_internal {
+  internal();
+};
+
+destination d_remote {
+  network(
+      "",
+      transport(tcp),
+      port(514),
+      flags(syslog-protocol)
+  );
+};
+
+destination d_internal {
+  file("/var/log/syslog-ng.log");
+};
+
+log {
+  source(s_console);
+  source(s_conserver);
+  destination(d_remote);
+};
+
+log {
+  source(s_internal);
+  destination(d_internal);
+};
+</pre>
+</p><p><span   class="bold"><b>
+Global Conserver Logs&mdash;the <tt>s_conserver</tt>
+Source:</b></span>
+</p><p>
+If you are not familiar with syslog-ng, the
+<tt  >s_conserver</tt> and <tt  >s_console</tt> sections can be a
+bit intimidating. To better understand how they work, take a look at a
+sample message conserver produces:
+
+<pre     class="programlisting">
+[Thu Sep  3 22:29:52 2015] conserver (13550): 
+ &#8618;[node42] automatic reinitialization
+</pre>
+</p><p>
+The related source definition contains three blocks:
+</p><div class="orderedlist"><ol type="1"><li><p>
+<tt  >source</tt>: the file path and the
+<tt  >no-parse</tt> flag, which tells syslog-ng to read the logfile, but not
+to parse it, as a syslog message (because it is not exactly in syslog format).
+</p></li><li><p>
+<tt  >parser</tt>: the <tt  >csv-parser</tt>
+splits the message at the colons (:) and extracts the following fields:
+<tt  >tmp.date</tt>, <tt  >PROGRAM</tt>,
+<tt  >PID</tt> and
+<tt  >MESSAGE</tt>. The parser's other options ensure that the field values
+are parsed properly.
+</p></li><li><p>
+<tt  >rewrite</tt>: defines a rewrite rule to remove
+leading and trailing spaces from the <tt  >MESSAGE</tt> key.
+(If you find a way to omit this point using 2., please let me know.)
+</p></li></ol></div><p>
+This configuration parses the above example message into the following
+structured data:
+
+<pre     class="programlisting">
+tmp.date: Thu Sep  3 22:29:52 2015
+PROGRAM: conserver
+PID: 13550
+MESSAGE: [node42] automatic reinitialization
+</pre>
+</p><p><span   class="bold"><b>
+Console Logs&mdash;the <tt>s_console</tt>
+Source:</b></span>
+</p><p>
+Here are two example messages from two different consoles:
+
+<pre     class="programlisting">
+node03: ACPI: No handler for Region [POWR] 
+ &#8618;(ffff8808248bb150) [IPMI]
+
+node66*: node66 login: root
+</pre>
+</p><p>
+The first one is an unattended message probably produced by an ACPI signal.
+The second one, as hinted by the * (asterisk) character appended to the
+name of the console, is a message produced while someone was attached to
+the console (using <tt  >console node66</tt>). We will use this
+hint to produce additional metadata. The source consists again of three
+parts:
+</p><div class="orderedlist"><ol type="1"><li><p>
+<tt  >source</tt>: the file path, this time without flags.
+That way, syslog-ng will try to parse the message using the symbolic
+pattern <tt  >%{PROGRAM}: %{MESSAGE}</tt>. As a result,
+<tt  >node03</tt> and <tt  >node66*</tt> will
+be parsed into the <tt  >PROGRAM</tt> key.
+</p></li><li><p>
+<tt  >junction</tt>: a construct with two mutually
+exclusive (hence the <tt  >final</tt> and 
+<tt  >fallback</tt> flags) channels (similar to a
+&ldquo;try:&rdquo; &ldquo;except&rdquo; structure in
+Python). The two channels correspond to the two cases in the example: the
+first one for messages when someone is attached to the console (thus, the
+<tt  >PROGRAM</tt> field contains an asterisk character), and the second for messages
+without anybody attached. To tell one case from the other easily (for
+example, when reviewing the messages in Elasticsearch), this information is
+stored in the <tt  >.SDATA.console.is_attached</tt> key.
+</p></li><li><p>
+<tt  >rewrite</tt>: Rewrites the <tt  >PROGRAM</tt>
+and <tt  >HOST</tt> fields to their sane
+content: <tt  >console</tt> and the name of the console,
+respectively.
+</p></li></ol></div><p>
+So in the above examples, the messages are parsed into the following
+structured data:
+
+<pre     class="programlisting">
+PROGRAM: console
+HOST: node03
+MESSAGE: ACPI: No handler for Region [POWR] 
+ &#8618;(ffff8808248bb150) [IPMI]
+.SDATA.console.is_attached: false
+
+PROGRAM: console
+HOST: node66
+MESSAGE: node66 login: root
+.SDATA.console.is_attached: true
+</pre>
+</p><p><span   class="bold"><b>
+Forwarding the Logs to the Central syslog-ng server,
+<tt>d_remote</tt>:</b></span>
+</p><p>
+The rest of the syslog-ng configuration is simple: we just send the
+structured payload using the syslog IETF RFC5424 protocol (hence the
+<tt  >syslog-protocol</tt> flag) to the central syslog-ng
+server. All RFC5424 keys, including <tt  >.SDATA.*</tt>, are
+sent over to the central syslog-ng server automatically. The only part that
+we parsed from the conserver logs that is not transferred to the central
+server is the <tt  >tmp.date</tt> field. Instead, we will use
+the time when syslog-ng processes the message (which is a good
+approximation for current logs). If you absolutely want to use the value
+from <tt  >tmp.date</tt> (because, for example, you want to
+send old conserver logs to the remote server), you can use the date parser
+from the syslog-ng-incubator project.
+</p><p><span   class="bold"><b>
+Configuring syslog-ng on the Central Logserver:</b></span>
+</p><p>
+On the central syslog-ng server, we have to route the console and conserver
+messages received from the conserver hosts to the Riemann and Elasticsearch
+back ends. The following syslog-ng configuration does exactly
+that; the only
+adjustment is that it removes the <tt  >.SDATA.</tt> prefix
+from the fields, so they are more readable:
+
+<pre     class="programlisting">
+@version: 3.7
+
+@include scl.conf
+
+options {
+  threaded(yes);
+};
+
+block destination realtime (
+  host()
+  port(5555)
+  type("udp")
+  throttle(0)
+  flush-lines(1)
+)
+{
+  riemann(
+    flush-lines(`flush-lines`)
+    throttle(`throttle`)
+    server(`host`)
+    port(`port`)
+    type(`type`)
+    ttl("${ttl:-300}")
+    host("$HOST")
+    description("$MESSAGE")
+    attributes(
+      scope(all-nv-pairs)
+      key(".SDATA.*"
+        rekey( shift(7) )
+      )
+    )
+  );
+};
+
+source s_remote_tcp {
+  channel {
+    source {
+      network(
+        transport(tcp)
+        port(514)
+        flags(syslog-protocol)
+        tags("syslog")
+        so-rcvbuf(8388608)
+      );
+    };
+  };
+};
+
+source s_internal {
+  internal();
+};
+
+destination d_elasticsearch {
+  elasticsearch(
+    index("syslog-${YEAR}.${MONTH}.${DAY}"),
+    type("syslog"),
+    flush-limit(1),
+    template("$(format-json -s all-nv-pairs --rekey 
+     &#8618;.SDATA.* --shift 7 --key ISODATE)")
+    cluster("elasticsearch")
+    port(9300)
+    server("localhost")
+    client_mode("transport")
+    time-zone("UTC")
+  );
+};
+
+destination d_internal {
+  file("/var/log/syslog-ng.log");
+};
+
+destination d_riemann {
+  realtime(
+    host("riemann"),
+  );
+};
+
+log {
+  source(s_remote_tcp);
+  destination(d_riemann);
+  destination(d_elasticsearch);
+};
+
+log {
+  source(s_internal);
+  destination(d_internal);
+};
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b20c08"></a>
+Conclusion</h2></div></div><p>
+From this article, you have learned how to create a system that allows you
+to review serial console logs in real time and make them accessible for
+free-text searching on a modern user interface. This is helpful for
+maintenance and troubleshooting purposes, and also for meeting auditing and
+compliance requirements. To achieve these goals, conserver can be
+integrated with Riemann and Elasticsearch. To integrate these services, you
+can use syslog-ng Open Source Edition, a flexible log collecting and
+processing application that can collect and parse the log messages and
+forward them to the Riemann Elasticsearch back end.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b20d10"></a>
+Improvements</h2></div></div><p>
+The syslog-ng application is very flexible and has powerful
+message-processing capabilities. If you learn a bit about its
+possibilities, you can find several ways to improve the configuration
+described in the article. Here are some ideas that you can do with
+syslog-ng:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Write a smarter parser to extract the name of the console from server
+messages (where available).
+</p></li><li><p>
+Correlate the console and server messages, extract the name of the
+user name from the server messages and add them to the console messages.
+That way, console events contain the name of the attached user, which
+makes troubleshooting and auditing easier.
+</p></li><li><p>
+Configure alerts for consoles that are attached for too long.
+</p></li><li><p>
+Use the date parser from the syslog-ng incubator project to use the
+timestamp that conserver adds to the messages.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1b21130"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Useful syslog-ng Features</b></p><p>
+The syslog-ng Open Source Edition application is a syslog d&aelig;mon that
+allows you to collect your log data and much more&mdash;for example:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Flexibly collect, parse, classify and correlate logs from various
+sources.
+</p></li><li><p>
+Send log data to message queues, including AMQP, STOMP or Apache Kafka.
+</p></li><li><p>
+Store your log data in plain files, HDFS, SQL databases or MongoDB.
+</p></li><li><p>
+Forward your log data to monitoring tools like Riemann, Redis or
+Graphite.
+</p></li><li><p>
+Process CSV, JSON or plain-text messages.
+</p></li><li><p>
+Rewrite, reformat and transform your log messages.
+</p></li><li><p>
+You can write your own modules in C, Java or Python.
+</p></li></ul></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1e34e08"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Real-Time Monitoring with Riemann</b></p><p>
+Riemann helps you monitor distributed systems. It aggregates events from
+your servers and applications, and it allows you to combine and process these
+events with a powerful stream processing language. You can query the
+events and visualize the results of these queries on dashboards. To get
+notifications promptly, you also can trigger alerts (for example, in e-mail
+or SMS). Since the clients actively push the data into Riemann, your
+dashboards display up-to-date information (in contrast with other systems
+that only pull event data every few minutes). If you use the integrated
+WebSocket server, you even can have completely synchronous event handling,
+all the way from the event source to the browser.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1e35018"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Demo Video: <a href="https://webcast.in2p3.fr/videos-syslog_ng_conserver" target="_self">https://webcast.in2p3.fr/videos-syslog_ng_conserver</a>
+</p><p>
+Conserver: <a href="http://www.conserver.com" target="_self">www.conserver.com</a>
+</p><p>
+Serial-over-LAN (SOL): <a href="https://en.wikipedia.org/wiki/Serial_over_LAN" target="_self">https://en.wikipedia.org/wiki/Serial_over_LAN</a>
+</p><p>
+Intelligent Platform Management Interface (IPMI):
+<a href="https://en.wikipedia.org/wiki/Intelligent_Platform_Management_Interface" target="_self">https://en.wikipedia.org/wiki/Intelligent_Platform_Management_Interface</a>
+</p><p>
+Puppet Module for Conserver, Developed by CC-IN2P3:
+<a href="http://github.com/ccin2p3/puppet-conserver" target="_self">github.com/ccin2p3/puppet-conserver</a>
+</p><p>
+CC-IN2P3: <a href="http://cc.in2p3.fr" target="_self">cc.in2p3.fr</a>
+</p><p>
+Accessing Conserver Logs with a Keystroke:
+<a href="http://conserver.com/docs/console.man.html" target="_self">conserver.com/docs/console.man.html</a>
+</p><p>
+syslog-ng Open Source Edition: <a href="http://www.syslog-ng.org" target="_self">www.syslog-ng.org</a>
+</p><p>
+Riemann: <a href="http://riemann.io" target="_self">riemann.io</a>
+</p><p>
+Elasticsearch: <a href="http://elastic.co/products/elasticsearch" target="_self">elastic.co/products/elasticsearch</a>
+</p><p>
+Riemann-dash: <a href="http://riemann.io/dashboard.html" target="_self">riemann.io/dashboard.html</a>
+</p><p>
+Kibana: <a href="http://elastic.co/products/kibana" target="_self">elastic.co/products/kibana</a>
+</p><p>
+syslog IETF RFC5424 Protocol: <a href="https://tools.ietf.org/html/rfc5424" target="_self">https://tools.ietf.org/html/rfc5424</a>
+</p><p>
+Date parser from the syslog-ng-incubator project:
+<a href="https://github.com/balabit/syslog-ng-incubator/tree/master/modules/date" target="_self">https://github.com/balabit/syslog-ng-incubator/tree/master/modules/date</a>
+</p><p>
+Using correlation in syslog-ng:
+<a href="https://www.balabit.com/sites/default/files/documents/syslog-ng-ose-latest-guides/en/syslog-ng-ose-guide-admin/html/patterndb-correlation.html" target="_self">https://www.balabit.com/sites/default/files/documents/syslog-ng-ose-latest-guides/en/syslog-ng-ose-guide-admin/html/patterndb-correlation.html</a>
+</p><p>
+Alerting for consoles that are attached for too long:
+<a href="https://www.balabit.com/sites/default/files/documents/syslog-ng-ose-latest-guides/en/syslog-ng-ose-guide-admin/html/patterndb-actions-correlation.html" target="_self">https://www.balabit.com/sites/default/files/documents/syslog-ng-ose-latest-guides/en/syslog-ng-ose-guide-admin/html/patterndb-actions-correlation.html</a>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a2f580.0x1e35cd0"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Fabien Wernli (faxm0dem) has been administering Linux clusters at the
+Computing Centre of the National Institute of Nuclear Physics and Particle
+Physics (CC-IN2P3) for 10+ years. Among others things, he is an expert on
+performance-data monitoring and infrastructure management.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../261/toc261.html">Issue Table of Contents</a>
+    <a class="link3" href="../261/11948.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

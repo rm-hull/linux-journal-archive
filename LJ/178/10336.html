@@ -1,0 +1,450 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Paranoid Penguin
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Creating restricted shares on your secure Samba file server.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x28fa580.0x29f1ac0"></a>
+Paranoid Penguin
+</h1></div><div><h3 class="subtitle"><i>
+Samba Security, Part IV
+</i></h3></div><div><div class="author"><h3 class="author">
+Mick
+ 
+Bauer
+</h3></div><div class="issuemoyr">Issue #178, February 2009</div></div><div><p>
+Creating restricted shares on your secure Samba file server.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28fa580.0x29f2460"></a></h2></div></div><p>
+For the past four months in this column, we've been building a secured Samba server for
+our local LAN, using Swat. To spare those of you who have been following
+this series a fourth summary of the usage scenario, let's suffice it to
+say, we're creating a series of file shares with varying user permissions.
+</p><p>
+This month, I wrap up the series by showing how to create a restricted,
+&ldquo;owner-only&rdquo; share and how to use mount.cifs to make persistent Samba
+mounts on your client systems.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28fa580.0x29f26c8"></a>
+What We've Done So Far</h2></div></div><p>
+Last month, we created a public share, SUPPER, and a nonpublic and
+group-readable share called CHORES. Prior to that, we had set up
+some global variables that are inherited by all shares. Those global
+variables were:
+
+
+<pre     class="programlisting">
+workgroup             = FED-CENTRAL
+security              = user
+client schannel       = yes
+server schannel       = yes
+map to guest          = Bad User
+guest account         = nobody
+unix password sync    = yes
+valid users           = mick, knute, pepe, skippy, nobody
+read list             = knute, pepe, skippy
+write list            = mick
+</pre>
+</p><p>
+Attentive readers of Part II of this series [December 2008] may notice that I omitted
+&ldquo;admin users&rdquo; here, even though in Part II, I had set that to mick. This
+was an embarrassing mistake. On Ubuntu systems at least, this wreaks
+havoc with how Samba interacts with Linux file permissions.
+</p><p>
+You'll recall that setting &ldquo;admin users&rdquo; causes listed users to be logged on to
+Samba as root after successfully authenticating as themselves. In other
+words, if &ldquo;admin users&rdquo; is set to mick, any time mick successfully logs
+on to any share, he'll actually be logged on as root. The
+<span   class="emphasis"><em>expected</em></span>
+result is that mick, therefore, will have superuser privileges
+and won't be restricted from doing anything at all. In practice, the
+results tend to be much less predictable than that.
+</p><p>
+For example, on my Ubuntu 8.04 system, suppose I set &ldquo;admin
+users&rdquo; to
+mick, create a directory on the underlying Linux filesystem that's
+owned by mick and has permissions of -rwx------ (or 0700), and then I
+create a Samba share mapped to that directory that has no guest access
+or read access (that is, a share like the one I'm about to show you how
+to set up).
+</p><p>
+If I then try to connect to this share with this command:
+
+<pre     class="programlisting">
+bash-$ smbclient //CASA_DE_MICK/BUZZ-OFF -U mick
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28fa580.0x29f2bf0"></a></h2></div></div><p>
+and enter the correct password when prompted, sure enough, silently
+and behind the scenes, I'll actually be logged on as root. But the result
+of this login will be:
+
+
+<pre     class="programlisting">
+Domain=[CASA_DE_MICK] OS=[Unix] Server=[Samba 3.0.28a]
+tree connect failed: NT_STATUS_ACCESS_DENIED
+</pre>
+</p><p>
+What? How can this be? Access shouldn't be denied to anything, for root,
+should it? But denied it will be, if the share in question maps to a
+directory not owned by root. This may or may not happen on non-Ubuntu
+systems. My point is that using the &ldquo;admin users&rdquo; parameter may result
+in unpredictable interactions between Samba and Linux filesystems.
+</p><p>
+As I said last month, letting people use Samba shares with root privileges
+is dangerous anyhow. Samba client software isn't the correct tool for
+Samba system administration, Swat is. So now we have two good reasons
+always to leave &ldquo;admin users&rdquo; empty!
+</p><p>
+Now, let's move on to our share-specific settings. The smb.conf variables that
+configured SUPPER, as set via the Swat tool, looked like this:
+
+<pre     class="programlisting">
+path          = /home/mick/supper
+read only     = yes
+guest ok      = yes
+invalid user  = root
+valid users   = 
+read list     = 
+write list    = mick
+admin users   = 
+hosts allow   = 192.168.44
+hosts deny    = ALL
+create mask   = 0644
+browseable    = yes
+available     = yes
+</pre>
+</p><p>
+These variables are set nearly the same for CHORES, except:
+
+<pre     class="programlisting">
+path          = /home/mick/chores
+guest ok      = no
+valid users   = +users
+</pre>
+</p><p>
+What do all these variables mean? I explained them in gory detail in
+the last three issues of <span   class="emphasis"><em>LJ</em></span>, and definitive descriptions can be found for all in the
+smb.conf(5) man page. Some of these will come into play this month too,
+as we create that restricted share.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28fa580.0x29f3170"></a>
+Creating a Restricted Share</h2></div></div><p>
+You'll recall that our Samba server has four user accounts: pepe,
+skippy, knute and mick, which correspond to my three roommates and
+me. These are UNIX user accounts on my Samba server's underlying OS,
+with corresponding but separate entries in the Samba server's separate
+user database. (I explained how to create and synchronize Samba user
+accounts in Part II of this series, in the December 2008 issue.)
+</p><p>
+For our restricted share, BUZZ-OFF, only mick should have read access
+<span   class="emphasis"><em>or</em></span> write access. No other user should have any rights at all on
+this share. Accordingly, when we create the directory to which this share will
+point, we'll be sure it's owned by mick and has a permissions mask
+of 0700 (u+rwx,g-rwx,o-rwx), like this:
+
+
+<pre     class="programlisting">
+drwx------ 2 mick users 4096 2008-11-04 00:00 buzz-off
+</pre>
+</p><p>
+Figure 1 shows the first round of parameters we'll set upon creating this
+share in Swat's Basic View.
+</p><div       class="mediaobject"><a href="10336f1.large.jpg"><img src="10336f1.jpg"></a><div class="caption"><p>
+Figure 1. Restricted Share, Basic Settings
+</p></div></div><p>
+After setting the path, we set read only to no&mdash;I'll be creating
+new files in this share&mdash;and guest ok to no as well, because we
+don't want to allow any anonymous access. We'll set hosts allow and
+hosts deny the same as our other shares&mdash;to permit access only from
+the local LAN (your network address is, obviously, probably different).
+</p><p>
+We'll set browseable to no, so this share won't turn up in people's
+Network Neighborhood or in smbtree listings. To connect to this share,
+therefore, we'll need to specify its path when mapping it to a drive or
+connecting to it with smbclient.
+</p><p>
+And, we'll leave available set at no until we've clicked the Commit
+Changes button, clicked the Change View to Advanced button and
+changed some things in the Advanced View (Figure 2).
+</p><div       class="mediaobject"><a href="10336f2.large.jpg"><img src="10336f2.jpg"></a><div class="caption"><p>
+Figure 2. Restricted Share, Advanced Settings
+</p></div></div><p>
+As you can see, we're going to blank out the list of valid
+users
+except for mick and completely empty the contents of read list. The
+write list, however, correctly contains the single value of mick.
+</p><p>
+The only other setting we need to change is create mask, which we'll
+set to 0600. This is different from the 0700 mask we used when creating
+the directory itself; the directory's execute bit needs to be set so
+the directory can be used, but the <span   class="emphasis"><em>contents</em></span> of this directory,
+which is what the share represents, do not.
+</p><p>
+Now we can change available to yes and click the Commit Changes
+button. Our restricted share is ready for use!
+</p><p>
+To test this, let's first make sure the share doesn't turn up in the
+local Samba browse list. We can perform this test using smbtree, like so:
+
+
+<pre     class="programlisting">
+bash-$ smbtree -N -b
+FED-CENTRAL
+   \\CASA_DE_MICK   iwazaru-ubuntu server (Samba, Ubuntu)
+      \\CASA_DE_MICK\print$   Printer Drivers
+      \\CASA_DE_MICK\SUPPER   Mick's menus
+      \\CASA_DE_MICK\CHORES   Chore lists
+      \\CASA_DE_MICK\IPC$     IPC Service (iwazaru-ubuntu server 
+                              &#8618;(Samba, Ubuntu))
+</pre>
+</p><p>
+Sure enough, the new share BUZZ-OFF doesn't appear in the browse
+list. But, is it nonetheless usable by mick, its owner? Let's find out
+with smbclient:
+
+
+<pre     class="programlisting">
+bash-$ smbclient //CASA_DE_MICK/BUZZ-OFF -U mick
+Password: ********
+Domain=[CASA_DE_MICK] OS=[Unix] Server=[Samba 3.0.28a]
+smb: \&gt; 
+</pre>
+</p><p>
+It worked. I've got a Samba prompt! There's no reason not to try a quick
+directory listing before exiting:
+
+
+<pre     class="programlisting">
+smb: \&gt; dir
+  .                         D        0  Tue Nov  4 23:17:34 2008
+  ..                        D        0  Tue Nov  4 23:17:34 2008
+  access-log_10312008.txt          665  Tue Nov  4 23:17:34 2008
+
+        52008 blocks of size 262144. 13229 blocks available
+smb: \&gt; exit
+</pre>
+</p><p>
+Everything worked as expected. One last test&mdash;just to be sure, I want
+to try
+logging in to the share as a guest user. Remember that our Samba server
+is set up to treat any login involving a nonexistent user name as a
+guest login:
+
+
+<pre     class="programlisting">
+bash-$ smbclient //CASA_DE_MICK/BUZZ-OFF -U totallyfakeuser
+Password: ********
+Domain=[CASA_DE_MICK] OS=[Unix] Server=[Samba 3.0.28a]
+tree connect failed: NT_STATUS_ACCESS_DENIED
+</pre>
+</p><p>
+It failed, in the expected and appropriate way. Our restricted share is
+accessible, insofar as we want it to be.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28fa580.0x2dec0d0"></a>
+Using mount.cifs for Persistent Samba Mounts</h2></div></div><p>
+Now that I've got a restricted share available to me, suppose it will
+contain things I need to read and change on a regular basis. Do I need
+to access it via an interactive smbclient shell every time?
+</p><p>
+Of course not. The ability to mount remote Samba shares as though they
+were local volumes is one of the best things about Samba. You can do
+this by using the standard mount command, along with Samba's mount.cifs
+module, on your Samba client systems.
+</p><p>
+On Red Hat-derived and SUSE systems, the cifs filesystem and associated
+utilities are included with the standard samba-client package. On Debian,
+Ubuntu and other Debian derivatives, however, you'll need to install
+the package smbfs.
+</p><p>
+Although based on the same protocols, smbfs and cifs are actually two
+different things. cifs is newer than smbfs, and the smbmount command
+formerly used for mounting Samba file shares via the smbfs filesystem
+has been deprecated by the Samba team in favor of cifs and the mount.cifs
+module. smbfs and smbmount are still distributed with Samba, but they
+are not being actively maintained.
+</p><p>
+While we're installing Ubuntu packages, you'll also want the package
+winbind, which mount.cifs needs in order to resolve NetBIOS or
+Windows NT names (the Samba server we've been setting up uses NetBIOS
+name resolution, not Windows NT). SUSE users will need the package
+samba-winbind. I'm not positive, but I believe winbind is included in
+Red Hat/CentOS/Fedora's samba-client package.
+</p><p>
+After installing winbind, you should add the string
+<tt  >wins</tt> to the <tt  >hosts:</tt>
+line in /etc/nfsswitch.conf (only root can do this; you'll need to use
+su or sudo).
+</p><p>
+After mount.cifs and winbind are in place, you're ready to start mounting
+Samba shares. To to this manually from a command line, you can invoke
+the mount command as root or, as shown here, using sudo:
+
+
+<pre     class="programlisting">
+myclientlaptop-$ sudo mount -t cifs //CASA_DE_MICK/BUZZ-OFF 
+ &#8618;./mymountpoint -o rw,suid,user=mick
+</pre>
+</p><p>
+In this example, we're telling mount to use a filesystem type (-t)
+of cifs. We're mounting, obviously, the share BUZZ-OFF on the server
+//CASA_DE_MICK, using the mountpoint ./mymountpoint (which is an
+existing directory within my current working directory). Note that I can,
+if necessary, use my Samba server's IP address rather than its NetBIOS
+(or Windows NT) name, in which case, that part of the command would look
+something like <tt  >//192.168.44.123/BUZZ-OFF</tt>.
+</p><p>
+The <tt  >-o</tt> gives a list of options for this mount. The
+first option, <tt  >rw</tt>,
+lets me both read files from and write them to the share.
+<tt  >suid</tt>
+causes any set-uid bits on files in the share to be acknowledged.
+<tt  >user</tt>
+passes my Samba user name to the mount.cifs module so it can authenticate
+the session. After entering the above command, I'll be prompted first
+for the root password and then for mick's password.
+</p><p>
+Whatever you do, do not enter your password on the command line using
+the <tt  >password=</tt> option. Because shell commands may be logged in various
+places and are stored in shell histories, it's generally a terrible idea
+to use any password as a command argument.
+</p><p>
+If your Samba credentials are unimportant, for example, because they do
+not correspond to any user account with actual shell access, it's still
+a good idea to avoid passing its password to a command. A better option
+in that scenario is to use a credentials file, which is simply a text
+file containing a user name and password.
+</p><p>
+However, that method is <span   class="emphasis"><em>not</em></span> appropriate for storing any credentials
+you actually use to log in to systems. Even with strict file
+permissions set, it may be possible for some unauthorized person or
+process to copy or read the credentials file.
+</p><p>
+As with any type of filesystem mounting, you can save yourself typing
+by creating an entry for your mount in /etc/fstab. For the example we
+just used, a corresponding fstab entry would look like this:
+
+<pre     class="programlisting">
+//CASA_DE_MICK/BUZZ-OFF /home/mick/mymountpoint cifs 
+ &#8618;rw,noauto,suid,user=mick 0 0
+</pre>
+</p><p>
+As you can see, this line is very similar to the mount command line we
+used earlier. One new option here is <tt  >noauto</tt>, which causes this line
+to be ignored at system startup&mdash;this Samba share won't be mounted
+until you issue a mount command, like this:
+
+<pre     class="programlisting">
+myclientlaptop-$ sudo mount /home/mick/mymountpoint
+</pre>
+</p><p>
+sudo will prompt you for the root password. (Again, if you aren't running
+Ubuntu, you could omit the sudo command and instead execute the rest
+of the command from a root shell session.) Then, mount will prompt you
+for mick's password.
+</p><p>
+Assuming authentication succeeds, you'll be able to use
+BUZZ-OFF as if it were part of your local filesystem, located in
+/home/mick/mymountpoint. When you're done working, you can unmount it
+like this:
+
+
+<pre     class="programlisting">
+bash-$ sudo umount /home/mick/mymountpoint
+</pre>
+</p><p>
+If you prefer your Samba mount to be activated every time your system
+starts, you can omit the noauto option in your fstab entry. However,
+unless you use a credentials file, you'll need to be present during each
+startup in order to enter the Samba password when prompted; otherwise, your
+startup will wait for you indefinitely. On a laptop system this probably
+isn't a problem, but on other types of systems it very well could be an
+issue.
+</p><p>
+Similarly, if your Samba server is unavailable for some reason when your
+client system starts up, this also can cause the client startup to hang
+or delay. When in doubt, stick to noauto mounting.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28fa580.0x2decd88"></a>
+Conclusion</h2></div></div><p>
+And, that's it for this series on Samba security. Funny how four
+columns can add up to only a basic tutorial, but I hope you've found it
+useful. Until next time, be safe!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28fa580.0x2dece90"></a></h2></div></div><div class="sidebar"><p class="title"><b>Resources</b></p><p>&ldquo;Samba Security, Part I&rdquo;, <span   class="emphasis"><em>LJ</em></span>,
+November 2008: <a href="http://www.linuxjournal.com/article/10224" target="_self">www.linuxjournal.com/article/10224</a>
+</p><p>&ldquo;Samba Security, Part II&rdquo;, <span   class="emphasis"><em>LJ</em></span>,
+December 2008: <a href="http://www.linuxjournal.com/article/10256" target="_self">www.linuxjournal.com/article/10256</a>
+</p><p>&ldquo;Samba Security, Part III&rdquo;, <span   class="emphasis"><em>LJ</em></span>,
+January 2009: <a href="http://www.linuxjournal.com/article/10292" target="_self">www.linuxjournal.com/article/10292</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Mick Bauer (<a href="mailto:darth.elmo@wiremonkeys.org">darth.elmo@wiremonkeys.org</a>) is Network
+Security
+Architect for one of the US's largest banks. He is the author of
+the O'Reilly book <span   class="emphasis"><em>Linux Server Security</em></span>, 2nd edition
+(formerly called
+<span   class="emphasis"><em>Building Secure Servers With Linux</em></span>), an occasional
+presenter at
+information security conferences and composer of the &ldquo;Network
+Engineering Polka&rdquo;.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../178/toc178.html">Issue Table of Contents</a>
+    <a class="link3" href="../178/10336.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

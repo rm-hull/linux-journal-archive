@@ -1,0 +1,457 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+At the Forge</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Building with the iCalendar standard, it's time to extract&#10;schedule information from a database and build calendars on&#10;the fly.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1282580.0x1379ab0"></a>
+At the Forge</h1></div><div><h3 class="subtitle"><i>
+Databases and Calendars</i></h3></div><div><div class="author"><h3 class="author">
+Reuven
+ M. 
+Lerner
+</h3></div><div class="issuemoyr">Issue #135, July 2005</div></div><div><p>
+Building with the iCalendar standard, it's time to extract
+schedule information from a database and build calendars on
+the fly.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1282580.0x137a3a0"></a></h2></div></div><p>
+Last month, we continued our look at the iCalendar standard, which
+makes it possible for programs to exchange calendar and appointment
+information. As we saw, an iCalendar file contains one or more events
+and tasks. If we make the file available via an HTTP server such as
+Apache, we can distribute it to anyone with an iCalendar-compatible
+program, such as Mozilla's Sunbird. As we saw last month, we can go one
+step further than this, generating an iCalendar file
+dynamically, using a CGI program.
+</p><p>
+Although the programs I presented and discussed last month might be
+useful in a limited context, it should be clear to any Web developer
+that keeping the date and time information inside of a program would
+be foolish, to say the least.
+</p><p>
+One of the best
+ways to keep track of such data is in a relational database such as
+PostgreSQL. A relational database allows you to ensure that the data
+you have entered is valid and provides you with fast, flexible access
+to some or all of the data it contains. Moreover, by storing the
+calendar information inside of a database, you can create multiple
+versions of the same calendar file, using the same source.
+</p><p>
+This month, we look at a simple example of a Web-based program
+that takes calendar information from a relational database and uses
+it to generate an iCalendar data file, which then can be imported into
+iCalendar-compliant programs, such as Mozilla's Sunbird.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1282580.0x137a5b0"></a>
+Defining the Table</h2></div></div><p>
+If we are going to store our calendar information in a relational
+database, we need to define at least one table. This is
+because everything in a relational database&mdash;often including
+configuration and status information&mdash;is stored in a two-dimensional
+table, in which the columns define individual fields, and each row
+contains one record.
+For example, here is how we might define a simple table of events in
+PostgreSQL:
+
+<pre     class="programlisting">
+
+CREATE TABLE Events (
+  event_id        SERIAL    NOT NULL,
+  event_summary   TEXT      NOT NULL
+    CHECK (event_summary &lt;&gt; ''),
+  event_location   TEXT      NOT NULL
+    CHECK (event_location &lt;&gt; ''),
+  event_start     TIMESTAMP NOT NULL,
+  event_end       TIMESTAMP NOT NULL,
+  event_timestamp TIMESTAMP NOT NULL
+    DEFAULT NOW(),
+
+  PRIMARY KEY(event_id)
+);
+
+</pre>
+</p><p>
+The above table contains six columns. The first, event_id, is defined
+to be of type SERIAL. If we don't explicitly provide a value for
+event_id when adding a row to the table, PostgreSQL retrieves a
+new integer value automatically, up to a maximum of
+2<sup  >31</sup>. PostgreSQL
+allows you to set a larger ceiling to allow the sequence to wrap
+around to 1, or both; see the documentation for more details.
+</p><p>
+The event_id column uniquely identifies rows in our table, and we
+tell the database this by marking it as a PRIMARY KEY. This not only
+tells other database programmers which column will be used for
+retrieving records, but it ensures that values are unique and that the
+column is indexed as well.
+</p><p>
+Another automatically populated column is event_timestamp. From the
+definition, it might appear as though we can (and will) set
+event_timestamp to an explicit value, with the current time providing
+a default as necessary. But whenever I define a column in this way,
+it implies that I never expect to set a value explicitly for this
+column. Rather, I am interested in letting PostgreSQL set the
+column's value with the current date and time.
+</p><p>
+Notice how the event_summary and event_location columns are both
+defined to be of type TEXT (that is, infinite-length text fields), while
+event_start, event_end and event_timestamp are all of type TIMESTAMP,
+the SQL-standard way of saying date and time.
+</p><p>
+All of the columns in this table are defined to be NOT NULL, meaning
+that they may not be assigned SQL's undefined value of NULL. NULL
+is distinct from true and false, which can make it a bit tricky for
+newcomers to understand. However, if you think of NULL as
+representing an unknown or undefined value, it might become
+clearer. As useful as NULLs can be in distinguishing between false
+and unknown values, it's usually a good idea to cut down on them as
+much as possible. Indeed, the advice that I have long heard, and
+repeated to others, is that you should define columns to be NOT NULL
+by default, opening them up to NULL values as the situation requires.
+</p><p>
+Finally, notice how our two text columns (event_summary and
+event_location) are defined both as NOT NULL and with an integrity
+check that ensures we enter something other than an empty string.
+Whether this combination of constraints is appropriate depends on your
+database needs. You might want to think about whether you want to
+allow NULL values at all and also if you want to allow empty strings
+for the summary and location columns.
+</p><p>
+Although this simple definition is meant to serve as an example,
+consider how much better it would be if we were to have a separate
+Locations table, with a location_id and location_name, and then
+replace the textual event_location column with a location_id. This
+would have the advantage of standardizing location names, which would
+lead to fewer inconsistencies. It also would allow us to search for
+all of the events taking place in a particular location.
+</p><p>
+Once we are done defining the table, we add some indexes to our table.
+Each index ensures that data will be retrieved from the table more
+quickly than usual, at the expense of additional time for each
+INSERT. Here are the definitions:
+
+<pre     class="programlisting">
+CREATE INDEX event_location_idx
+  ON Events(event_location);
+CREATE INDEX event_start_idx
+  ON Events(event_start);
+CREATE INDEX event_end_idx
+  ON Events(event_end);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1282580.0x137aa80"></a>
+Inserting New Data</h2></div></div><p>
+Now that we have a defined table and indexes, we can start to populate
+our database table with some events. We can, as always, INSERT new
+events into our table with the following syntax:
+
+<pre     class="programlisting">
+INSERT INTO Events
+  (event_summary, event_location,
+   event_start, event_end)
+VALUES
+  ('Ides of March', 'Everywhere',
+ '2005-March-15 00:00', '2005-March-15 23:59:59')
+</pre>
+</p><p>
+As you can see, the above INSERT statement names only four of the six
+columns defined in Events. When we check our new row, we find the
+following:
+
+<pre     class="programlisting">
+atf=# select * from events;
+-[ RECORD 1 ]---+---------------------------
+event_id        | 1
+event_summary   | Ides of March
+event_location  | Everywhere
+event_start     | 2005-03-15 00:00:00
+event_end       | 2005-03-15 23:59:59
+event_timestamp | 2005-04-04 01:20:15.575032
+</pre>
+</p><p>
+As you can see, event_id (which we defined to be of type SERIAL) has
+automatically received a value of 1. Furthermore, event_timestamp has
+been set with the date and time at which we executed the query.
+</p><p>
+It's easy to imagine how we could invoke this INSERT statement with a
+Web-based program using CGI or a more advanced system, such as
+mod_perl or Zope. Indeed, we really don't have to think much about
+how the data has arrived in the database, particularly if we have set
+appropriate constraints on our data. We can assume that whatever
+resides in the database is reliable, and that the server has rejected
+any entries that would violate our rules.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1282580.0x137ad40"></a>
+Creating a Dynamic iCalendar File</h2></div></div><p>
+Now that we have some activities in our database table, we can
+retrieve them into a CGI program. That program then produces
+output in iCalendar format, allowing iCalendar clients to retrieve its
+data. Listing 1 contains the program, which is a modified version of
+last month's dynamic-calendar.py program. As I mentioned last
+month, I wrote this program in Python in no small part because of the
+relative dearth of modules to create iCalendar-format files.
+Fortunately, there is such a module for Python, and I have taken
+advantage of that fact in this program.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1282580.0x137ae48"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. db-calendar.py
+</b></p><pre     class="programlisting">
+
+#!/usr/bin/python
+
+# Grab the CGI module
+import cgi
+import psycopg
+from iCalendar import Calendar, Event
+from datetime import datetime
+from iCalendar import UTC # timezone
+
+# Log any problems that we might have
+import cgitb
+cgitb.enable(display=0, logdir="/tmp")
+
+# Send a content-type header
+print "Content-type: text/calendar\n\n"
+
+# Create a calendar object
+cal = Calendar()
+
+# What product created the calendar?
+cal.add('prodid',
+        '-//Python iCalendar 0.9.3//mxm.dk//')
+
+# Version 2.0 corresponds to RFC 2445
+cal.add('version', '2.0')
+
+# Create the database connection
+db_connection =
+  psycopg.connect('dbname=atf user=reuven')
+db_cursor = db_connection.cursor()
+
+db_cursor.execute
+  ('''SELECT event_id, event_summary, event_location,
+             event_start, event_end, event_timestamp
+        FROM Events
+    ORDER BY event_start''')
+
+result_rows = db_cursor.fetchall()
+
+for row in result_rows:
+    # Create one event
+    event = Event()
+
+    # Set the event ID
+    event['uid'] = str(row[0]) + 'id@ATF'
+
+    # Set the description and location
+    event.add('summary', row[1])
+    event.add('location', row[2])
+
+    # Transform the dates appropriately
+    event.add('dtstart', datetime(tzinfo=UTC(),
+              *row[3].tuple()[0:5]))
+    event.add('dtend', datetime(tzinfo=UTC(),
+              *row[4].tuple()[0:5]))
+    event.add('dtstamp', datetime(tzinfo=UTC(),
+              *row[5].tuple()[0:5]))
+
+    # Give this very high priority!
+    event.add('priority', 5)
+
+    # Add the event to the calendar
+    cal.add_component(event)
+
+# Ask the calendar to render itself as an iCalendar
+# file, and return that file in an HTTP response
+print cal.as_string()
+
+</pre></div><p>
+As you can see in Listing 1, the program is fairly straightforward.
+After importing a number of modules, we create a calendar object and
+insert the iCalendar-mandated fields indicating the source of the
+calendar.
+</p><p>
+We then connect to a PostgreSQL server, which is presumed to be on the
+local computer. Although several database adaptors exist in Python
+for PostgreSQL access, I have long used psycopg, which is both fast
+and stable. To connect to PostgreSQL with psycopg, we use the
+following syntax:
+
+<pre     class="programlisting">
+db_connection = psycopg.connect
+                  ('dbname=atf user=reuven')
+</pre>
+</p><p>
+The above indicates that the database name is atf and the user name
+is reuven. You also might need to specify the server and
+a password as additional arguments, especially if you are working on a
+production system.
+</p><p>
+Once we have connected to the database, we get a cursor, which
+allows us to submit queries and get their results:
+
+<pre     class="programlisting">
+db_cursor = db_connection.cursor()
+</pre>
+</p><p>
+With a cursor in hand, we now can send our SQL
+query to the database, using Python's triple-quote
+functionality to make our SQL more readable. Now we
+retrieve our results. If we were expecting to
+retrieve dozens or hundreds of rows, we
+probably would want to get them one at a time, or perhaps
+in batches. But I know that this calendar will
+contain only a few events, so I use the fetchall()
+method to get them in one large sequence:
+
+<pre     class="programlisting">
+result_rows = db_crsor.fetchall()
+</pre>
+</p><p>
+Each element of result_rows is a row from our PostgreSQL database. We
+thus iterate (in a for loop) over the rows, retrieving the different
+elements that appear.
+</p><p>
+For the most part, this is pretty straightforward.
+However, things get a bit tricky when we are working
+with dates and times&mdash;important elements of any
+calendar of events! The problem is that psycopg uses
+the open-source mxDateTime module from eGenix.com,
+which makes working with dates extremely easy. But
+mxm's iCalendar module uses Python's datetime module,
+which is different. We thus need to retrieve
+each of the dates (for the event's starting time,
+ending time and stamp), turn them from an instance
+of mxDateTime into a datetime-compatible tuple,
+use that tuple to create an instance of datetime
+and then pass that to event.add, using the three
+calls starting with:
+
+<pre     class="programlisting">
+event.add('dtstart', datetime(tzinfo=UTC(),
+event.add('dtend', datetime(tzinfo=UTC(),
+          *row[3].tuple()[0:5]))
+</pre>
+</p><p>
+The second argument to datetime() in the above three rows of code does
+exactly what we said. It retrieves one column from the returned row and
+turns it into a tuple. We then take a slice of the sequence (with
+Python's convenient [0:5] notation) to grab a subset of the items
+returned by tuple().
+</p><p>
+But we can't pass datetime() a sequence; rather, it is expecting a
+number of individual elements. In other words, datetime() wants
+several numbers, not a reference or pointer to a list of numbers. We
+turn the tuple into its individual elements with Python's * operator.
+Finally, sharp-eyed readers will notice that we have passed the
+tzinfo argument before the individual elements of the tuple; this is
+because Python requires that we pass named arguments before the *
+operator.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1282580.0x137b478"></a>
+What More Can We Do?</h2></div></div><p>
+Sure enough, the result of invoking db-calendar.py is a fully
+iCalendar-compliant file, suitable for importing into Sunbird or any
+other calendar program. Moreover, simply by modifying the contents of
+our Events database table, we can ensure that everyone who
+subscribes to our calendar gets the latest version.
+</p><p>
+We can go one step further than this, modifying db-calendar.py such
+that it includes only certain events in its result. For example,
+perhaps the calendar needs to contain only events in the future; there
+is no need to clutter someone's calendar (and bandwidth) with events
+from the past. By adding a simple WHERE clause to our SQL query, we
+easily can remove all of the events from the past.
+</p><p>
+More intriguing is the possibility of supporting different groups and
+access levels to a calendar. HTTP supports authentication with
+user names and passwords, and although Sunbird doesn't support such
+protections at the present time, I would expect it (and other
+programs) to do so in the future. Given that a CGI program easily
+can determine the user name of the person making an authenticated HTTP
+request, it's not too far-fetched to say that db-calendar.py could
+produce different output for different users, depending on a set of
+assigned permissions or roles.
+</p><p>
+Finally, although we have focused on iCalendar-format
+output for the last few months, there isn't any reason
+why we can turn only the contents of the database into
+an iCalendar file. Indeed, it's quite possible that
+we would want to display our events database in plain-old HTML, as well as in iCalendar. Once again, it's
+easy to see how we could do that using HTML tables&mdash;demonstrating once again that relational databases
+make it easy to display a set of data in a number of
+different ways.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1282580.0x137b688"></a>
+Conclusion</h2></div></div><p>
+This month, we have seen how to use a database to store event
+information that eventually will be transformed into an
+iCalendar-compliant file. Using a database
+makes us not only more confident that stored data is valid, but it allows us to
+create dynamically generated files quickly and easily that are suitable for use
+in programs that use the iCalendar format.
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../135/8263.html" target="_self">/article/8263</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Reuven M. Lerner, a longtime Web/database consultant and developer,
+now is a graduate student in the Learning Sciences program at
+Northwestern University. His Weblog is at <a href="http://altneuland.lerner.co.il" target="_self">altneuland.lerner.co.il</a>, and you can reach him at
+<a href="mailto:reuven@lerner.co.il">reuven@lerner.co.il</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../135/toc135.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

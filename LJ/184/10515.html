@@ -1,0 +1,638 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+At the Forge</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Use factories and fixtures in your Rails applications to help&#10;simplify your database-related testing.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x12be580.0x13b5ac0"></a>
+At the Forge</h1></div><div><h3 class="subtitle"><i>
+Fixtures and Factories
+</i></h3></div><div><div class="author"><h3 class="author">
+Reuven
+ M. 
+Lerner
+</h3></div><div class="issuemoyr">Issue #184, August 2009</div></div><div><p>
+Use factories and fixtures in your Rails applications to help
+simplify your database-related testing.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b6358"></a></h2></div></div><p>
+One of the points of pride in the Ruby community is the degree to
+which developers are focused on testing. As I wrote last month, tests
+in a dynamic language have more potential to correct more errors and
+keep your code trim and functional than even the best compliers.
+Rails developers are used to working with three different types of
+tests: unit (for database models), functional (for controller
+classes) and integration (for testing things from a user's
+perspective). Combined with coverage and analysis tools, such as the
+metric_fu gem I described last month, these tests can help
+ensure that your code is as solid as possible before it is seen by the
+general public.
+</p><p>
+Testing your code requires that you provide it with inputs and that
+you then match those inputs with expected outputs. When it comes to a
+Web application, those inputs most likely will come from either a
+relational database or from a user's form submission. Testing form
+submissions is not particularly difficult, especially in a framework
+such as Rails, which has extensive testing support built in. Testing
+data that comes from a database, however, can be a bit more
+challenging, because it means that you must somehow store the data in
+the database so that the tests can access it.
+</p><p>
+One possible solution, of course, is to pre-populate the
+database tables with test data directly. But, as simple and obvious as that
+solution might appear at first glance, it assumes that you have a
+source from which you can pre-populate the database. You could do
+it by hand, but then you'll find that any modifications your
+program makes to the database&mdash;creating, updating and deleting
+rows&mdash;either will stay in effect for the next test or will need to be
+reloaded from scratch from another source.
+</p><p>
+In other words, you need a way to put the test database into a known
+state before you begin your tests. If you know this beginning state,
+you can write tests that check subsequent states.
+</p><p>
+The question is, how do you create that initial state? From the time
+that Rails was first released, the answer was fixtures&mdash;text files
+containing YAML-formatted hand-crafted data. Fixtures are nice, but
+as a number of Rails developers have written over the years, they can
+be hard to write, hard to keep track of and generally brittle.
+</p><p>
+This month, I take a look at the current state of loading data into a test
+database. I start by examining fixtures, exploring some ways
+you still might be able to make them useful inside your
+tests. Then, I cover a newer approach to test data, known as
+factories, looking at the Factory Girl gem and then taking a
+quick peek at the Machinist gem, both of which are in widespread use
+among Rails developers and might be a better fit than plain-old
+fixtures for your project.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b6720"></a>
+Creating Your Application</h2></div></div><p>
+Fixtures, as I mentioned above, are YAML files containing data that
+can be loaded into a database. Rails actually allows you to put your
+fixture data in formats other than YAML, such as CSV. However, my
+guess is that CSV is mostly unused, and that YAML is the format used
+by almost everyone working with fixtures.
+</p><p>
+I created a simple Rails application (using SQLite) on my computer with:
+
+<pre     class="programlisting">
+rails --database=sqlite3 appointments
+</pre>
+</p><p>
+Then, I generated a RESTful resource for people:
+
+<pre     class="programlisting">
+./script/generate scaffold person \
+      first_name:string last_name:string email:string
+</pre>
+</p><p>
+This not only created a model for working with people, but also a
+controller for handling the basic RESTful functions, views for all of
+those controller actions, a database migration that uses Ruby to
+describe my model and even some rudimentary tests. I can import the
+database migrations with:
+
+<pre     class="programlisting">
+rake db:migrate
+</pre>
+</p><p>
+And, voil&agrave;! I now have a working application that allows me to add,
+delete, modify and list a bunch of people. You might have noticed
+that I named my Rails application appointments. My plan is to create
+a very simple appointment calendar, so that I can keep track of with
+whom I'll be meeting. So, I create another resource, named
+meetings:
+
+<pre     class="programlisting">
+./script/generate scaffold meeting \
+      starting_at:timestamp ending_at:timestamp location:text
+</pre>
+</p><p>
+(It should go without saying that if I were creating this for real, I
+would not store the location as a text field, but rather as an ID
+pointing to another table of locations. Keeping data in such
+normalized form, so that the text appears in a single place and
+is referred to from elsewhere in the database using foreign keys,
+makes the application more robust, as well as more efficient.)
+</p><p>
+Finally, I create a third table, meeting_person, which allows one
+or more people to have a meeting. If I were willing to restrict
+appointments to a single participant (or two participants, if I
+include the person using this software), I simply could have a
+person_id field in the meeting table. To get this, I create a new model:
+
+<pre     class="programlisting">
+./script/generate model meeting_person \
+      person_id:integer meeting_id:integer
+</pre>
+</p><p>
+Now that the three models are in place, I can add associations&mdash;those
+declarations in the model classes that link them to one another.
+While I'm editing the model, I also will add some validations,
+which ensure that the data fits my standards. The final version of
+the models is shown in Listing 1. Perhaps the only particularly interesting
+part of the models is the custom validation that I placed in the
+Meeting model:
+
+
+<pre     class="programlisting">
+def validate
+  if starting_at &gt; ending_at
+    errors.add_to_base("Starting time is later than ending time!")
+  end
+end
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b6cf8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Model Files, with Associations and Validations</b></p><pre     class="programlisting">
+
+class Person &lt; ActiveRecord::Base
+  has_many :meeting_people
+  has_many :meetings, :through =&gt; :meeting_people
+
+  validates_presence_of :first_name, :last_name, :email
+  validates_uniqueness_of :email
+
+  def fullname
+    "#{first_name} #{last_name}"
+  end
+
+end
+
+
+class Meeting &lt; ActiveRecord::Base
+  has_many :meeting_people
+  has_many :people, :through =&gt; :meeting_people
+
+  validates_presence_of :starting_at, :ending_at, :location
+
+  def validate
+    if starting_at &gt; ending_at
+      errors.add_to_base("Starting time is later than ending time!")
+    end
+
+    if self.people.empty?
+      errors.add_to_base("You must meet with at least one person!")
+    end
+  end
+
+  def people_as_sentence
+    return self.people.map { |p| p.fullname}.to_sentence
+  end
+
+end
+
+class MeetingPerson &lt; ActiveRecord::Base
+  belongs_to :person
+  belongs_to :meeting
+
+end
+
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b6f08"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. views/meetings/new.html.erb, Modified from the Default
+Scaffold to Allow the User to Enter One or More People</b></p><pre     class="programlisting">
+
+&lt;h1&gt;New meeting&lt;/h1&gt;
+
+&lt;% form_for(@meeting) do |f| %&gt;
+ &lt;%= f.error_messages %&gt;
+
+ &lt;p&gt;
+  &lt;%= f.label :starting_at %&gt;&lt;br /&gt;
+  &lt;%= f.datetime_select :starting_at %&gt;
+ &lt;/p&gt;
+ &lt;p&gt;
+  &lt;%= f.label :ending_at %&gt;&lt;br /&gt;
+  &lt;%= f.datetime_select :ending_at %&gt;
+ &lt;/p&gt;
+ &lt;p&gt;
+  &lt;%= f.label :location %&gt;&lt;br /&gt;
+  &lt;%= f.text_area :location %&gt;
+ &lt;/p&gt;
+
+ &lt;p&gt;With:
+   &lt;%= select("person",
+              "person_id",
+              Person.all.collect { |p| [p.fullname, p.id] },
+              {},
+              {:multiple =&gt; true}) %&gt;
+ &lt;/p&gt;
+ &lt;p&gt;
+  &lt;%= f.submit 'Create' %&gt;
+ &lt;/p&gt;
+
+&lt;% end %&gt;
+
+&lt;%= link_to 'Back', meetings_path %&gt;
+
+</pre></div><p>
+I also created a convenience function that returns an array of names
+with whom the appointment will be:
+
+<pre     class="programlisting">
+def people_as_sentence
+  return self.people.map {|p| p.fullname}.to_sentence
+end
+</pre>
+</p><p>
+This validation, which is run whenever I try to save an instance of
+Meeting, checks to make sure that the starting time is earlier than
+the ending time. If this is not the case, the validation fails,
+and the data is not stored. (The fact that I can treat times as
+full-fledged objects, with access to the &gt; and &lt; operators, is one of
+my favorite parts of both Ruby and SQL.)
+</p><p>
+Finally, I'm going to enhance this application by modifying the
+existing scaffolded controller actions to be more useful. First, I
+modify the new and create actions, such that they will allow
+someone to create an appointment, simultaneously indicating the person
+or people with whom the appointment will take place. Then, I
+modify the index action, so that the user will get a list of all
+upcoming appointments.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b7278"></a>
+Fixtures</h2></div></div><p>
+Now that I've created a simple application, the time has come to
+test it. As I wrote above, testing the application requires that I
+have some sample data with which to test it. By default, the
+generators for Rails models create basic fixtures, which have long
+been the standard way to import data into Rails tests. By basic, I
+mean that they contain some very, very basic data&mdash;too basic,
+actually, for any real testing I might want to do. For example,
+here is the automatically generated fixture for people:
+
+<pre     class="programlisting">
+one:
+  first_name: MyString
+  last_name: MyString
+  email: MyString
+
+two:
+  first_name: MyString
+  last_name: MyString
+  email: MyString
+</pre>
+</p><p>
+Even if you are new to reading YAML, let alone fixture files, the
+format should be easy enough to understand. YAML consists of
+name-value pairs within a hierarchy, and indentation indicates where
+in the hierarchy a particular name-value pair exists. (You also
+can associate a list of values with the key, by separating values with
+commas.) Thus, there are two people defined in the
+fixture, one and two, and each has three name-value pairs.
+</p><p>
+However, these name-value pairs are close to useless. They might
+contain valid data, or they might contain data that fails to adhere to
+the standards laid out in my model validations. If I had defined a
+validator for the email field, ensuring that the field always
+would contain a valid e-mail address, the tests would fail right away,
+before they even ran. Rails would load the fixtures into ActiveRecord,
+the database would reject them as being invalid and
+I'd be left scratching my head.
+</p><p>
+Things get even hairier when you start to make fixtures that depend on
+associations. I obviously want my meeting_people fixtures to point
+to valid people and meetings, but using the numeric IDs can get
+confusing very quickly. Fortunately, recent versions of Rails allow
+me to name the fixture to which an object is associated, rather than
+its numeric ID. Thus, although the default fixtures for meeting_people is
+this:
+
+<pre     class="programlisting">
+one:
+  person_id: 1
+  meeting_id: 1
+
+two:
+  person_id: 1
+  meeting_id: 1
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b7590"></a></h2></div></div><p>
+instead, I can say this:
+
+<pre     class="programlisting">
+one:
+  person: one
+  meeting: one
+
+two:
+  person: two
+  meeting: two
+</pre>
+</p><p>
+Obviously, you would want to choose more descriptive names for your
+fixtures. But, I now have indicated that meeting #1 is with person
+#1, and meeting #2 is with person #2. This is obviously more
+descriptive than the simple numbers would be.
+</p><p>
+You can even do one better than this, because fixtures understand the
+has_many :through associations that I defined in the models. Just as
+in the Ruby code, I can add a person to a meeting with:
+
+<pre     class="programlisting">
+
+meeting.people &lt;&lt; a_person
+
+</pre>
+</p><p>
+I can put the same sorts of information in the fixture file. For
+example:
+
+<pre     class="programlisting">
+one:
+  starting_at: 2009-05-10 00:48:12
+  ending_at: 2009-05-10 01:48:12
+  location: MyText
+  people: one, two
+two:
+  starting_at: 2009-05-10 00:48:12
+  ending_at: 2009-05-10 01:48:12
+  location: MyText
+  people: two
+</pre>
+</p><p>
+If you do things this way, you don't want to define things in both the
+meeting_people fixture and in the meetings fixture. Otherwise, you
+might be in for some very strange errors. Note that fixture files are
+ERb (embedded Ruby) files, so you can have dynamically generated
+entries, such as:
+
+<pre     class="programlisting">
+
+one:
+  starting_at: &lt;%= 5.minutes.ago %&gt;
+  ending_at: &lt;%= Time.now %&gt;
+  location: MyText
+  people: one, two
+
+</pre>
+</p><p>
+Now, how do you use these fixtures in your tests? It's actually
+pretty straightforward. You need to load the fixtures you want with
+the fixtures method:
+
+<pre     class="programlisting">
+fixtures :meetings
+</pre>
+</p><p>
+By default, all fixtures are imported, thanks to:
+
+<pre     class="programlisting">
+fixtures :all
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b7ab8"></a></h2></div></div><p>
+in test/test_helper.rb, which is imported automatically into all
+tests. Then, in your test, you can say something like this:
+
+<pre     class="programlisting">
+get :edit, :id =&gt; people(:one).id
+</pre>
+</p><p>
+This example (of a functional test) will load the person object
+identified as one in people.yml, invoking the edit method and
+passing it the ID of the appropriate fixture.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13b7c70"></a>
+Factory Girl</h2></div></div><p>
+For a small site, or when you can keep everything in your head,
+fixtures are just fine. I've certainly used them over the years, and
+I've found them to be an invaluable part of my testing strategy. But,
+factories are an alternative to fixtures that have become increasingly
+popular, both because they're written in Ruby code, and they
+allow you to do all sorts of things that are difficult or impossible
+with YAML fixtures.
+</p><p>
+Factory Girl is one of the best known factories, written and
+distributed by the Thoughtbot company, and it is available as
+a Ruby gem. After installing Factory Girl on your system and bringing
+it into your application's environment with:
+
+<pre     class="programlisting">
+config.gem "thoughtbot-factory_girl",
+             :lib    =&gt; "factory_girl",
+             :source =&gt; "http://gems.github.com"
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13ae6b8"></a></h2></div></div><p>
+in config/environment.rb, you will be able to use it. Basically,
+Factory Girl allows you to create objects in Ruby, rather than load
+them from fixture files. No defaults are created for you by the
+generator, but that's not a big deal, given how easy it is to use
+Factory Girl to create test objects.
+</p><p>
+Above, I showed how in a test environment using fixtures, you can
+grab the person object with a name of one by using the people
+method, and then passing a symbol:
+
+<pre     class="programlisting">
+get :edit, :id =&gt; people(:one).id
+</pre>
+</p><p>
+<tt  >people(:one)</tt> is a full-fledged ActiveRecord object, with everything
+you might expect from such an object. Factory Girl works in a
+different way. First, you need to create a test/factories.rb
+file, in which your factories are defined. (You also may create a
+test/factories/ directory, the contents of which will be Ruby files
+defining factories.)
+</p><p>
+To create a factory for people (that is, in place of people.yml),
+insert people.rb inside test/factories:
+
+<pre     class="programlisting">
+Factory.define :person do |p|
+  p.first_name 'Reuven'
+  p.last_name  'Lerner'
+  p.email 'reuven@lerner.co.il'
+end
+</pre>
+</p><p>
+Now, inside the tests, you can say:
+
+<pre     class="programlisting">
+get :edit, :id =&gt; Factory.build(:person).id
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13aead8"></a></h2></div></div><p>
+or:
+
+<pre     class="programlisting">
+person = Factory.build(:person)
+get :edit, :id =&gt; person.id
+</pre>
+</p><p>
+At first glance, this doesn't seem too exciting. After all, you could
+have done roughly the same thing with your fixture, right? But
+factories allow you to override the defaults:
+
+
+
+<pre     class="programlisting">
+person = Factory.build(:person, :first_name =&gt; 'Foobar')
+get :edit, :id =&gt; person.id
+</pre>
+</p><p>
+But wait, there's more. You can set associations as follows:
+
+
+<pre     class="programlisting">
+Factory.define :person do |p|
+  p.first_name 'Reuven'
+  p.last_name  'Lerner'
+  p.email 'reuven@lerner.co.il'
+  p.meetings {|meetings| meetings.association(:meeting)}
+end
+</pre>
+</p><p>
+In other words, if you have created a meeting factory, you can
+incorporate it into your person factory, taking advantage of the
+association, using a fairly natural syntax.
+</p><p>
+An even more interesting idea is that of sequences. If your
+application needs to create a large number of test people, you
+might want each of those people to have a unique e-mail address.
+(Never mind that the e-mail never will be sent.) You can do this
+with a sequence:
+
+<pre     class="programlisting">
+Factory.define :person do |p|
+  p.first_name 'Reuven'
+  p.last_name  'Lerner'
+  p.sequence(:email) {|n| "person#{n}@example.com" }
+end
+</pre>
+</p><p>
+The first person created with this factory will have an e-mail
+address of person1@example.com; the second will be
+person2@example.com and so forth.
+</p><p>
+As you can see, Factory Girl is as easy to use as YAML fixtures, but
+it offers a great many capabilities that come in handy when testing Rails
+applications.
+</p><p>
+Factory Girl is a terrific library for factories, and it has become quite
+popular since it was first released. But, not everyone liked its basic
+syntax, and one of those people was Pete Yandell, who decided that
+although the basic idea behind factories was sound, he wanted to use a
+different (and more compact) syntax for his factories. Thus was born
+Machinist, which uses a Sham object to describe fields in an object,
+which are then assembled into blueprints for specific objects. For
+example:
+
+
+<pre     class="programlisting">
+require 'faker'
+
+# Define the fields that we will need
+Sham.first_name  { Faker::Name.first_name }
+Sham.last_name  { Faker::Name.last_name }
+Sham.email { Faker::Internet.email }
+
+# Now use these field definitions to create a blueprint
+Person.blueprint do
+  first_name
+  last_name
+  email
+end
+</pre>
+</p><p>
+Now you can use these blueprints to create test objects. For example:
+
+<pre     class="programlisting">
+person = Person.make()
+</pre>
+</p><p>
+As with Factory Girl, you also can override the defaults:
+
+<pre     class="programlisting">
+person = Person.make(:email =&gt; 'foo@example.com')
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13af268"></a>
+Conclusion</h2></div></div><p>
+Fixtures have been a part of Rails testing practices since the
+beginning, and they still can be quite useful. But, if you're finding
+yourself frustrated by YAML files, or if you want to experiment with
+something that offers more flexibility and features, you might well
+want to try looking into factories. This month, I looked at two
+different libraries for creating Rails factories, both of which are in
+popular use and might be a good fit for your project.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12be580.0x13af370"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+The home page for Ruby on Rails is <a href="http://www.rubyonrails.com" target="_self">www.rubyonrails.com</a>.
+Information about testing, including the use of fixtures, is in one of
+the excellent, community-written Rails guides at
+<a href="http://guides.rubyonrails.org/testing.html" target="_self">guides.rubyonrails.org/testing.html</a>.
+</p><p>
+If you are interested in learning more about factories, a good
+starting point (as is often the case) is the Railscast site, with
+weekly screencasts by Ryan Bates. The Railscast that talks about
+fixtures is at <a href="http://railscasts.com/episodes/158-factories-not-fixtures" target="_self">railscasts.com/episodes/158-factories-not-fixtures</a>.
+</p><p>
+Finally, the home page for Factory Girl is at
+<a href="http://dev.thoughtbot.com/factory_girl" target="_self">dev.thoughtbot.com/factory_girl</a>, and the home page for Machinist is at
+<a href="http://github.com/notahat/machinist/tree/master" target="_self">github.com/notahat/machinist/tree/master</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Reuven M. Lerner, a longtime Web/database developer and consultant, is
+a PhD candidate in learning sciences at Northwestern University,
+studying on-line learning communities. He recently returned (with his
+wife and three children) to their home in Modi'in, Israel, after four
+years in the Chicago area.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../184/toc184.html">Issue Table of Contents</a>
+    <a class="link3" href="../184/10515.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

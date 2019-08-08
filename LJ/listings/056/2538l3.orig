@@ -1,0 +1,375 @@
+#!/usr/bin/perl
+#
+#
+# plotdays.pl
+# 
+# This guy uses the PGPLOT module, which in turn is based
+# on the pgplot FORTRAN libraries...  It's a long story, but
+# it works.  The goal is to produce some GIF format files
+# of interesting statistics for the last X days.
+#
+use PGPLOT;  # Load PGPLOT module
+
+require "timelocal.pl";
+
+$DATADIR = "/home/weather/data";
+
+$twentyfourhours = 86400;  #seconds in a day
+
+@daysofweek = ('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday');
+
+# Get the number of days of interest
+if( $#ARGV >= 0 ) { $days=$ARGV[0]; }
+else { $days = 7; }
+
+$maxouttemp = 0;  $minouttemp = 100;
+$maxbp = 0;  $minbp = 100;
+$maxraind = 0;  $minraind = 100;
+$maxrainrate = 0;  $minrainrate = 100;
+$maxwinds = 0;  $minwinds = 100;
+
+# Loop through the number of days we are interested in.
+# My loop index _decreases_, day X is further back
+#  in history than X-1.
+#
+# In true FORTRAN style, we are keeping parallel arrays for 
+#  each statistic and label.  And $j holds the total number
+#  of data points for each statistic's array.
+$j = 0;
+for($i=$days; $i >= 0; $i-- )
+{
+	# Caculate file name for that day in the past.
+	$dtime = time();
+	$ttime = $dtime-($twentyfourhours * $i);
+	@time = localtime($ttime);
+
+	$DAYFILE = sprintf "%s/%02d%02d%02d",
+		$DATADIR, $time[4]+1, $time[3], $time[5];
+
+	$daylabel[$i] = sprintf "%s", $daysofweek[$time[6]];
+	$daydate[$i] = sprintf "%2d/%02d/%02d",$time[4]+1,$time[3],$time[5];
+
+	if( -r "$DAYFILE" )
+	{
+		# Open that day's file and read the data into local arrays
+		# We are interested in outtemp, humidity,
+		# pressure, rainfall, and windspeed.
+		open(IN, "$DAYFILE") or die "Cannot open file $DAYFILE";
+		while (<IN>)
+		{
+			($time, $date, $wdir, $winds, $aux, $intemp,
+			$outtemp, $hum, $bp, $raind, $rainm, $rainrate)
+				= split;
+
+			# Just in case a Min or Max slips in somehow
+			if( $time =~ /[M]/ ) { next; }
+
+			($hour,$min) = split(/:/,$time);
+
+			# Make basetime be the time in seconds at
+			#  first of the day on that recent day in question
+			# We want to end up with a Unix-style long integer
+			#  time value for each data point.
+			$time[0] = $time[1] = $time[2] = 0;
+			$basetime[$i] = timelocal(@time);
+
+			$today_time = (((60*$hour)+$min)*60); 
+			$readingtime = $basetime[$i] + $today_time;
+			$readingtime = $readingtime - $basetime[$days];
+
+			# This is the X value for each plot
+			$xval[$j] = $readingtime;
+
+			$outtemp[$j] = $outtemp;
+			if( $outtemp > $maxouttemp ) { $maxouttemp = $outtemp; }
+			if( $outtemp < $minouttemp ) { $minouttemp = $outtemp; }
+
+			$dp[$j] = &dewpoint($outtemp,$hum);
+
+			$bp[$j] = $bp;
+			if( $bp > $maxbp ) { $maxbp = $bp; }
+			if( $bp < $minbp ) { $minbp = $bp; }
+
+			$raind[$j] = $raind;
+			if( $raind > $maxraind ) { $maxraind = $raind; }
+			if( $raind < $minraind ) { $minraind = $raind; }
+
+			$rainrate[$j] = $rainrate;
+			if( $rainrate > $maxrainrate )
+				{ $maxrainrate = $rainrate; }
+			if( $rainrate < $minrainrate )
+				{ $minrainrate = $rainrate; }
+
+			$winds[$j] = $winds;
+			if( $winds > $maxwinds ) { $maxwinds = $winds; }
+			if( $winds < $minwinds ) { $minwinds = $winds; }
+
+			$j++;
+		}
+		
+		close IN;
+	}
+}
+
+# Then I just create the plots using a whole bunch
+#  of calls to pgplot routines.  Not real pretty, but
+#  it gets the job done.
+
+#
+# Temp and dewpoint plot
+#
+$dev = "temp.gif/GIF";
+$dev = "?" unless defined $dev;
+
+pgbegin(0,$dev,1,1);  # Open plot device
+pgpap(7.0,0.55);
+pgscr(1,0.75,0.75,0.75);
+pgscr(5,0.40,0.70,0.40);
+pgscr(0,1.0,1.0,1.0);
+pgscf(1);             # Set character font
+pgslw(1);             # Set line width
+pgsch(1.2);           # Set character height
+pglabel("","",""); # Labels
+
+$top = (int(($maxouttemp)/10)+1) * 10 ;
+$bottom = (int(($minouttemp)/10)) * 10 ;
+$left = 0;
+$right = ($basetime[0] + $twentyfourhours) - $basetime[$days];
+pgswin($left,$right,$bottom,$top);
+pgbox( 'ABCGI',$twentyfourhours,0,'ABCGINMVS',10,2);
+pgsci(0);                # Change colour
+pgdraw($xval[0],$outtemp[0]);
+
+pgsci(2);                # Change colour
+for( $i=0; $i < $j; $i++)
+{
+	pgdraw($xval[$i],$outtemp[$i]);
+}
+
+pgsci(2);                # Change colour
+pgptxt(0, $top+3.5 ,0,0,"Temperature (F)");
+pgsci(4);                # Change colour
+pgptxt(0, $top+1 ,0,0,"Dewpoint (F)");
+pgsci(5);                # Change colour
+pgptxt(int(($right-$left)/2), $top+3.5 ,0,0, "$time $daylabel[0] $date ");
+
+pgsci(0);                # Change colour
+pgdraw($xval[0],$dp[0]);
+
+pgsci(4);                # Change colour
+for( $i=0; $i < $j; $i++)
+{
+	pgdraw($xval[$i],$dp[$i]);
+}
+
+pgsci(5);                # Change colour
+pgsch(1.20);           # Set character height
+
+for( $i=$days; $i >= 0; $i-- )
+{
+	$offset = (($days-$i) * $twentyfourhours) + int($twentyfourhours/2);
+	pgptxt($offset, $bottom-2 ,0,0.5,$daylabel[$i]);
+	pgptxt($offset, $bottom-4 ,0,0.5,$daydate[$i]);
+}
+pgend;    # Close plot
+
+###
+#
+# Atmospheric Pressure Plot
+#
+$dev = "pressure.gif/GIF";
+pgbegin(0,$dev,1,1);  # Open plot device
+pgpap(7.0,0.55);
+pgscr(1,0.75,0.75,0.75);
+pgscr(5,0.40,0.70,0.40);
+pgscr(0,1.0,1.0,1.0);
+pgscf(1);             # Set character font
+pgslw(1);             # Set line width
+pgsch(1.2);           # Set character height
+
+pglabel("","",""); # Labels
+
+$top = (int($maxbp * 2) + 1) / 2;
+$bottom = (int($minbp * 2)) / 2;
+$left = 0;
+$right = ($basetime[0] + $twentyfourhours) - $basetime[$days];
+pgswin($left,$right,$bottom,$top);
+pgbox( 'ABCGI',$twentyfourhours,0,'ABCGINMVS',.5,2);
+
+pgsci(0);                # Change colour
+pgdraw($xval[0],$bp[0]);
+pgsci(2);                # Change colour
+for( $i=0; $i < $j; $i++)
+{
+	pgdraw($xval[$i],$bp[$i]);
+}
+
+pgsci(2);                # Change colour
+pgptxt(0, $top+.05 ,0,0,"Pressure (inches of mercury)");
+pgsci(5);                # Change colour
+pgptxt(int(($right-$left)/2), $top+.05 ,0,0, "$time $daylabel[0] $date ");
+
+pgsci(5);                # Change colour
+pgsch(1.20);           # Set character height
+
+for( $i=$days; $i >= 0; $i-- )
+{
+	$offset = (($days-$i) * $twentyfourhours) + int($twentyfourhours/2);
+	pgptxt($offset, $bottom-.05 ,0,0.5,$daylabel[$i]);
+	pgptxt($offset, $bottom-.10 ,0,0.5,$daydate[$i]);
+}
+pgend;    # Close plot
+
+###
+#
+# Daily Rainfall and Rainfall Rate
+#
+$dev = "raind.gif/GIF";
+pgbegin(0,$dev,1,1);  # Open plot device
+pgpap(7.0,0.55);
+pgscr(1,0.75,0.75,0.75);
+pgscr(5,0.40,0.70,0.40);
+pgscr(0,1.0,1.0,1.0);
+pgscf(1);             # Set character font
+pgslw(1);             # Set line width
+pgsch(1.2);           # Set character height
+
+pglabel("","",""); # Labels
+
+if( $maxraind > $maxrainrate ) { $maxrain = $maxraind; }
+else { $maxrain = $maxraind; }
+
+if( $minraind > $minrainrate ) { $minrain = $minraind; }
+else { $minrain = $minraind; }
+
+$top = (int($maxrain * 2) + 1) / 2;
+$bottom = (int($minrain * 2)) / 2;
+$left = 0;
+$right = ($basetime[0] + $twentyfourhours) - $basetime[$days];
+pgswin($left,$right,$bottom,$top);
+pgbox( 'ABCGI',$twentyfourhours,0,'ABCGINMVS',.5,2);
+
+pgsci(0);                # Change colour
+pgdraw($xval[0],$raind[0]);
+
+pgsci(2);                # Change colour
+for( $i=0; $i < $j; $i++)
+{
+	pgdraw($xval[$i],$raind[$i]);
+}
+
+pgsci(4);                # Change colour
+for( $i=0; $i < $j; $i++)
+{
+	# Just print positive data points for rainrate
+	if( $rainrate[$i] > 0 )
+	{
+		$y[0] = $rainrate[$i];
+		$x[0] = $xval[$i];
+		pgpt(1,\@x,\@y,20);
+	}
+}
+
+pgsci(2);                # Change colour
+pgptxt(0, $top+.08 ,0,0,"Daily Rainfall (inches)");
+pgsci(4);                # Change colour
+pgptxt(0, $top+.04 ,0,0,"Rainfall Rate (inches per hour)");
+pgsci(5);                # Change colour
+pgptxt(int(($right-$left)/2), $top+.05 ,0,0, "$time $daylabel[0] $date ");
+
+pgsci(5);                # Change colour
+pgsch(1.20);           # Set character height
+
+for( $i=$days; $i >= 0; $i-- )
+{
+	$offset = (($days-$i) * $twentyfourhours) + int($twentyfourhours/2);
+	pgptxt($offset, $bottom-.05 ,0,0.5,$daylabel[$i]);
+	pgptxt($offset, $bottom-.10 ,0,0.5,$daydate[$i]);
+}
+pgend;    # Close plot
+
+###
+#
+# Windspeed Plot
+#
+$dev = "winds.gif/GIF";
+pgbegin(0,$dev,1,1);  # Open plot device
+pgpap(7.0,0.55);
+pgscr(1,0.75,0.75,0.75);
+pgscr(5,0.40,0.70,0.40);
+pgscr(0,1.0,1.0,1.0);
+pgscf(1);             # Set character font
+pgslw(1);             # Set line width
+pgsch(1.2);           # Set character height
+
+pglabel("","",""); # Labels
+
+$top = (int(($maxwinds)/5)+1) * 5 ;
+$bottom = (int(($minwinds)/5)) * 5 ;
+$left = 0;
+$right = ($basetime[0] + $twentyfourhours) - $basetime[$days];
+pgswin($left,$right,$bottom,$top);
+pgbox( 'ABCGI',$twentyfourhours,0,'ABCGINMVS',5,0);
+
+pgsci(0);                # Change colour
+pgdraw($xval[0],$winds[0]);
+
+pgsci(2);                # Change colour
+for( $i=0; $i < $j; $i++)
+{
+	pgdraw($xval[$i],$winds[$i]);
+}
+
+pgsci(2);                # Change colour
+pgptxt(0, $top+1 ,0,0,"Windspeed (MPH)");
+pgsci(5);                # Change colour
+pgptxt(int(($right-$left)/2), $top+1 ,0,0, "$time $daylabel[0] $date ");
+
+pgsci(5);                # Change colour
+pgsch(1.20);           # Set character height
+
+for( $i=$days; $i >= 0; $i-- )
+{
+	$offset = (($days-$i) * $twentyfourhours) + int($twentyfourhours/2);
+	pgptxt($offset, $bottom-.70 ,0,0.5,$daylabel[$i]);
+	pgptxt($offset, $bottom-1.4 ,0,0.5,$daydate[$i]);
+}
+pgend;    # Close plot
+
+exit;
+
+# Subroutines to do things like calculate dewpoint
+#  and corrected atmospheric pressure.
+sub cbp
+{
+	local($in) = @_;
+	return(sprintf("%2.2f", $in + $CBP_CORRECTION));
+}
+
+sub ctof
+{
+	local ($C) = @_;
+	$F = (9/5 * $C) + 32;
+	return $F;
+}
+
+sub ftoc
+{
+	local ($F) = @_;
+	$C = 5/9 * ($F - 32);
+	return $C;
+}
+
+sub dewpoint
+{
+	local ($F, $H) = @_;
+
+	$rh = $H/100; # RH. Fraction, [0..1] not %.
+	$t = ftoc($F); #Celsius Temperature
+
+	$es = 6.112 * exp(17.67 * $t / ($t + 243.5));
+	$e = $rh * $es;
+	$loge = log($e/6.112);
+	$dp = 243.5 * $loge/(17.67 - $loge);
+        return ctof($dp);
+}

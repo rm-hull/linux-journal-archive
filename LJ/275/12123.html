@@ -1,0 +1,571 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Integrating Web Applications with Apache
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Learn how to write your own custom Apache&#10;configurations to make your applications work the way you want.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1afc580.0x1bf3ac0"></a>
+Integrating Web Applications with Apache
+</h1></div><div><div class="author"><h3 class="author">
+Andy
+ 
+Carlson
+</h3></div><div class="issuemoyr">Issue #275, March 2017</div></div><div><p>
+Learn how to write your own custom Apache
+configurations to make your applications work the way you want.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1afc580.0x1bf41f8"></a></h2></div></div><p>
+When you deploy a web application, how do end users access it?
+Often web applications are set behind a gateway device through which
+end users can access it. One of the popular products to act as
+an application gateway on Linux is the Apache Web Server. Although it can
+function as a normal web server, it also has the ability to connect through
+it to other web servers. 
+</p><p>
+In this article, I discuss what it takes to
+integrate a web application into Apache. This includes integrating the
+HTTP protocol functionality, customizing content to render properly and
+reusing pieces of configuration. Once you understand those basic bits of
+functionality,
+you'll have the tools you need to maximize your web applications'
+usability. So, let's get started!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1afc580.0x1bf4408"></a>
+Crash Course in RegEx</h2></div></div><p>
+A mechanism that I use throughout this article that might need a brief
+introduction is Regular Expressions (or regex). Regex is used to define
+a text pattern to search for within a URL or to find and replace text
+within content, such as HTML or JavaScript. The text processing command
+<tt  >sed</tt> uses regex to do searches and substitutions.
+</p><p>
+For each example
+below there will be three parts: input, regex pattern and output.
+The pattern will be applied to the input text and determine the value
+of the output text.
+</p><p>
+<span   class="bold"><b>Example 1:</b></span>
+
+<pre     class="programlisting">
+Input:
+  Name: Frank Sinatra
+  Genre: Jazz
+  Name: 2Pac
+  Genre: Rap
+  Name: Reel Big Fish
+  Genre: Ska
+
+Regex pattern: "^Name: "
+
+Output:
+  Name: Frank Sinatra
+  Name: 2Pac
+  Name: Reel Big Fish
+</pre>
+</p><p>
+This example searches the input text for text that matches
+the pattern <tt  >"^Name: "</tt>. This pattern says, &ldquo;Look for the text 'Name:
+' at the beginning of each line.&rdquo; Since there are two lines that
+begin with that text, only those two lines are returned. While
+&ldquo;^&rdquo;
+represents the beginning of a line, &ldquo;$&rdquo; represents the end of a line.
+So if you were to apply the pattern &ldquo;a$&rdquo;, two lines would be returned
+(Frank Sinatra and Ska). Let's expand on that example and use
+the input from Example 1 with a new pattern.
+</p><p>
+<span   class="bold"><b>Example 2:</b></span>
+
+<pre     class="programlisting">
+Regex pattern: "^Name: [0-9]"
+
+Output:
+  Name: 2Pac
+</pre>
+</p><p>
+As you can see, I've taken the original regex pattern and added
+<tt  >[0-9]</tt>
+to the end. This will search for a single character that can be any
+number from 0 to 9, which is why &ldquo;2Pac&rdquo; was the only line
+returned.
+You also can specify a range with alphabetic characters
+(<tt  >[a-z]</tt> or <tt  >[A-Z]</tt>).
+</p><p>
+Along with pattern selection, you also can do
+substitution with regex.
+There are two formats for regex substitutions: s|pattern|replace|modifier
+or s/pattern/replace/modifier. In Apache, I find it easier to use the
+pipe-style substitution. Example 3 uses the same input
+with a new pattern.
+</p><p>
+<span   class="bold"><b>Example 3:</b></span>
+
+<pre     class="programlisting">
+Regex pattern: "s|^(.*)Frank(.*)$|\1Dwezil\2|g"
+
+Output:
+  Name: Dwezil Sinatra
+  Genre: Jazz
+  Name: 2Pac
+  Genre: Rap
+  Name: Reel Big Fish
+  Genre: Ska
+  Name: Dwezil Zappa
+  Genre: Unknown
+</pre>
+</p><p>
+This pattern has a lot to dissect.
+One of the great features
+of regex is the ability to match any character. The dot operator will
+match any one character. The asterisk operator will match 0 or more of
+whatever character or operator preceded it. Putting these two operators
+together matches 0 or more of any character. Enclosing this in
+parentheses allows the matched text to be represented in the replace
+portion of the pattern with a variable. In this case,
+<tt  >\1</tt> represents the
+first block of text within parentheses and <tt  >\2</tt> represents the second.
+The only characters that are explicitly being matched are
+&ldquo;Frank&rdquo;. As
+such, the lines containing &ldquo;Frank&rdquo; will be replaced with everything up to
+&ldquo;Frank&rdquo; (represented by <tt  >\1</tt>),
+&ldquo;Dwezil&rdquo;, and everything following &ldquo;Frank&rdquo;
+(represented by <tt  >\2</tt>). As you can see, the entirety of the text input
+was sent to the output although modified by the pattern.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1afc580.0x1bf50c0"></a>
+Protocol Integration</h2></div></div><p>
+When it is decided that an application would benefit from Apache
+integration, there is a high likelihood that it will reside on a separate
+server from Apache. To integrate applications being accessed via
+HTTP fully, any or all of these modules may be used:
+<tt  >mod_rewrite</tt>, <tt  >mod_proxy</tt>,
+<tt  >mod_ssl</tt> and <tt  >mod_headers</tt>. Each
+of these modules allows you to customize
+the way communication between the end user and web servers occurs from
+modifying HTTP header data to managing proxy connections to other servers.
+</p><p>
+First, let's look at <tt  >mod_rewrite</tt>. There are a number of directives
+within the <tt  >mod_rewrite</tt> module, but I cover only a
+handful here: <tt  >RewriteEngine</tt>,
+<tt  >RewriteCond</tt> and <tt  >RewriteRule</tt>.
+The <tt  >RewriteEngine</tt> directive simply enables URL rewriting and is invoked
+as follows:
+
+<pre     class="programlisting">
+RewriteEngine on
+</pre>
+</p><p>
+<tt  >RewriteRule</tt> allows the server to respond to an HTTP request to a specific
+URL by, among other things, returning an HTTP redirect (code 301 or 302),
+which will redirect the end user to a specified URL or send a proxied
+request to a back-end server. Here's an example of issuing an HTTP
+redirect:
+
+<pre     class="programlisting">
+RewriteRule /google http://www.google.com [R=301]
+</pre>
+</p><p>
+In this example, when the URL of /google is accessed, the server
+will respond with an HTTP 301 that will redirect the user to
+http://www.google.com. This example will work only if the request
+URL is exactly equal to &ldquo;/google&rdquo;. If the need is to redirect on any
+URL starting with &ldquo;/google&rdquo;, you would define a conditional redirect using
+<tt  >RewriteCond</tt> as follows:
+
+<pre     class="programlisting">
+RewriteCond "%{REQUEST_URI}" "/google.*$"
+RewriteRule "^.*$" http://www.google.com [R=301]
+</pre>
+</p><p>
+The <tt  >RewriteCond</tt> directive has two parts: a string value to check
+and a substring to search for. In this example, you are looking in
+the <tt  >REQUEST_URI</tt> HTTP session variable for anything beginning with
+&ldquo;/google&rdquo;. If that condition is met, the
+<tt  >RewriteRule</tt> on the following
+line is executed. Because you are determining the value of the target
+URL in the <tt  >RewriteCond</tt>, the value of the target URL
+in the <tt  >RewriteRule</tt>
+is defined as <tt  >"^.*$"</tt>.
+</p><p>
+The examples given here are all user-facing events like a 301
+redirect. The <tt  >RewriteRule</tt> directive also can be used to proxy requests
+to a server. This is done behind the scenes unlike an HTTP redirect,
+so the request is forwarded without the users' knowledge. A proxied
+request may be configured like the example below:
+
+<pre     class="programlisting">
+RewriteRule "/home/(.*)$" http://back-end01.test:8080/$1 [P]
+</pre>
+</p><p>
+The above illustrates an example of a virtual root directory. When
+the user accesses anything underneath /home (note the &ldquo;.*&rdquo;
+expression),
+the request is sent to back-end01.test on port 8080 with the location
+set to the URL path beneath /home. For example, if the user tries to
+access /home/test/image.jpg, the request is sent to back-end01.test:8080
+with a location of /test/image.jpg. A proxied
+<tt  >RewriteRule</tt> also
+may be used in conjunction with <tt  >RewriteCond</tt> for further customization.
+Note that this statement proxies only the HTTP request.
+Proxying of HTTP responses will require <tt  >mod_proxy</tt>.
+</p><p>
+Another option for proxying HTTP connections through Apache is
+<tt  >mod_proxy</tt>,
+which provides <tt  >ProxyPass</tt>,
+<tt  >ProxyPassReverse</tt> and
+<tt  >ProxyPassMatch</tt> among
+many other directives that provide more robust proxying options. 
+I focus primarily on these three directives here. As mentioned
+previously, <tt  >RewriteRule</tt> provides proxying of HTTP requests. Let's compare
+the example already given for proxying with
+<tt  >RewriteRule</tt> and an example
+for <tt  >ProxyPass</tt>:
+
+<pre     class="programlisting">
+ProxyPass /home http://back-end01.test:8080/
+</pre>
+</p><p>
+This <tt  >ProxyPass</tt> statement provides roughly the same level of functionality
+as the <tt  >RewriteRule</tt> statement with a more simplistic command. When a
+request comes in for any URL beginning with &ldquo;/home&rdquo;, the request header
+will be rewritten so that the request will be received properly by
+http://back-end01.test:8080/. Consider the following first lines of
+an HTTP request:
+
+<pre     class="programlisting">
+From user to server:    GET /home/test/image.jpg HTTP/1.1
+From server to back-end:    GET /test/image.jpg HTTP/1.1
+</pre>
+</p><p>
+The first line of the header contains the method
+(<tt  >GET</tt> in this case)
+and the URL being requested. When the server receives the request from
+the client, it strips off &ldquo;/home&rdquo;, as specified in the
+<tt  >ProxyPass</tt> directive
+and forwards the request to the back-end server. If you want to proxy
+response packets as well as request packets, the
+following <tt  >ProxyPassReverse</tt> statement
+can be paired with the previous <tt  >ProxyPass</tt> statement:
+
+<pre     class="programlisting">
+ProxyPassReverse /home http://back-end01.test:8080/
+</pre>
+</p><p>
+The syntax is exactly the same as <tt  >ProxyPass</tt>, adding to the simplicity
+of the <tt  >mod_proxy</tt> configuration. This will take any HTTP response
+matching an HTTP request for /home and forward the response back to
+the original client. If you need to add some programmatic
+proxying (similar to <tt  >RewriteCond</tt>), you can use the
+<tt  >ProxyPassMatch</tt>. When
+implementing a forward/reverse proxy configuration,
+<tt  >ProxyPassMatch</tt> can
+replace <tt  >ProxyPass</tt>. Here's an example:
+
+<pre     class="programlisting">
+ProxyPassMatch "^/home/([a-z0-9]*/docs)" http://docserver01.test:8080/$1
+ProxyPassReverse /home http://docserver01.test:8080/
+</pre>
+</p><p>
+This example suggests that within the /home folder, there are
+many sub-folders (let's say user names) and within each of those
+exists a folder named &ldquo;docs&rdquo;. The USERNAME/docs URL exists on
+docserver01.test:8080 in the root of the web server, as denoted by the
+$1 in the server URL. The <tt  >ProxyPassReverse</tt> will function in the same
+manner as it did in the previous example.
+</p><p>
+Securing websites with SSL in Apache is accomplished with
+<tt  >mod_ssl</tt>.
+Although I won't discuss configuring SSL from the ground up,
+a few directives relate to proxied SSL connections:
+<tt  >SSLProxyCheckPeerExpire</tt>,
+<tt  >SSLProxyCheckPeerName</tt> and
+<tt  >SSLProxyCheckPeerCN</tt>.
+It is a common practice to use self-signed certificates on back-end
+servers (provided a valid cert is in place on the user-facing server),
+and these directives address common issues that can arise when using
+self-signed certs. Any of these directives can have one of two arguments
+provided: &ldquo;on&rdquo; or &ldquo;off&rdquo;. If set to
+&ldquo;off&rdquo;, <tt  >SSLProxyCheckPeerExpire</tt>
+will skip checking the expiration date on the SSL cert used on a
+back-end server. To avoid checking a certificate's common name or
+alternate names against the server name used to access a back end,
+set <tt  >SSLProxyCheckPeerName</tt> to &ldquo;off&rdquo;. In
+older versions of Apache,
+you might be able to use <tt  >SSLProxyCheckPeerCN</tt> (set to
+&ldquo;off&rdquo;) instead of
+<tt  >SSLProxyCheckPeerName</tt>.
+</p><p>
+Along with rewriting URLs, it may be necessary to rewrite HTTP request or
+response header fields. In Apache, this is done with
+<tt  >mod_headers</tt>. There
+are only two directives within this module: <tt  >Header</tt>
+and <tt  >RequestHeader</tt>.
+These directives are used to modify response and request header fields,
+respectively. Many actions can be used with either
+of these directives, but here, let's look at the <tt  >set</tt>
+and <tt  >edit</tt>
+actions&mdash;for example:
+
+<pre     class="programlisting">
+Header set ReceiveTime "%t"
+</pre>
+</p><p>
+This example will add and replace any existing header in an HTTP response
+named <tt  >ReceiveTime</tt> and give it the value of the UNIX timestamp when the
+request was received by the server (represented by
+<tt  >"%t"</tt>). 
+</p><p>
+If you
+need to replace the value of a header that comes from a back-end server,
+you would use the <tt  >edit</tt> action. Consider the following example:
+
+<pre     class="programlisting">
+Header edit Location "^http://back-end01.test:8080/(.*)$" 
+ &#8618;"http://public.test/$1"
+</pre>
+</p><p>
+This example will replace the <tt  >Location</tt> attribute in an HTTP
+response, which will exist in a 301/302 redirect. If it finds
+http://back-end01.test:8080 at the beginning of the
+<tt  >Location</tt> header,
+it replaces that part with &ldquo;http://public.test&rdquo; (the user-facing URL).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1afc580.0x1bedd10"></a>
+Content Integration</h2></div></div><p>
+Once a remote application is integrated with an Apache server, from a
+protocol standpoint, it may be necessary to integrate content. This will
+generally manifest itself as URLs coded into HTML or JavaScript that are
+specific to a back-end server and not to a user-facing server. The basic
+necessity is to be able to search and replace bits of HTML or JavaScript
+content,
+so that it can render and perform correctly when accessed through an
+Apache proxy. The module that accomplishes this is
+<tt  >mod_substitute</tt> and
+specifically the <tt  >Substitute</tt> directive.
+<tt  >Substitute</tt> allows a simple regex
+substitute to be performed on the payload data of an HTTP response.
+</p><p>
+Something to consider before attempting to replace text is to account for
+whether the back-end web server compresses data before sending it
+over the network. If it does, your <tt  >Substitute</tt>
+statements might not work,
+as it will be searching for ASCII text within binary compressed data.
+To account for this, you can instruct Apache to decompress the data,
+manipulate the response and then re-compress it. This is done using
+the <tt  >SetOutputFilter</tt> directive, which is part of Apache core functionality.
+Here's how it works:
+
+<pre     class="programlisting">
+SetOutputFilter INFLATE;SUBSTITUTE;DEFLATE
+</pre>
+</p><p>
+Reading the arguments from left to right, this tells Apache to
+<tt  >INFLATE</tt> (decompress) the data from the back-end
+server, perform the
+substitute and <tt  >DEFLATE</tt> (compress) the data before returning it to
+the end user.
+</p><p>
+The <tt  >Substitute</tt> statement uses a regex substitute expression. As I
+mentioned previously, I found it easier to use the pipe-style substitute
+expression in Apache. To recap, the syntax is s|search|replace|options. Two
+common options that I tend to use: &ldquo;i&rdquo;, which denotes a case-insensitive
+search, and &ldquo;n&rdquo;, to allow the search and replace values to be processed
+as regex. Here's a common use example:
+
+<pre     class="programlisting">
+Substitute "s|(href="http)(://)back-end01.test:8080|$1s$2public.test|in"
+</pre>
+</p><p>
+For this example, let's assume that the user-facing site (public.test) runs
+HTTPS, and the back-end server (back-end01.test) runs HTTP on port 8080.
+This would be a solution if the back-end web server returned hyperlinks
+that were specific to itself as opposed to the user-facing site. In the
+search portion of the regex substitute, this splits out two groups of
+text in parentheses: <tt  >(href=\"http)</tt> and
+<tt  >(://)</tt>. These are blocks of text
+that you want preserved in the replace section of the regex. In the
+replace,
+you are inserting an &ldquo;s&rdquo; after http and replacing the hostname/port with
+the user-facing site name. After processing, the resulting string will
+be <tt  >href="https://public.test</tt>. This will update hyperlinks that use
+&ldquo;href&rdquo; attributes (&lt;a&gt; and &lt;link&gt;). For &lt;img&gt; and
+&lt;script&gt; tags, you
+could use this same Substitute statement and replace &ldquo;href&rdquo;
+with &ldquo;src&rdquo;.
+Another consideration would be to account for double or single quotes
+delimiting attribute values (<tt  >href='</tt> vs.
+<tt  >href="</tt>).
+</p><p>
+Another application of <tt  >Substitute</tt> is to extend the
+functionality of a page
+without manipulating the original source code. Consider the
+following example:
+
+<pre     class="programlisting">
+Substitute "s|(&lt;body.*&gt;)|\1&lt;div style=\"font-size:14pt;
+&#8618;font-weight:bold;background-color:#ff0000;color:
+&#8618;#ffffff;display:block;text-align:center;\"&gt;This site 
+ &#8618;will be down for 24 hours beginning at 8 pm tonight&lt;/div&gt;|in"
+</pre>
+</p><p>
+If a website needs to be taken off-line for maintenance, this is an
+easy way to alert the user population of the outage without modifying
+the application itself. This example simply inserts a red bar along the
+top of the page (right after the &lt;body&gt; tag), which displays information
+about the outage. Depending on how your page is rendered, you might need
+to choose another tag to act as your starting point instead of &lt;body&gt;.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1afc580.0x1f01b40"></a>
+Streamlining Future Integrations</h2></div></div><p>
+All of the topics presented here can be configured and
+maintained relatively easily if you have only a few statements.
+In the real world, there typically will be many sites that use a similar
+configuration and having to define the functionality for each site can
+be time-consuming and can lead to mistakes. Luckily, Apache provides a
+mechanism to repeat functionality throughout your configuration through
+the use of <tt  >mod_macro</tt>. The
+<tt  >&lt;Macro&gt;</tt> directive within an Apache config
+functions very much like a function or subroutine. Once a macro is
+defined, it can be referenced as many times as is necessary, leaving you
+with one place within your config to maintain your detailed functionality.
+Here's an example macro:
+
+<pre     class="programlisting">
+
+&lt;Macro RedirectSecure $host $path&gt;
+        RewriteCond "%{REQUEST_URI}" "^$path"
+        RewriteRule "^/(.*)$" "https://$host/$1"
+&lt;/Macro&gt;
+
+</pre>
+</p><p>
+When called, this macro will define a <tt  >RewriteCond</tt>
+and <tt  >RewriteRule</tt> that,
+if they access a URL starting with the value of the $path argument, will
+redirect the user to http://$host/$1, where $host is the hostname specified
+as a macro argument and $1 is the entire URL path. The following syntax
+would be used to call this macro:
+
+<pre     class="programlisting">
+Use RedirectSecure public.test /users
+</pre>
+</p><p>
+Something to consider is the location within the Apache config from
+which a macro is called. A <tt  >RewriteRule</tt>, for
+example, cannot be called
+outside a <tt  >&lt;VirtualHost&gt;</tt> block. As such, if the macro is called
+outside a <tt  >&lt;VirtualHost&gt;</tt> block, Apache will throw an error and not start.
+Here's another example:
+
+<pre     class="programlisting">
+
+&lt;Macro ReplaceContentURL $backendurl $publicurl&gt;
+        Substitute "s|(href=\")$backendurl|$1$publicurl|in"
+        Substitute "s|(src=\")$backendurl|$1$publicurl|in"
+&lt;/Macro&gt;
+
+</pre>
+</p><p>
+This macro expands on the replacing of URLs that I covered previously. This will
+search for tag attributes of &ldquo;href&rdquo; and &ldquo;src&rdquo; and replace the hyperlinks
+of the back-end server with that of the user-facing server. Here's an
+example of how this might be called:
+
+<pre     class="programlisting">
+Use ReplaceContentURL http://back-end01.test:8080 https://public.test
+</pre>
+</p><p>
+This will search for http://back-end01.test:8080, beginning with either
+<tt  >href="</tt> or <tt  >src="</tt> and replace the URL with https://public.test. Macros
+can be used for any piece of Apache configuration. They can be used
+to do small tasks as shown here as well as whole site configurations.
+Although macros are pretty simple, they make the difference between a
+large amount of difficult-to-maintain configuration files and a simplified
+reusable configuration.
+</p><p>
+At this point, you have some basic knowledge of integrating HTTP,
+customizing content and reproducing configuration within Apache.
+Although many directives and modules weren't covered here, this will
+be a great starting point and can help you get started with accessing
+your applications through Apache. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1afc580.0x1f02328"></a></h2></div></div><div class="sidebar"><p class="title"><b>Resources</b></p><p>
+The following are some articles I've
+found useful along with some example Apache configs I've written.
+</p><p>
+Apache Module Reference (2.2): <a href="http://httpd.apache.org/docs/2.2/mod" target="_self">httpd.apache.org/docs/2.2/mod</a>
+</p><p>
+Apache Module Reference (2.4): <a href="http://httpd.apache.org/docs/2.4/mod" target="_self">httpd.apache.org/docs/2.4/mod</a>
+</p><p>
+Git Instaweb Reverse Proxy: <a href="https://gist.github.com/bng44270/cff67619db3e3f915957" target="_self">https://gist.github.com/bng44270/cff67619db3e3f915957</a>
+</p><p>
+Monit Reverse Proxy: <a href="https://gist.github.com/bng44270/287277ea1975b9a3e3526d5a5bcb017c" target="_self">https://gist.github.com/bng44270/287277ea1975b9a3e3526d5a5bcb017c</a>
+</p><p>
+Adobe Experience Manager Apache Config: <a href="https://github.com/bng44270/aem-dispatcher-config" target="_self">https://github.com/bng44270/aem-dispatcher-config</a>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1afc580.0x1f028a8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Andy Carlson has worked in IT for the past 13 years
+doing networking and server administration. He is thankful to have 
+chosen a career that he loves, grows in and learns from. He and his amazing
+wife have three daughters and a son, and they currently reside in
+Cincinnati, Ohio. He enjoys playing the guitar and spending time with
+family and friends.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../275/toc275.html">Issue Table of Contents</a>
+    <a class="link3" href="../275/12123.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

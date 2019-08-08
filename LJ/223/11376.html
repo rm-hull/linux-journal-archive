@@ -1,0 +1,335 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Work the Shell
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;It's not hard to create functions to ensure that your script&#10;doesn't run forever. But what if you want portions to be timed while others&#10;can take as long as they need? Not so fast, Dave explains in his latest&#10;Work&#10;the Shell.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2760580.0x2857ac0"></a>
+Work the Shell
+</h1></div><div><h3 class="subtitle"><i>
+SIGALRM Timers and Stdin Analysis
+</i></h3></div><div><div class="author"><h3 class="author">
+Dave
+ 
+Taylor
+</h3></div><div class="issuemoyr">Issue #223, November 2012</div></div><div><p>
+It's not hard to create functions to ensure that your script
+doesn't run forever. But what if you want portions to be timed while others
+can take as long as they need? Not so fast, Dave explains in his latest
+Work
+the Shell.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2760580.0x2858358"></a></h2></div></div><p>
+In my last article, I started building out a skeleton script that would have the
+basic functions needed for any decent shell script you might want to create.
+I started with command-line argument processing with getopts, then
+explored syslog and status logging as scripts. Finally, I ended that column
+by talking about how to capture signals like Ctrl-C and invoke functions
+that can clean up temp files and so on before actually giving up control of your
+shell script.
+</p><p>
+This time, I want to explore a different facet of signal management in a
+shell script: having built-in timers that let you specify an allowable
+quantum of time for a specific function or command to complete with explicit
+consequences if it hangs.
+</p><p>
+When does a command hang? Often when you're tapping into a network
+resource. For example, you might have a script that looks up definitions by
+handing a query to Google via curl. If everything's running
+fine, it'll complete in a second or two, and you're on your way.
+</p><p>
+But if the network's off-line or Google's having a problem or any of
+the million other reasons that a network query can fail, what happens to
+your script? Does it just hang forever, relying on the curl
+program to have its own timeout feature? That's not good.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2760580.0x2858670"></a>
+Alarm Timers</h2></div></div><p>
+One of the most common alarm timer approaches is to give the entire script a
+specific amount of time within which it has to finish by spawning a
+subshell that waits that quantum, then kills its parent. Yeah, kinda
+Oedipal, but at least we're not poking any eyes out in this script!
+</p><p>
+The additional lines end up looking like this:
+
+<pre     class="programlisting">
+
+(
+sleep 600           # if 10 minutes pass
+kill -TERM $$       # send it a SIGTERM signal
+)&amp;
+
+</pre>
+</p><p>
+There's no &ldquo;trap&rdquo; involved&mdash;easy enough. Notice especially that the closing
+parenthesis has a trailing ampersand to ensure that the subshell is pushed into
+the background and runs without blocking the parent script from proceeding.
+</p><p>
+A smarter, cleaner way to do this would be for the timer child subshell to
+send the appropriate SIGALRM signal to the parent&mdash;a small tweak:
+
+<pre     class="programlisting">
+
+(
+sleep 600            # if 10 minutes pass
+kill -ALRM $$        # send it a SIGALRM signal
+)&amp;
+
+</pre>
+</p><p>
+If you do that, however, what do you need in the parent script to capture the
+SIGALRM? Let's add that, and let's set up a few functions along the way
+to continue the theme of useful generic additions to your scripts:
+
+<pre     class="programlisting">
+
+function allow_time
+{
+   ( echo timer allowing $1 seconds for execution
+     sleep $1
+     kill -ALRM $$
+   ) &amp;
+}
+
+</pre>
+</p><p>
+This first function lets you easily set a time for subsequent execution,
+while the second presents your ALRM handler in a bit neater fashion:
+
+<pre     class="programlisting">
+function timeout_handler
+{
+   echo allowable time for execution exceeded.
+   exit 1
+}
+</pre>
+</p><p>
+Note that both scripts have debugging output that's probably not needed
+for actual production code. It's easily commented out, but running it as is will
+help you understand how things interact and work together.
+</p><p>
+How might this be used? Like this:
+
+<pre     class="programlisting">
+trap timeout_handler SIGALRM
+allow_time 10
+code that has ten seconds to complete
+</pre>
+</p><p>
+That would give the script ten seconds to finish.
+</p><p>
+The problem is, what happens if it finishes up in less time than allotted? The
+subshell is still out there, waiting, and it pushes out the signal to a
+nonexistent process, causing the following sloppy error message to show
+up:
+
+<pre     class="programlisting">
+sigtest.sh: line 7: kill: (10532) - No such process
+</pre>
+</p><p>
+There are two ways to fix this, either kill the subshell when the parent
+shell exits or have the subshell test for the existence of the parent
+shell just before it sends the signal.
+</p><p>
+Let's do the latter. It's easier, and having the subshell float
+around for a few seconds in a sleep is certainly not going to be a waste of
+computing resources.
+</p><p>
+The easiest way to test for the existence of a specified process is to use
+ps and check the return code, like this:
+
+<pre     class="programlisting">
+
+ps $$ &gt;/dev/null ; echo $?
+
+</pre>
+</p><p>
+If the process exists, the return code will be 0. If it's gone, the
+return code will be nonzero. This suggests a simple test:
+
+<pre     class="programlisting">
+if [ ! $(ps $$ &gt; /dev/null) ]
+</pre>
+</p><p>
+But, that won't work because it's the return code, not what's
+handed to the shell. The solution? Simply invoke the ps command, then
+have the expression test the return code:
+
+<pre     class="programlisting">
+
+function allow_time
+{
+   ( echo timer allowing $1 seconds for execution
+     sleep $1
+     ps $$ &gt; /dev/null
+     if [ ! $? ] ; then
+       kill -ALRM $$
+     fi
+   ) &amp;
+}
+
+</pre>
+</p><p>
+That solves that problem. But, what if you have sections of code where
+you want to limit your execution time followed by other sections where you
+don't care?
+</p><p>
+That's easy if you don't mind leaving some child processes around
+waiting to shoot a signal at the parent. Just use this:
+
+<pre     class="programlisting">
+trap '' SIGALRM
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2760580.0x2859118"></a></h2></div></div><p>
+when you're done with the timed passage. What happens is that the timer
+generates a signal, but the parent script ignores it.
+</p><p>
+The limitation on this, of course, is if you have code like this:
+
+<pre     class="programlisting">
+
+regular code
+possible runaway code &lt;-- allocate 100 seconds
+cancel timer
+more regular code
+possible runaway code &lt;-- allocate 100 seconds
+
+</pre>
+</p><p>
+The situation arises if the second code block is started before the first
+timer runs out. Imagine that you've allocated 100 seconds for the first
+timed block and it finishes in 90 seconds. Regular code takes five seconds,
+then you're in block two, for exactly ten seconds. Then the first ALRM
+timer triggers, after ten seconds rather than another 100.
+Not good.
+</p><p>
+This is admittedly a bit of a corner case, but to fix it, let's 
+reverse the decision about having child processes test for the existence of
+the parent before sending the signal and instead have the parent script kill
+all child subshells upon completion of the timed portion. It's a bit tricky to
+build, because it requires the use of ps and picks up more processes than
+just that subshell, so you not only need to screen out your own process,
+you
+also want to get rid of any subshell processes that aren't actually the
+script itself.
+</p><p>
+I use the following:
+
+<pre     class="programlisting">
+ps -g $$ | grep $myname | cut -f1 -d\  | grep -v $$
+</pre>
+</p><p>
+This generates a list of process IDs (pids) for all the subshells running,
+which you then can feed to <tt  >kill</tt>:
+
+
+<pre     class="programlisting">
+pids=$(ps -g $$ | grep $myname | cut -f1 -d\  | grep -v $$)
+kill $pids
+</pre>
+</p><p>
+The problem is that not all of those processes are still around by the time
+they're handed to the kill program. The solution? Ignore any
+errors generated by PID not found:
+
+<pre     class="programlisting">
+
+kill $pids &gt; /dev/null 2&gt;&amp;1
+
+</pre>
+</p><p>
+Combined as a function, it'd look like this:
+
+
+<pre     class="programlisting">
+
+function kill_children
+{
+   myname=$(basename $0)
+   pids=$(ps -g $$ | grep $myname | cut -f1 -d\  | grep -v $$)
+   kill $pids &gt; /dev/null 2&gt;&amp;1
+}
+
+</pre>
+</p><p>
+If you're thinking &ldquo;holy cow, multiple timers in the same script is
+a bit of a mess&rdquo;, you're right. At the point where you need something
+of this nature, it's quite possible that a different solution would be a
+smarter path.
+</p><p>
+Further, I'm sure there are other ways to address this, in which
+case I'd be most interested in hearing from readers about whether
+you've encountered a situation where you need to have multiple timed
+portions of your code, and if so, how you managed it! Send e-mail via
+<a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Dave Taylor has been hacking shell scripts for more than 30 years. Really.
+He's the author of the popular <span   class="emphasis"><em>Wicked Cool Shell
+Scripts</em></span> and
+can be found on Twitter as @DaveTaylor and more generally at
+<a href="http://www.DaveTaylorOnline.com" target="_self">www.DaveTaylorOnline.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../223/toc223.html">Issue Table of Contents</a>
+    <a class="link3" href="../223/11376.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,473 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Hardening Sendmail</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Mick examines sendmail's security controversies and builds an&#10;    SMTP gateway for handling internet mail.&#10;    "><meta name="keywords" content="Sendmail, security, SMTP, gateway"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xd6d580.0xe64ab0"></a>Hardening Sendmail</h1></div><div><div class="author"><h3 class="author">Mick Bauer</h3></div><div class="issuemoyr">Issue #96, April 2002</div></div><div><p>
+    Mick examines sendmail's security controversies and builds an
+    SMTP gateway for handling internet mail.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe65450"></a></h2></div></div><p>Ah, sendmail. You either love it for
+being so versatile and ubiquitous, or you hate it for being
+bloated, complicated and insecure. Or perhaps you're a complete
+newcomer to the e-mail server game and would like to give sendmail
+a try (after all, sendmail is arguably the most popular open-source
+software package on the Internet).</p><p>Well, contrary to popular belief, sendmail isn't a total loss
+where security is concerned, nor does it require learning the
+arcane syntax of sendmail.cf (although hardcore sendmail gurus do
+indeed master it). This month we examine these and other sendmail
+security controversies, using sendmail's handy m4 macros to rapidly
+build a secure but functional Simple Mail Transport Protocol (SMTP)
+gateway to handle internet mail.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe655b0"></a>Why (or Why Not) Use Sendmail?</h2></div></div><p>Sendmail is one of the most venerable internet software
+packages still in widespread use. It first appeared in 4.1c BSD
+UNIX (April 1983), and to this day it has remained the most
+relied-upon application of its kind. Among message transfer agents
+(MTAs), sendmail is the great workhorse of the Internet,
+transferring e-mail between networks dependably and (to end users)
+transparently. But sendmail has both advantages and
+disadvantages.</p><p>On the good side, sendmail has a huge user community, with
+the result that it's easy to find both free and commercial support
+for it, not to mention a wealth of electronic and print
+publications. It's also stable and predictable, due to its
+maturity.</p><p>On the negative side, sendmail has acquired a certain amount
+of cruft (old code) over its long history, with the result that it
+has a reputation of being insecure and bloated. Both charges are
+open to debate, however. It's true that it has had a number of
+significant vulnerabilities over the years. However, these have
+been brought to light and fixed rapidly.</p><p>As for the &ldquo;bloatware&rdquo; charge, it's true that sendmail has
+a much larger code base than other MTAs such as qmail and Postfix,
+and a larger RAM footprint too. This probably has at least as much
+to do with the fact that sendmail is monolithic (one executable
+provides most of sendmail's functionality) as it does with cruft.
+Indeed, sendmail's code has been scrutinized so closely by so many
+programmers over the years that it's a little hard to believe that
+too much cruft (i.e., code that is strictly historical and
+obsolete) has survived intact over the past 20 years.</p><p>It's much more useful to observe that being monolithic,
+sendmail must run as root if <span   class="emphasis"><em>any portion</em></span> of
+its required functionality does, i.e., writing mail to multiple
+users' home directories. For this reason, sendmail can run only as
+an unprivileged user on systems on which it's to act solely as an
+e-mail relay or gateway.</p><p>Sendmail also is criticized for its complexity. The syntax of
+its configuration file, sendmail.cf, is non-instinctive to say the
+least&mdash;in my opinion, its difficulty ranks somewhere between C
+programming and regular expressions. As with these, this is because
+of how powerful sendmail is (though many of us do wish sendmail
+used C, regular expressions or some other standard configuration
+language in sendmail.cf rather than its own equally complex but
+much more proprietary syntax). Nowadays, though, this point is
+largely moot. Recent versions of sendmail can be configured via m4
+macros, which provide a much less user-hostile experience than
+editing sendmail.cf directly.</p><p><a href="5753s1.html" target="_self">Mick's Disclaimer</a></p><p>Regardless of one's opinions on sendmail, it's unquestionably
+a powerful and well-supported piece of software. If sendmail's
+benefits are more compelling to you than the negatives, you're in
+good company. But you'll be in even <span   class="emphasis"><em>better</em></span>
+company if you learn to run sendmail securely.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe65a28"></a>Sendmail Architecture</h2></div></div><p>As mentioned earlier, sendmail is monolithic in that it does
+all its real work with one executable, sendmail. Sendmail has two
+modes of operation: it can be invoked as needed, in which case it
+will process any queued mail and then quit; or it can be run as a
+persistent background d&aelig;mon.</p><p>D&aelig;mon mode is required only when sendmail's role is to
+receive mail from external hosts; if all you use sendmail for is
+sending mail, you shouldn't run sendmail as a d&aelig;mon, and in
+fact you can probably stop reading now, because sendmail really
+doesn't need any customization to do this unless you wish to run it
+chroot-ed.</p><p>The way sendmail works, then, depends on how it's being run.
+If it's running as a d&aelig;mon (i.e., with the -bd flag), it
+listens for incoming SMTP connections on TCP port 25 and
+periodically tries to send any outbound messages in its queue
+directory /var/spool/mqueue. If it's being invoked on the fly, it
+attempts to deliver the outbound message it's been invoked to send
+and/or checks /var/spool/mqueue for other pending outbound
+messages.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe65be0"></a>The Task at Hand</h2></div></div><p>Before we go any further, I should make clear what we're
+about to build. I've chosen the SMTP gateway scenario because it's
+such a common role for sendmail and because it's so dependent on
+good security (in most organizations, publicly accessible mail
+servers face scarier if not more numerous threats than internal
+mail servers do).</p><p>An SMTP gateway typically needs meticulous attention to
+privilege levels, file permissions and in general, only as much
+enabled functionality as is needed to route mail. On such a host,
+sendmail should run as an unprivileged user where possible; it
+should run chroot-ed (in a subset of /) at least when writing
+files, and it should be configured to relay mail only for your
+organization, not for spammers.</p><p>It takes very little tweaking to harden sendmail on Red Hat 7
+for SMTP gateway use and only a little more on SuSE and other
+distributions.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe65d98"></a>Obtaining and Installing Sendmail</h2></div></div><p>I can state with absolute certainty that your Linux
+distribution of choice includes one or more packages for sendmail.
+Whether it's presently installed on your system and whether it's an
+appropriate version for you to use, however, is another
+matter.</p><p>If you use an RPM-based distribution (Red Hat, Mandrake,
+SuSE, etc.), you can see whether you've got sendmail installed and
+which version by issuing the command <b  >rpm -qv
+sendmail</b>. Note that Red Hat and its derivatives split
+sendmail into three packages: sendmail, sendmail-cf and
+sendmail-doc. SuSE uses a single package, sendmail.</p><p>So, what version should you run? As of this writing, the
+latest version of sendmail is 8.12.2. Red Hat 7 and SuSE 7,
+however, still support variants of sendmail version 8.11. As far as
+I can tell, there's nothing wrong with sticking with your
+distribution's supported sendmail package if it's version 8.11.0 or
+higher. There were no major security problems in the 8.10 or 8.11
+releases; 8.11, in fact, was a &ldquo;features&rdquo; release: rather than
+being released to patch security holes, it was released because the
+sendmail team had added support for TLS encryption and for the SMTP
+AUTH extension to SMTP.</p><p>If you've got the time and/or inclination, though, it's never
+a bad idea to compile and install the latest stable version. For
+sanity's sake, I'll assume for the remainder of this article that
+you're using sendmail 8.10.0 or higher (unless otherwise
+noted).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe66000"></a>Note to Debian Users</h2></div></div><p>Debian GNU/Linux v2.2 (Potato) still supports sendmail
+v.8.9.3. Although this is a stable and apparently secure release,
+it's now two major versions old (if one considers the second
+numeral to represent a major version, which I do because the first
+numeral has been eight for half a decade). In addition, 8.9.3
+doesn't support TLS or SMTP AUTH.</p><p>If you want TLS or SMTP AUTH, or are uncomfortable running an
+older version, you always can uninstall the package, download the
+latest source code tarball from
+<a href="http://www.sendmail.org" target="_self">www.sendmail.org</a> and
+compile and install sendmail from source. The source code tarball
+is well documented and compiles easily under Linux, assuming you've
+got a working gcc installation.</p><p>Once you've installed sendmail, either in the form of a
+binary package from your distribution or from a source code tarball
+you've compiled yourself, you've still got a couple of tasks left
+before you can configure and run the sendmail executable as a
+d&aelig;mon.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe66210"></a>SuSE Sendmail Preparation</h2></div></div><p>If you're a SuSE user, become root if you aren't already.
+Next, open /etc/rc.config with your text editor of choice and set
+the variable SMTP to &ldquo;yes&rdquo;. This is necessary for sendmail's
+startup script in /etc/init.d to run at boot time.</p><p>In addition, you need to edit the file
+/etc/rc.config.d/sendmail.rc.config so that the variable
+SENDMAIL_TYPE is set to &ldquo;no&rdquo;. Doing so essentially will disable
+SuSEconfig's use of /etc/rc.config.d/sendmail.rc.config, which in
+other circumstances can be set up to generate a simple sendmail
+configuration automatically. We're going to set up an SMTP
+gateway/relay, which is a bit beyond the scope of
+sendmail.rc.config. But if your host is to act only as a simple
+SMTP server for its own local users, it will probably suffice to
+edit this file (having first set its SENDMAIL_TYPE variable to
+&ldquo;yes&rdquo;); if so, you'll find sendmail.rc.config's full
+documentation in /etc/mail/README.</p><p>After editing rc.config and sendmail.rc.config, run
+SuSEconfig. This will propagate the changes you just made to
+rc.config and sendmail.rc.config. To start the d&aelig;mon you can
+enter the command <b  >/etc/init.d/sendmail start</b>,
+but I recommend you wait until sendmail is fully configured before
+you do so.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe66420"></a>Red Hat Sendmail Preparation</h2></div></div><p>If you're a Red Hat user, you have only one step prior to
+configuring sendmail: edit /etc/sysconfig/sendmail so that the
+variable DAEMON is set to &ldquo;yes&rdquo;. This will tell the startup
+script /etc/init.d/sendmail to start sendmail as a d&aelig;mon at
+boot time.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0xe66528"></a>Configuring Sendmail</h2></div></div><p>And now, at last, we configure sendmail to act as our
+domain's SMTP gateway. What follows applies to any installation of
+sendmail 8.9 or higher (you shouldn't in any circumstances run
+8.8).</p><p>The simplified method of generating sendmail configurations
+(sendmail.cf and accompanying files) consists of these
+steps:</p><div class="orderedlist"><ol type="1"><li><p>Enable needed features in sendmail.mc.</p></li><li><p>Set up domain-name masquerading, if needed, in
+sendmail.mc.</p></li><li><p>Run <b  >m4</b> to generate sendmail.cf
+from sendmail.mc.</p></li><li><p>Configure delivery rules by editing
+mailertable.</p></li><li><p>Configure relaying rules by editing access.</p></li><li><p>Configure local user-aliases in aliases.</p></li><li><p>Convert mailertable, access and aliases to
+databases.</p></li><li><p>Define all local hostnames in
+local-host-names.</p></li><li><p>(Re)start sendmail.</p></li></ol></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0x125efb8"></a>Notable Settings in sendmail.mc</h2></div></div><p>The first and probably longest task in setting up an SMTP
+gateway is generating /etc/sendmail.cf. This is done most easily by
+editing /etc/mail/sendmail.mc (or on SuSE systems,
+/etc/mail/linux.mc&mdash;it may be different on other
+distributions).</p><p>Depending on which Linux distribution you use, configuration
+information for sendmail.mc can be found in
+/usr/share/doc/sendmail/README.cf (Red Hat and its derivatives),
+/usr/share/sendmail/README (SuSE) or some variant thereof. I don't
+have enough space to describe the syntax of the many settings in
+this file in detail. We will, however, look at some that are useful
+for security and for modularizing our configuration a bit.</p><p>In addition to sendmail.cf itself, we can configure sendmail
+to read several other files for configuration information. This is
+useful for two reasons. First, editing sendmail.cf directly is
+unpleasant and even regenerating it from sendmail.mc isn't always
+desirable. Second, if your SMTP gateway has multiple administrators
+with varying privileges, you may wish to keep sendmail.mc and
+sendmail.cf locked down but allow other administrators to edit user
+aliases or mail delivery rules (i.e., /etc/mail/access and
+/etc/mail/mailertable, respectively).</p><p>The most useful external configuration files to enable are
+mailertable, which defines local mail-delivery rules;
+virtusertable, which defines virtual domain mappings on a per-user
+and per-domain level; and access, which defines which hosts may use
+the server as an SMTP relay.</p><p>The sendmail.mc directives for enabling these files are shown
+below:</p><pre     class="programlisting">
+FEATURE(`mailertable',`hash -o
+        /etc/mail/mailertable.db')dnl
+FEATURE(`virtusertable',`hash -o
+        /etc/mail/virtusertable.db')dnl
+FEATURE(`access_db',`hash -o
+        /etc/mail/access.db')dnl
+</pre><p>(Note that the mailertable and access_db features are enabled
+by default under Red Hat, but that virtusertable must be added
+manually.)
+</p><p>Each of these lines tells sendmail to reference the specified
+file (although the access database is called access, not
+access_db), to use a hash database and the path of the respective
+file. We'll see how to use these files shortly, but first we've got
+a few more things to attend to in sendmail.mc.</p><p>If your users' e-mail addresses are generic to your domain
+rather than specific to the hosts they log on to, for example,
+mick@polkatistas.org rather than mick@myron.polkatistas.org, you
+probably want the From: fields of their outbound e-mail to reflect
+this. (Receiving e-mail addressed to those generic names requires
+user aliases&mdash;see below.)</p><p>Following are some sendmail.mc lines that tell our example
+SMTP gateway to rewrite the From: fields of polkatistas.org's users
+in this manner. All the lines in the example below must be added
+(or uncommented):</p><pre     class="programlisting">
+MASQUERADE_AS(`polkatistas.org')dnl
+MASQUERADE_DOMAIN(`.polkatistas.org')dnl
+EXPOSED_USER(`root')dnl
+FEATURE(`masquerade_entire_domain')dnl
+FEATURE(`masquerade_envelope')dnl
+</pre><p>The MASQUERADE_AS directive specifies the fully qualified
+domain name you wish to appear in applicable From: addresses. The
+MASQUERADE_DOMAIN directive specifies the hosts to which
+MASQUERADE_AS is applicable. Note that the &ldquo;.&rdquo; preceding
+polkatistas.org indicates that all hostnames with this domain name
+are to be masqueraded.
+</p><p>EXPOSED_USER specifies a user name for whom the From: address
+should <span   class="emphasis"><em>not</em></span> be masqueraded.
+<span   class="bold"><b>root</b></span> is a popular candidate for
+this because e-mail from root often contains alerts and warnings;
+if you receive one, you generally want to know which host sent
+it.</p><p>The feature masquerade_entire_domain causes MASQUERADE_DOMAIN
+to be interpreted as an entire domain rather than a hostname;
+masquerade_envelope applies the masquerading not only to the SMTP
+header but to the envelope as well.</p><p>Four other directives, one logistical and the other three
+security-related, are shown in Listing 1. The always_add_domain
+feature is enabled by default under Red Hat and SuSE; use_cw_file
+and smrsh are enabled in Red Hat but not SuSE; confSAFE_FILE_ENV
+always must be defined manually.</p><p><a href="5753l1.html" target="_self">Listing 1. Some More Sendmail
+Features</a></p><p>The always_add_domain feature simply forces the local host's
+domain name to be appended to any e-mail originating from a host
+that identifies itself without a domain. For example, if the SMTP
+gateway receives mail from the user &ldquo;bobo&rdquo; on a host identified
+only as &ldquo;whoopeejohn&rdquo;, sendmail will rewrite the From: field to
+read bobo@whoopeejohn.polkatistas.org rather than bobo@whoopeejohn
+(but of course masquerading directives still apply).</p><p>The use_cw_file feature tells sendmail to refer to the file
+/etc/mail/local-host-names for a list of hostnames sendmail should
+consider local. The file /etc/mail/local-host-names is a text file
+containing hostnames listed one per line. Suppose our example SMTP
+gateway receives e-mail not only for the domain polkatistas.org,
+but also tubascoundrels.net. If our gateway's hostname is &ldquo;mail&rdquo;,
+then its local-host-names file will look like this:</p><pre     class="programlisting">
+localhost.localdomain
+mail.polkatistas.org
+mail.tubascoundrels.net
+</pre><p>The third feature enabled in Listing 1 is smrsh, the sendmail
+restricted shell. This is an important security control that
+restricts the commands that may be executed from a user's .forward
+file.
+</p><p>The fourth line in Listing 1 tells sendmail to set
+sendmail.cf's SafeFileEnvironment variable to, you guessed it, some
+subdirectory of / that sendmail will chroot to (sort of). Actually,
+this only will happen when sendmail writes files. If you think
+about it, though, this 50% chroot makes sense: file-writes are what
+we're probably most worried about, and creating this sort of chroot
+environment is a lot simpler than your typical chroot jail (which
+must contain copies of every file hierarchy, file, executable and
+device your chroot-ed program needs).</p><p>Listing 2 shows a recursive listing (<b  >ls
+-lR</b>) of my example SafeFileEnvironment
+/var/mailjail.</p><p><a href="5753l2.html" target="_self">Listing 2. Contents of
+/var/mailjail</a></p><p>Sendmail created the files
+/var/mailjail/var/spool/mqueue/bobo and .../root. Beforehand, I had
+created the entire chroot jail with only four commands:</p><pre     class="programlisting">
+mkdir -p /var/mailjail/var/spool/mail
+/var/mailjail/var/spool/mqueue
+cd /var/mailjail
+chown -R mail:mail *
+chmod -R 700 *
+</pre><p>If you're concerned about unsolicited commercial e-mail,
+there's some good news. By default, sendmail doesn't allow SMTP
+relaying, a common technique of spammers. This can be disabled in
+sendmail.mc, but you won't find out how from me. Leave this alone.
+In addition, you can direct sendmail to reject mail from known
+sources of spam, per the Realtime Blackhole List (RBL), by adding
+or uncommenting this line:
+<pre     class="programlisting">
+FEATURE(`dnsbl')
+</pre>
+
+
+For this to work, however, you need to subscribe to the RBL. See
+Resources for a link to its home page, where you'll find
+subscription and use instructions and some important disclaimers.
+(Note that while RBL subscriptions are free for &ldquo;Individual/Hobby
+Sites&rdquo;, there is a fee-schedule associated with this service.)
+Using the RBL can block e-mail from some legitimate users as well
+as from spammers, so proceed with caution.
+</p><p>If you run Red Hat 7.1 or 7.2, there's one more sendmail.mc
+parameter to check, this time one that needs to be commented out.
+If your /etc/mail/sendmail.mc contains a line like this:</p><pre     class="programlisting">
+DAEMON_OPTIONS(`Port=smtp,Addr=127.0.0.1, Name=MTA')
+</pre><p>Then you need to comment it out by appending the string dnl
+to the beginning of the line. If active, this line will cause
+sendmail to accept only connections on the loopback interface and
+not from external hosts. Needless to say, for an SMTP gateway this
+is undesirable (though it unquestionably enhances security).
+</p><p>Those are the most important sendmail.mc settings for our
+purposes. There are others relevant to security, especially for
+nongateway roles (local delivery, etc.). For more information see
+the README.cf or README file I alluded to at the beginning of this
+section.</p><p>To compile our macro-configuration file into sendmail.cf, we
+use this command:</p><pre     class="programlisting">
+m4 /etc/mail/sendmail.mc &gt; /etc/sendmail.cf
+</pre><p>If your macro-configuration file's name isn't sendmail.mc,
+substitute it with linux.mc or whatever your macro-configuration
+file is called. Sendmail expects its configuration file to be named
+sendmail.cf; however, it looks for it in /etc, so that part of the
+command is the same regardless of your distribution or even your
+version of sendmail.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0x125fdd0"></a>Configuring Delivery Rules</h2></div></div><p>That was the hard part. Now we only need to tell sendmail
+what to do with incoming mail, what local hostnames are legitimate
+and which users, networks and domains may use the SMTP gateway to
+relay mail not destined locally.</p><p>The mailertable is used to define delivery rules. It has a
+simple syntax, which is described in
+/usr/share/doc/sendmail/README.cf or /usr/share/sendmail/README
+depending on your distribution. In a nutshell, each line contains
+two parts: a destination identifier and an action. The destination
+identifier matches destination addresses or parts thereof; the
+action tells sendmail what to do with messages whose destinations
+match the identifier.</p><p>If the identifier begins with a &ldquo;.&rdquo;, then all e-mail source
+addresses ending in whatever follows the dot will match. If it
+doesn't, then everything following the &ldquo;@&rdquo; sign must be identical
+to the identifier. The e-mail address bobo@weird-al.polkatistas.org
+won't match the identifier polkatistas.org but will match
+.polkatistas.org.</p><p>The action takes the form
+<span   class="emphasis"><em>agent</em></span>:<span   class="emphasis"><em>action</em></span> where
+<span   class="emphasis"><em>agent</em></span> is either a mailer (defined in
+sendmail.mc/linux.mc in MAILER() statements) or the built-in agents
+&ldquo;local&rdquo; or &ldquo;error&rdquo;. The &ldquo;local&rdquo; agent, of course, means the
+mail should be delivered to a local user, specified after the colon
+(if nothing follows the colon, the user specified in the message
+itself will be used).</p><p>Below is a mailertable with two different actions:</p><pre     class="programlisting">
+polkatistas.org       smtp:internalmail.polkatistas.org
+mail.polkatistas.org  local:postmaster
+</pre><p>In addition to delivery rules, sendmail needs to know which
+e-mail destinations should be considered synonyms of the local
+(SMTP gateway's) hostname. These are specified in
+/etc/mail/local-host-names, one per line:
+<pre     class="programlisting">
+mail.polkatistas.org
+weird-al.polkatistas.org
+1.23.234.2
+</pre>
+
+
+Finally, we need to define allowed relayers by editing
+/etc/mail/access. The syntax is simple. Each line contains a source
+name or address, paired with an action (again, see README.cf or its
+equivalent on your distribution for details). The action can be
+RELAY, REJECT, DISCARD, OK or ERROR. In practice, the most useful
+of these actions is RELAY. Because by default relaying is rejected,
+REJECT and DISCARD are only useful when defining exceptions to
+explicit RELAY rules.
+</p><p>Here is a simple access file:</p><pre     class="programlisting">
+localhost.localdomain           RELAY
+localhost                       RELAY
+127.0.0.1                       RELAY
+192.168                         RELAY
+</pre><p>Do you notice the absence of real hostnames in the example
+above? In this example, the SMTP gateway performs only outbound
+relays; inbound mail must be addressed to a local e-mail address,
+and outbound relays must originate from hosts whose IP addresses
+begin with the octets 192.168 (obviously a noninternet-routable
+network). I like this technique (using IP addresses) because then I
+can prevent IP address spoofing with my firewall rules, but I can't
+prevent forged From: addresses in e-mail (however, your needs may
+be different of course):
+<pre     class="programlisting">
+access
+local-host-names
+mailertable
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd6d580.0x12603a8"></a>More-Advanced Sendmail Security</h2></div></div><p>SMTP AUTH (in sendmail version 8.10 and later) adds
+authentication to SMTP transactions, e.g., to determine whether to
+permit relaying. This is especially useful when systems or users
+don't run their own MTA but need to send mail, i.e., need to relay
+outbound mail through a central gateway.</p><p>If you're running an SMTP server that relays mail from other
+domains, you probably want this feature, as it's an important
+defense against unsolicited commercial e-mail, the perpetrators of
+which rely heavily on SMTP relays.</p><p>There's just one more file that may need tweaking: aliases.
+This file contains a map of e-mail aliases to user names. Usually
+an SMTP gateway doesn't need a very granular alias database; to
+translate entire domains' (or virtual domains') e-mail addresses
+you're better off using the user database (which, sadly, I don't
+have space to cover). It's fairly self-explanatory, though, so edit
+it if you need to.</p><p>Now three of the four files we've just discussed,
+mailertable, access and aliases, actually can't be used by sendmail
+directly; they must first be converted to databases. The /etc/mail
+file contains a handy Makefile for this purpose. To use it simply
+change your working directory to /etc/mail and enter this
+command:</p><pre     class="programlisting">
+Make access.db mailertable.db
+</pre><p>Note that this won't work for aliases, which has its own
+utility, newaliases. Run newaliases without any flags to convert
+your changed /etc/aliases file into a new /etc/aliases.db file
+automatically.
+</p><p>And that's it for now. There's much I haven't covered,
+notably the smrsh shell (applicable mainly to local mail delivery,
+not to gateways). But hopefully I've given you some useful hints
+and pointers to more complete sources of information. Good
+luck!</p><p><a href="5753s2.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p><span   class="bold"><b>Mick Bauer</b></span>
+      (<a href="mailto:mick@visi.com">mick@visi.com</a>) is a
+      network security consultant in the Twin Cities area. He's been a
+      Linux devotee since 1995 and an OpenBSD zealot since 1997, and
+      enjoys getting these cutting-edge OSes to run on obsolete
+      junk.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../096/toc096.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

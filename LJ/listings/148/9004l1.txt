@@ -1,0 +1,464 @@
+Listing 1. Rendezvous Code
+
+/* Copyright Girish Venkatachalam 2006
+ * girish1729@gmail.com
+ *
+ * You are free to modify it to suit your requirements.
+ * The licensing terms of this program is along the lines
+ * of the BSD license. You are free to use this for commercial
+ * purposes provide you retain this notice.
+ *
+ *
+ *
+ */
+#include "p2pcommon.h"
+
+struct cs_st cs[1024];
+
+
+int tcp1,tcp2,udp; /* One tcp port for 80 and another for 1234 */
+
+void setnonblock(int sock)
+{
+        int fl = fcntl(sock, F_GETFL);
+        if (fl < 0)
+                syslog(LOG_ERR,"fcntl() problem");
+        if (fcntl(sock, F_SETFL, fl | O_NONBLOCK) < 0)
+                syslog(LOG_ERR,"fcntl() problem");
+}
+
+
+void settimeouts(int sock, int secs)
+{
+        struct timeval tv;
+
+        tv.tv_sec = secs;
+        tv.tv_usec = 0;
+        if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0)
+                syslog(LOG_ERR,"setsockopt(SO_SNDTIMEO) problem");
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
+                syslog(LOG_ERR,"setsockopt(SO_RCVTIMEO) problem");
+}
+
+
+
+int update_desc_list(fd_set *rfds, fd_set *wfds) {
+        int i,fds;
+
+        FD_ZERO(rfds);
+        FD_ZERO(wfds);
+        FD_SET(tcp1,rfds);
+        FD_SET(tcp2,rfds);
+        FD_SET(udp,rfds);
+
+        if(tcp1 > tcp2) {
+                if(udp > tcp1)
+                        fds = udp + 1;
+                else
+                        fds = tcp1 + 1;
+        }
+        else {
+                if(udp > tcp2)
+                        fds = udp + 1;
+                else
+                        fds = tcp2 + 1;
+        }
+
+
+        for(i = 0; cs[i].fd != -1;i++) {
+                fds = cs[i].fd + 1;
+                FD_SET(cs[i].fd,rfds);
+        }
+        return fds;
+
+
+}
+void adddescr(int ntcp) {
+        int i =0;
+        while(cs[i].fd != -1)
+                i++;
+        cs[i].fd = ntcp;
+        cs[i+1].fd = -1;
+}
+
+int hdl_register(int sock,struct register_payload *st) {
+        int i = 0,n;
+        struct msg m;
+
+
+        while(cs[i].fd != -1) {
+                if(cs[i].id == ntohl(st->id)) {
+                        m.op = DUPLICATE_ID;
+                        break;
+                }
+                if(cs[i].fd == sock) {
+                        m.op = REGISTRATION_COMPLETED;
+                        break;
+                }
+                i++;
+        }
+        /* Now send the result back to client indicating
+         * successful registration or duplicate
+         */
+        do {
+                n = send(sock,(char *)&m,sizeof(m),0);
+        }while(eblock());
+
+        if(n == -1) { /* send() failed */
+                syslog(LOG_ERR,"TCP send() problem, closing socket");
+                close(sock);
+        }
+
+        if(m.op == DUPLICATE_ID)
+                return 0;
+
+        cs[i].id = ntohl(st->id);
+        cs[i].priv = st->priv;
+        cs[i].pub  = st->pub;
+        syslog(LOG_INFO,"<<Successfully registered with ID:%d, Socket =
+%d>>",cs[i].id,cs[i].fd);
+        syslog(LOG_INFO,"Successfully registered with public %s:%d",
+                        inet_ntoa(cs[i].pub.sin_addr),
+                        ntohs(cs[i].pub.sin_port));
+        syslog(LOG_INFO,"Successfully registered with private %s:%d",
+                        inet_ntoa(cs[i].priv.sin_addr),
+                        ntohs(cs[i].priv.sin_port));
+
+
+        return 0;
+
+}
+
+int hdl_clreqob(struct req_payload *st) {
+        struct msg m;
+        struct cs_st *cp;
+        int n;
+        int peersock;
+        cp = lookup_entry(ntohl(st->peer.id));
+        peersock = cp->fd;
+        m.op = NEW_CLIENT_REQ_INBOUND;
+        m_st.reqpl = *st;
+
+        do {
+                n = send(peersock,(char *)&m,sizeof(m),0);
+        }while(eblock());
+
+        if(n == -1) { /* send() failed */
+                syslog(LOG_ERR,"TCP send() problem, closing socket");
+                close(peersock);
+                cp->fd = -2;
+                cp->id = 0;
+        }
+
+        return 0;
+
+}
+
+int hdl_peer(int sock,struct peercoord_payload *st) {
+        struct msg m;
+        struct cs_st *cp;
+        int n;
+        cp = lookup_entry(ntohl(st->id));
+        if(cp == NULL) {
+                m.op = PEERID_WRONG;
+
+        }
+        else {
+                m.op = PEER_COORD;
+                m_st.peerpl.id = cp->id;
+                m_st.peerpl.priv = cp->priv;
+                m_st.peerpl.pub = cp->pub;
+        }
+        do {
+                n = send(sock,(char *)&m,sizeof(m),0);
+        }while(eblock());
+
+        if(n == -1) { /* send() failed */
+                syslog(LOG_ERR,"TCP send() problem, closing socket");
+                close(sock);
+                cp->fd = -2;
+                cp->id = 0;
+        }
+
+
+        return 0;
+
+}
+
+int hdl_end(int sock,struct peercoord_payload *st) {
+        struct msg m;
+        int n;
+        struct cs_st *cp = lookup_entry(ntohl(st->id));
+        m.op = HOLEPUNCH_COMPLETED;
+        do {
+                n = send(sock,(char *)&m,sizeof(m),0);
+        }while(eblock());
+        if(cp != NULL) {
+                do {
+                        n = send(cp->fd,(char *)&m,sizeof(m),0);
+                }while(eblock());
+        }
+
+        if(n == -1) { /* send() failed */
+                syslog(LOG_ERR,"TCP send() problem, closing socket");
+                close(sock);
+                cp->fd = -2;
+                cp->id = 0;
+        }
+
+        return 0;
+}
+
+
+/* This is the body of the client loop.
+ * The p2p clients stay connected and await for intimation
+ * from the server for connection requests
+ *
+ */
+int serve(int sock,int ind) {
+        int b;
+        struct msg m;
+
+        b = recv(sock,(void *)&m,sizeof(m),0);
+        if(b == -1 || b == 0) {
+                close(sock);
+                cs[ind].fd = -2;
+                cs[ind].id = 0;
+                syslog(LOG_ERR,"Socket %d closed ",sock);
+                return 0;
+        }
+        switch(m.op) {
+                case REGISTER:
+                        syslog(LOG_INFO,"Register payload");
+                        hdl_register(sock,&m_st.rpl);
+                        break;
+                case  NEW_CLIENT_REQ_OUTBOUND:
+                        syslog(LOG_INFO,"New outbound holepunch req
+payload");
+                        hdl_clreqob(&m_st.reqpl);
+                        break;
+                case GET_PEER:
+                        syslog(LOG_INFO,"Get peer payload");
+                        hdl_peer(sock,&m_st.peerpl);
+                        break;
+                case HOLEPUNCHING_COMPLETE:
+                        syslog(LOG_INFO,"<<<Holepunch complete
+payload>>>");
+                        hdl_end(sock,&m_st.peerpl);
+                        break;
+
+                default:
+                        /*syslog(LOG_ERR,"Garbled message from client");*/
+                        break;
+
+        }
+        return 0;
+}
+
+void setreuse(int sock) {
+        const int one = 1;
+
+#ifdef SO_REUSEADDR
+        if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
+                                (const void*)&one, sizeof(one)) < 0)
+                syslog(LOG_ERR,"setsockopt(SO_REUSEADDR) problem");
+#endif
+#ifdef SO_REUSEPORT
+        if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT,
+                                (const void*)&one, sizeof(one)) < 0)
+                syslog(LOG_ERR,"setsockopt(SO_REUSEPORT) problem");
+#endif
+}
+
+
+void bounceudp(int udpsock)
+{
+        struct sockaddr_in ssin;
+        socklen_t sinlen;
+        struct request rq;
+        struct reply rp;
+        int rc;
+
+        sinlen = sizeof(ssin);
+        rc = recvfrom(udpsock, &rq, sizeof(rq), 0,
+                        (struct sockaddr*)&ssin, &sinlen);
+        if (rc < 0) {
+                syslog(LOG_ERR,"recvfrom() problem");
+                return;
+        }
+        if (rc < (signed)sizeof(rq)) {
+                syslog(LOG_ERR, "Runt UDP request from %s:%d\n",
+                                inet_ntoa(ssin.sin_addr),
+                                ntohs(ssin.sin_port));
+                return; /* drop */
+        }
+        if (rq.magic != htonl(REQMAGIC)) {
+                syslog(LOG_ERR, "Invalid UDP request from %s:%d\n",
+                                inet_ntoa(ssin.sin_addr),
+                                ntohs(ssin.sin_port));
+                return; /* drop */
+        }
+
+                /* Build the reply and send it to the client */
+        rp.magic = htonl(REPLMAGIC);
+        rp.pubaddr = ssin.sin_addr;
+        rp.pubport = ssin.sin_port;
+        if (sendto(udpsock, &rp, sizeof(rp), 0,(struct sockaddr*)&ssin,
+sizeof(ssin)) < 0) {
+                syslog(LOG_ERR,"sendto() problem");
+        }
+        syslog(LOG_INFO, "UDP request from %s:%d\n",
+                        inet_ntoa(ssin.sin_addr),
+                        ntohs(ssin.sin_port));
+
+
+}
+
+
+int createconn(int tcpsock) {
+        struct sockaddr_in sa;
+        socklen_t l = sizeof(sa);
+
+        int ntcp = accept(tcpsock,(struct sockaddr*)&sa,&l);
+        if(ntcp != -1) {
+                syslog(LOG_INFO,"New TCP connection from %s:%d,Socket =
+%d",inet_ntoa(sa.sin_addr),ntohs(sa.sin_port),ntcp);
+                adddescr(ntcp);
+                return 0;
+        }
+        syslog(LOG_ERR,"TCP accept() returns -1");
+
+        return -1;
+}
+
+int main() {
+        int ret,i;
+        int on = 1,fds;
+        struct sockaddr_in tcpsa,udpsa;
+        fd_set rfds,wfds;
+        socklen_t l;
+
+
+        cs[0].fd = -1;
+
+        if(geteuid() != 0) {
+                fprintf(stderr,"You are not root, dying\n");
+                syslog(LOG_ERR,"You are not root, no point in continuing");
+                exit(128);
+        }
+
+        /* Daemonize */
+        if(fork() != 0)
+                exit(0);
+        else
+                setsid();
+
+        signal(SIGPIPE,SIG_IGN);
+
+        chdir("/");
+
+        openlog("mediator",LOG_PID | LOG_CONS | LOG_PERROR,LOG_LOCAL2);
+        syslog(LOG_INFO,"Starting the mediator daemon...");
+        FD_ZERO(&rfds);
+        FD_ZERO(&wfds);
+
+        tcp1 = socket(AF_INET,SOCK_STREAM,0);
+        tcp2 = socket(AF_INET,SOCK_STREAM,0);
+        setnonblock(tcp1);
+        setnonblock(tcp2);
+        ret = setsockopt(tcp1,SOL_SOCKET,SO_KEEPALIVE,&on,sizeof(on));
+        if(ret < 0)
+                syslog(LOG_ERR,"setsockopt(SO_KEEPALIVE) problem on tcp1");
+        ret = setsockopt(tcp2,SOL_SOCKET,SO_KEEPALIVE,&on,sizeof(on));
+        if(ret < 0)
+                syslog(LOG_ERR,"setsockopt(SO_KEEPALIVE) problem on tcp2");
+
+        if(tcp1 == -1 || tcp2 == -1)  {
+                syslog(LOG_ERR," TCP Socket creation problem.. Exiting");
+                exit(128);
+        }
+
+        setreuse(tcp1);
+        setreuse(tcp2);
+        /* make sure we don't linger  a long time if the other end
+ * disappears */
+        settimeouts(tcp1,20); /* 20 seconds */
+        settimeouts(tcp2,20);
+        tcpsa.sin_addr.s_addr = INADDR_ANY;
+        tcpsa.sin_port = htons(1234);
+        tcpsa.sin_family = AF_INET;
+
+        ret = bind(tcp1,(struct sockaddr *)&tcpsa,sizeof(tcpsa));
+
+        if(ret) {
+                syslog(LOG_ERR,"TCP port 1234 Bind.. Exiting");
+                exit(128);
+        }
+
+        tcpsa.sin_addr.s_addr = INADDR_ANY;
+        tcpsa.sin_port = htons(80);
+        tcpsa.sin_family = AF_INET;
+
+        ret = bind(tcp2,(struct sockaddr *)&tcpsa,sizeof(tcpsa));
+
+        if(ret) {
+                syslog(LOG_ERR,"TCP port 80 Bind.. Exiting");
+                exit(128);
+        }
+
+
+        /* Now let us proceed to bind to our UDP ping server */
+        udp = socket(AF_INET,SOCK_DGRAM,0);
+
+        if(udp == -1) {
+                syslog(LOG_ERR," UDP Socket creation.. Exiting");
+                exit(128);
+        }
+
+        setreuse(udp);
+        udpsa.sin_addr.s_addr = INADDR_ANY;
+        udpsa.sin_port = htons(17000);
+        udpsa.sin_family = AF_INET;
+
+        ret = bind(udp,(struct sockaddr *)&udpsa,sizeof(udpsa));
+
+        if(ret) {
+                syslog(LOG_ERR,"UDP ping server port 17000 Bind..
+Exiting");
+                exit(128);
+        }
+
+        l = sizeof(struct sockaddr);
+
+        listen(tcp1,1024);
+        listen(tcp2,1024);
+
+
+        for(;;) {
+
+                update_socket_list();
+                fds = update_desc_list(&rfds,&wfds);
+
+                select(fds,&rfds,NULL,NULL,NULL);
+
+                if(FD_ISSET(udp,&rfds)) {
+                        bounceudp(udp);
+                }
+                if(FD_ISSET(tcp1,&rfds)) {
+                        createconn(tcp1);
+                }
+                if(FD_ISSET(tcp2,&rfds)) {
+                        createconn(tcp2);
+                }
+                for(i=0;cs[i].fd != -1;i++) {
+                        if(FD_ISSET(cs[i].fd,&rfds)) {
+                                serve(cs[i].fd,i);
+                        }
+
+                }
+        }
+
+        return 0;
+
+}
+

@@ -1,0 +1,164 @@
+# Listing 3: zap-thread.pl
+
+#!/usr/bin/perl -wT
+
+# Time-stamp: <1998-12-08 09:58:14 reuven>
+
+# zap-thread.pl, which allows for the deletion of an entire thread
+
+use strict;
+use diagnostics;
+use CGI;
+use CGI::Carp qw(fatalsToBrowser);
+use DBI;
+
+use lib qw(/home/reuven/www/cgi-bin);
+use ATFConstants;
+
+# Remove buffering
+$| = 1;
+
+# ------------------------------------------------------------
+# Create an instance of CGI
+my $query = new CGI;
+
+# Send a MIME header
+print $query->header("text/html");
+
+print $query->start_html(-title => "Zap a thread",
+			 -bgcolor => "#FFFFFF");
+
+# Connect to the database
+my $dbh = 
+    DBI->connect("DBI:mysql:$database:$server:$port",$username,$password);
+die "DBI error from connect: ", $DBI::errstr unless $dbh;
+
+# ------------------------------------------------------------
+# If we were invoked with GET, print a list of threads with
+# checkboxes
+
+if ($query->request_method eq "GET")
+{
+
+    print "<H1>Zap threads</H1>\n";
+
+    print "<P>Check the box next to any thread you wish to delete. \n";
+    print "Then enter the password.  <B>There is no undelete.</B>";
+    print "You have been warned.</P>\n";
+
+    print "<Form method=\"POST\" action=\"/cgi-bin/zap-thread.pl\">\n";
+
+    my $sql = "SELECT id,subject FROM ATFThreads ORDER BY subject";
+
+    # Send the query
+    my $sth = $dbh->prepare($sql);
+    die "DBI error with prepare:", $sth->errstr unless $sth;
+
+    # Execute the query
+    my $result = $sth->execute;
+    die "DBI error with execute:", $sth->errstr unless $result;
+
+    # If we received threads from the SELECT, print them out
+    if ($sth->rows)
+    {
+	# Iterate through thread IDs and names
+	while (my @row = $sth->fetchrow)
+	{
+	    print "<input type=\"checkbox\" name=\"thread-$row[0]\">
+                   $row[1]\n<BR>";
+	}
+
+	# Finish that database call
+	$sth->finish;
+    }
+    else
+    {
+	print "<P>No threads to display<\#150><\#150>so there's nothing to zap!</P>\n";
+    }
+
+    print '<P>Password: <input type="password" name="password">', "\n</P>";
+    print '<P><input type="submit" value="Zap those threads!">', "\n</P>";
+
+    print "</Form>\n";
+
+}
+
+# If we are invoked with POST, check the password and delete
+# the appropriate threads and messages
+
+elsif ($query->request_method eq "POST")
+{
+    # Check the password
+    if ($query->param("password") eq $zap_password)
+    {
+	my @elements = $query->param;
+
+	# Iterate through each thread ID marked for deletion
+	foreach my $element (@elements)
+	{
+	    # Ignore any elements we don't want
+	    next unless ($element =~ m/^thread-(\d+)$/);
+
+	    # Grab the thread ID
+	    my $thread_id = $1;
+
+	    # Delete the thread from ATFThreads
+	    my $sql  = "DELETE FROM ATFThreads WHERE id = $thread_id ";
+	    warn "SQL: \"$sql\"\n";
+	    my $sth = $dbh->prepare ($sql);
+	    my $result = $sth->execute;
+
+	    die("Error deleting from ATFThreads: " . $sth->errstr) 
+		unless $result;
+
+	    print "<P>Deleted the thread.</P>\n";
+
+  	    # Delete messages for this thread from ATFMessages
+	    $sql  = "DELETE FROM ATFMessages WHERE thread = $thread_id ";
+	    warn "SQL: \"$sql\"\n";
+	    $sth = $dbh->prepare ($sql);
+	    $result = $sth->execute;
+
+	    die("Error deleting from ATFMessages: " . $sth->errstr) 
+		unless $result;
+
+	    print "<P>Deleted messages in the thread.</P>\n";
+	}
+    }
+
+    else
+    {
+	print "<P>Sorry, but you entered the wrong password.</P>\n";
+    }
+}
+
+# If the request method is neither GET nor POST, issue an error
+else
+{
+    print "<P>Sorry, but we only recognize GET and POST.</P>\n";
+}
+
+# ------------------------------------------------------------
+# Menu bar
+print "<P>\n";
+
+# Send the user to the posting form
+print "<a href=\"/cgi-bin/post-comment-form.pl\">[Post a message]";
+print "</a>\n";
+
+# Send the user to the thread list
+print "<a href=\"/cgi-bin/list-threads.pl\">[View all threads]</a>\n";
+
+# Send the user to the search
+print "<a href=\"/atf/search-form.shtml\">[Search]</a>\n";
+
+# Allow the user to create a new thread
+print "<a href=\"/cgi-bin/add-thread-form.pl\">[Add a new thread]</a>\n";
+
+# Give a plug for the ATF home page
+print "<a href=\"/atf/\">[ATF home]</a>\n";
+
+print "</P>\n";
+
+# Disconnect from the database
+$dbh->disconnect;

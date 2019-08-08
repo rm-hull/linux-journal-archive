@@ -1,0 +1,92 @@
+4815l3
+
+Listing 3. rc.iptables.static
+
+#!/bin/sh
+PATH=/sbin
+export PATH
+IPT=`which` iptables
+
+# define interfaces
+# internal interface
+IINT=eth0
+# external interface (can be ppp+, eth#, ippp+, etc.)
+IEXT=eth1
+# internal network
+INTNET=192.168.0.0/24
+# external interface IP(s)
+EXTIP=10.0.0.2-10.0.0.6
+# web servers for public use:
+# WEB=192.168.0.2-192.168.0.6:80
+# if the above or below is a range of servers, netfilter will perform
+# a rudimentary form of load balancing
+# DNS servers:
+# DNS=192.168.0.8-192.168.0.9:53
+###
+
+# first, turn off forwarding
+echo 0 > /proc/sys/net/ipv4/ip_forward
+
+modprobe ip_tables
+modprobe ip_nat_ftp
+modprobe ip_conntrack_ftp
+
+# flush all chains and delete user chains
+for i in filter nat mangle
+do
+$IPT -t $i -F
+$IPT -t $i -X
+done
+
+# if your ISP blocks "fragmentation needed" ICMP packets, i.e.,:
+# web browsers connect, then hang with no data received
+# small e-mail works OK, but large e-mails hang
+# ssh works OK, but scp hangs after initial handshake
+# uncomment the following:
+# $IPT -t filter -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+# create new user chain
+$IPT -t filter -N tcprules
+
+###
+## ACCEPT HERE ANY PORTS YOU WISH TO DNAT BELOW ##
+# $IPT -A tcprules -i $IEXT -p tcp --dport 80 -m state --state NEW -j ACCEPT
+# $IPT -A tcprules -i $IEXT -p udp --dport 53 -m state --state NEW -j ACCEPT
+###
+# Note:  you may want to change the above rules to limit the number of
+# connections per minute or else run portsentry, etc., to watch for and
+# block bad guys:
+# $IPT -A tcprules -i $IEXT -p tcp --dport 80 -m limit --limit 3/second -m state --state NEW -j ACCEPT
+
+$IPT -A tcprules  -i $IEXT -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPT -A tcprules -i ! $IEXT -m state --state NEW -j ACCEPT
+$IPT -A tcprules -i $IEXT -m state --state NEW,INVALID -j LOG --log-prefix "IPT DROP "
+$IPT -A tcprules -i $IEXT -m state --state NEW,INVALID -j DROP
+
+$IPT -A INPUT -j tcprules
+$IPT -A FORWARD -j tcprules
+
+###
+## DNAT RULES GO HERE ##
+# $IPT -t nat -A PREROUTING -d $EXTIP -p tcp --dport 80 -j DNAT --to-destination $WEB
+# $IPT -t nat -A PREROUTING -d $EXTIP -p udp --dport 53 -j DNAT --to-destination $DNS
+###
+
+# now for snat:
+$IPT -t nat -A POSTROUTING -o $IEXT -s $INTNET -j SNAT --to-source $EXTIP
+
+# a few mangle rules you might or might not want to try out
+# note that ssh sets its own TOS value, so is not required below
+$IPT -t mangle -A PREROUTING -m multiport -p tcp --dport 80,21 -j TOS --set-tos 16
+$IPT -t mangle -A PREROUTING -m multiport -p tcp --sport 80,21 -j TOS --set-tos 16
+$IPT -t mangle -A PREROUTING -p tcp --dport ftp-data -j TOS --set-tos 8
+$IPT -t mangle -A PREROUTING -p tcp --sport ftp-data -j TOS --set-tos 8
+$IPT -t mangle -A PREROUTING -p tcp --dport 25 -j TOS --set-tos 4
+$IPT -t mangle -A PREROUTING -p tcp --dport 110 -j TOS --set-tos 2
+
+# if you have a line in your /etc/sysctl.conf like this:
+# net.ipv4.ip_forward = 1
+# uncomment the following and comment out the echo line below it
+#/sbin/sysctl -p > /dev/null
+echo 1 > /proc/sys/net/ipv4/ip_forward
+

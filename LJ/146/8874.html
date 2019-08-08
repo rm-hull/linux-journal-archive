@@ -1,0 +1,428 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Recovery of RAID and LVM2 Volumes</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Raid and Logical Volume Managers are great, until you lose data.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1e63580.0x1f5aab0"></a>
+Recovery of RAID and LVM2 Volumes</h1></div><div><div class="author"><h3 class="author">
+Richard
+ 
+Bullington-McGuire
+</h3></div><div class="issuemoyr">Issue #146, June 2006</div></div><div><p>
+Raid and Logical Volume Managers are great, until you lose data.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5b240"></a></h2></div></div><p>
+The combination of Linux software RAID (Redundant Array of Inexpensive
+Disks) and LVM2 (Logical Volume Manager, version 2) offered in modern
+Linux operating systems offers both robustness and flexibility, but
+at the cost of complexity should you ever need to recover data from a
+drive formatted with software RAID and LVM2 partitions. I found this
+out the hard way when I recently tried to mount a system disk created
+with RAID and LVM2 on a different computer. The first attempts to read
+the filesystems on the disk failed in a frustrating manner.
+</p><p>
+I had attempted to put two hard disks into a small-form-factor computer
+that was really only designed to hold only one hard disk, running the disks
+as a mirrored RAID 1 volume. (I refer to that system as raidbox for the
+remainder of this article.) This attempt did not work, alas. After running
+for a few hours, it would power-off with an automatic thermal shutdown
+failure. I already had taken the system apart and started re-installing
+with only one disk when I realized there were some files on the
+old RAID volume that I wanted to retrieve.
+</p><p>
+Recovering the data would have been easy if the system did not use RAID
+or LVM2. The steps would have been to connect the old drive to another
+computer, mount the filesystem and copy the files from the failed
+volume. I first attempted to do so, using a computer I refer to as
+recoverybox, but this attempt met with frustration.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5b3f8"></a>
+Why Was This So Hard?</h2></div></div><p>
+Getting to the data proved challenging, both because the data was on
+a logical volume hidden inside a RAID device, and because the volume
+group on the RAID device had the same name as the volume group on the
+recovery system.
+</p><p>
+Some popular modern operating systems (for example, Red Hat Enterprise
+Linux 4, CentOS 4 and Fedora Core 4) can partition the
+disk automatically at install time, setting up the partitions using LVM for the root
+device. Generally, they set up a volume group called VolGroup00, with two
+logical volumes, LogVol00 and LogVol01, the first for the root directory
+and
+the second for swap, as shown in Listing 1.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5b558"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Typical LVM Disk Configuration
+</b></p><pre     class="programlisting">
+[root@recoverybox ~]# /sbin/sfdisk -l /dev/hda
+
+Disk /dev/hda: 39560 cylinders, 16 heads, 63 sectors/track
+Warning: The partition table looks like it was made
+  for C/H/S=*/255/63 (instead of 39560/16/63).
+For this listing I'll assume that geometry.
+Units = cylinders of 8225280 bytes, blocks of 1024 bytes, counting from 0
+
+   Device Boot Start     End   #cyls    #blocks   Id  System
+/dev/hda1   *      0+     12      13-    104391   83  Linux
+/dev/hda2         13    2481    2469   19832242+  8e  Linux LVM
+/dev/hda3          0       -       0          0    0  Empty
+/dev/hda4          0       -       0          0    0  Empty
+[root@recoverybox ~]# /sbin/pvscan
+  PV /dev/hda2   VG VolGroup00   lvm2 [18.91 GB / 32.00 MB free]
+  Total: 1 [18.91 GB] / in use: 1 [18.91 GB] / in no VG: 0 [0   ]
+[root@recoverybox ~]# /usr/sbin/lvscan
+  ACTIVE            '/dev/VolGroup00/LogVol00' [18.38 GB] inherit
+  ACTIVE            '/dev/VolGroup00/LogVol01' [512.00 MB] inherit
+</pre></div><p>
+The original configuration for the software RAID device had three RAID
+1 devices: md0, md1 and md2, for /boot, swap and /, respectively. The
+LVM2 volume group was on the biggest RAID device, md2. The volume group
+was named VolGroup00. This seemed like a good idea at the time, because
+it meant that the partitioning configuration for this box looked
+similar to how the distribution does things by default. Listing 2 shows
+how the software RAID array looked while it was operational.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5b768"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. Software RAID Disk Configuration
+</b></p><pre     class="programlisting">
+[root@raidbox ~]# /sbin/sfdisk -l /dev/hda
+
+Disk /dev/hda: 9729 cylinders, 255 heads, 63 sectors/track
+Units = cylinders of 8225280 bytes, blocks of 1024 bytes, counting from 0
+
+   Device Boot Start     End   #cyls    #blocks   Id  System
+/dev/hda1   *      0+     12      13-    104391   fd  Linux raid
+autodetect
+/dev/hda2         13      77      65     522112+  fd  Linux raid
+autodetect
+/dev/hda3         78    9728    9651   77521657+  fd  Linux raid
+autodetect
+/dev/hda4          0       -       0          0    0  Empty
+[root@raidbox ~]# cat /proc/mdstat
+Personalities : [raid1]
+md2 : active raid1 hdc3[1] hda3[1]
+      77521536 blocks [2/2] [UU]
+
+md1 : active raid1 hdc2[1] hda2[1]
+      522048 blocks [2/2] [UU]
+
+md0 : active raid1 hdc1[1] hda1[1]
+      104320 blocks [2/2] [UU]
+</pre></div><p>
+If you ever name two volume groups the same thing, and something goes
+wrong, you may be faced with the same problem. Creating conflicting
+names is easy to do, unfortunately, as the operating system has a
+default primary volume group name of VolGroup00.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5b978"></a>
+Restoring Access to the RAID Array Members</h2></div></div><p>
+To recover, the first thing to do is to move the drive to another
+machine. You can do this pretty easily by putting the drive in a USB2
+hard drive enclosure. It then will show up as a SCSI hard disk device,
+for example, /dev/sda, when you plug it in to your recovery computer. This
+reduces the risk of damaging the recovery machine while
+attempting to install the hardware from the original computer.
+</p><p>
+The challenge then is to get the RAID setup recognized and to gain
+access to the logical volumes within. You can use <tt  >sfdisk -l
+/dev/sda</tt>
+to check that the partitions on the old drive are still there.
+</p><p>
+To get the RAID setup recognized, use <tt  >mdadm</tt> to scan the devices for
+their raid volume UUID signatures, as shown in Listing 3.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5bbe0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. Scanning a Disk for RAID Array Members
+</b></p><pre     class="programlisting">
+[root@recoverybox ~]# mdadm --examine --scan  /dev/sda1 /dev/sda2 /dev/sda3
+ARRAY /dev/md2 level=raid1 num-devices=2
+ &#8618;UUID=532502de:90e44fb0:242f485f:f02a2565
+   devices=/dev/sda3
+ARRAY /dev/md1 level=raid1 num-devices=2
+ &#8618;UUID=75fa22aa:9a11bcad:b42ed14a:b5f8da3c
+   devices=/dev/sda2
+ARRAY /dev/md0 level=raid1 num-devices=2
+ &#8618;UUID=b3cd99e7:d02be486:b0ea429a:e18ccf65
+   devices=/dev/sda1
+</pre></div><p>
+This format is very close to the format of the /etc/mdadm.conf file that
+the mdadm tool uses. You need to redirect the output of mdadm to a file,
+join the device lines onto the ARRAY lines and put in a nonexistent
+second device to get a RAID1 configuration. Viewing the the md array in
+degraded mode will allow data recovery:
+
+<pre     class="programlisting">
+[root@recoverybox ~]# mdadm --examine --scan  /dev/sda1
+ &#8618;/dev/sda2 /dev/sda3 &gt;&gt; /etc/mdadm.conf
+[root@recoverybox ~]# vi /etc/mdadm.conf
+</pre>
+</p><p>
+Edit /etc/mdadm.conf so that the devices statements are on the
+same lines as the ARRAY statements, as they are in Listing 4. Add the
+&ldquo;missing&rdquo; device to the devices entry for each array member to fill out
+the raid1 complement of two devices per array. Don't forget to renumber
+the md entries if the recovery computer already has md devices and ARRAY
+statements in /etc/mdadm.conf.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5bef8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. /etc/mdadm.conf
+</b></p><pre     class="programlisting">
+DEVICE partitions
+ARRAY /dev/md0 level=raid1 num-devices=2
+ &#8618;UUID=b3cd99e7:d02be486:b0ea429a:e18ccf65
+ &#8618;devices=/dev/sda1,missing
+ARRAY /dev/md1 level=raid1 num-devices=2
+ &#8618;UUID=75fa22aa:9a11bcad:b42ed14a:b5f8da3c
+ &#8618;devices=/dev/sda2,missing
+ARRAY /dev/md2 level=raid1 num-devices=2
+ &#8618;UUID=532502de:90e44fb0:242f485f:f02a2565
+ &#8618;devices=/dev/sda3,missing
+</pre></div><p>
+Then, activate the new md devices with <tt  >mdadm -A
+-s</tt>, and check
+/proc/mdstat to verify that the RAID array is active. Listing 5 shows
+how the raid array should look.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5c160"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. Reactivating the RAID Array
+</b></p><pre     class="programlisting">
+
+[root@recoverybox ~]# mdadm -A -s
+[root@recoverybox ~]# cat /proc/mdstat
+Personalities : [raid1]
+md2 : active raid1 sda3[1]
+      77521536 blocks [2/1] [_U]
+
+md1 : active raid1 sda2[1]
+      522048 blocks [2/1] [_U]
+
+md0 : active raid1 sda1[1]
+      104320 blocks [2/1] [_U]
+
+unused devices: &lt;none&gt;
+
+</pre></div><p>
+If md devices show up in /proc/mdstat, all is well, and you can move on
+to getting the LVM volumes mounted again.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5c370"></a>
+Recovering and Renaming the LVM2 Volume</h2></div></div><p>
+The next hurdle is that the system now will have two sets of lvm2 disks
+with VolGroup00 in them. Typically, the <tt  >vgchange -a
+-y</tt> command would
+allow LVM2 to recognize a new volume group. That won't work if devices
+containing identical volume group names are present, though. Issuing
+<tt  >vgchange -a y</tt> will report that VolGroup00 is inconsistent, and the
+VolGroup00 on the RAID device will be invisible. To fix this, you need
+to rename the volume group that you are about to mount on the system by
+hand-editing its lvm configuration file.
+</p><p>
+If you made a backup of the files in /etc on raidbox, you can edit a
+copy of the file /etc/lvm/backup/VolGroup00, so that it reads VolGroup01
+or RestoreVG or whatever you want it to be named on the system you are
+going to restore under, making sure to edit the file itself to rename
+the volume group in the file.
+</p><p>
+If you don't have a backup, you can re-create the equivalent of an LVM2
+backup file by examining the LVM2 header on the disk and editing out the
+binary stuff. LVM2 typically keeps copies of the metadata configuration
+at the beginning of the disk, in the first 255 sectors following the
+partition table in sector 1 of the disk. See /etc/lvm/lvm.conf and man
+lvm.conf for more details. Because each disk sector is typically 512 bytes,
+reading this area will yield a 128KB file. LVM2 may have stored several
+different text representations of the LVM2 configuration stored on the
+partition itself in the first 128KB. Extract these to an ordinary file
+as follows, then edit the file:
+
+<pre     class="programlisting">
+dd if=/dev/md2 bs=512 count=255 skip=1 of=/tmp/md2-raw-start
+vi /tmp/md2-raw-start
+</pre>
+</p><p>
+You will see some binary gibberish, but look for the bits of plain
+text. LVM treats this metadata area as a ring buffer, so there may be
+multiple configuration entries on the disk. On my disk, the first entry
+had only the details for the physical volume and volume group, and the
+next entry had the logical volume information. Look for the block of
+text with the most recent timestamp, and edit out everything except
+the block of plain text that contains LVM declarations. This has the
+volume group declarations that include logical volumes information. Fix
+up physical device declarations if needed. If in doubt, look at the
+existing /etc/lvm/backup/VolGroup00 file to see what is there. On disk,
+the text entries are not as nicely formatted and are in a different order
+than in the normal backup file, but they will do. Save the trimmed
+configuration as VolGroup01. This file should then look like Listing 6.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5c688"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 6. Modified Volume Group Configuration File
+</b></p><pre     class="programlisting">
+VolGroup01 {
+id = "xQZqTG-V4wn-DLeQ-bJ0J-GEHB-4teF-A4PPBv"
+seqno = 1
+status = ["RESIZEABLE", "READ", "WRITE"]
+extent_size = 65536
+max_lv = 0
+max_pv = 0
+
+physical_volumes {
+
+pv0 {
+id = "tRACEy-cstP-kk18-zQFZ-ErG5-QAIV-YqHItA"
+device = "/dev/md2"
+
+status = ["ALLOCATABLE"]
+pe_start = 384
+pe_count = 2365
+}
+}
+
+# Generated by LVM2: Sun Feb  5 22:57:19 2006
+</pre></div><p>
+Once you have a volume group configuration file, migrate the volume
+group to this system with <tt  >vgcfgrestore</tt>, as Listing 7 shows.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5c8f0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 7. Activating the Recovered LVM2 Volume
+</b></p><pre     class="programlisting">
+[root@recoverybox ~]# vgcfgrestore -f VolGroup01 VolGroup01
+[root@recoverybox ~]# vgscan
+  Reading all physical volumes.  This may take a while...
+  Found volume group "VolGroup01" using metadata type lvm2
+  Found volume group "VolGroup00" using metadata type lvm2
+[root@recoverybox ~]# pvscan
+  PV /dev/md2    VG VolGroup01   lvm2 [73.91 GB / 32.00 MB free]
+  PV /dev/hda2   VG VolGroup00   lvm2 [18.91 GB / 32.00 MB free]
+  Total: 2 [92.81 GB] / in use: 2 [92.81 GB] / in no VG: 0 [0   ]
+[root@recoverybox ~]# vgchange VolGroup01 -a y
+  1 logical volume(s) in volume group "VolGroup01" now active
+[root@recoverybox ~]# lvscan
+  ACTIVE            '/dev/VolGroup01/LogVol00' [73.88 GB] inherit
+  ACTIVE            '/dev/VolGroup00/LogVol00' [18.38 GB] inherit
+  ACTIVE            '/dev/VolGroup00/LogVol01' [512.00 MB] inherit
+</pre></div><p>
+At this point, you can now mount the old volume on the new system,
+and gain access to the files within, as shown in Listing 8.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x1f5cb00"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 8. Mounting the Recovered Volume
+</b></p><pre     class="programlisting">
+[root@recoverybox ~]# mount /dev/VolGroup01/LogVol00 /mnt
+[root@recoverybox ~]# df -h
+Filesystem            Size  Used Avail Use% Mounted on
+/dev/mapper/VolGroup00-LogVol00
+                       19G  4.7G   13G  28% /
+/dev/hda1              99M   12M   82M  13% /boot
+none                  126M     0  126M   0% /dev/shm
+/dev/mapper/VolGroup01-LogVol00
+                       73G  2.5G   67G   4% /mnt
+# ls -l /mnt
+total 200
+drwxr-xr-x   2 root root  4096 Feb  6 02:36 bin
+drwxr-xr-x   2 root root  4096 Feb  5 18:03 boot
+drwxr-xr-x   4 root root  4096 Feb  5 18:03 dev
+drwxr-xr-x  79 root root 12288 Feb  6 23:54 etc
+drwxr-xr-x   3 root root  4096 Feb  6 01:11 home
+drwxr-xr-x   2 root root  4096 Feb 21  2005 initrd
+drwxr-xr-x  11 root root  4096 Feb  6 02:36 lib
+drwx------   2 root root 16384 Feb  5 17:59 lost+found
+drwxr-xr-x   3 root root  4096 Feb  6 22:12 media
+drwxr-xr-x   2 root root  4096 Oct  7 09:03 misc
+drwxr-xr-x   2 root root  4096 Feb 21  2005 mnt
+drwxr-xr-x   2 root root  4096 Feb 21  2005 opt
+drwxr-xr-x   2 root root  4096 Feb  5 18:03 proc
+drwxr-x---   5 root root  4096 Feb  7 00:19 root
+drwxr-xr-x   2 root root 12288 Feb  6 22:37 sbin
+drwxr-xr-x   2 root root  4096 Feb  5 23:04 selinux
+drwxr-xr-x   2 root root  4096 Feb 21  2005 srv
+drwxr-xr-x   2 root root  4096 Feb  5 18:03 sys
+drwxr-xr-x   3 root root  4096 Feb  6 00:22 tftpboot
+drwxrwxrwt   5 root root  4096 Feb  7 00:21 tmp
+drwxr-xr-x  15 root root  4096 Feb  6 22:33 usr
+drwxr-xr-x  20 root root  4096 Feb  5 23:15 var
+</pre></div><p>
+Now that you have access to your data, a prudent final step would be to
+back up the volume group information with
+<tt  >vcfgbackup</tt>, as Listing 9 shows.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x2267b28"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 9. Backing Up Recovered Volume Group Configuration
+</b></p><pre     class="programlisting">
+[root@teapot-new ~]# vgcfgbackup
+Volume group "VolGroup01" successfully backed up.
+Volume group "VolGroup00" successfully backed up.
+[root@teapot-new ~]# ls -l /etc/lvm/backup/
+total 24
+-rw-------  1 root root 1350 Feb 10 09:09 VolGroup00
+-rw-------  1 root root 1051 Feb 10 09:09 VolGroup01
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e63580.0x2267ce0"></a>
+Conclusion</h2></div></div><p>
+LVM2 and Linux software RAID make it possible to create economical,
+reliable storage solutions with commodity hardware. One trade-off involved
+is that some procedures for recovering from failure situations may not
+be clear. A tool that reliably extracted old volume group information
+directly from the disk would make recovery easier. Fortunately, the
+designers of the LVM2 system had the wisdom to keep plain-text backup
+copies of the configuration on the disk itself. With a little patience
+and some research, I was able to regain access to the logical volume
+I thought was lost; may you have as much success with your LVM2 and
+RAID installation.
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../146/8948.html" target="_self">/article/8948</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Richard Bullington-McGuire is the Managing Partner of PKR Internet, LLC,
+a software and systems consulting firm in Arlington, Virginia,
+specializing
+in Linux, Open Source and Java. He has been a Linux sysadmin since
+1994. You can reach him at <a href="mailto:rbulling@pkrinternet.com">rbulling@pkrinternet.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../146/toc146.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

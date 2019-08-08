@@ -1,0 +1,352 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The Serial Driver Layer</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Greg explains the interface to the new serial driver layer&#10;    and how to register a serival driver and an individual&#10;    serial port.&#10;    "><meta name="keywords" content="kernel, serial, driver"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x176e580.0x1865ab0"></a>The Serial Driver Layer</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #104, December 2002</div></div><div><p>
+    Greg explains the interface to the new serial driver layer
+    and how to register a serival driver and an individual
+    serial port.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x176e580.0x18663f8"></a></h2></div></div><p>In the last two installments of Driving
+Me Nuts [<i  >LJ</i> August 2002 and October 2002], we
+covered the tty layer, explaining how to create a minimal tty
+driver. We also explained some of the various ioctls and how to
+interpret the termios structure. Those articles are a great start
+if you have to implement a new tty-type device for your embedded
+system, such as a serial port. For every new system that is
+designed, the hardware engineers always like to place the serial
+port at a different address, or use a different UART, or sometimes
+just forget the serial port and use a USB port. So most developers
+want to create a whole new tty driver for their new devices in
+order for the hardware to work properly on Linux. Fortunately,
+there are some layers above the tty layer that help buffer its
+complexities and provide the developer with a lot of common
+functions that are needed for a serial driver and that fit the UART
+or USB model better. These layers are the serial and USB to serial
+driver layers. We cover the serial driver layer in this article and
+will cover the USB to serial layer in a future article.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x176e580.0x1866558"></a>Serial Mess</h2></div></div><p>If you look at the code for the generic PC serial driver in
+the 2.2 and 2.4 kernels (available at drivers/char/serial.c), you
+will see a very complex driver that has numerous #ifdef lines,
+depending on the type of hardware you are using. This file has been
+copied numerous times in order to provide serial support for
+devices that do not fit the typical PC UART device (such as the
+serial_amba.c and serial_21285.c drivers). Thankfully, a number of
+developers, led by ARM Linux maintainer Russell King, restructured
+the serial driver into a generic serial core and a number of
+smaller, hardware-specific drivers. That code showed up in the main
+kernel tree sometime around the 2.5.28 release. The examples in
+this article are from version 2.5.35, so check that things have not
+changed for the kernel version you are using.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x176e580.0x1866660"></a>Registering a Serial Driver</h2></div></div><p>The serial layer requires your driver to do two things:
+register the driver itself with the serial core and then register
+the individual serial ports as they are found in the system
+(through PCI enumeration or some other sort of device discovery
+mechanism). To register your driver, call uart_register_driver()
+with a pointer to a struct uart_driver structure. This function
+takes the information provided in the uart_driver structure and
+sets up the tty layer based on this.</p><p>The fields in the uart_driver structure that the serial
+driver needs to provide are the following:</p><pre     class="programlisting">
+struct module           *owner;
+const char              *driver_name;
+const char              *dev_name;
+int                      major;
+int                      minor;
+int                      nr;
+struct console          *cons;
+</pre><p>The owner field is a pointer to the module owning the serial
+driver. This is usually set to the macro THIS_MODULE.
+</p><p>The driver_name field is a pointer to the string that
+describes this driver, which is usually the same as the dev_name
+field. However, when describing the dev_name field, devfs needs to
+be taken into account, and the characters &ldquo;%d&rdquo; must be added to
+the end of this field if devfs is selected. This is because of the
+way devfs creates the device nodes. As an example, the amba.c
+driver sets the driver_name and dev_name fields as such:</p><pre     class="programlisting">
+        .driver_name            = "ttyAM",
+#ifdef CONFIG_DEVFS_FS
+        .dev_name               = "ttyAM%d",
+#else
+        .dev_name               = "ttyAM",
+#endif
+</pre><p>The major and minor fields specify the major number for the
+driver and the starting minor number, respectively.
+</p><p>The nr field specifies the maximum number of serial ports
+this driver supports.</p><p>The cons field is a pointer to the struct console structure
+that is used if this driver can support a serial console. If the
+driver does not support serial console mode, this field should be
+set to NULL.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x176e580.0x1866a28"></a>Registering a Serial Port</h2></div></div><p>Now that the serial driver has been registered with the
+serial driver layer, each of the serial ports needs to be
+registered individually with a call to uart_add_one_port(). This
+function takes a pointer to the original uart_driver structure that
+was passed to uart_register_driver and a pointer to the uart_port
+structure. The uart_port structure is defined as the
+following:</p><pre     class="programlisting">
+struct uart_port {
+  spinlock_t       lock;      /* port lock */
+  unsigned int     iobase;    /* in/out[bwl] */
+  char             *membase;  /* read/write[bwl] */
+  unsigned int     irq;       /* irq number */
+  unsigned int     uartclk;   /* base uart clock */
+  unsigned char    fifosize;  /* tx fifo size */
+  unsigned char    x_char;    /* xon/xoff char */
+  unsigned char    regshift;  /* reg offset shift */
+  unsigned char    iotype;    /* io access style */
+  unsigned int     read_status_mask;
+                              /* driver specific */
+  unsigned int     ignore_status_mask;
+                              /* driver specific */
+  struct uart_info *info;
+                        /* pointer to parent info */
+  struct uart_icount icount; /* statistics */
+  struct console   *cons;
+                      /* struct console, if any */
+#ifdef CONFIG_SERIAL_CORE_CONSOLE
+  unsigned long sysrq;       /* sysrq timeout */
+#endif
+  unsigned int     flags;
+  unsigned int     mctrl;
+                 /* current modem ctrl settings */
+  unsigned int     timeout;
+                 /* character-based timeout */
+  unsigned int     type;      /* port type */
+  struct uart_ops  *ops;
+  unsigned int     line;      /* port index */
+  unsigned long    mapbase;   /* for ioremap */
+  unsigned char    hub6;
+           /* this should be in the 8250 driver */
+  unsigned char unused[3];
+    };
+</pre><p>A majority of these fields are used by the individual serial
+drivers during their operation to define how the specific port is
+hooked up to the processor (through the hub6, iobase, membase,
+mapbase and iotype variables).
+</p><p>One of the more interesting variables in this structure is
+the struct uart_ops pointer, which defines a list of functions that
+the serial core uses to call back into the port-specific serial
+driver. This structure is defined as:</p><pre     class="programlisting">
+struct uart_ops {
+  unsigned int    (*tx_empty)(struct uart_port *);
+  void   (*set_mctrl)(struct uart_port *,
+                      unsigned int mctrl);
+  unsigned int    (*get_mctrl)(struct uart_port *);
+  void   (*stop_tx)(struct uart_port *,
+                    unsigned int tty_stop);
+  void   (*start_tx)(struct uart_port *,
+                     unsigned int tty_start);
+  void   (*send_xchar)(struct uart_port *, char ch);
+  void   (*stop_rx)(struct uart_port *);
+  void   (*enable_ms)(struct uart_port *);
+  void   (*break_ctl)(struct uart_port *, int ctl);
+  int    (*startup)(struct uart_port *);
+  void   (*shutdown)(struct uart_port *);
+  void   (*change_speed)(struct uart_port *,
+                         unsigned int cflag,
+                         unsigned int iflag,
+                         unsigned int quot);
+  void        (*pm)(struct uart_port *,
+                    unsigned int state,
+                unsigned int oldstate);
+  int        (*set_wake)(struct uart_port *,
+                         unsigned int state);
+  /*
+   * Return a string describing the port type
+   */
+  const char *(*type)(struct uart_port *);
+  /*
+   * Release IO and memory resources used by
+   * the port. This includes iounmap if necessary.
+   */
+  void   (*release_port)(struct uart_port *);
+  /*
+   * Request IO and memory resources used by the
+   * port.  This includes iomapping the port if
+   * necessary.
+   */
+  int    (*request_port)(struct uart_port *);
+  void   (*config_port)(struct uart_port *, int);
+  int    (*verify_port)(struct uart_port *,
+                        struct serial_struct *);
+  int    (*ioctl)(struct uart_port *, unsigned int,
+                  unsigned long);
+};
+</pre><p>This is a very large structure, with a lot of different
+function pointers, looking almost as bad as the tty_driver
+structure.
+</p><p>The startup function is called once each time the open(2)
+call happens. It is only called after the serial core has done a
+lot of resource checking and is sure the port needs to be opened.
+The serial driver usually does some hardware-specific setup to
+allow the port to be used in this function.</p><p>The shutdown function is the opposite of the startup
+function. It is called when the port is closed and all data has
+stopped flowing though it. This is where the hardware is told to
+stop, and any resources that were allocated in the startup function
+should be freed.</p><p>The request_port and release_port functions are used to
+reserve memory and other hardware resources that are related to the
+serial port. The config_port function is much like request_port,
+but it is called when the hardware can autoprobe for any serial
+ports connected to it and is also responsible for doing the same
+hardware reservations that request_port does.</p><p>The change_speed function is called whenever the port line
+settings need to be modified. The values passed to this function
+already have been cleaned up from the original termios structure
+that was passed through the tty layer, making the logic in the
+serial driver much simpler.</p><p>There are a number of functions that are used to get and set
+the serial line state and port status, these are:</p><div class="itemizedlist"><ul type="disc"><li><p>set_mctrl: sets a new value for the MCR UART
+register.</p></li><li><p>get_mctrl: gets the current MCR UART register
+value.</p></li><li><p>stop_tx: stops the port from sending data.</p></li><li><p>start_tx: starts the port sending data.</p></li><li><p>tx_empty: returns if the port transmitter is empty
+or not.</p></li><li><p>send_xchar: tells the port to send the XOFF
+character to the host.</p></li><li><p>stop_rx: stops receiving data.</p></li><li><p>break_ctl: sends the BREAK value over the
+port.</p></li><li><p>enable_ms: enables the modem status
+interrupts.</p></li></ul></div><p>There are two functions related to power management issues
+with the serial port: pm and set_wake. If your hardware platform
+supports power management, use these functions to handle powering
+the hardware up and down.</p><p>verify_port is called to verify that the settings passed to
+it are valid settings for the specific serial port and is called
+when the user makes a TIOCSSERIAL ioctl(2) call on the port (see
+&ldquo;The tty Layer, Part II&rdquo;, <i  >LJ</i> October 2002
+for more on TIOCSSERIAL).</p><p>The serial driver layer handles many of the common serial
+ioctls, such as TIOCMGET, TIOCMBIS, TIOCMBIC, TIOCMSET,
+TIOCGSERIAL, TIOCSSERIAL, TIOCSERCONFIG, TIOCSERGETLSR, TIOCMIWAIT,
+TIOCGICOUNT, TIOCSERGWILD and TIOCSERSWILD. If any other ioctl is
+called on the serial port, it is passed down to the specific port
+through the ioctl callback in the uart_ops structure.</p><p>The last remaining function is type, which is used to return
+a string describing the type of serial port. This is used in the
+proc file that resides in /proc/tty/driver/ and in the initial boot
+message when the port is discovered.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x176e580.0x18676e0"></a>Where Is the Data?</h2></div></div><p>You may have noticed there is no function in the struct
+uart_ops to send or receive data. The data that is sent from the
+user to the tty layer through a call to write(2) is placed in a
+circular buffer by the serial driver layer, and it is up to the
+specific UART driver to pick up this data and send it out of the
+port. Usually, every time the UART interrupt happens, the driver
+checks the circular buffer to see if any more data is present to be
+sent. The following example function shows one way of doing
+this:</p><pre     class="programlisting">
+static void tiny_tx_chars(struct uart_port *port)
+{
+    struct circ_buf *xmit = &amp;port-&gt;info-&gt;xmit;
+    int count;
+    if (port-&gt;x_char) {
+        /* send port-&gt;x_char out the port here */
+        UART_SEND_DATA(port-&gt;x_char);
+        port-&gt;icount.tx++;
+        port-&gt;x_char = 0;
+        return;
+    }
+    if (uart_circ_empty(xmit) ||
+       uart_tx_stopped(port)) {
+        tiny_stop_tx(port, 0);
+        return;
+    }
+    count = port-&gt;fifosize &gt;&gt; 1;
+    do {
+        /* send xmit-&gt;buf[xmit-&gt;tail]
+         * out the port here */
+        UART_SEND_DATA(xmit-&gt;buf[xmit-&gt;tail]);
+        xmit-&gt;tail = (xmit-&gt;tail + 1) &amp;
+                     (UART_XMIT_SIZE - 1);
+        port-&gt;icount.tx++;
+        if (uart_circ_empty(xmit))
+            break;
+    } while (--count &gt; 0);
+    if (uart_circ_chars_pending(xmit) &lt;
+       WAKEUP_CHARS)
+        uart_event(port, EVT_WRITE_WAKEUP);
+    if (uart_circ_empty(xmit))
+        tiny_stop_tx(port, 0);
+}
+</pre><p>The function starts out by looking to see if the x_char is
+specified to be sent out at this moment in time. If so, it sends it
+out and increments the number of characters sent out the port. If
+not, the circular buffer is checked to see if it has any data in it
+and if the port is not currently stopped by anything. If this is
+true, we start taking characters out of the circular buffer and
+send them to the UART. In this example, we send, at most, the size
+of the FIFO divided by two, which is a good average amount of
+characters to send. After the characters are sent, we see whether
+we have flushed out enough characters from the circular buffer to
+ask for more to be sent to us. If so, we call uart_event() with the
+EVT_WRITE_WAKEUP parameter, telling the serial core to notify user
+space that we can accept more data.
+</p><p>Any data received by the serial driver is passed to the tty
+layer, exactly like a normal tty driver would, with a call to
+tty_insert_flip_char(). This is usually done in the UART interrupt
+function.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x176e580.0x18678f0"></a>Tiny Serial Example</h2></div></div><p>Listing 1 [available on the <i  >LJ</i> FTP site
+at
+<a href="../listings/104/6331l1.txt" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue104/6331l1.txt</a>],
+shows an example of how to register a serial driver with the serial
+driver layer and how to register a single serial port. This serial
+port is much like the previous tty example serial driver in that it
+acts like a character is received every two seconds as long as the
+port is opened. It also will print any characters that are sent to
+it with a call to write(2) to the kernel debug log.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x176e580.0x1867aa8"></a>Conclusion</h2></div></div><p>In this article, the interface to the new serial driver layer
+has been explained, detailing how to register a serial driver and
+then an individual serial port. Thanks to this new driver layer
+being introduced in the 2.5 kernel, serial drivers can be much
+smaller, and creating a new one is a easier process, keeping the
+complexities of the tty layer away from the programmer.</p></div></div>
+<div class="authorblurb"><p><span   class="bold"><b>Greg
+      Kroah-Hartman</b></span> is currently the Linux USB and PCI Hot
+      Plug kernel maintainer. He works for IBM, doing various Linux
+      kernel-related things and can be reached at
+      <a href="mailto:greg@kroah.com">greg@kroah.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../104/toc104.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

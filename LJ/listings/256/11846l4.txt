@@ -1,0 +1,39 @@
+Listing 4. Job control stack pop function implemented in MATLAB. Queries
+job control table for next available data file to process. If data is
+available, the path to it is returned. If none is available, returns an
+empty string causing further processing to end.
+
+function stJobEntry = pop_job_table(taskid, entryid)
+
+% determine which node we are on for table update (for performance
+% tracking)
+iNodeID = str2num(getenv('SLURM_PROCID'));
+
+sMYSQL = 'mysql -h myhost -u myuser -p<password> myDB';
+
+% select one entry from the job management table that hasn't been
+% done yet. Immediately update with this processor's node_id to try
+% to lock the row out from further requests.
+sPOPSQL = sprintf(['echo "set @B=%d; set @C=%d;' ...
+                   'select @A:=entry_id as entry_id, datapath from ' ...
+                   'JobManagement where task_id = @B and entry_id = @C' ...
+                   'and node_id ' ...
+                   'is null limit 1 for update;' ...
+                   'update JobManagement set node_id = %d,' ...
+                   'node_start = now() where task_id = @B and ' ...
+                   'entry_id = @A;' ...
+                   'set @A=0;"'], taskid, entryid, iNodeID);
+
+% execute the table pop and get a day that is not being processed
+[status, cmdout] = system([sPOPSQL ' | ' sMYSQL ' | head -2 | tail ' ...
+                    '-1']);
+
+stJobEntry = struct('entry',0, 'datapath','');
+
+if length(cmdout) > 0
+    % parse cmdout to entry_id, datapath
+    iTokens = str2num(cmdout);
+    stJobEntry.entry = iTokens(1);
+    stJobEntry.datapath = iTokens(2);
+end
+

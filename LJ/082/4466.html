@@ -1,0 +1,284 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Journaling with ReiserFS</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Mason gives a tour through the Reiser File System: its features&#10;    and construction.&#10;    "><meta name="keywords" content="ReiserFS, journaling, filesystem, LVM, RAID"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x26a3580.0x279aab0"></a>Journaling with ReiserFS</h1></div><div><div class="author"><h3 class="author">Chris Mason</h3></div><div class="issuemoyr">Issue #82, February 2001</div></div><div><p>
+    Mason gives a tour through the Reiser File System: its features
+    and construction.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279b450"></a></h2></div></div><p>There are a few new file systems coming
+out for Linux these days, bringing some badly needed features for
+both servers and desktops. I'll briefly describe some of the key
+ReiserFS features and discuss some details of the journal layer.
+</p><p>ReiserFS stores all file system objects in a single B*tree.
+The tree supports:</p><div class="itemizedlist"><ul type="disc"><li><p>Dynamic inode allocation</p></li><li><p>Compact, indexed directories</p></li><li><p>Resizable items</p></li><li><p>60-bit offsets</p></li></ul></div><p>There are four basic types of items in the tree. Stat data,
+directory items, indirect items and direct items. Items are found
+by searching for a key, where the key contains an ID, the offset in
+the object you are looking for and the item type.
+</p><p>The ReiserFS directories grow and shrink as their contents
+change. A hash of the file name is used to keep an entry's offset
+in the directory constant. The tree indexing of this hash allows
+for very large directories without much performance loss and still
+provides clean support for NFS and the standard directory
+operations.</p><p>For files, indirect items point to data blocks, and direct
+items contain packed file data. This packed file data is stored
+directly in the tree and can share space in the tree nodes with
+items from other objects. So, for large files, ReiserFS stores
+block pointers similar to the ones ext2 uses, but for small files
+we pack the data together to prevent wasted space.</p><p>All of these items are resizable by rebalancing the tree. We
+can append to the packed file data, or if we need another field in
+the stat data, it can grow to accommodate the new information. The
+disk format deserves much more detail than I'm giving it here, and
+you can learn more from the papers on the ReiserFS home page (see
+Resources).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279ba28"></a>Large File Support</h2></div></div><p>ReiserFS actually has two main disk formats. The new format
+introduced in our 2.4 code allows 60-bit file offsets, and the
+format used in our 2.2 code uses 32-bit offsets. When you mount an
+older file system under the new kernel, the old format is preserved
+and large files are not allowed.</p><p>There is a mount option for converting to the new format, but
+the code for mounting the new format under 2.2 kernels is still in
+beta. Instead of putting out-of-date information in this article, I
+suggest going to the ReiserFS web site for details on enabling
+large file support.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279bb88"></a>How Does the Journal Work?</h2></div></div><p>My goal here isn't to describe APIs or log data structures;
+I'm hoping to list the major issues involved in file system logging
+and how ReiserFS deals with them.</p><p>Before we talk about how logging works, let's discuss the
+problem we are trying to solve. In order to have a consistent file
+system after a crash, updates need to be atomic. They need to
+happen completely or not at all. For example, to append blocks onto
+a file, you need to update the file's block pointers, allocate
+blocks from the free list and update the superblock. If the system
+crashes in the middle of these changes, the file might have a
+pointer to a block still on the free list, or the superblock might
+not have updated stats in it, or the block you allocated could be
+lost (not in the file and not on the free list).</p><p>The ReiserFS journal uses a simple metadata-only, write-ahead
+logging scheme. The idea is that before any changes are written to
+disk, they are first committed to a log. After a crash, committed
+transactions are replayed, which is nothing more than copying
+blocks from the log into the main disk area.</p><p>Writing changes to the log isn't what makes logging
+complicated. The hard part is keeping the log from slowing your
+file system down to a crawl. The most obvious optimization is to
+write to the log in big sequential chunks and lower the number of
+commit blocks written. Most operations update a small number of
+blocks, so the journal combines multiple operations into a large
+atomic unit.</p><p>Modified buffers cannot be flushed until they have been
+copied to the log, and they cannot be freed until they have been
+flushed. Larger transactions pin more kernel memory but also make
+many other optimizations possible. Since ReiserFS stores everything
+in a balanced tree, the tree frequently needs balancing. Tree
+blocks are allocated, modified and then freed in another balance
+later on. With larger transactions, we increase the chance the
+block will be freed before it is written to the log or the main
+disk.</p><p>It is common for blocks to be logged over and over again. If
+the superblock is included in transactions one, two and three, it
+needs to be written to the log once for each transaction. But, it
+doesn't need to be written the main disk area until after
+transaction three has finished. The total number of writes needed
+is lower, and most of the writes are to the sequential log. In some
+cases, this actually makes logging faster than the original file
+system was.</p><p>Whenever possible, log I/O is done by a worker thread,
+<span   class="bold"><b>kreiserfsd</b></span>. This allows log
+commits to happen in the background, without slowing down user
+processes. However, the log is a fixed size, so user processes
+might have to wait for log space to become available before they
+can start a new transaction. A great deal of care must be taken to
+make sure processes waiting on the log don't have resources needed
+by a process already inside a transaction.</p><p>Most of the file system does not need to be aware there is a
+journal layer keeping things safe, but there are a few new rules
+that need to be followed. First, it isn't safe to modify a dirty
+buffer. On SMP systems, another CPU might be writing the buffer
+while you are changing it, which means the modifications would get
+to disk before the transaction is committed.</p><p>Most operations will alter a limited number of buffers, but
+file writes and truncates are effectively unbounded. Instead of
+adding the complexity of unbounded transaction size in the journal
+layer, I chose to code consistency points into these operations. If
+the current transaction needs to end, they log enough information
+to make the file system consistent, and then start a new
+transaction. When data logging is used,
+<span   class="bold"><b>fsync</b></span> needs to do the same
+checks.</p><p>Another new rule required by the journal layer has to do with
+reusing blocks when metdata-only logging is used. Picture these two
+transactions:</p><pre     class="programlisting">
+1. allocate block 200, insert into the tree&lt;\n&gt;
+change and log block 200
+free block 200
+close and commit transaction 1
+2. allocate block 200 as a data block
+change block 200, fsync to disk
+close and commit transaction 2
+[system crash]
+</pre><p>After the crash, the transactions are replayed in order.
+While replaying transaction one, the logged version of block 200 is
+copied into the main disk, and after replaying transaction two,
+block 200 is a data block in a file. But, the contents written to
+block 200 by the fsync are no longer there. ReiserFS avoids this by
+never allocating a data block until there is no chance a log replay
+will overwrite the contents with old information. When the file
+system is full, this means we have to flush transactions to disk
+and find reusable blocks. Similar checks need to happen if a data
+block is logged and then written directly later on.
+</p><p>Now that <span   class="bold"><b>fsck</b></span> isn't needed
+after every crash, we need to be more careful with lost files. An
+unlinked file isn't actually deleted until the last open process
+using it finishes. If the system crashes before the delete
+operation is complete, the journal will give a consistent file
+system, but some space will still be allocated to the file. Since
+the file isn't in the directory tree, there isn't a way to reclaim
+the blocks.</p><p>The easiest way to fix this in ReiserFS is to link the file
+into a special directory. ReiserFS directories are very fast, and
+there isn't much locking involved if you aren't worried about file
+name conflicts. After a crash, the directory is read, and file
+deletion is finished for any objects left. The special directory
+doesn't actually need file names at all, just the key information
+for looking up the file. This fix is not yet integrated into the
+official ReiserFS releases, but it should be soon.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279c210"></a>User Space Transactions</h2></div></div><p>From time to time, people ask for a version of the
+transaction API exported to user space. The ReiserFS journal layer
+was designed to support finite operations that usually complete
+very quickly, and it would not be a good fit for a general
+transaction subsystem. It might be a good idea to provide atomic
+writes to user space, however, and give them more control over
+grouping operations together. That way an application could request
+for a 64K file to be created in a certain directory and treat it
+like an atomic operation. Very little planning has happened in this
+area thus far.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279c318"></a>VM Integration</h2></div></div><p>As memory gets low on the system, the kernel needs to start
+flushing dirty data to disk so the pages can be freed. But, pinned
+buffers from uncommitted transactions can't be freed until the
+transaction commits, leaving the VM unable to do anything without
+help from the file system. We also want to make sure the journal
+does not use too high a percentage of the system memory for pinned
+buffers.</p><p>We will be working with the VM developers to give memory
+pressure to the file systems properly. The API is not set in stone
+yet, but people seem to be leaning toward a flush callback
+associated with the page, and a generic memory pressure
+registration system. It isn't known yet how much of that will
+happen in the 2.4 kernel and what will be left for 2.5.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279c478"></a>ReiserFS and LVM</h2></div></div><p>LVM adds a bunch of cool new features to Linux, one of which
+is the ability to make read-only snapshots of a device. The
+snapshot is created very quickly, and copy-on-write is used to keep
+the snapshot unchanged as the original device is modified. This
+allows for on-line, consistent backups of most software on just
+about any file system.</p><p>But, the journaled file systems make this a little harder.
+When sync is called on ReiserFS, we just commit metadata changes to
+the log, knowing that a replay will make things consistent after a
+crash. For a read-only LVM snapshot, log replay is not an option.
+Instead, we can provide a few new generic calls to flush everything
+to the main disk and pause new file system modifications. While
+things are paused, LVM initializes the snapshot, so it will be
+consistent without a log replay. Once LVM is done, the file system
+is unlocked and writes proceed normally.</p><p>Since all the file system operations need to be able to wait
+on the log, this was easily coded in ReiserFS. LVM 0.9 and ReiserFS
+3.6.18 have this functionality, but we are not sure when the
+generic calls are going to be added in the kernel. Regardless,
+patches to provide the missing pieces will be available on the
+ReiserFS and LVM web sites.</p><p>Another LVM feature is the ability to relocate extents from
+one device to another. If you discover an area of the disk is
+getting higher-than-average traffic, you can relocate those blocks
+to a faster device. In fact, you could relocate the entire log area
+to a faster device, reducing head contention and drive seeks.
+Relocating the log to a solid-state disk could really improve
+performance on log intensive applications.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279c688"></a>Software RAID</h2></div></div><p>In the 2.2 kernels, the software RAID code could write pinned
+buffers to disk, which breaks the write ordering constraints used
+to keep things consistent. Only drive striping and concatenation
+were completely safe, and mirroring was safe as long as you did not
+use the on-line rebuild code. In the 2.4 kernels, all software RAID
+levels should work properly with the journaled file systems.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279c790"></a>ReiserFS and NFS</h2></div></div><p>ReiserFS has problems supporting NFS because 64 bits of
+information are required to find an object in the tree, and NFS
+expects to find an inode with just the inode number (32-bits long).
+The good news is the NFS file handle has enough room to store the
+extra information ReiserFS needs in order to find the file again
+later, and other kernel developers have written APIs to give the
+file system control over some of the file handle. By the time this
+article is out, there should be public patches to add proper NFS
+support to ReiserFS.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279c898"></a>Write Caching</h2></div></div><p>For performance benchmarks, some of the new drives have
+write-back caching by default. This means the drive reports a write
+is completed before it is actually on the media. The block is still
+in the drive's cache, where the writes can be reordered. If this
+happens, metadata changes might be written before the log commit
+blocks, leading to corruption if the machine loses power. It is
+very important to disable write-back caching on both IDE and SCSI
+drives.</p><p>Some hardware RAID controllers provide a battery-backed
+write-back cache that preserves the cache contents if the system
+loses power. These should be safe to use, but the cache battery
+should be checked often. A dramatic performance increase can be
+seen with these write caches, especially for log intensive
+applications like mail servers.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279c9f8"></a>Mail Server Optimizations</h2></div></div><p>Mail servers tend to be a worst-case for the journaled file
+systems because they need to make sure each file operation
+completes. They use fsync, or a bunch of other tricks to prevent
+losing messages after a crash, and this forces the file system to
+close transactions while they are still very small.</p><p>Mail servers need a fast way to get new files committed to
+disk, and data logging can help with this. During the fsync call,
+you log the data blocks and metadata required to add the file in
+the tree, producing one large sequential write. If the file being
+written is a transient spool file, it might never be written back
+to the main drive. Combined with a fast dedicated logging device,
+data logging can make a big performance improvement.</p><p>As of yet, the ReiserFS 2.4 code does not support data
+logging. There is data logging code in our releases for the 2.2
+kernels, but it needs to be adapted to the 2.4 page cache.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x26a3580.0x279cbb0"></a>The Competition</h2></div></div><p>The end result of the new Linux file systems should be very
+interesting. Admins will be able to choose the best product for
+their applications, and programmers will be able to compare their
+decisions against the alternatives. Linux as a whole will benefit
+as the community picks and chooses the best features from each file
+system.</p><p><a href="4466s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p><span   class="bold"><b>Chris Mason</b></span>
+      (mason@suse.com) was a system administrator before he started
+      contributing to the ReiserFS Project. He now works full-time for
+      SuSE from his home in Rochester New York.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../082/toc082.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

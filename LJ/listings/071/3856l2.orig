@@ -1,0 +1,294 @@
+Listing 2: rank-something.pl, which allows users to rank an item.  If
+the item does not exist in RankItems, the user can add a new item from
+the same form.
+
+#!/usr/bin/perl -wT
+
+# rank-something.pl, from Linux Journal
+# Written by Reuven M. Lerner (reuven@lerner.co.il)
+
+# Released under the GNU General Public License, available from
+# http://www.gnu.org/copyleft/gpl.html
+
+use strict;
+use diagnostics;
+use CGI::Pretty qw(:standard);
+use CGI::Carp qw(fatalsToBrowser);
+use DBI;
+
+# Create a new instance of CGI
+my $query = new CGI;
+
+# Send a MIME header and HTML title to the user's browser
+print $query->header("text/html");
+print $query->start_html(-title => "Rank something!");
+
+# Get the category and item IDs, if set
+my $category_id = $query->param("category_id") || 0;
+my $existing_item_id = $query->param("existing_item_id");
+
+# Connect to the database
+my $dbh = DBI->connect("DBI:mysql:test:localhost") ||
+    die qq{DBI error from connect: "$DBI::errstr"};
+
+# Declare some variables that we will use a lot
+my $sql;
+my $sth;
+my $result;
+my $success;
+my @items = ();
+
+# ------------------------------------------------------------
+# If the program was invoked with POST, insert a new ranking
+
+if ($query->request_method eq "POST")
+{
+    my $item_id;
+
+    # If $existing_item_id was set, then the user chose to
+    # use an existing item, rather than insert a new one
+    if ($existing_item_id)
+    {
+	$item_id = $existing_item_id;
+    }
+
+    # Insert the new item and get its ID, if the user so chooses
+    else
+    {
+	my $item_name = $query->param("new_item_name") ||  "";
+	my $item_category =
+	    $query->param("new_category_id") ||  "";
+	my $item_description = 
+	    $query->param("new_item_description") || "";
+
+	# Make sure that the item has a name, description, and
+	# category ID
+	unless ($item_name and $item_description and $item_category)
+	{
+	    print $query->start_html(-title => "Missing item name");
+	    print p("In order to rank a new item, it must have a name,",
+		    "description, and category. Please try again.");
+	    print p("Alternatively, you can rank an existing item.");
+	    exit;
+	}
+
+	# Insert this new item into RankItems
+	$sql  = "INSERT INTO RankItems ";
+	$sql    .= "(category_id, item_name, item_description) ";
+	$sql    .= "VALUES (?,?,?) ";
+
+	$sth = $dbh->prepare($sql) 
+	    || die "Cannot prepare: $DBI::errstr";
+
+	$success =
+	    $sth->execute($item_category, $item_name, $item_description);
+
+	# Check for errors
+	unless ($success)
+	{
+	    print h1("Error inserting new item");
+	    print p("There was an error inserting the item: $DBI::errstr");
+	    print p("Perhaps this item already exists in the database?");
+	    exit;
+	}
+
+	$sth->finish;
+
+	# Get the inserted item ID
+	$item_id = $dbh->{"mysql_insertid"};
+
+    }
+
+    # ------------------------------------------------------------
+    # Since the item is definitely in RankItems, we can rank it
+
+    # Check for a name and e-mail address
+    my $ranker_name = $query->param("ranker_name") || "";
+    my $email = $query->param("email") || "";
+
+    unless ($ranker_name and $email)
+    {
+	print $query->start_html(-title => "Missing information");
+	print p("You must include your name and e-mail address ",
+		"in order for your ranking to be accepted.  ",
+		"Please enter this information and try again.");
+	exit;
+    }
+
+    # Remove HTML from the comments, and separate
+    # paragraphs with <P> and </P>
+    my $comments = $query->param("comments");
+    $comments =~ s|<.*?>||g;
+    $comments =~ s|[\r\n]{2,}|<br>\n\n|g;
+
+    my $rank = $query->param("rank");
+
+    $sql  = "INSERT INTO Rankings ";
+    $sql    .= "(item_id, ranker_name, email, comments, rank) ";
+    $sql    .= "VALUES (?,?,?,?,?) ";
+
+    $sth = $dbh->prepare($sql) 
+	|| die "Cannot prepare: $DBI::errstr";
+
+    $success =
+	$sth->execute($item_id, $ranker_name, $email, $comments, $rank);
+
+    unless ($success)
+    {
+	print h1("Error inserting ranking");
+	print p("There was an error inserting the ranking: $DBI::errstr");
+	print p("Perhaps you have ranked this item in the past?");
+	exit;
+    }
+
+    $sth->finish;
+
+    # Indicate that the ranking was successful
+    print p("Your ranking was successfully entered.");
+}
+
+# ------------------------------------------------------------
+# Get all of the items, choosing a specific category if the user
+# selected one
+
+$sql  = "SELECT item_id, item_name ";
+$sql .= "FROM RankItems ";
+$sql .= "WHERE category_id = $category_id" if $category_id;
+
+$sth = $dbh->prepare($sql) 
+    || die "Cannot prepare: $DBI::errstr";
+
+$result = $sth->execute
+    || die "Cannot execute: $DBI::errstr";
+
+my %items = ();
+while (my $row = $sth->fetchrow_arrayref)
+{
+    # Get the elements that we retrieved
+    my ($id, $name) = @$row;
+
+    # Put information about this item in a hash
+    $items{$id} = $name;
+}
+
+$sth->finish;
+
+# ------------------------------------------------------------
+# Get all of the categories, for future entries
+
+$sql  = "SELECT category_id, category_name ";
+$sql .= "FROM RankCategories ";
+
+$sth = $dbh->prepare($sql) 
+    || die "Cannot prepare: $DBI::errstr";
+
+$result = $sth->execute
+    || die "Cannot execute: $DBI::errstr";
+
+my %categories = ();
+while (my $row = $sth->fetchrow_arrayref)
+{
+    # Get the elements that we retrieved
+    my ($id, $name) = @$row;
+
+    # Put information about this item in a hash
+    $categories{$id} = $name;
+}
+
+$sth->finish;
+
+# ------------------------------------------------------------
+# Now produce some output for the user, in an HTML
+# form that can be used
+
+print h1("Rank something!"), 
+    startform(-method => "POST",
+	      -action => $query->url);
+
+print p("Add a new category", 
+	a({-href=>'/cgi-bin/rank-category.pl'}, "here"),
+	".");
+
+print p("View existing rankings", 
+	a({-href=>'/cgi-bin/view-ranking.pl'}, "here"),
+	".");
+
+print table({-border => 1, -cellpadding => 15},
+
+	    Tr({-valign => 1}, 
+	       td([
+
+		   # Table cell for existing items
+		   p(b("Choose an existing item...")) . 
+
+		   popup_menu(-name => "existing_item_id",
+			      -values => [0, (sort {
+				  $items{$a} cmp $items{$b}} keys %items)],
+			      -labels => {0 => "Choose one", 
+					  map {($_, $items{$_})} %items}, 
+			      -default => $existing_item_id,
+			      -override => 1),
+
+		   # Table cell for new items
+		   p(b("... or add a new one to the database:")) . 
+
+		   "Name:" .
+		   textfield(-name => 'new_item_name',
+			     -size => 25,
+			     -override => 1,
+			     -maxlength => 25) .
+
+		   " Category:" . 
+		   popup_menu(-name => 'new_category_id',
+			      -values => [0, sort {$categories{$a} cmp $categories{$b}} 
+					  keys %categories],
+			      -default => 0,
+			      -override => 1,
+			      -labels => {0 => "Choose one", %categories}) . 
+
+		   p("Detailed description: ") . 
+		   p(textarea(-name => "new_item_description",
+			      -rows => 10,
+			      -columns => 50,
+			      -override => 1,
+			      -default => "Use this space to provide contact and
+pricing information, among other things."))])));
+
+# Allow the user to rank the item
+print hr, h3("Now rank the item:");
+
+print p("Your name:", 
+	textfield(-name => 'ranker_name',
+		  -size => 25,
+		  -override => 1,
+		  -maxlength => 30),
+	"Your e-mail address:", 
+	textfield(-name => 'email',
+		  -size => 25,
+		  -override => 1,
+		  -maxlength => 40));
+
+print p("Ranking:",
+	popup_menu(-name => 'rank',
+		   -values => [0 ..10],
+		   -default => 5,
+		   -override => 1,
+		   -labels => {0 => "0 (worst)", 
+			       5 => "5 (average)", 
+			       10 => "10 (best)"}));
+
+print p("Detailed comments: "),
+    p(textarea(-name => "comments",
+	       -rows => 10,
+	       -columns => 50,
+	       -override => 1,
+	       -default => "Why did you like or dislike this item?
+Would you recommend it to your friends?"));
+
+# Produce a "submit" button
+print submit(-value => 'Rank this item');
+print endform;
+
+# End the HTML, and disconnect from the database
+print $query->end_html;
+$dbh->disconnect;

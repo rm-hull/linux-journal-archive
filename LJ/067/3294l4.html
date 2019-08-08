@@ -1,0 +1,194 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>NoSQL Tutorial</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h4>Listing 4, result.pl</h4>
+  <pre>
+#!/usr/bin/perl -w
+# Cgi to show customer's orders
+# Secure path
+$ENV{PATH} = '/bin/:/usr/bin:/usr/local/bin';
+# Using CGI modules and creating a new CGI instance
+use CGI;
+$query = new CGI;
+# Defining some variables
+$htmltpl  = '/home/httpd/html/result.html';
+$basepath = '/var/tables/acmeinc/';
+$cusfile  = $basepath . 'customer.rdb';
+$ctlgfile = $basepath . 'catalog.rdb';
+# Getting customer name from the form
+$cusname  = $query-&gt;param('cusname');
+# Avoid buffer overflow (maximum 50 chars) and command execution
+# from the customer name: this is a security countermeasure
+$cusname = substr($cusname, 0, 50);
+$cusname =~ s/\///g;
+$cusname =~ s/#//g;
+$cusname =~ s/\n//g;
+$cusname =~ s/"//g;
+$cusname =~ s/'//g;
+$cusname =~ s/\`//g;
+$cusname =~ s/!//g;
+$cusname =~ s/;//g;
+$cusname =~ s/&lt;//g;
+$cusname =~ s/&gt;//g;
+# Extracting customer code for further queries and striping insecure stuffs
+$cuscode = `nosql row 'NAME=="$cusname"' &lt; $cusfile | nosql column CODE | nosql body`;
+$cuscode =~ s/\///g;
+$cuscode =~ s/#//g;
+$cuscode =~ s/!//g;
+$cuscode =~ s/\n//g;
+$cusname =~ s/"//g;
+$cusname =~ s/\`//g;
+$cusname =~ s/;//g;
+$cusname =~ s/&lt;//g;
+$cusname =~ s/&gt;//g;
+$cuscode =~ s/\s*//g;
+# Getting customer datafile that is usually the code plus the ".rdb"
+# extension
+$datafile = $basepath . "received/" . $cuscode . ".rdb";
+# Getting the rows containing the query of the pending orders
+#
+@cusdata = `nosql cat $datafile | nosql join -j PROD - $ctlgfile |
+nosql addcol SUBTOTAL | nosql compute 'SUBTOTAL = QTY*PRICE' | nosql
+column PROD DESC QTY PRICE SUBTOTAL | nosql body`;
+# If no rows found, then customer may not exists or has no pending
+# orders
+if (@cusdata == 0) {
+        &amp;log_and_die("No records found on the specified customer")
+};
+# Calculating total amount due
+chop($total = `nosql cat $datafile | nosql join -j PROD - $ctlgfile |
+nosql addcol SUBTOTAL | nosql compute 'SUBTOTAL = QTY*PRICE' | nosql
+subtotal -T SUBTOTAL | nosql body`);
+# If the string is empty, then something went wrong.
+if ($total eq '') {
+        &amp;log_and_die("Cannot calculate total")
+};
+# This opens html template file for reading and
+# it's associated to the standard input space ($_)
+open(HTMFILE, $htmltpl) || &amp;log_and_die("Can't open file $htmltpl");
+$_ = join("", &lt;HTMFILE&gt;);
+close(HTMFILE);
+# Keeping out newlines.
+s/\n//g;
+# Transforming multiple spaces into one,
+s/\s+/ /g;
+# Finding stanza into template and we separate
+# header, footer and the body (that has to be repeated)
+/(.+)&lt;\s*!--\s*here\s+starts\s+nosql\s+stanza\s*---&gt;(.+)&lt;\s*!--\s*here
+\s+ends\s+nosql\s+stanza\s*--\s*&gt;(.+)/i ;
+#
+# Copying found pattern on temp vars
+my $header = $1;
+my $body   = $2;
+my $footer = $3;
+# substituting keywords on header and footer with appropriate values
+$header =~ s/##NAME##/$cusname/;
+$footer =~ s/##TOTAL##/$total/;
+# Print html content type and template header
+print $query-&gt;header("text/html");
+print $header;
+# Repeating values substitution in stanza for each query row
+foreach $data (@cusdata) {
+        my $tmpbody = $body;
+        my ($prod, $desc, $qty, $price, $subtotal) = split(/\t/, $data);
+        $tmpbody =~ s/##PROD##/$prod/;
+        $tmpbody =~ s/##DESC##/$desc/;
+        $tmpbody =~ s/##QTY##/$qty/;
+        $tmpbody =~ s/##PRICE##/$price/;
+        $tmpbody =~ s/##SUBTOTAL##/$subtotal/;
+        print $tmpbody;
+}
+# Print template footer
+print $footer;
+#
+sub log_and_die
+{
+        # Get parms
+        my $message = shift;
+        # Print error message to user's browser
+        print $query-&gt;header("text/html");
+        print $query-&gt;start_html(-title=&gt; "Error processing data");
+        print "&lt;P&gt;An unrecoverable error occurred: $message&lt;/P&gt;\n";
+        print $query-&gt;end_html;
+        exit(1);
+};
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../067/toc067.html">Issue Table of Contents</a>
+    <a class="link3" href="../067/3294.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

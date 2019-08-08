@@ -1,0 +1,144 @@
+#! /usr/bin/perl
+#-------------------------------------------------------
+# SECTION 1:
+#
+# Set variables for the locations and names of all the
+# files.
+#-------------------------------------------------------
+$logfile = "/var/httpd/logs/access_log";
+$httproot = "/var/httpd/htdocs/";
+$imagedir = "images";
+$datafile = "/tmp/gnuplot_$$.dat";
+$gpfile = "/tmp/gnuplot_$$.gp";
+$giffile = "gnuplot_$$.gif";
+$GNUPLOT = "gnuplot";
+$PPMTOGIF = "ppmtogif";
+
+#-------------------------------------------------------
+# SECTION 2:
+#
+# Get today's date in the same format as the server's
+# access log.
+#-------------------------------------------------------
+
+if ($ENV{"QUERY_STRING"} =~ /[0-9]+/) {
+    ($day, $mon, $year) = split ("/", $ENV{"QUERY_STRING"});
+}
+else {
+    $datestr = `date`;
+    chop $datestr;
+    ($dow, $mon, $day, $hour, 
+     $min, $sec, $zone, $year) = split (/[ ]+|:/, $datestr);
+}
+$date = sprintf ("%02d/%s/%d", $day, $mon, $year);
+
+#-------------------------------------------------------
+# SECTION 3:
+#
+# Count the number of hits for the specified date.
+#
+# I scale minutes (0..59) to a value in the 0..99 range 
+# so that gnuplot plots a contiguous graph. For example,
+# the time 1:30pm would become the gnuplot x value 1350
+# (more or less).
+#-------------------------------------------------------
+open (LOGFILE, "<\<> $logfile");
+while (<\<>LOGFILE>) {
+    if ($_ =~ /\[$date/) {
+	if ($_ =~ m/^.+\[(.+)\].+$/) {
+	    ($indate, $inhour, 
+	     $inmin, $stuff) = split (":", $1);
+	    $hr_percent = ($inmin/60) * 100;
+	    $accesses[$inhour * 100 + $hr_percent]++;
+	    $total++;
+	}
+    }
+}
+close LOGFILE;
+
+#-------------------------------------------------------
+# SECTION 4:
+#
+# Write the data file that gnuplot will use. 
+#-------------------------------------------------------
+open (DATAFILE, "> $datafile");
+for ($i=0; $i <\<>= 2400; $i++) {
+    if (defined ($accesses[$i])) {
+	printf (DATAFILE "%04d\t%d\n", $i, $accesses[$i]);
+    }
+    else {
+	printf (DATAFILE "%04d\t0\n", $i);
+    }
+}
+close DATAFILE;
+
+#-------------------------------------------------------
+# SECTION 5:
+#
+# Write the gnuplot command file.
+#-------------------------------------------------------
+
+# Define custom tic marks for the x axis.
+for ($i=0; $i <\<>=24; $i++) {
+    if ($i == 12) {
+        $xtics = sprintf ("%s\"%s\" %d,", 
+			  $xtics, "Noon", $i*100);
+    }
+    else {
+        $xtics = sprintf ("%s\"%02d\" %d,", 
+			  $xtics, $i, $i*100);
+    }
+}
+chop $xtics;
+
+open (GPFILE, "> $gpfile");
+
+# Everything after the following line up to the
+# terminating "EOM" line defines the contents of
+# the gnuplot command file.
+print GPFILE <\<><\<>EOM;
+set term pbm color
+set offsets
+set nolog
+set nopolar
+set border
+set grid
+
+set title "Web Server Accesses for $mon $day, $year"
+set xlabel "Time (Hours)"
+set ylabel "Number of Hits"
+set size 1.10, 0.50
+set xtics ($xtics)
+
+plot '$datafile' title "" with lines
+EOM
+
+close GPFILE;
+
+#-------------------------------------------------------
+# SECTION 6:
+#
+# Run gnuplot, and convert the output to gif format.
+#-------------------------------------------------------
+system ("$GNUPLOT $gpfile | $PPMTOGIF 2> /dev/null > "
+	."$httproot/$imagedir/$giffile"); 
+unlink ($gpfile, $datafile);
+
+#-------------------------------------------------------
+# SECTION 7:
+#
+# Output an HTML page to display the graphic we just
+# generated.
+#-------------------------------------------------------
+print "Content-type: text/html\n\n";
+print <\<><\<>EOM;
+<\<>HTML>
+<\<>BODY bgcolor=#FFFFFF>
+<\<>TITLE>Web Access<\<>/TITLE>
+<\<>h3>Web Accesses<\<>/h3>
+Total Accesses: <\<>b>$total<\<>/b><\<>p>
+<\<>IMG SRC=/$imagedir/$giffile><\<>p>
+<\<>/BODY>
+<\<>/HTML>
+
+EOM

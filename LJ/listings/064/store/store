@@ -1,0 +1,498 @@
+#!/usr/bin/perl
+
+# ###################################################
+# Program:  store
+# Author :  Jay Sissom
+# Date   :  11/25/98
+# Purpose:  A book store on the web
+# ###################################################
+
+# Important changable stuff like paths
+require 'store.inc';
+
+# CGI kinds of stuff
+require 'cgi-lib.pl';
+
+# use the CTlib library
+use Sybase::CTlib;
+
+# Valid pages
+@valid_pages = ('mainmenu','envvar','search','search1','book','book1',
+   'admin','account','account1','admin1','newacct','newacct1');
+
+# Use the PATH_INFO to figure out where we are
+$request = substr($ENV{'PATH_INFO'},1);
+$request =~ s/\//_/g;
+$request = "mainmenu" if ($request eq '');
+
+# Get our form data (if any)
+&ReadParse();
+
+if (grep($_ eq $request,@valid_pages)) {
+    &$request;
+} else { 
+    &error("Invalid Page","An invalid page was called.  Contact programmer");
+}
+
+# ######################################################
+# Pages
+# ######################################################
+
+# Called from:  mainmenu
+# Description:  Add New Account
+sub newacct {
+
+  &print_template('newacct');
+
+}
+
+# Called from:  newacct
+# Description:  Add a new account
+sub newacct1 {
+
+    # Get all the information out of the form
+    $user_id = $in{'user_id'};
+    $password = $in{'password'};
+    $password1 = $in{'password1'};
+    $phone_nbr = $in{'phone_nbr'};
+    $first_nm = $in{'first_nm'};
+    $last_nm = $in{'last_nm'};
+    $address = $in{'address'};
+    $city = $in{'city'};
+    $state = $in{'state'};
+    $zipcode = $in{'zipcode'};
+
+    # Validate everything
+    &error('Must specify a first name','Press back to return') if (!$first_nm);
+    &error('Must specify a last name','Press back to return') if (!$last_nm);
+    &error('Must specify an address','Press back to return') if (!$address);
+    &error('Must specify a city','Press back to return') if (!$city);
+    &error('Must specify a state','Press back to return') if (!$state);
+    &error('Must specify a zipcode','Press back to return') if (!$zipcode);
+    &error('Must specify a phone nbr','Press back to return') if (!$phone_nbr);
+    &error('Must specify a user ID','Press back to return') if (!$user_id);
+    &error('Must specify a Password','Press back to return') if (!$password);
+
+    if ( $password ne $password1 ) {
+       &error('Your passwords must match','Press back to return');
+    }
+
+    $db = &DBlogin();
+
+    $ret = &create_account($db,$user_id,$password,$last_nm,$first_nm,$address,
+       $city,$state,$zipcode,$phone_nbr);
+
+    if ( $ret != 0 ) {
+       &error("Error $ret adding account","Problem...");
+    } else {
+       &print_template('newacct1');
+    }
+}
+
+# Called from:  mainmenu
+# Description:  Account Information
+sub account {
+
+  $title = "Enter your username and password for account maintenance";
+  $screen = "account1";
+  &print_template('username');
+
+}
+
+# Called from:  mainmenu
+# Description:  Bookstore Administration
+sub admin {
+
+  $title = "Enter your username and password for system administration";
+  $screen = "admin1";
+  &print_template('username');
+
+}
+
+# Called from: admin
+# Description: Administration Menu
+sub admin1 {
+  &error('Do this','Do this');
+}
+
+# Called from: account
+# Description: Account Information
+sub account1 {
+    $user_id = $in{'user_id'};
+    $password = $in{'password'};
+
+   $db = &DBlogin();
+
+   # Check the username and password
+   if ( ! check_password($db,$user_id,$password) ) {
+      &print_template('badpassword');
+      die "";
+   }
+   # Account Info
+   ($first_nm, $last_nm, $address, $city, $state, $zipcode, $phone_nbr) = 
+      &get_user_info($db,$user_id);
+
+   # Orders
+
+   $qref = $db->ct_sql("execute list_orders_pr '$user_id'");
+   @rows = @$qref;
+
+   $orders = "<table border>\n";
+   $orders .= "<TR><TD>Date</TD><TD>Qty</TD><TD>Title</TD><TD>Amount (Each)</TD><TD>Ship Date</TD></TR>\n";
+
+   $count = @rows;
+   $x = 0;
+   foreach $row (@rows) {
+      $x++;
+      next if $x == $count;
+
+      $order_nbr = $$row[0];
+      ($title_id = $$row[1]) =~ s/\s+$//;
+      ($title = $$row[2]) =~ s/\s+$//;
+      $price = $$row[3];
+      $qty = $$row[4];
+      $ordered_dt = $$row[5];
+      $shipped_dt = $$row[6];
+      $shipped_dt = "Not Shipped" if $sihpped_dt eq "";
+
+      $orders .= "<TR><TD>$ordered_dt</TD><TD ALIGN=RIGHT>$qty</TD><TD>$title</TD><TD ALIGN=RIGHT>$price</TD><TD>$shipped_dt</TD></TR>\n";
+   }
+   $orders .= "</table>\n";
+
+   &print_template('account1');  
+}
+
+# Called from:  mainmenu
+# Description:  Search for a book
+sub search {
+    # Login to the database
+    $db = &DBlogin();
+
+    $qref = $db->ct_sql("execute list_types_pr");
+    @rows = @$qref;
+
+    $options = qq(<OPTION VALUE=".">Any\n);
+
+    $count = @rows;
+    $x = 1;
+    foreach $row (@rows) {
+      next if ( $x == $count );
+      $x++;
+
+      ($type_cd = $$row[0]) =~ s/\s+$//;
+      ($type_desc = $$row[1]) =~ s/\s+$//;
+
+      $options .= qq(<OPTION VALUE="$type_cd">$type_desc\n);
+    }
+    &print_template('search');
+    exit();
+}
+
+# Called from:  search
+# Description:  Retrieves search criteria and does the search
+sub search1 {
+    $db = &DBlogin();
+
+    # Build SQL string
+    $sql = "select t.title_id,title,d.type_desc,price,notes,i.stock_amt from pubs2..titles t,inventory_t i,types_t d where t.title_id = i.title_id and t.type = d.type_cd ";
+
+    # now build the rest of the WHERE clause
+    $txtTitle = $in{'txtTitle'};
+    $txtCategory = $in{'txtCategory'};
+    $sql .= " and title like '%$txtTitle%'" if $txtTitle ne '';
+    $sql .= " and t.type = '$txtCategory'" if $txtCategory ne '.';
+
+    $qref = $db->ct_sql($sql);
+    @rows = @$qref;
+    $count = @rows;
+
+    if ( $count > 0 ) {
+      $books = "<TABLE BORDER=1>\n";
+      $books .= "<TR>\n<TH>Title</TH><TH>Type</TH><TH>Price</TH><TH>Stock</TH>\n</TR>\n";
+
+      foreach $row (@rows) {
+	($title_id = $$row[0]) =~ s/\s+$//;
+	($title = $$row[1]) =~ s/\s+$//;
+	($type_desc = $$row[2]) =~ s/\s+$//;
+	$price = sprintf("%1.2f",$$row[3]);
+	($notes = $$row[4]) =~ s/\s+$//;
+	$stock_amt = $$row[5];
+
+ 	$books .= qq(<TR>\n<TD><A HREF="$SCRIPT_NAME/book?title_id=$title_id">$title</A></TD><TD>$type_desc</TD><TD ALIGN=RIGHT>$price</TD>);
+	if ( $stock_amt > 0 ) {
+		$books .= "<TD>In Stock</TD>";
+	} else {
+		$books .= "<TD>Out of Stock</TD>";
+	}
+      }
+      $books .= "</TABLE>\n";
+    } else {
+      $books = "Your search didn't return any books.";
+    }
+
+    &print_template('search1');
+}
+
+# Called from:  search1
+# Description:  Display information about a book and allow someone to order it
+sub book {
+    $db = &DBlogin();
+
+    $title_id = $in{'title_id'};
+    ($title, $type, $type_desc, $price, $notes, $pubdate, $stock_amt,
+      $order_amt) = &get_book_info($db,$title_id);
+
+    # If it's in stock, allow them to order it, if not, don't
+    if ( $stock_amt > 0 ) {
+       &print_template('book');
+    } else {
+       &print_template('book_oos');
+    }
+}
+
+# Called from:  book
+# Description:  Place the order for the book
+sub book1 {
+   $title_id = $in{'title_id'};
+   $qty = $in{'qty'};
+   $user_id = $in{'user_id'};
+   $password = $in{'password'};
+
+   if ( ! $title_id || ! $user_id || ! $password ) {
+      &error('You must fill in all info!','Fill in everything, please!');
+   }
+   if ( $qty < 1 ) {
+      &error('You must order at least one book','Press back to try again');
+   }
+
+   $db = &DBlogin();
+
+   # Check the username and password
+   if ( ! check_password($db,$user_id,$password) ) {
+      &print_template('badpassword');
+      die "";
+   }
+
+   # Validate the book ID
+   if ( ! check_title_id($db,$title_id) ) {
+      &error($title_id . ' is a bad Book ID','please try again');
+      die "";
+   }
+
+   # Make the order
+   if ( order_book($db,$title_id,$qty,$user_id) ) {
+      # The order was placed! Get info that will be returned
+      # to the user
+      ($first_nm, $last_nm, $address, $city, $state, $zipcode, $phone_nbr) = 
+         &get_user_info($db,$user_id);
+    ($title, $type, $type_desc, $price, $notes, $pubdate, $stock_amt,
+      $order_amt) = &get_book_info($db,$title_id);
+
+      &print_template('orderplaced');
+   } else {
+      &print_template('ordernotplaced');
+   }
+}
+
+# Called from:  Everywhere!
+# Description:  Displays the main menu
+sub mainmenu {
+    &print_template('mainmenu');
+    exit();
+}
+
+# Called from:  Everywhere!
+# Description:  Gives an error message
+sub error {
+    local($error,$description) = @_;
+    &print_template('error');
+    exit();
+}
+
+# Called from:  Noplace
+# Description:  Prints out all the environment variables passed to the CGI
+sub envvar {
+    $form = "<TABLE BORDER>\n";
+    foreach $item (sort keys(%in) ) {
+        $form .= "<TR><TD>$item</TD><TD>$in{$item}</TD></TR>\n";
+    }
+    $form .= "</TABLE>\n";
+
+    $vars = "<TABLE BORDER>\n";
+    foreach $item (sort keys(%ENV) ) {
+	$vars .= "<TR><TD>$item</TD><TD>$ENV{$item}</TD></TR>\n";
+    }
+    $vars .= "</TABLE>\n";
+    &print_template('envvar');
+}
+
+# #######################################################
+# Support stuff
+# #######################################################
+sub get_book_info {
+    local($db,$title_id) = @_;
+    local($sql,$qref,@rows,$row);
+    local($title,$type,$type_desc,$price,$notes,$pubdate,
+      $stock_amt, $order_amt);
+
+    $sql = "execute get_book_info_pr '$title_id'";
+
+    $qref = $db->ct_sql($sql);
+    @rows = @$qref;
+
+    $row = @rows[0];
+    ($title = $$row[0]) =~ s/\s+$//;
+    ($type = $$row[1]) =~ s/\s+$//;
+    ($type_desc = $$row[2]) =~ s/\s+$//;
+    $price = sprintf("%1.2f",$$row[3]);
+    ($notes = $$row[4]) =~ s/\s+$//;
+    ($pubdate = $$row[5]) =~ s/\s+$//;
+    $stock_amt = sprintf("%1.2f",$$row[6]);
+    $order_amt = sprintf("%1.2f",$$row[7]);
+
+    ($title,$type,$type_desc,$price,$notes,$pubdate,$stock_amt,$order_amt);
+}
+
+sub get_user_info {
+    local($db,$user_id) = @_;
+    local($sql,$ref,@rows,$first_nm,$last_nm,$address,$city,$state,$zipcode,$phone_nbr);
+
+    $sql = "execute get_user_info_pr '$user_id'";
+
+    $ref = $db->ct_sql($sql);
+    @rows = @$ref;
+    $row = $rows[0];
+
+    ($first_nm = $$row[0]) =~ s/\s+$//;
+    ($last_nm = $$row[1]) =~ s/\s+$//;
+    ($address = $$row[2]) =~ s/\s+$//;
+    ($city = $$row[3]) =~ s/\s+$//;
+    ($state = $$row[4]) =~ s/\s+$//;
+    ($zipcode = $$row[5]) =~ s/\s+$//;
+    ($phone_nbr = $$row[6]) =~ s/\s+$//;
+
+    ($first_nm, $last_nm, $address, $city, $state, $zipcode, $phone_nbr);
+}
+
+sub create_account {
+    local($db,$user_id,$password,$last_nm,$first_nm,$address,$city,
+      $state,$zipcode,$phone_nbr) = @_;
+    local($sql,$ref,@rows);
+
+    $sql = "execute create_account_pr '$user_id','$password','$last_nm','$first_nm','$address','$city','$state','$zipcode','$phone_nbr'";
+
+    $ref = $db->ct_sql($sql);
+    @rows = @$ref;
+    $row = $rows[0];
+    return $$row[0];
+}
+
+sub order_book {
+    local($db,$title_id,$qty,$user_id) = @_;
+    local($sql,$ref,@rows);
+
+    $sql = "execute place_order_pr '$user_id','$title_id',$qty";
+
+    $ref = $db->ct_sql($sql);
+    @rows = @$ref;
+    $row = $rows[0];
+    return $$row[0];
+}
+
+sub check_title_id {
+    local($db,$title_id) = @_;
+    local($sql,$ref,@rows);
+
+    $sql = "execute check_title_id_pr '$title_id'";
+
+    $ref = $db->ct_sql($sql);
+    @rows = @$ref;
+    $row = $rows[0];
+    return $$row[0];
+}
+
+sub check_password {
+    local($db,$user,$password) = @_;
+    local($sql,$ref,@rows);
+
+    $sql = "execute check_password_pr '$user','$password'";
+
+    $ref = $db->ct_sql($sql);
+    @rows = @$ref;
+    $row = $rows[0];
+    return $$row[0];
+}
+
+sub getdate {
+    local($junk,$month,$day,$year,$hour,$minute);
+
+    ($junk,$minute,$hour,$day,$month,$year,$junk,$junk,$junk) = localtime(time);
+    $month += 1;
+    
+    return sprintf "%2d/%02d/%4d %2d:%02d",$month,$day,1900 + $year, $hour,$minute;
+}
+
+sub DBlogin {
+
+    if ( ! $db ) {
+       $db = Sybase::CTlib->ct_connect($sybase_user,$sybase_password,$sybase_server);
+       &error("Unable to login","Unable to access database") if ( ! $db );
+       $db->ct_sql("use $sybase_database");
+    }
+    return $db;
+}
+
+sub return_template {
+   local($template) =@_;
+   local($out);
+
+   $out = '';
+   if ( open(TMP,"$template_dir/$template.tmplt") ) {
+      while($line = <TMP>) {
+        $out .= eval('qq(' . $line . ')');
+      }
+      close(TMP);
+   }
+   return $out;
+}
+
+sub print_template {
+
+   local($template) = @_;
+
+   print &PrintHeader();
+   if ( open(TMP,"$template_dir/$template.tmplt") ) {
+      while($line = <TMP>) {
+        print eval('qq(' . $line . ')');
+      }
+      close(TMP);
+   } else {
+      print "Unable to locate template file <B>$template.tmplt</B><BR>\n";
+   }
+}
+
+sub loadTemplate {
+    local($filename) = @_;
+
+    $data = '';
+    if ( -e "$filename" ) {
+	open(DATA,"$filename");
+	while( <DATA> ) {
+	    $data .= $_;
+	}
+	close(DATA);
+    }
+    return $data;
+}
+
+sub useTemplate {
+    local($template,%data) =@_;
+
+    # Do the substitutions
+    foreach $item (keys(%data)) {
+	$template =~ s/\_\_$item\_\_/$data{$item}/g;
+    }
+
+    return $template;
+}
+

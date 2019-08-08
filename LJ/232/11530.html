@@ -1,0 +1,328 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Hack and /
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Now that you know the fundamentals behind DNSSEC, it's time for the&#10;implementation.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xe10580.0xf07ac0"></a>
+Hack and /
+</h1></div><div><h3 class="subtitle"><i>
+DNSSEC Part II: the Implementation
+</i></h3></div><div><div class="author"><h3 class="author">Kyle Rankin</h3></div><div class="issuemoyr">Issue #232, August 2013</div></div><div><p>
+Now that you know the fundamentals behind DNSSEC, it's time for the
+implementation.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf083b0"></a></h2></div></div><p>
+This article is the second in a series on DNSSEC. In the first one, I gave a
+general overview of DNSSEC concepts to lay the foundation for this article, which
+discusses how to enable DNSSEC for a zone using BIND. If you want to deploy
+DNSSEC but aren't sure what I mean when I say KSK, ZSK, DLV or DS record, you
+may want to go back to Part I to refresh yourself on the concepts,
+because in this article, I'm going to dive right in to implementation.
+</p><p>
+Adding DNSSEC to a zone using BIND involves a few extra steps on top of what you
+normally would do to configure BIND as a master for your zone. First, you will
+need to generate a Key-Signing Key (KSK) and Zone-Signing Key (ZSK), then update
+the zone's config and sign it with the keys. Finally, you will reconfigure BIND
+itself to support DNSSEC. After that, your zone should be ready, so if your
+registrar supports DNSSEC, you can update it or otherwise use DLV with a provider
+like dlv.isc.org. Now, let's look at the steps in more detail using my
+greenfly.org zone as an example.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf08618"></a>
+Make the Keys</h2></div></div><p>
+The first step is to generate the KSK and ZSK for your zone. As I mentioned in my
+previous article, the KSK is used only to sign ZSKs in the zone and to provide a
+signature for the zone's parent to sign, while ZSKs sign the records in each
+zone. Having separate keys also allows you to create a stronger KSK and have a
+weaker ZSK that you can rotate out each month. So first, let's create a KSK for
+greenfly.org using <tt  >dnssec-keygen</tt>:
+
+
+<pre     class="programlisting">
+$ cd /etc/bind/
+$ dnssec-keygen -a RSASHA1 -b 2048 -n ZONE -f KSK greenfly.org
+</pre>
+</p><p>
+By default, the <tt  >dnssec-keygen</tt> command dumps the generated keys in the current
+directory, so change to the directory in which you store your BIND
+configuration. The <tt  >-a</tt> and <tt  >-b</tt> arguments set the algorithm (RSASHA1) and key
+size (2048 bit), while the <tt  >-n</tt> option tells
+<tt  >dnssec-keygen</tt> what kind of key it is
+creating (a ZONE key). You also can use <tt  >dnssec-keygen</tt> to generate keys for DDNS
+and other BIND features, so you need to be sure to specify this is for a zone. I
+also added a <tt  >-f KSK</tt> option that tells
+<tt  >dnssec-keygen</tt> to set a bit that denotes
+this key as a KSK instead of a ZSK. Finally, I specified the name of the zone this
+key is for: greenfly.org. This command should create two files: a .key file, which
+is the public key published in the zone, and a .private file, which is the private
+key and should be treated like a secret. These files start with a K, then the
+name of the zone, and then a series of numbers (the latter of which is
+randomly generated), so in my case, it created two files:
+Kgreenfly.org.+005+10849.key and Kgreenfly.org.+005+10849.private.
+</p><p>
+Next I need to create the ZSK. The command is very similar to the command to
+create the KSK, except I lower the bit size to 1024 bits, and I remove the
+<tt  >-f KSK</tt>
+argument:
+
+
+<pre     class="programlisting">
+$ dnssec-keygen -a RSASHA1 -b 1024 -n ZONE greenfly.org
+</pre>
+</p><p>
+This command creates two other key files: Kgreenfly.org.+005+58317.key and
+Kgreenfly.org.+005+58317.private. Now I'm ready to update and sign my zone.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf08cf8"></a>
+Update the Zone File</h2></div></div><p>
+Now that each key is created, I need to update my zone file for greenfly.org (the
+file that contains my SOA, NS, A and other records) to include the public KSK and
+ZSK. In BIND, you can achieve this by adding <tt  >$INCLUDE</tt> lines to the end of your
+zone. In my case, I added these two lines:
+
+<pre     class="programlisting">
+$INCLUDE Kgreenfly.org.+005+10849.key ; KSK
+$INCLUDE Kgreenfly.org.+005+58317.key ; ZSK
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf08eb0"></a>
+Sign the Zone</h2></div></div><p>
+Once the keys are included in the zone file, you are ready to sign the zone
+itself. You will use the <tt  >dnssec-signzone</tt> command to do this:
+
+
+<pre     class="programlisting">
+$ dnssec-signzone -o greenfly.org -k Kgreenfly.org.+005+10849 \
+  db.greenfly.org Kgreenfly.org.+005+58317.key
+</pre>
+</p><p>
+In this example, the <tt  >-o</tt> option specifies the zone
+origin, essentially the
+actual name of the zone to update (in my case, greenfly.org). The
+<tt  >-k</tt> option is
+used to point to the name of the KSK to use to sign the zone. The last two
+arguments are the zone file itself (db.greenfly.org) and the name of the ZSK file
+to use.
+</p><p>
+If you are using DLV, you will add an extra <tt  >-l</tt> option to specify the DLV server
+you are using:
+
+<pre     class="programlisting">
+$ dnssec-signzone -l dlv.isc.org -o greenfly.org -k \
+  Kgreenfly.org.+005+10849 db.greenfly.org \
+  Kgreenfly.org.+005+58317.key
+</pre>
+</p><p>
+In either case, the command will create a new .signed zone file (in my case,
+db.greenfly.org.signed) that contains all of your zone information along with a
+lot of new DNSSEC-related records that list signatures for each RRSET in your
+zone. If you aren't using DLV, it also will create a dsset-zonename file that
+contains a DS record you will use to get your zone signed by the zone parent. If
+you are using DLV, you will get a dlvset-zonename file. Any time you make a
+change to the zone, simply update your regular zone file like you normally would,
+then run the <tt  >dnssec-signzone</tt> command to create an
+updated .signed file. Some
+administrators recommend even putting the <tt  >dnssec-signzone</tt> command in a cron job
+to run daily or weekly, as by default the key signatures will expire after a
+month if you don't run <tt  >dnssec-signzone</tt> in that time.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf09488"></a>
+Reconfigure Zone's BIND Config</h2></div></div><p>
+Now that you have a new .signed zone file, you will need to update your zone's
+config in BIND so that it uses it instead of the plain-text file, which is pretty
+straightforward:
+
+<pre     class="programlisting">
+zone "greenfly.org" {
+  type master;
+  file "/etc/bind/db.greenfly.org.signed";
+  allow-transfer { slaves; };
+};
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf095e8"></a>
+Enable DNSSEC Support in BIND</h2></div></div><p>
+Next, update the options that are enabled in your main BIND configuration file
+(often found in named.conf or named.conf.options), so that DNSSEC is enabled, the
+server attempts to validate DNSSEC for any recursive queries and DLV (DNSSEC
+Lookaside Validation) is supported:
+
+<pre     class="programlisting">
+options {
+  dnssec-enable yes;
+  dnssec-validation yes;
+  dnssec-lookaside auto;
+};
+</pre>
+</p><p>
+When you set <tt  >dnssec-lookaside</tt> to
+<tt  >auto</tt>, BIND automatically will trust the DLV
+signature it has for dlv.isc.org as it's included with the BIND software.
+Alternatively, you can add a DLV key manually if you add an additional BIND option
+and trusted key:
+
+
+<pre     class="programlisting">
+options { dnssec-lookaside . trust-anchor dlv.isc.org.; };
+trusted-keys {
+        dlv.isc.org. 257 3 5
+"BEAAAAPHMu/5onzrEE7z1egmhg/WPO0+juoZrW3euWEn4MxDCE1+lLy2
+brhQv5rN32RKtMzX6Mj70jdzeND4XknW58dnJNPCxn8+jAGl2FZLK8t+
+1uq4W+nnA3qO2+DL+k6BD4mewMLbIYFwe0PG73Te9fZ2kJb56dhgMde5
+ymX4BI/oQ+cAK50/xvJv00Frf8kw6ucMTwFlgPe+jnGxPPEmHAte/URk
+Y62ZfkLoBAADLHQ9IrS2tryAe7mbBZVcOwIeU/Rw/mRx/vwwMCTgNboM
+QKtUdvNXDrYJDSHZws3xiRXF1Rf+al9UmZfSav/4NWLKjHzpT59k/VSt TDN0YUuWrBNh";
+};
+</pre>
+</p><p>
+Once you are done changing your BIND configuration files, reload or restart BIND,
+and your zone should be ready to reply to DNSSEC queries.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf09958"></a>
+Test DNSSEC</h2></div></div><p>
+To test DNSSEC support for a zone, just add the <tt  >+dnssec</tt>
+argument to <tt  >dig</tt>. Here's
+an example query against www.greenfly.org:
+
+
+<pre     class="programlisting">
+
+$ dig +dnssec www.greenfly.org
+
+; &lt;&lt;&gt;&gt; DiG 9.8.1-P1 &lt;&lt;&gt;&gt; +dnssec www.greenfly.org
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 13093
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 2, AUTHORITY: 3, ADDITIONAL: 5
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags: do; udp: 4096
+;; QUESTION SECTION:
+;www.greenfly.org.              IN      A
+
+;; ANSWER SECTION:
+www.greenfly.org.       900     IN      A       64.142.56.172
+www.greenfly.org.       900     IN      RRSIG   A 5 3 900 20130523213855
+20130423213855 58317 greenfly.org.
+cZS1G2Jj3FNB0UrU4W+LbpCJlvVa+3yos1ni5V0pct4x4lWvXGQNoh1G
+/uFFJ62YRYXskL/c17wiAEIqsJ0O/wzek5KFWAoiJ3zW051l9c/8KPGF
+7LzmEumdAVM2MmrPVu+PKGfilPlfofjwJLbgVhyYqepbbD8xv3bmg0Np YnM=
+
+;; AUTHORITY SECTION:
+greenfly.org.           900     IN      NS      ns2.greenfly.org.
+greenfly.org.           900     IN      NS      ns1.greenfly.org.
+greenfly.org.           900     IN      RRSIG   NS 5 2 900 20130523213855
+20130423213855 58317 greenfly.org.
+d/7E3iCxzS/qBSOl/x7m/yMMqbl5mUGH7tVw/j7U/qyC7D9YZJIXNp3J
+uU8vueo09cZf+yjwHusdWDWgdW8mkAVoGR5K/azoY4o2xRBvt8Z5pf3a
+BqmNIHzROZkf6BOrx6Nqv65npSGoNLQBoEc90FvDFe/N5I27LBTIxCv4 3UQ=
+
+;; ADDITIONAL SECTION:
+ns1.greenfly.org.       900     IN      A       64.142.56.172
+ns2.greenfly.org.       900     IN      A       75.101.46.232
+ns1.greenfly.org.       900     IN      RRSIG   A 5 3 900 20130523213855
+20130423213855 58317 greenfly.org.
+VDeJSlfEYRwHkjRnCvmDXFHneG3Fhw15mCSALT8m8fOtQkMroI8t0qu3
+K8Tdt4q8/t1JYucpwQbpjsR3f+rmJc0t4L7HSVA/1LHajOqA+Wn2XH8L
+Rp01qVkeBIZ7g+K7LY2XRU3DGSzbeFUKrViqtakbTQxZ9o3Oj6ZqL0Pv 0nQ=
+ns2.greenfly.org.       900     IN      RRSIG   A 5 3 900 20130523213855
+20130423213855 58317 greenfly.org.
+dUU/6bbc6sHoSl+e2uGwoEXLMGyr4Qaedk3E74ArnUOb4VViBd3CxvGF
+SPG2QK3AggDv8z3+9Wm6NA11oTFcuIGnbBarxDQIrbERHFfcSQaekvSR
+UcSSD7wft9YO7UTIiQrc8LkItXZAKd72Gy1ZP4mhhLxwwOIhlHshQ9d2 uTY=
+
+;; Query time: 196 msec
+;; SERVER: 64.142.56.172#53(64.142.56.172)
+;; WHEN: Fri Apr 26 16:13:22 2013
+;; MSG SIZE  rcvd: 817
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0xf09c18"></a>
+Tell Your Parent</h2></div></div><p>
+The final step once you have confirmed that DNSSEC is returning signed records
+for your zone is to go to your zone's parent (typically through the registrar
+you used to buy the domain to begin with) and provide them with the DS record (in
+that dsset-zonename file that dnssec-signzone generated) so they can sign it.
+Unfortunately, only a small number of registrars provide DNSSEC support today, and
+some charge extra for the service. In either case, you may want to use DLV instead
+via a service like dlv.isc.org. To do that, simply visit <a href="https://dlv.isc.org" target="_self">https://dlv.isc.org</a> and
+follow the instructions to create an account and register your zone with them.
+They provide a simple interface that validates DNSSEC on your zone and even
+will send you alerts if you forget to update your zone's signatures after a month.
+</p><p>
+So, although enabling DNSSEC isn't as simple as a regular BIND configuration (and to
+many people even that is pretty complicated), it's also not all that difficult
+once you know the proper steps. Hopefully, this column has encouraged you to try
+out DNSSEC on your zones.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe10580.0x1215e60"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Kyle Rankin is a Sr. Systems Administrator in the San Francisco Bay Area
+and
+the
+author of a number of books, including <span   class="emphasis"><em>The Official Ubuntu Server
+Book</em></span>,
+<span   class="emphasis"><em>Knoppix Hacks</em></span> and <span   class="emphasis"><em>Ubuntu Hacks</em></span>.
+He is currently the president of the North
+Bay Linux Users' Group.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../232/toc232.html">Issue Table of Contents</a>
+    <a class="link3" href="../232/11530.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

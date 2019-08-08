@@ -1,0 +1,253 @@
+#!/bin/sh
+
+# Baccarat game, shell script written by Dave Taylor for Linux Journal
+
+function initializeDeck
+{
+    card=1
+    while [ $card -lt 53 ]
+    do
+      deck[$card]=$card
+      card=$(( $card + 1 ))
+    done
+    player[1]=-1; player[2]=-1; player[3]=-1; player[4]=-1; player[5]=-1
+    banker[1]=-1; banker[2]=-1; banker[3]=-1; banker[4]=-1; banker[5]=-1
+}
+
+function pickCard
+{
+    local errcount randomcard
+
+    threshold=10		# max guesses for a card before we fall through
+    errcount=0
+
+    while [ $errcount -lt $threshold ]
+    do
+      randomcard=$(( ( $RANDOM % 52 ) + 1 ))
+      errcount=$(( $errcount + 1 ))
+
+      if [ ${deck[$randomcard]} -ne 0 ] ; then
+	picked=${deck[$randomcard]}
+	deck[$picked]=0		# picked, remove it
+	# echo randomly picked $picked
+        return $picked 
+      fi
+    done
+
+    # If we get here, we've been uanble to randomly pick a card
+    # so now we'll just step up until we find an available card
+
+    randomcard=1
+
+    while [ ${deck[$randomcard]} -eq 0 ]
+    do
+       randomcard=$(( $randomcard + 1 ))
+    done
+
+    picked=$randomcard
+    deck[$picked]=0		# picked, remove it
+    # echo fell through, picked $picked
+    return $picked
+}
+
+function shuffleDeck
+{
+    count=1
+
+    while [ $count -le 52 ]
+    do
+      pickCard
+      newdeck[$count]=$picked
+      # echo " .. pickCard returned $picked"
+      count=$(( $count + 1 ))
+    done
+}
+
+
+function showCard
+{
+   card=$1
+
+   if [ $card -lt 1 -o $card -gt 52 ] ; then
+     echo "Bad card value: $card"
+     exit 1
+   fi
+
+   suite="$(( ( ( $card - 1) / 13 ) + 1))"
+   rank="$(( $card % 13))"
+
+   case $suite in
+     1 ) suite="Hearts"	  ;;
+     2 ) suite="Clubs"    ;;
+     3 ) suite="Spades"   ;;
+     4 ) suite="Diamonds" ;;
+     * ) echo "Bad suite value: $suite"; exit 1
+   esac 
+    
+   case $rank in 
+     0 ) rank="King" 	;;
+     1 ) rank="Ace"	;;
+     11) rank="Jack"    ;;
+     12) rank="Queen"   ;;
+   esac
+
+   cardname="$rank of $suite"
+}
+
+function handValue
+{
+   # feed this as many cards as are in the hand. This uses weird Baccarat
+   # hand value scoring: 1-9 are their own point values, 10,J,Q,K are 0
+   handvalue=0	# initialize
+   for cardvalue
+   do
+     if [ $cardvalue -ge 0 ] ; then
+       rankvalue=$(( $cardvalue % 13 ))
+       case $rankvalue in
+         0|11|12 ) rankvalue=0 	;;
+         1       ) rankvalue=11	;;
+       esac
+
+       handvalue=$(( $handvalue + $rankvalue ))
+     fi
+   done
+
+   handvalue=$(( $handvalue % 10 ))
+}
+
+function dealBanker 
+{
+    # Banker draws a card
+    banker[$nextbankercard]=${newdeck[$nextcard]}
+
+    handValue ${banker[1]} ${banker[2]} ${banker[3]}
+    bankerhandvalue=$handvalue
+
+    echo -n "Banker takes a card: " 
+    showCard ${banker[$nextbankercard]}
+    echo "$cardname (hand value = $bankerhandvalue)"
+}
+
+function showResult
+{
+   # This determines who wins: "Banker", "Player" or "Tie". 
+
+   if [ $bankerhandvalue -gt $playerhandvalue ] ; then
+     echo "Banker wins"
+     result=1
+   elif [ $bankerhandvalue -lt $playerhandvalue ] ; then
+     echo "Player wins"
+     result=2
+   else
+     echo "Tie"
+     result=3
+   fi
+}
+
+#################################################################
+####  The main code block ....
+
+initializeDeck
+shuffleDeck
+
+cat << EOF
+
+Welcome to Baccarat. You can choose to either stake the player or banker
+to win this game. Remember, face cards are worthless and all point values are
+modulo 10, with '9' the best possible hand value. We're using Punto Banco
+rules with this simulation, if you're already an expert...
+
+EOF
+
+player[1]=${newdeck[1]}
+player[2]=${newdeck[3]}
+nextplayercard=3	# player starts with two cards
+
+banker[1]=${newdeck[2]}
+banker[2]=${newdeck[4]}
+nextbankercard=3	# banker also has two cards
+
+nextcard=5		# we've dealt the first four cards already
+playerDrewCard=0	# not yet, at least
+
+# now we show both hands and call out the values...
+
+handValue ${player[1]} ${player[2]}
+playerhandvalue=$handvalue
+handValue ${banker[1]} ${banker[2]}
+bankerhandvalue=$handvalue
+
+# Step 1: show both hands, ascertain if there's an immediately endgame
+# situation where player or banker has 8 or 9...
+
+echo -n "** Player was dealt: "
+showCard ${player[1]} ; echo -n "$cardname, "
+showCard ${player[2]} ; echo "$cardname (hand value = $playerhandvalue)"
+echo -n "** Banker was dealt: "
+showCard ${banker[1]} ; echo -n "$cardname, "
+showCard ${banker[2]} ; echo "$cardname (hand value = $bankerhandvalue)"
+echo ""
+
+if [ $playerhandvalue -ge 8 -o $bankerhandvalue -ge 8 ] ; then
+  echo -n "Play is complete. "
+  showResult 
+  echo ""
+  exit 0
+fi
+
+# Step 2: Now, let's see if the player can draw a card. This can only 
+#  happen if the player has an initial total of 0-5
+
+if [ $playerhandvalue -lt 6 ] ; then
+  playerDrewCard=1
+  player[$nextplayercard]=${newdeck[$nextcard]}
+
+  handValue ${player[1]} ${player[2]} ${player[3]}
+  playerhandvalue=$handvalue
+
+  echo -n "Player takes a card: "; showCard ${player[$nextplayercard]}
+  echo "$cardname (hand value = $playerhandvalue)"
+
+  nextplayercard=$(( $nextplayercard + 1 ))
+  nextcard=$(( $nextcard + 1 ))
+fi
+
+# Step 3: the complicated rules of whether the Banker takes another 
+# card or not, the essence of what makes Baccarat an interesting game...
+
+if [ $playerDrewCard -eq 0 ] ; then
+  if [ $bankerhandvalue -lt 6 ] ; then
+    dealBanker;
+  fi
+else
+  # Player drew a card. Now the rules get complicated...
+
+  pdcRank=$(( ${player[3]} % 13 ))
+
+  if [ $pdcRank -eq 2 -o $pdcRank -eq 3 ] ; then
+    if [ $bankerhandvalue -lt 5 ]; then
+      dealBanker;
+    fi
+  elif [ $pdcRank -eq 4 -o $pdcRank -eq 5 ] ; then
+    if [ $bankerhandvalue -lt 6 ] ; then
+      dealBanker;
+    fi
+  elif [ $pdcRank -eq 6 -o $pdcRank -eq 7 ] ; then
+    if [ $bankerhandvalue -lt 7 ] ; then
+      dealBanker;
+    fi
+  elif [ $pdcRank -eq 8 -a $bankerhandvalue -lt 3 ] ; then
+    dealBanker;
+  elif [ $pdcRank -eq 9 -o $pdcRank -eq 0 ] ; then
+    if [ $bankerhandvalue -lt 4 ] ; then
+      dealBanker;
+    fi
+  fi
+fi
+
+echo ""
+echo -n "Play is complete. "
+showResult 
+echo ""
+
+exit 0

@@ -1,0 +1,325 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>klogd: The Kernel Logging D&aelig;mon</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    klogd reads kernel log messages and helps process and send those&#10;    messages to the appropriate files, sockets or users. This month we discuss memory&#10;    address resolution and how to modify klogd's default behavior using command-line&#10;    switches.&#10;    "><meta name="keywords" content="klogd, logging, kernel, daemon, memory, address"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xabf580.0xbb6ab0"></a>klogd: The Kernel Logging D&aelig;mon</h1></div><div><div class="author"><h3 class="author">Michael A. Schwarz</h3></div><div class="issuemoyr">Issue #76, August 2000</div></div><div><p>
+    klogd reads kernel log messages and helps process and send those
+    messages to the appropriate files, sockets or users. This month we discuss memory
+    address resolution and how to modify klogd's default behavior using command-line
+    switches.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xabf580.0xbb7660"></a></h2></div></div><p><span   class="emphasis"><em>klogd reads kernel log messages
+and helps process and send those messages to the appropriate files,
+sockets or users. This month we discuss memory address resolution
+and how to modify klogd's default behavior using command-line
+switches.</em></span>
+</p><p>The syslog d&aelig;mon takes messages sent through the syslog
+applications programming interface (the openlog, syslog and
+closelog library calls) and dispatches them to various files,
+sockets, users, pipes, or the bit-bucket (meaning a
+&ldquo;discard&rdquo;--any log message that doesn't match a selector in the
+syslog.conf file is discarded). Kernel messages, however, cannot
+use the syslog API.</p><p>The basic reason for this is that the syslog API is provided
+by the kernel itself. Code that can be called by itself is said to
+be &ldquo;reentrant&rdquo;. In order to be reentrant, a secondary call must
+have no effect on a prior call. If code makes any use of global or
+static variables, for example, it cannot be reentrant, since a
+change to a static variable in the secondary call will change it in
+the primary call.</p><p>Think about it this way: what would happen if a program were
+in the middle of a syslog call when the kernel needed to call the
+syslog function to report some kernel event? Unless the syslog call
+were totally reentrant, the kernel call would clobber the
+user-space call.</p><p>Many parts of the kernel are reentrant, either by being truly
+reentrant or through the use of selective locking. It would be very
+bad news indeed if a user-space program could block kernel
+execution merely by getting stuck in a system call. For this reason
+(among others), a very clean separation is maintained between the
+functions that kernel-space code may use and the code that
+user-space code may use. No kernel API function is dependent on the
+state of any user-space call (or, to be a bit more precise, those
+dependencies that exist are predictable and well understood). Thus,
+the kernel doesn't have to worry about what user-space programs are
+calling what user-space API functions from moment to moment. The
+kernel code may simply get on with business.</p><p>The kernel does, however, need a way to send messages to
+report abnormal situations, and, when debugging kernel layer code,
+to &ldquo;see how far we got&rdquo;. Thus, the kernel has its own logging
+API.</p><p>(For the curious, the user-space syslog call is provided by a
+function in the kernel called <b  >sys_syslog</b>. The
+kernel syslog call is called <b  >printk</b>. You can
+find the source code for both in your own copy of the Linux kernel
+source, which is more than likely to be in the /usr/src/linux
+directory on your system. Go ahead and look. Remember, it's
+<span   class="emphasis"><em>your</em></span> source!)</p><p>The kernel is built for simplicity and speed. Thus, the
+kernel's conception of logging is a bit more basic than that of
+syslog. Kernel messages are simple text with the convention that a
+priority of 0 to 7 will be encoded in
+<span   class="emphasis"><em>&lt;n&gt;</em></span> characters (where
+<span   class="emphasis"><em>n</em></span> is the priority, from 0 to 7) prefixed to
+the rest of the message text. The kernel logging API doesn't have
+the concept of a &ldquo;facility&rdquo; as syslogd does. Level 7 is the
+lowest priority and level 0 is the highest.</p><p>Sometimes, as when a protection fault occurs, the kernel logs
+contain memory addresses. The protection fault report from a Linux
+kernel isn't much use to anyone in debugging your problem, because
+kernels are almost certainly locally compiled. Even if you have
+never recompiled your kernel, the sheer number of distributions and
+versions of distributions out there makes it impossible for someone
+to help you with a raw protection fault log.</p><p>Fortunately, Linux kernels since 1.3.43 have reported
+addresses in a standard format. The klogd program recognizes that
+format and attempts to resolve addresses to symbol names so that
+one can actually find the object or code an address refers to.
+Later on, we'll cover how klogd does this.</p><p>These aspects of kernel messages (separate API, non-syslog
+attributes and memory address resolution) are the reason for a
+separate d&aelig;mon for kernel messages. There were (and are)
+patched versions of syslog that pick up kernel messages, but this
+practice is no longer popular, and with good reason. A clean
+separation of user-space and kernel-space features makes sense. If
+syslogd did some of these things, it would tie syslogd fairly
+tightly to the kernel version. Of course, klogd is bound fairly
+tightly, but this is considered much more acceptable, since it
+&ldquo;encapsulates&rdquo; this &ldquo;dependent&rdquo; code and then passes it on to a
+standard logging mechanism (syslogd).</p><p>So, what klogd does, basically, is read kernel log messages,
+transforms them slightly (by resolving kernel memory addresses to
+symbols) and then calls the user-space syslog API with the kernel
+facility and the priority as encoded in the kernel message. This is
+the d&aelig;mon's default behavior. Let's take a look at how the
+default behavior can be modified.</p><p>First off, klogd does not have a configuration file as
+syslogd does. Its behavior can be modified only through
+command-line switches and signals. We'll cover the switches first,
+then we'll discuss address resolution. Finally, we'll go over the
+signals to which klogd responds.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xabf580.0xbb7d98"></a>Command-Line Switches</h2></div></div><p><b  >-c</b> Default console logging level. The
+kernel writes log messages not only to the kernel message buffer,
+but also to the system console (usually /dev/console). The default
+level for the kernel is 7, which means that messages of a value
+lower than 7 (higher priority) are written to the console. Often,
+you will want to change this once klogd is running, so the console
+isn't always scrolling through a lot of low-priority messages. The
+klogd/syslogd combination gives you quite a bit more control over
+your kernel messages than simply dumping them to a screen. You can
+specify a number <span   class="emphasis"><em>n</em></span> here (ex. -c 4) where
+messages of a value lower than but not equal to
+<span   class="emphasis"><em>n</em></span> will go to the console. Note that klogd
+doesn't route messages to the console itself. It merely provides
+this interface to change the kernel's setting of the console
+logging level. Keep in mind that lower values of
+<span   class="emphasis"><em>n</em></span> are higher priority messages.</p><p><b  >-d</b> Debugging mode. This generates lots of
+output on <b  >stderr</b>. Give it a try if you're
+curious, although I do not recommend running this way for any
+length of time.</p><p><b  >-f</b> Log messages to file. This switch
+allows you to bypass the syslogd interface and log kernel messages
+directly to a file. You lose all of syslogd's ability to separate
+messages by facility and priority, to route a message to multiple
+destinations, and to route to pipes, sockets and users. It has
+obvious value, however, if for some reason you aren't running
+syslogd! (Ex. <b  >-f /var/log/kernel.log</b>)</p><p><b  >-i</b>, <b  >-I</b> Signal the
+currently running klogd. We'll go over these two switches (they are
+distinct!) in the section on memory address resolution.</p><p><b  >-n</b> Do not auto-background. There are three
+ways you might run a d&aelig;mon: by command at the console, by
+startup script, or directly with the System V init model
+(/etc/inittab). When you run with init, you don't want the process
+to &ldquo;fork and die&rdquo; (which is how a *nix process puts itself in the
+background; see chapter 2.6 of W. Richard Stevens' excellent book
+<span   class="emphasis"><em>UNIX Network Programming</em></span> if none of this makes
+any sense) as you would in the other two cases. Generally, this
+need not concern you if klogd is already running on your
+box.</p><p><b  >-o</b> One-shot mode. When started with this
+option, klogd will read all the messages presently in the kernel
+log buffer, and then it will exit.</p><p><b  >-p</b> Paranoia mode. This changes when klogd
+loads kernel symbol data. We'll cover this in more detail in the
+section on memory address resolution.</p><p><b  >-s</b> Force system call mode. Normally, klogd
+checks at startup for the existence of the /proc/kmsg file. If it
+is there, this is opened as the place to read kernel messages. If
+it is not there, klogd will poll the kernel through a system call
+for kernel messages. The /proc/kmsg is favored because it has lower
+overhead, especially when there are no kernel messages (which is a
+common case). You can override the preference for the /proc/kmsg
+interface and force klogd to use the system call instead with this
+switch.</p><p><b  >-k</b> Kernel symbol file. See the section on
+memory address resolution.</p><p><b  >-v</b> Print version and exit. This document
+is based on klogd 1.3-3.</p><p><b  >-x</b> Do not resolve addresses. See the
+section on memory address resolution for more information.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xabf580.0xbb8840"></a>Memory Address Resolution</h2></div></div><p>(The following discussion presumes Linux running on an x86
+processor. I would imagine other processors are similar, but I have
+not examined the code for them, so I'm not prepared to state that
+the following holds true for those processors.)</p><p>Let's begin by noting that real protection exceptions
+resulting in kernel logs are very rare events. Most protection
+faults occur in user-space code. User-space protection faults
+result in a program termination and core file dump. You can use the
+core file and your favorite debugger to post-mortem the
+application. These events hardly bother the Linux kernel, which
+merrily goes on handling all the other applications in the
+system.</p><p>The faults we are talking about here are processor exceptions
+that happen in kernel code. These are so rare that I have seen only
+five since I started using Linux in 1993. Three of them occurred
+when I was using the &ldquo;TAMU&rdquo; Linux release from Texas A&amp;M
+University. We're talking pre-0.99 Linux. I think that was to be
+expected. The next occurred when I had a dying hard drive and my
+swap partition was the defective area. The fifth and last occurred
+when I had an overheating CPU in my laptop. Since 1994, I haven't
+seen one for any reason, excepting a hardware failure.</p><p>That said, they do happen. Some never-before-used combination
+of hardware leads to a combination of kernel code never previously
+run; or perhaps you are a daring soul and you are running a
+development kernel. Whatever the reason, sometimes good code goes
+bad. The good news is Linux is an open-source OS. You can fix the
+bug. Or if not, you can post a bug report that goes directly to the
+people who can fix the bug. Try <span   class="emphasis"><em>that</em></span> with
+Windows!</p><p>When a protection fault occurs, Linux dumps out a dump of the
+processor state, including all the registers and the last several
+entries of the system stack. The latter is critical for finding the
+source of the problem. Trouble is, the raw dump consists entirely
+of memory addresses. Since Linux is an open-source system and since
+many installations have been custom compiled, the likelihood that
+these addresses will help anyone at a support desk to figure out
+the problem is small indeed.</p><p>Luckily, if you built your kernel in a normal way, there is a
+file called System.map installed with your kernel (probably in
+/boot). This maps code and symbols to physical addresses. The klogd
+d&aelig;mon reads this file. This takes care of all the
+&ldquo;compiled-in&rdquo; kernel code, but since the
+2.0.<span   class="emphasis"><em>x</em></span> kernel series, Linux has supported
+kernel modules, which are dynamically loaded kernel-code modules.
+These could be at any address, depending on which are loaded at a
+given moment and in what order.</p><p>At program start, or in response to a signal, klogd will
+query the kernel for a list of modules and their load addresses.
+Kernel modules may register individual function or identifier
+addresses with the kernel when they are loaded. The klogd
+d&aelig;mon will use this information to report addresses in a
+fault dump. It is important to note that module addresses from
+klogd can be out of date! If modules are loaded or unloaded after
+klogd is initialized, then these module/address resolutions will be
+incorrect. Your distribution may take care of this for you by
+providing scripted utilities to refresh klogd automatically. If it
+does not, then some of the switches we skipped over earlier come
+into play to help you keep the memory map up to date.</p><p>The <b  >-i</b> switch tells klogd to reload the
+module symbols. The <b  >-I</b> tells klogd to reload the
+System.map file. The <b  >-p</b> switch enables
+&ldquo;paranoia&rdquo; mode. What this does is cause klogd to attempt to
+reload the module symbols whenever it sees &ldquo;Oops&rdquo; in the kernel
+message stream. Protection faults have this string in them. I
+personally consider this kludgy, and I don't use it. Also, if there
+has been a protection fault, it is possible that the kernel is
+about to halt or the memory map may be in a corrupt state. It is
+available if you want it. The <b  >-k</b> option allows
+you to specify the file that contains the kernel symbol
+information. See the section on multiple kernels below. The
+<b  >-x</b> switch tells klogd to not read kernel and
+module symbols and simply to dump the protection fault messages
+untranslated.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xabf580.0xfb1068"></a>Multiple Kernels</h2></div></div><p>Linux beginners are unlikely to encounter this, but more
+seasoned users will often have more than one bootable kernel on
+their system at a time. If the box is a hobbyist or kernel hacker's
+box, it is likely to have a number of stable and a number of
+development series kernels on it. I myself always keep three
+generations of stable kernels on my systems, so that if a bug
+should show up, I can immediately reboot into the older
+kernel.</p><p>When klogd starts, it identifies the kernel version (all
+kernels since 1.3.43 put version information in the map files) and
+then looks at:</p><pre     class="programlisting">
+/boot/System.map
+/System.map
+/usr/src/linux/System.map
+</pre><p>It will use the kernel version information to choose the
+correct one, if possible. When I have a development series kernel
+on a box, I leave the stable kernel map in /boot and I leave the
+development kernel map in /usr/src/linux. As for my two &ldquo;old&rdquo;
+stable kernels, I just live with the fact that klogd will not be
+able to resolve addresses in the event of a fault if I boot into
+them. Remember, you can use the <b  >-k</b> switch on
+klogd to force it to use a particular map file if you build an
+archive of them.
+</p><p>Just bear in mind as you read this discussion that these
+events are so rare that in 15 machine years (three machines running
+Linux 24x7 for five years), I have seen this happen twice, and both
+times it was due to failing hardware.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xabf580.0xfb1328"></a>Signals</h2></div></div><p>In addition to the command-line switches, klogd will respond
+to certain signals. You send signals with the
+<span   class="bold"><b>kill</b></span> command.</p><p>The signals klogd responds to are:</p><div class="itemizedlist"><ul type="disc"><li><p>SIGTSTP/SIGCONT</p></li></ul></div><p><b  >SIGTSTP</b> suspends and
+<b  >SIGCONT</b> resumes kernel logging. The resuming
+includes re-initialization, so you can use this to, for example,
+unmount the /proc file system without killing klogd:
+<pre     class="programlisting">
+kill -TSTP &lt;pid&gt;
+umount /proc
+kill -CONT &lt;pid&gt;
+</pre>
+
+
+<div class="itemizedlist"><ul type="disc"><li><p>SIGUSR1/SIGUSR2</p></li></ul></div>
+
+<b  >SIGUSR1</b> causes a reload of the kernel module
+symbols. <b  >SIGUSR2</b> reloads both the static kernel
+symbols and the module symbols.
+</p><p>See the Memory Address Resolution section for more
+information.</p><div class="itemizedlist"><ul type="disc"><li><p>SIGINT/SIGHUP/SIGKILL/SIGTERM</p></li></ul></div><p>These signals all gracefully shut down klogd.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xabf580.0xfb1ab8"></a>Summary</h2></div></div><p>The klogd works with syslogd to handle the dispatch of kernel
+messages. It exists solely because the kernel itself is unable to
+use the syslog API directly. Klogd provides for resolving raw
+memory addresses into kernel symbol names.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="4058aa.jpg"></div>
+
+      <span   class="bold"><b>Michael A. Schwarz</b></span>
+      (mschwarz@sherbtel.net) is a
+      consultant with Interim Technology Consulting in Minneapolis,
+      Minnesota. He has 15 years of experience writing UNIX software and
+      heads up the open-source SASi project. He has been using Linux
+      since he downloaded the TAMU release in 1994, and keeps the SASi
+      project at
+      <a href="http://alienmystery.planetmercury.net" target="_self">http://alienmystery.planetmercury.net/</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../076/toc076.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

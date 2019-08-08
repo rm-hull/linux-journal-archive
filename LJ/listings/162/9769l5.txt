@@ -1,0 +1,100 @@
+Listing 5. Entire FUSE Shim C++ Class
+
+#include <fuselagefs/fuselagefs.hh>
+using namespace Fuselage;
+using namespace Fuselage::Helpers;
+
+#include <aio.h>
+#include <errno.h>
+
+#include <string>
+#include <iostream>
+using namespace std;
+...
+class CustomFilesystem
+ :
+ public Delegatefs
+{
+ typedef Delegatefs _Base;
+ off_t m_oldOffset;
+ off_t m_startNextAIOOffset;
+ enum
+ {
+   aio_buffer_sz = 8 * 1024 * 1024,
+   aio_consume_window = aio_buffer_sz / 2,
+   debug_readahread_aio = false
+ };
+ char aio_buffer[ aio_buffer_sz ];
+
+ void schedule_readahread_aio( int fd,
+     off_t offset, bool forceNewReadAHead )
+ {
+   if( m_startNextAIOOffset <= offset
+        || forceNewReadAHead )
+   {
+     cerr << "Starting an async read request"
+          << " at offset:" << offset << endl;
+
+     ssize_t retval; ssize_t nbytes;
+     struct aiocb arg;
+     bzero( &arg, sizeof (struct aiocb));
+     arg.aio_fildes = fd;
+     arg.aio_offset = offset;
+     arg.aio_buf = (void *) aio_buffer;
+     arg.aio_nbytes = aio_buffer_sz;
+     arg.aio_sigevent.sigev_notify = SIGEV_NONE;
+
+     retval = aio_read( &arg );
+     if( retval < 0 )
+       cerr << "error starting aio request!"
+            << endl;
+
+     m_startNextAIOOffset = offset
+        + aio_consume_window;
+
+     if( debug_readahread_aio )
+     {
+       while ( (retval = aio_error( &arg ) )
+           == EINPROGRESS )
+       {}
+       cerr << "aio_return():"
+            << aio_return( &arg )
+             << endl;
+      }
+    }
+ }
+
+public:
+
+ CustomFilesystem()
+ :
+ _Base(),
+ m_startNextAIOOffset( 0 ),
+ m_oldOffset( -1 )
+ {
+ }
+
+ virtual int fs_read( const char *path,
+    char *buf, size_t size,
+    off_t offset, struct fuse_file_info *fi)
+ {
+   cerr << "fs_read() offset:" << offset
+      << " sz:" << size << endl;
+   int fd = fi->fh;
+
+   bool forceNewReadAHead = false;
+   if( (offset - size) != m_oldOffset )
+   {
+     cerr << "possible seek() between read()s!"
+          << endl;
+     forceNewReadAHead = true;
+     aio_cancel( fd, 0 );
+   }
+   schedule_readahread_aio( fd, offset,
+                            forceNewReadAHead );
+   m_oldOffset = offset;
+   return _Base::fs_read( path, buf,
+                          size, offset, fi );
+ }
+};
+

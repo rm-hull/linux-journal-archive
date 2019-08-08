@@ -1,0 +1,648 @@
+4750l1
+
+Listing 1. osfpe.c
+
+/* 
+   osfpe.c by Rob Beck
+   ---------------------------
+   Simple userspace application for attempted os fingerprinting
+   detection evasion.  When used in conjunction with iptables
+   udp, icmp, and tcp queues it will give the impression that
+   the host is a Windows machine to untrusted hosts.
+
+   Disclaimers & Warnings:
+   1. This is proof of concept code and should be used as such!
+   2. The author takes no responsibility for mishaps from this.
+   3. Always look both ways before crossing the street.
+
+   Note: This application -CAN- be fingerprinted if the proper
+   tests are conducted by a knowledgable person.  For those of
+   you who do not like this, please read Disclaimer item 1.
+
+   ./osfpe -h || ./osfpe --help for help on usage.
+
+   Special thanks:
+   Rex Warren   -       for help on buildWinOptions, _tcp, and all his testing.
+   Myles Conley -       for testing and support.
+*/
+
+#include <libipq.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <linux/netfilter.h>
+#include <linux/netfilter_ipv4/ip_queue.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
+#include <netinet/tcp.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/in.h>
+#include <time.h>
+#include <getopt.h>
+
+#define BUFSIZE 2048
+#define MAX_TABLES 50
+#define WINDOW_OPTIONS_LENGTH 20
+#define TCP_HDR_LEN_SANS_OPT 20
+
+#define TRUSTED_F "osfpe.access" // trusted hosts file
+char Host_List[20][16]; // global variable to hold hosts(20 hosts max)
+int DAEMON;
+
+// Values from tcp.h
+#define TCP_FIN 0x01
+#define TCP_SYN 0x02
+#define TCP_RST 0x04
+#define TCP_PSH 0x08
+#define TCP_ACK 0x10
+#define TCP_URG 0x20
+
+#define TCP_BOG 0x40 // nmap bogus flag
+
+// Borrowed from Libnet along with tcp_check()
+#define LIBNET_CKSUM_CARRY(x) (x = (x >> 16) + (x & 0xffff), (~(x + (x >> 16)) & 0xffff))
+
+static void Help ()
+{
+        printf("Usage: osfpe [-d] [-l <log file>]");
+        printf("d --daemon  \t=\trun as a daemon.\n");
+        printf("h --help   \t=\tdisplay this help message.\n");
+
+}
+
+u_long in_checksum(u_short *addr, int len) 
+{
+        u_long sum;
+        int nleft;
+        u_short ans;
+        u_short *w;
+
+        sum = 0;
+        ans = 0;
+        nleft = len;
+        w = addr;
+
+        while (nleft > 1)
+        {
+                sum += *w++;
+                nleft -= 2;
+        }
+        if (nleft == 1)
+        {
+                *(u_char *)(&ans) = *(u_char *)w;
+                sum += ans;
+        }
+        return sum;
+}
+
+u_short chsum( u_short *buff, int nwords)
+{
+	unsigned long sum;
+	for (sum = 0; nwords > 0; nwords--)
+		sum += *buff++;
+	sum = (sum >> 16) + (sum & 0xffff);
+	sum += (sum >> 16);
+	return ~sum;
+}
+
+u_short tcp_check(struct tcphdr *th, int len, u_long saddr, u_long daddr)
+{
+        u_long sum;
+
+        sum = in_checksum((u_short *) &saddr, 4);
+        sum += in_checksum((u_short *) &daddr, 4);
+        sum += ntohs(IPPROTO_TCP + len);
+        sum += in_checksum((u_short *) th, len);
+        sum = LIBNET_CKSUM_CARRY(sum);
+        return (u_short) (sum & 0xffff);
+}
+
+// handles our incoming UDP packets
+char * Handle_UDP (char *buf)
+{
+    struct iphdr	*ptr_iphdr,*rtn_iphdr;
+	struct udphdr  *ptr_udphdr,*rtn_udphdr;
+	struct icmphdr	*ptr_icmphdr;
+    u_int32_t data_len, packet_len,t_addr;
+	char *data, *udpdata;
+
+	data_len = (((struct iphdr *)buf)->ihl * 4);
+	data = (char *)malloc(sizeof(struct iphdr) + 8 + (((struct iphdr *)buf)->ihl * 4) + 8);
+	memcpy(data, buf, sizeof(struct iphdr));
+	
+	ptr_iphdr = (struct iphdr *) data;        
+	ptr_icmphdr = (struct icmphdr *) ((u_int32_t *)ptr_iphdr + ptr_iphdr->ihl);
+	
+	ptr_iphdr->saddr = ((struct iphdr *)buf)->daddr;
+	ptr_iphdr->daddr = ((struct iphdr *)buf)->saddr;
+	ptr_iphdr->frag_off = 0;
+	ptr_iphdr->ttl = 128;
+	ptr_iphdr->id = htons(random());	
+
+	switch(ntohs(((struct udphdr *)(buf + ((struct iphdr *)buf->ihl * 4)))->dest))
+	{
+		case 135:
+		case 137:
+		case 138:
+			 return(NULL);
+			break;
+		default:
+			ptr_iphdr->protocol = IPPROTO_ICMP;
+			ptr_iphdr->check = 0;
+			ptr_iphdr->tot_len = htons( sizeof(struct iphdr) + 8 + (((struct iphdr *)buf)->ihl * 4) + 8); 
+			ptr_iphdr->check = (ushort)in_checksum((ushort *)ptr_iphdr, sizeof(struct iphdr)); 
+			ptr_icmphdr->type = ICMP_DEST_UNREACH;
+			ptr_icmphdr->code = 3;
+			ptr_icmphdr->checksum = 0;
+			memcpy(data + sizeof(struct iphdr) + sizeof(struct icmphdr),buf,sizeof(struct iphdr) + sizeof(struct icmphdr));
+
+			ptr_icmphdr->checksum = chsum((u_short *)ptr_icmphdr, (ntohs(ptr_iphdr->tot_len) - sizeof(struct iphdr)) >> 1);
+			
+			break;
+	}
+
+	return(data);
+}
+
+// handles incoming ICMP packets
+char * Handle_ICMP (char *buf)
+{
+	struct icmphdr *ptr_icmphdr;
+	struct iphdr *ptr_iphdr;
+	u_int32_t data_len, packet_len,t_addr;
+	char *data;
+        
+	
+	packet_len = ntohs(((struct iphdr *)buf)->tot_len);
+	data = (char *)malloc(packet_len);
+        memcpy(data, buf, packet_len);	
+	ptr_iphdr = (struct iphdr *)data;
+	
+	// Get the return stuffs ready should we need to send it out
+
+	// start setting parameters and options
+	t_addr = ptr_iphdr->saddr;
+	ptr_iphdr->saddr = ptr_iphdr->daddr;
+	ptr_iphdr->daddr = t_addr;
+	ptr_iphdr->frag_off = 0;
+	ptr_iphdr->protocol = IPPROTO_ICMP;
+	ptr_iphdr->ttl = 128;
+	ptr_iphdr->id = (u_int32_t)random();
+
+        ptr_icmphdr = (struct icmphdr *) ((u_int32_t *)ptr_iphdr + ptr_iphdr->ihl);
+
+        if (ICMP_ECHOREPLY == ptr_icmphdr->type)
+			return(NULL); // Note, this will stop us from getting ICMP responses from untrusted hosts!
+	
+        switch(ptr_icmphdr->type)
+        {
+ 
+                case ICMP_ECHO:
+                        
+						// Check for Nmap ping
+						data_len = (ntohs(ptr_iphdr->tot_len) - (ptr_iphdr->ihl * 4)) - 8;
+						if (0 == data_len)
+						{
+							if (!DAEMON)
+								printf("Nmap ping!\n"); // This doesn't serve any -real- purpose other than detecting it.
+						}
+						ptr_iphdr->check = (ushort)in_checksum((ushort *)ptr_iphdr, sizeof(struct iphdr)); 
+						ptr_icmphdr->type = ICMP_ECHOREPLY;
+						ptr_icmphdr->code = 0;
+						ptr_icmphdr->checksum = 0;
+						ptr_icmphdr->checksum = chsum((u_short *)ptr_icmphdr, (data_len + 8) >> 1); 
+						break;
+                default:
+                        printf("Unknown ICMP code: %d\n",ptr_icmphdr->code);
+                        break;
+
+        }
+
+	ptr_icmphdr->checksum = 0;
+	ptr_icmphdr->checksum = chsum((u_short *)ptr_icmphdr, (data_len + 8) >> 1); 	
+	return(data);
+}
+
+// this puts together our TCP options
+uint8_t *buildWinOptions(uint8_t *out, uint8_t wsf, uint16_t mss, uint32_t etime){
+        uint32_t ttime;
+        uint8_t gOut[WINDOW_OPTIONS_LENGTH] = {2,4,1,1,1,3,3,0,1,1,8,10,0,0,0,0,0,0,0,0};   // Options in Windows (TM) format
+        ttime = htonl(time(NULL));
+        memcpy(out, gOut, WINDOW_OPTIONS_LENGTH);
+        memcpy((out + 1), &mss, 2);
+        memcpy((out + 7), &wsf, 1);
+        memcpy((out + 12), &ttime, 4);
+        memcpy((out + 16), &etime, 4);
+
+        return out;
+}
+
+// handles incoming TCP packets
+char * Handle_TCP (char *inBuf)
+{
+        struct iphdr *outBufIP, *inBufIP;
+        struct tcphdr *outBufTCP, *inBufTCP;
+        int inBufLen, send_stat, sfd, i, outBufLen;
+        struct sockaddr_in sock_data;
+        uint32_t tstamp, estamp;
+        uint16_t MSS;
+        uint8_t *outBufOpt, WSF, unkLen, *inBufOpt, *outBuf, tcphdr_flags;
+        int inBufOptLen;
+
+        inBufLen = ntohs(((struct iphdr *)inBuf)->tot_len);
+        inBufIP = (struct iphdr *)inBuf;
+        inBufTCP = (struct tcphdr *)(inBuf + inBufIP->ihl * 4);
+        tcphdr_flags = *((u_int8_t*)inBufTCP + 13);
+
+        inBufOpt = (inBuf + (inBufIP->ihl * 4) + TCP_HDR_LEN_SANS_OPT);
+        inBufOptLen = inBufTCP->doff * 4 - TCP_HDR_LEN_SANS_OPT;
+        outBufLen = inBufLen - (inBufTCP->doff * 4 - TCP_HDR_LEN_SANS_OPT) + WINDOW_OPTIONS_LENGTH;
+        outBuf = (uint8_t *)malloc(outBufLen);
+        bzero((char *)outBuf,sizeof(outBufLen));
+        memcpy(outBuf, inBuf, outBufLen);
+        outBufIP = (struct iphdr *)outBuf;
+        outBufTCP = (struct tcphdr *)(outBuf + outBufIP->ihl * 4);
+
+        // get options from packet
+        for (i = 0; i < inBufOptLen; i++){
+                switch ((int)*(inBufOpt + i)) {
+                        case 0:
+                                break;
+                        case 1:
+                                break;
+                        case 2:
+                                MSS =  *(uint16_t *)(inBufOpt + i + 2);
+                                i += 3;
+                                break;
+                        case 3:
+                                WSF = *(inBufOpt + i + 2);
+                                i += 2;
+                                break;
+                        case 8:
+                                tstamp = *(uint32_t *)(inBufOpt + i + 2);
+                                estamp = *(uint32_t *)(inBufOpt + i + 6);
+                                i += 9;
+                                break;
+                        default:
+                                unkLen = *(inBufOpt + i + 1);
+                                i += (unkLen - 1);
+                                break;
+                }
+        }
+        outBufOpt = (uint8_t *)malloc(WINDOW_OPTIONS_LENGTH);
+
+        // Set the options to make it look like Windows (TM)
+        buildWinOptions(outBufOpt, WSF, MSS, tstamp);
+        
+        // manipulate the outgoing packet data to send it back
+        outBufIP->daddr = inBufIP->saddr;     // set dest addr
+        outBufIP->saddr = inBufIP->daddr;     // set src addr
+        outBufIP->tot_len = htons(outBufLen);
+
+		*((u_int8_t *)outBufIP + 6) = 0x00;   // make sure no frag is off
+        outBufTCP->dest = inBufTCP->source;   // set the dest port
+        outBufTCP->source = inBufTCP->dest;   // set the src port
+		*((u_int8_t *)outBufTCP + 13) = 0x00; // clear flags
+        outBufTCP->ack_seq = htonl(ntohl(outBufTCP->seq) + 1);
+        outBufTCP->seq = htonl(ntohl(inBufTCP->seq) + (rand()%499) + 1); // +1 in the event of rand() == 0
+        outBufTCP->doff = 0;
+
+		switch(tcphdr_flags)
+		{
+			case 0: // Null packet - Test 2
+                switch(ntohs(outBufTCP->source))
+                {
+                        case 135:
+                        case 139:
+                                outBufTCP->ack = 1;
+                                outBufTCP->rst = 1;
+                                outBufTCP->ack_seq = htonl(ntohl(outBufTCP->ack_seq) - 1);
+                                outBufTCP->window = 0;
+                                bzero(outBufOpt,WINDOW_OPTIONS_LENGTH);
+                                break;
+                        default:
+                                return(NULL);
+                                break;
+                }
+				break;
+		
+			case 2: // Syn packet - port scan & Test 5
+                switch(ntohs(outBufTCP->source))
+                {
+                        case 135:
+                        case 139:
+                                outBufTCP->syn = 1;
+                                outBufTCP->ack = 1;
+                                outBufTCP->window = htons(0x869F);
+                                memcpy(outBuf + outBufIP->ihl * 4 + TCP_HDR_LEN_SANS_OPT, outBufOpt, WINDOW_OPTIONS_LENGTH);
+                                outBufTCP->doff = (TCP_HDR_LEN_SANS_OPT + WINDOW_OPTIONS_LENGTH)/4;
+                                break;
+                        default:
+                                outBufTCP->rst = 1;
+                                outBufTCP->ack = 1;
+                                outBufTCP->seq = 0;
+                                outBufTCP->window = 0;
+                                break;
+                }
+				break;
+		
+			case 16: // ACK packet - Test 4 & Test 6
+                outBufTCP->rst = 1;
+                outBufTCP->window = 0;
+                break;
+		
+			case 41: //FIN|PSH|URG to closed - Test 7
+                outBufTCP->ack = 1;
+                outBufTCP->rst = 1;
+                outBufTCP->window = 0;
+                break;
+		
+			case 43: // Xmas packet - Test 3
+                switch(ntohs(outBufTCP->source))
+                {
+                        case 135:
+                        case 139:
+                                outBufTCP->ack = 1;
+                                outBufTCP->syn = 1;
+								*((u_int8_t *)outBufIP + 6) = 0x40; // don't frag me
+                                outBufTCP->window = htons(0x869F);
+                                memcpy(outBuf + outBufIP->ihl * 4 + TCP_HDR_LEN_SANS_OPT, outBufOpt, WINDOW_OPTIONS_LENGTH);
+                                outBufTCP->doff = (TCP_HDR_LEN_SANS_OPT + WINDOW_OPTIONS_LENGTH)/4;
+                                break;
+                        default:
+                                outBuf = NULL;
+                                return(outBuf);
+                                break;
+                }
+				break;
+		
+			case 66: // Syn + Bogus - Test 1
+				switch(ntohs(outBufTCP->source))
+				{
+					case 135:
+					case 139:
+						outBufTCP->ack = 1;
+						outBufTCP->syn = 1;
+						*((u_int8_t *)outBufIP + 6) = 0x40; // don't frag me
+						outBufTCP->window = htons(0x869F);
+						memcpy(outBuf + outBufIP->ihl * 4 + TCP_HDR_LEN_SANS_OPT, outBufOpt, WINDOW_OPTIONS_LENGTH);
+						outBufTCP->doff = (TCP_HDR_LEN_SANS_OPT + WINDOW_OPTIONS_LENGTH)/4;
+						break;
+					default:
+			
+						return(outBuf);
+						break;
+				}
+				break;
+
+			default:
+				return(NULL);
+				break;
+        }
+
+        // recalculate the checksums
+        outBufIP->check = 0;
+        outBufIP->check = (ushort)in_checksum((ushort *)outBufIP, sizeof(struct iphdr)); 
+        outBufTCP->check = 0;
+        outBufTCP->check = tcp_check(outBufTCP, (int)outBufTCP->doff * 4, outBufIP->saddr, outBufIP->daddr);
+
+        return(outBuf);
+}
+
+// do we know this person?
+int Trusted_Host (int uh_host)
+{
+		int i;
+		i = 0;
+		while(i <= 20)
+		{
+			if ((strcmp(Host_List[i],(char *)inet_ntoa(uh_host))) == 0)
+				return(1);
+			i++;
+		}
+        return 0;
+}
+
+// quick function for reading our trusted hosts file
+int GetTrustedHosts()
+{
+	FILE	*in_f;
+	u_char	in_l[17];
+	int		i,h;
+	
+	// this is quick and dirty
+	h = 0;
+	in_f = fopen(TRUSTED_F,"r");
+	if (NULL == in_f)
+		return(2);
+	while(!feof(in_f))
+	{
+		fgets(in_l,17,in_f);
+		while(in_l[i] != '\0')
+			i++;
+		if (in_l[i - 1] == '\n')
+		{
+			in_l[i - 1] = '\0';
+			i--;
+		}
+		if (i != 0)
+		{
+			if (h >= 20)
+			{
+				printf("Trusted host list full, going with current 20...\n");
+				fclose(in_f);
+				return(0);
+			}
+			strcpy(Host_List[h],in_l);
+			h++;
+		}
+	}
+	fclose(in_f);
+	if (h = 0)
+		return (1);
+	return(0);
+}
+
+static void die(struct ipq_handle *h){
+                ipq_perror("passer");
+                ipq_destroy_handle(h);
+                exit(1);
+}
+
+// this is pretty much the brains(or lack there of) of the application
+// get packet -> do we know the sender? -> no?, ok, process it -> send a response
+int Watch_Queue()
+{
+        int status, S, send_stat;
+        struct ipq_handle *handle;
+        struct ipq_packet_msg *mesg;
+        struct iphdr *our_ip_hdr, *t_iphdr;
+		struct sockaddr_in sock_data;
+        char *packet_o;
+        unsigned char buf[sizeof *mesg + BUFSIZE];
+        handle = ipq_create_handle(0);
+        if (NULL == handle)
+        {
+                printf("ipq_create_handle error: %s",ipq_errstr());
+                exit(-1);
+        }
+
+        status = ipq_set_mode(handle, IPQ_COPY_PACKET, BUFSIZE);
+
+        if (status < 0)
+                die(handle);
+
+		if ((S = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) == -1)
+		{
+                fprintf(stderr, "Unable to open socket\n");
+                exit(1);
+        }
+
+        while(1)
+        {
+                status = ipq_read(handle, buf, BUFSIZE, 0);
+                if (status < 0)
+                        die(handle);
+				bzero((char *) &sock_data, sizeof(struct sockaddr));
+                switch (ipq_message_type(buf))
+                { 
+                        case NLMSG_ERROR:
+                                switch(ipq_get_msgerr(buf))
+                                {
+                                        case EPERM:
+                                                printf("You don't have proper permissions to run this application.\n");
+                                                exit(1);
+                                        default:
+                                                printf("Encountered error in ipq_message_type, error code: %d", ipq_get_msgerr(buf));
+                                                exit(1);
+                                }
+                                break;
+
+                        case IPQM_PACKET: 
+                                mesg = ipq_get_packet(buf);
+                                our_ip_hdr = (struct iphdr *)mesg->payload;
+                                if (Trusted_Host(our_ip_hdr->saddr))
+                                {
+                                        status = ipq_set_verdict(handle, mesg->packet_id, NF_ACCEPT, 0, NULL);
+                                        if (status < 0)
+                                                die(handle);
+                                        break;
+                                }
+								sock_data.sin_family = AF_INET;
+        						sock_data.sin_addr.s_addr = our_ip_hdr->saddr;
+                                switch (our_ip_hdr->protocol)
+                                {
+                                        case IPPROTO_ICMP:
+                                                packet_o = Handle_ICMP(mesg->payload);
+                                                break;
+
+                                        case IPPROTO_TCP:
+												// Since we might need to be sending a packet back, set the sin_port now
+												sock_data.sin_port = ntohs(((struct tcphdr *)our_ip_hdr + (our_ip_hdr->ihl * 4))->source);
+                                                packet_o = Handle_TCP(mesg->payload);
+                                                break;
+                                        case IPPROTO_UDP:
+												// Since we might need to be sending a packet back, set the sin_port now
+												sock_data.sin_port = ntohs(((struct udphdr *)our_ip_hdr + (our_ip_hdr->ihl * 4))->source);
+                                                packet_o = Handle_UDP(mesg->payload);
+                                                break;
+                                        default:
+                                                printf("Unaccounted IPPROTO_ in Watch_Queue()\n");
+                                                break;
+                                }
+
+								if (NULL == packet_o)
+									break;
+								
+								t_iphdr = (struct iphdr *)packet_o;
+								
+								send_stat = sendto(S, packet_o, ntohs(t_iphdr->tot_len), 0, (struct sockaddr *)&sock_data,sizeof(struct sockaddr));
+        						
+								if (send_stat == -1)
+								{
+                					fprintf(stderr, "Unable to Send Packet\n");
+                					exit(1);
+        						}
+        						if (send_stat != ntohs(t_iphdr->tot_len))
+								{
+                					fprintf(stderr, "Warning: Incomplete packet sent\n");
+               						exit(1);
+        						}
+								free(packet_o);
+                                status = ipq_set_verdict(handle, mesg->packet_id, NF_DROP, 0, NULL);
+                                if (status < 0)
+									die(handle);
+                                break;
+
+                        default: 
+                                printf("Unknown message type!\n");
+                                break;
+                }
+        }
+
+        ipq_destroy_handle(handle);
+        return;
+}
+
+int main(int argc, char **argv)
+{
+        int c, f_pid, option_index;
+        DAEMON = c = f_pid = option_index = 0;
+
+        // Get command line args
+        printf("osfpe v1.2 by Rob Beck (-h/--help for help).\n");
+        while (1)
+        {
+                static struct option long_options[] =
+                {
+                        {"daemon", 0, 0, 'd'},
+                        {"help", 0, 0, 'h'},
+                        {0, 0, 0, 0}
+                };
+                c = getopt_long (argc, argv, "dh", long_options, &option_index);
+                if (c == -1)
+                        break;
+                switch(c)
+                {
+
+                        case 'd':
+                                DAEMON = 1;
+                                break;
+                        case 'h':
+                                Help();
+                                return 0;
+                                break;
+                        default:
+                                printf("Unrecognized argument returned from getopt(): %o\n", c);
+                                return -1;
+                                break;
+                }
+
+        }
+		switch(GetTrustedHosts())
+		{
+			case 1:
+				printf("WARNING: No trusted hosts were listed in osfpe.access!\n");
+				break;
+			case 2:
+				printf("WARNING: Unable to open osfpe.access, using no trusted hosts!\n");
+				break;
+			default:
+				printf("Read in trusted hosts from osfpe.access...\n");
+				break;
+		}
+        if (0 != DAEMON)
+        {
+				printf("Going daemon...\n\n");
+                f_pid = fork();
+                if (f_pid == -1)
+                {
+                        printf("Unable to fork()!\n");
+                        return -1;
+                }
+                if (f_pid != 0)
+                        return 1;
+        }
+        
+        return Watch_Queue(); // Bye-bye
+}

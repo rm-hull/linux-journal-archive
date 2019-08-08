@@ -1,0 +1,124 @@
+#!/bin/sh
+#
+# Usage: sync-app <app description filename> <destination server name> [--resync]
+#
+# Copyright (C) 1998, 1999 Philip J. Lewis
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+#
+#    Contact: lewispj@email.com
+#
+
+appname=$1
+serverdest=$2
+resync=$3
+application=`basename $appname`
+APPLCK=/var/run/sync-app.$application.lock
+
+if [ "$resync" != "" ]; then
+	appname=$1
+fi
+
+if [ "$appname" = "" -o "$serverdest" = "" ]; then
+	echo "Usage: $0 <app description filename> <destination server name> [--resync]"
+	exit 1;
+fi
+
+
+# Usage: synchronize <directory> <destination server name>
+synchronize ()
+{
+	rsync			\
+	--archive		\
+	--update		\
+	--owner			\
+	--sparse		\
+	--one-file-system	\
+	--progress		\
+	--delete		\
+	--stats			\
+	--rsh=ssh		\
+	-v			\
+	$1 $2:$1
+# remove --progress and verbose when all is OK
+
+}
+
+# Usage: re-synchronize <directory> <dest server name>
+# same as synchronize except for backups are made on dest.
+re-synchronize ()
+{
+	rsync			\
+	--archive		\
+	--update		\
+	--owner			\
+	--sparse		\
+	--one-file-system	\
+	--progress		\
+	--delete		\
+	--stats			\
+	--rsh=ssh		\
+	-v			\
+	--backup		\
+	--suffix=~CLUSTER-BACKUP~ \
+	$1 $2:$1
+# remove --progress and verbose when all is OK
+
+}
+
+# are we in a fail-over state - if so don't do anything
+# /var/run/failover is created/deleted by linux-ha
+if [ -f /var/run/failover -a "$resync" != "--resync" ]; then
+	echo "$0 Ignoring $application synchronization request - in failover mode"
+	exit 1;
+fi
+
+# remove stale pid lock file if it exists and process is not running
+if [ -f $APPLCK ]; then
+	lockpid=`cat $APPLCK`
+	kill -0 $lockpid > /dev/null 2>&1
+	if [ "$?" = "1" ]; then
+		rm -f $APPLCK
+	fi
+fi
+
+# is sync-app already synching this application ? - If so then quit.
+if [ -f $APPLCK ]; then
+	echo "$0 Ignoring $application synchronization request - already synchronizing."
+	exit 1;
+fi
+
+# create pid lock file
+echo $$ > $APPLCK
+echo "$0 Processing $application synchronization"
+
+# main synchronization procedure
+(
+read
+while [ "$REPLY" != "" ]; do
+	echo synchronizing $REPLY
+	if [ "$resync" != "--resync" ]; then
+		synchronize $REPLY $serverdest
+	else
+		re-synchronize $REPLY $serverdest
+	fi
+	read
+done
+) < $appname
+
+# remove pid lock file
+rm -f $APPLCK
+
+exit 0

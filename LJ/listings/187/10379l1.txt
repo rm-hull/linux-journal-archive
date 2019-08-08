@@ -1,0 +1,62 @@
+Listing 1. Client-Side Python Program
+
+#!/usr/bin/python
+
+from qpid.util import connect, ssl
+from qpid.connection import Connection, sslwrap
+from qpid.datatypes import Message, RangedSet, uuid4
+from qpid.queue import Empty
+from qpid.spec import load
+
+# First, load the correct specification file.
+amqSpec = load('/usr/local/share/qpid/specs/amqp.0-10.xml')
+
+# Now, connect to the server.
+socket = connect("localhost", 5672)
+connection = Connection (sock=socket,
+                         spec=amqSpec,
+                         username = "guest",
+                         password = "guest")
+connection.start()
+session = connection.session(str(uuid4()))
+
+# Declare the reply queue:
+replyQueueName = "producerReply_" + session.name
+replyQueue = session.queue_declare(queue=replyQueueName,
+                                   exclusive=True,
+                                   auto_delete=True)
+session.exchange_bind(exchange="amq.direct",
+                      queue=replyQueueName,
+                      binding_key=replyQueueName)
+
+# Declare a local queue to which we subscribe the reply-to queue
+localQueueName = "producerLocalQueue_" + session.name
+localQueue = session.incoming(localQueueName)
+session.message_subscribe(queue=replyQueueName,
+                          destination=localQueueName)
+localQueue.start()
+
+# Now, create a message with a request.
+message_properties = session.message_properties()
+message_properties.reply_to = session.reply_to("amq.direct",
+                                               replyQueueName)
+delivery_properties =
+    session.delivery_properties(routing_key="SERVER_STATUS")
+requestMsgText = "RPM_STATUS"
+
+# Send the message and wait for a response.
+session.message_transfer(destination="amq.topic",
+                         message=Message(message_properties,
+                                         delivery_properties,
+                                         requestMsgText))
+
+while True:
+    try:
+        message = localQueue.get(timeout=60)
+        content = message.body
+        session.message_accept(RangedSet(message.id))
+        print content
+    except Empty:
+        print "No more messages!"
+        break
+

@@ -1,0 +1,84 @@
+Listing 1. trillian.fw
+
+#!/bin/sh 
+#
+#  Firewall Builder  fwb_ipt v1.0.8-3 
+#
+#  Generated Tue Mar 11 08:01:21 2003 CST
+
+log() {
+  if test -x "$LOGGER"; then
+    logger -p info "$1"
+  fi
+}
+
+MODPROBE="/sbin/modprobe"
+IPTABLES="/sbin/iptables"
+IP="/sbin/ip"
+LOGGER="/usr/bin/logger"
+
+cd /etc || exit 1
+
+log "Activating firewall script..."
+
+va_num=1
+
+FWD=`cat /proc/sys/net/ipv4/ip_forward`
+echo "0" > /proc/sys/net/ipv4/ip_forward
+echo 30 > /proc/sys/net/ipv4/tcp_fin_timeout
+echo 1800 > /proc/sys/net/ipv4/tcp_keepalive_intvl
+
+$IP -4 neigh flush dev eth0
+$IP -4 addr flush dev eth0 label "eth0:FWB*"
+
+$IPTABLES -P OUTPUT  DROP
+$IPTABLES -P INPUT   DROP
+$IPTABLES -P FORWARD DROP
+
+cat /proc/net/ip_tables_names | while read table; do
+  $IPTABLES -t $table -L -n | \
+  while read c chain rest; do
+      if test "X$c" = "XChain" ; then
+        $IPTABLES -t $table -F $chain
+      fi
+  done
+  $IPTABLES -t $table -X
+done
+
+$IPTABLES -A INPUT   -m state \
+--state ESTABLISHED,RELATED -j ACCEPT
+$IPTABLES -A OUTPUT  -m state \
+--state ESTABLISHED,RELATED -j ACCEPT
+$IPTABLES -A FORWARD -m state \
+--state ESTABLISHED,RELATED -j ACCEPT
+
+# Rule 0(lo):  Outbound from loopback
+$IPTABLES -A OUTPUT  -o lo -j ACCEPT 
+
+# Rule 1(lo): Inbound from loopback
+$IPTABLES -A INPUT  -i lo -j ACCEPT 
+
+# Rule 0(global)
+$IPTABLES -A INPUT -p tcp  -m multiport  \
+--destination-port 80,443  -m state \
+--state NEW -j ACCEPT 
+
+# Rule 1(global)
+$IPTABLES -A OUTPUT -p tcp  --destination-port 53 \
+-m state --state NEW -j ACCEPT 
+$IPTABLES -A OUTPUT -p udp  --destination-port 53 \
+-m state --state NEW -j ACCEPT 
+
+# Rule 2(global)
+$IPTABLES -A INPUT -p tcp  -s 192.168.111.0/24  \
+--destination-port 22  -m state --state NEW \
+-j ACCEPT 
+
+# Rule 3(global)
+$IPTABLES -N RULE_3
+$IPTABLES -A FORWARD -j RULE_3 
+$IPTABLES -A RULE_3 -j LOG  --log-level warning \
+--log-prefix "RULE 3 -- DROP "  --log-ip-options 
+$IPTABLES -A RULE_3 -j DROP 
+
+echo 0 > /proc/sys/net/ipv4/ip_forward

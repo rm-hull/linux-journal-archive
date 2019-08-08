@@ -1,0 +1,1344 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Secure File Transfer 
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;How to improve file transfer security with RFC 1867, thttpd and Stunnel.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xd7e580.0xe75ac0"></a>
+Secure File Transfer 
+</h1></div><div><div class="author"><h3 class="author">
+Charles
+ 
+Fisher
+</h3></div><div class="issuemoyr">Issue #261, January 2016</div></div><div><p>
+How to improve file transfer security with RFC 1867, thttpd and Stunnel.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0xe76250"></a></h2></div></div><p>
+File transfer between Linux systems (and perhaps all POSIX systems in
+general) is in some ways a neglected subject. The arcane protocols in
+common use are far from secure, and the SSH replacements offer too much
+power and complexity. Servers holding highly sensitive data (such as credit
+card numbers, SSNs, birthdates and so on) often must accept file transfers, but
+greatly restrict remote visibility and administration, which is hard with
+the well known tools.
+</p><p>
+File transfers with RFC 1867 (<a href="https://www.ietf.org/rfc/rfc1867.txt" target="_self">https://www.ietf.org/rfc/rfc1867.txt</a>) can offer a number of benefits over most other
+methods: the highest security and optional encryption, all without
+requiring entries in /etc/passwd or other credentials for the operating
+system. 
+</p><p>
+The tools I cover in this article to implement this protocol are sthttpd,
+an upload CGI utility, stunnel and curl.
+The examples here were developed on Oracle Linux 7.1, but most of the code
+is portable and should run on other platforms with minimal changes
+(with the exception of the systemd configuration).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0xe76510"></a>
+Why Not FTP?</h2></div></div><p>
+There have been substantial improvements in security and performance
+through 
+the years in the FTP server software that is commonly bundled with Linux
+(<a href="https://security.appspot.com/vsftpd.html#security" target="_self">https://security.appspot.com/vsftpd.html#security</a>).
+It remains easy to configure FTP clients for batch activity with automatic
+logins:
+
+<pre     class="programlisting">
+echo machine a_server.com login YourName password 
+ &#8618;a_Password &gt;&gt; ~/.netrc
+chmod 600 ~/.netrc
+echo -e 'ls -l \n quit' | ftp a_server.com
+</pre>
+</p><p>
+Unfortunately, this is a terrible idea that gets progressively worse with
+the passage of time:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The login, password and file payload are all sent in clear text over the
+wire in the normal configuration, and there are many utilities to capture
+them that might be used over an untrusted network.
+</p></li><li><p>
+Classic FTP servers listening on port 21 must run as root. If attackers
+find and exploit a weakness, your OS belongs to them.
+</p></li><li><p>
+In &ldquo;active&rdquo; FTP, the client and server switch roles in running the
+<tt  >connect()</tt> and <tt  >listen()</tt> system calls. This causes the TCP connections to
+open in both directions, introducing problems for firewalls.
+</p></li><li><p>
+Unless the FTP server supports chroot() and it is individually and
+specifically configured for a target user, that user is able to 
+fetch recursively all accessible files on the system that have world-read permission.
+</p></li><li><p>
+An FTP account created for a few files can give visibility to just about
+everything. Most modern FTP clients allow such recursive transfers.
+An FTP user requires an entry in /etc/passwd on the server that creates an
+OS account. If not properly managed, this allows the remote user to log in
+to a shell or otherwise gain unwanted access.
+</p></li><li><p>
+Password aging often is mandated in high-security environments, requiring
+synchronized password changes on the client and server (usually after a
+failed overnight batch run).
+</p></li></ul></div><p>
+Later revisions to the FTP protocol do add TLS/SSL encryption capabilities,
+but it is unwise to implement them:
+
+
+<pre     class="programlisting">
+man vsftpd.conf | col -b | awk '/^[ ]*ssl_enable/,/^$/'
+    ssl_enable
+        If enabled, and vsftpd was compiled against OpenSSL, 
+        vsftpd will support secure connections via SSL. This 
+        applies to the control connection  (including  login) 
+        and also data connections. You'll need a client with 
+        SSL support too. NOTE!!  Beware enabling this option.  
+        Only enable it if you need it. vsftpd can make no
+        guarantees about the security of the OpenSSL libraries. 
+        By enabling this  option, you are declaring that you 
+        trust the security of your installed OpenSSL library.
+</pre>
+</p><p>
+The reason for the above warning is that because the FTP server runs as root,
+it exposes the encryption library to remote connections with the highest
+system privilege. There have been many, many encryption security flaws
+through
+the years, and this configuration is somewhat dangerous.
+</p><p>
+The OpenSSH suite of communication utilities includes &ldquo;sftp&rdquo; clients and
+servers, but this also requires an account on the operating system and
+special key installation for batch use. The recommended best practice for
+key handling requires passwords and the use of an agent:
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+Our recommended method for best security with unattended SSH operation is
+public-key authentication with keys stored in an agent....The agent method
+does have a down side: the system can't continue unattended after a reboot.
+When the host comes up again automatically, the batch jobs won't have their
+keys until someone shows up to restart the agent and provide the
+passphrases to load the keys.&mdash;<span   class="emphasis"><em>SSH, the Secure
+Shell</em></span>, 2nd Edition, Daniel
+J. Barrett, Richard E. Silverman and Robert G. Byrnes.
+</p></blockquote></div><p>
+Those who blindly rush from FTP to sftp due to security pressures do not
+understand the complexities of key generation, the ssh-agent and
+ssh-add.
+Forcing such sophisticated utilities on a general population that is
+attempting to migrate away from FTP is sure to end badly.
+</p><p>
+OpenSSH also extends the ability to run a shell to the client in the
+default configuration. It is possible to constrain a user to file transfers
+only and configure for a higher-security chroot(), but extensive
+modifications to the server configuration must be performed to implement
+this. The main focus of SSH is secure interactive login&mdash;file transfers
+are a sideline. The lack of &ldquo;anonymous&rdquo; sftp or keyed file dropoff
+highlight this (lack of) focus.
+</p><p>
+The classic Berkeley R-Utilities include an rcp program for remote file
+copy. This does eliminate the clear-text password, but improves little else.
+The use of these utilities is highly discouraged in modern systems, and
+they are not installed and configured by default.
+</p><p>
+None of the above programs work well for secure batch file copy when
+receiving files from untrusted sources, and for these reasons, let's turn to
+RFC 1867.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0xe77220"></a>
+thttpd in a chroot()</h2></div></div><p>
+RFC 1867 is the specification behind the &ldquo;file upload gadget&rdquo; found on Web
+pages. The HTML to implement the gadget is relatively simple:
+
+
+<pre     class="programlisting">
+
+&lt;form action="script.cgi" enctype="multipart/form-data" 
+ method="post"&gt;
+&lt;input type="file" name="Whatever"&gt;
+&lt;input type="submit" value="Upload"&gt;
+&lt;/form&gt;
+
+</pre>
+</p><p>
+Various browsers render the gadget with a slightly different appearance,
+but the function is the same (Figures 1&ndash;3).
+
+</p><div       class="mediaobject"><img src="11940f1.jpg"><div class="caption"><p>
+Figure 1. Google Chrome
+</p></div></div><div       class="mediaobject"><img src="11940f2.jpg"><div class="caption"><p>
+Figure 2. Microsoft Internet Explorer
+</p></div></div><div       class="mediaobject"><img src="11940f3.jpg"><div class="caption"><p>
+Figure 3. Mozilla Firefox
+</p></div></div><p>
+For this article, I will be using the &ldquo;curl&rdquo; non-graphical,
+command-line tool to perform
+file transfers using this protocol. Since the RFC 1867 protocol is
+implemented over HTTP, a Web server is needed. The server software choice
+here will be unconventional, for I'm going to require native support for the
+chroot()
+system call, which isolates running processes in the filesystem tree. This
+prevents access to powerful programs in /sbin and any other sensitive data
+stored in restricted locations.
+</p><p>
+Liberal use of chroot() and privilege separation recently saved OpenBSD's
+new mail system from disaster in a code audit
+(<a href="http://undeadly.org/cgi?action=article&amp;sid=20151013161745" target="_self">undeadly.org/cgi?action=article&amp;sid=20151013161745</a>):
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+First of all, on the positive side, privileges separation, chrooting and
+the message passing design have proven fairly efficient at protecting us
+from a complete disaster. [The] Worst attacks resulted in [the]
+unprivileged process being compromised, the privileged process remained
+untouched, so did the queue process which runs as a separate user too,
+preventing data loss....This is good news, we're not perfect and bugs will
+creep in, but we know that these lines of defense work, and they do reduce
+considerably how we will suffer from a bug, turning a bug into a nuisance
+rather than a full catastrophe. No root were harmed during this audit as
+far as we know.
+</p></blockquote></div><p>
+The common Web servers on Linux, Apache and Nginx repeatedly have refused
+to implement native chroot() security
+(<a href="http://www.openbsd.org/papers/httpd-asiabsdcon2015.pdf" target="_self">www.openbsd.org/papers/httpd-asiabsdcon2015.pdf</a>):
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+OpenBSD has run its Web servers in a chroot for many years; Apache and nginx
+have been patched to run chroot'ed by default. These patches have never
+been accepted by upstream, but yet they provide a significant benefit.
+</p></blockquote></div><p>
+Although this refusal precludes the use of Apache and Nginx in high-security
+applications, the recently updated sthttpd Web server
+(<a href="http://opensource.dyc.edu/sthttpd" target="_self">opensource.dyc.edu/sthttpd</a>) does offer this
+capability. thttpd lacks many modern features (FastCGI, SPDY and SSL/TLS),
+but the native chroot() trumps the disadvantages.
+Here are the steps
+to download and install it:
+
+
+<pre     class="programlisting">
+wget ftp://opensource.dyc.edu/pub/sthttpd/sthttpd-2.27.0.tar.gz
+tar xvzf sthttpd-2.27.0.tar.gz
+cd sthttpd-2.27.0/
+
+./configure
+make install exec_prefix=/home/jail
+
+mkdir /home/jail/etc
+mkdir /home/jail/logs
+mkdir /home/jail/htdocs
+mkdir /home/jail/upload
+chown nobody:nobody /home/jail/logs /home/jail/upload
+
+echo 'port=80
+dir=/home/jail
+chroot
+data_dir=/htdocs
+#data_dir=/home/jail/httpd/htdocs
+user=nobody
+cgipat=**.xyz
+pidfile=/home/jail/logs/thttpd.pid
+logfile=/home/jail/logs/thttpd.log' &gt; /home/jail/etc/thttpd.conf
+</pre>
+</p><p>
+Note above the <tt  >cgipat=**.xyz</tt> for executing programs that adhere to the
+Common Gateway Interface
+(<a href="https://en.wikipedia.org/wiki/Common_Gateway_Interface" target="_self">https://en.wikipedia.org/wiki/Common_Gateway_Interface</a>). The thttpd documentation mentions using the
+conventional .cgi extension, but I suggest you pick your own random
+extension and rename any CGI applications that you deploy to make them
+harder to find and exploit by an attacker.
+</p><p>
+After you have installed the thttpd Web server, you can start a copy with
+the following command:
+
+<pre     class="programlisting">
+/home/jail/sbin/thttpd -C /home/jail/etc/thttpd.conf
+</pre>
+</p><p>
+If you point a Web browser at your machine (first try
+http://localhost&mdash;your firewall rules might prevent you from using a remote browser), you
+should see a directory listing:
+
+<pre     class="programlisting">
+Index of /
+    mode  links  bytes  last-changed  name
+    dr-x   2           6  Oct 22 22:08  ./
+    dr-x   6          51  Oct 22 22:08  ../
+</pre>
+</p><p>
+If you wish, you can explore your new chroot() environment by downloading a
+copy of BusyBox. BusyBox is a statically linked collection of
+&ldquo;miniature&rdquo;
+UNIX/POSIX utilities, with several tools specific to Linux. When BusyBox
+binaries are prepared in such a way that they have no external library
+linkage, they are perfect for running inside a
+chroot():
+
+
+<pre     class="programlisting">
+cd /home/jail/sbin
+wget http://busybox.net/downloads/binaries/busybox-x86_64
+chmod 755 busybox-x86_64
+
+ln -s busybox-x86_64 sh
+
+cd ../htdocs
+echo 'Keep out! This means you!' &gt; index.html
+
+
+echo '#!/sbin/sh
+
+echo Content-type: text/plain
+echo ""
+/sbin/busybox-x86_64 env
+echo "---"
+/sbin/busybox-x86_64 id
+echo "---"
+/sbin/busybox-x86_64 ls -l /
+echo "---"
+/sbin/busybox-x86_64' &gt; script.xyz
+
+chmod 755 script.xyz
+</pre>
+</p><p>
+Notice first that an index.html blocks the directory
+list. Ensure that your CGI applications are protected this way, so they are
+not seen unless you have chosen to expose them as a
+<tt  >&lt;FORM&gt;</tt> action. Also
+observe that a softlink was created from /sbin/busybox-x86_64 to /sbin/sh. 
+Calling BusyBox with the link changes the program's behavior and turns it
+into a Bourne shell. The program examines <tt  >$argv[0]</tt>, and if the contents
+match an &ldquo;applet&rdquo; that has been compiled into it, BusyBox executes the
+applet directly.
+</p><p>
+If you now load http://localhost/script.xyz with your browser, the
+shell script will run, and you should see:
+
+
+<pre     class="programlisting">
+GATEWAY_INTERFACE=CGI/1.1
+SHLVL=1
+REMOTE_ADDR=::1
+HTTP_USER_AGENT=Mozilla/5.0 (X11; Linux x86_64; rv:38.0) 
+ &#8618;Gecko/20100101 Firefox/38.0
+CGI_PATTERN=**.xyz
+HTTP_ACCEPT=text/html,application/xhtml+xml,application/
+&#8618;xml;q=0.9,*/*;q=0.8
+HTTP_HOST=localhost
+SERVER_SOFTWARE=thttpd/2.27.0 Oct 3, 2014
+PATH=/usr/local/bin:/usr/ucb:/bin:/usr/bin
+HTTP_ACCEPT_LANGUAGE=en-US,en;q=0.5
+SERVER_PROTOCOL=HTTP/1.1
+HTTP_ACCEPT_ENCODING=gzip, deflate
+REQUEST_METHOD=GET
+PWD=/htdocs
+SERVER_PORT=80
+SCRIPT_NAME=/script.xyz
+SERVER_NAME=localhost.localdomain
+---
+uid=99 gid=99 groups=99
+---
+total 0
+drwxr-xr-x    2 0    0        24 Oct 22 22:08 etc
+drwxr-xr-x    2 0    0        40 Oct 24 15:03 htdocs
+drwxr-xr-x    2 0    0        40 Oct 22 22:10 logs
+drwxr-xr-x    2 0    0        97 Oct 24 15:02 sbin
+---
+BusyBox v1.24.0.git (2015-10-04 23:30:51 GMT) multi-call binary.
+BusyBox is copyrighted by many authors between 1998-2015.
+Licensed under GPLv2. See source distribution for detailed
+copyright notices.
+
+Usage: busybox [function [arguments]...]
+  or: busybox --list[-full]
+  or: busybox --install [-s] [DIR]
+  or: function [arguments]...
+
+    BusyBox is a multi-call binary that combines many common 
+    Unix utilities into a single executable. Most people will 
+    create a link to busybox for each function they wish to 
+    use and BusyBox will act like whatever it was invoked as.
+
+Currently defined functions:
+    [, [[, acpid, add-shell, addgroup, adduser, adjtimex, arp, 
+    arping, ash, awk, base64, basename, beep, blkid, blockdev, 
+    bootchartd, bunzip2, bzcat, bzip2, cal, cat, catv, chat, 
+    chattr, chgrp, chmod, chown, chpasswd, chpst, chroot, chrt, 
+    chvt, cksum, clear, cmp, comm, conspy, cp, cpio, crond, 
+    crontab, cryptpw, cttyhack, cut, date, dc, dd, deallocvt, 
+    delgroup, deluser, depmod, devmem, df, dhcprelay, diff,
+    dirname, dmesg, dnsd, dnsdomainname, dos2unix, du, dumpkmap,
+    dumpleases, echo, ed, egrep, eject, env, envdir, envuidgid,
+    ether-wake, expand, expr, fakeidentd, false, fatattr, fbset, 
+    fbsplash, fdflush, fdformat, fdisk, fgconsole, fgrep, find, 
+    findfs, flock, fold, free, freeramdisk, fsck, fsck.minix, 
+    fstrim, fsync, ftpd, ftpget, ftpput, fuser, getopt, getty, 
+    grep, groups, gunzip, gzip, halt, hd, hdparm, head, hexdump, 
+    hostid, hostname, httpd, hush, hwclock, i2cdetect, i2cdump, 
+    i2cget, i2cset, id, ifconfig, ifdown, ifenslave, ifup, inetd,
+    init, insmod, install, ionice, iostat, ip, ipaddr, ipcalc, 
+    ipcrm, ipcs, iplink, iproute, iprule, iptunnel, kbd_mode, 
+    kill, killall, killall5, klogd, less, linux32, linux64, linuxrc, 
+    ln, loadfont, loadkmap, logger, login, logname, logread, 
+    losetup, lpd, lpq, lpr, ls, lsattr, lsmod, lsof, lspci, lsusb, 
+    lzcat, lzma, lzop, lzopcat, makedevs, makemime, man, md5sum, 
+    mdev, mesg, microcom, mkdir, mkdosfs, mke2fs, mkfifo,
+    mkfs.ext2, mkfs.minix, mkfs.vfat, mknod, mkpasswd, mkswap, 
+    mktemp, modinfo, modprobe, more, mount, mountpoint, mpstat, 
+    mt, mv, nameif, nanddump, nandwrite, nbd-client, nc, netstat, 
+    nice, nmeter, nohup, nslookup, ntpd, od, openvt, passwd, patch, 
+    pgrep, pidof, ping, ping6, pipe_progress, pivot_root, pkill, 
+    pmap, popmaildir, poweroff, powertop, printenv, printf, ps, 
+    pscan, pstree, pwd, pwdx, raidautorun, rdate, rdev, readahead, 
+    readlink, readprofile, realpath, reboot, reformime, remove-shell, 
+    renice, reset, resize, rev, rm, rmdir, rmmod, route, rpm,
+    rpm2cpio, rtcwake, run-parts, runsv, runsvdir, rx, script,
+    scriptreplay, sed, sendmail, seq, setarch, setconsole, setfont,
+    setkeycodes, setlogcons, setserial, setsid, setuidgid, sh, 
+    sha1sum, sha256sum, sha3sum, sha512sum, showkey, shuf, slattach, 
+    sleep, smemcap, softlimit, sort, split, start-stop-daemon, stat, 
+    strings, stty, su, sulogin, sum, sv, svlogd, swapoff, swapon, 
+    switch_root, sync, sysctl, syslogd, tac, tail, tar, tcpsvd, tee, 
+    telnet, telnetd, test, tftp, tftpd, time, timeout, top, touch, 
+    tr, traceroute, traceroute6, true, truncate, tty, ttysize, 
+    tunctl, ubiattach, ubidetach, ubimkvol, ubirmvol, ubirsvol, 
+    ubiupdatevol, udhcpc, udhcpd, udpsvd, uevent, umount, uname, 
+    unexpand, uniq, unix2dos, unlink, unlzma, unlzop, unxz, unzip, 
+    uptime, usleep, uudecode, uuencode, vconfig, vi, vlock,
+    volname, watch, watchdog, wc, wget, which, whoami, whois, xargs, 
+    xz, xzcat, yes, zcat, zcip
+</pre>
+</p><p>
+A few things to point out regarding each section above:
+</p><div class="orderedlist"><ol type="1"><li><p>
+The environment in the first section above will include a
+<tt  >QUERY_STRING</tt> if
+you have referenced it from a GET-method form&mdash;that is, if you append ?abc=123
+to the URL, you will see <tt  >QUERY_STRING=abc=123</tt> as standard GET-method
+parameters.
+</p></li><li><p>
+User 99 above actually is defined as nobody in the local /etc/passwd on the
+test system. Because there is no /etc/passwd file in the
+chroot(), all user
+IDs will be expressed numerically. If you want users to resolve to names
+for some reason, define those users in a separate passwd file copy in
+the jail.
+</p></li><li><p>
+It is obvious that the root directory above is confined within the jail.
+These files also are resolving to numeric ownership&mdash;if an entry for root
+is placed in the passwd jail file, named owners will appear.
+</p></li></ol></div><p>
+BusyBox is useful for exploring a chroot(), but it should not be left on a
+production server, as it introduces far too much power. This is confirmed on
+the thttpd Web site with words of warning on the contents of the jail
+(<a href="http://www.acme.com/software/thttpd/notes.html" target="_self">www.acme.com/software/thttpd/notes.html</a>):
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+Also: it is actually possible to break out of chroot jail. A process
+running as root, either via a setuid program or some security hole, can
+change its own chroot tree to the next higher directory, repeating as
+necessary to get to the top of the filesystem. So, a chroot tree must be
+considered merely one aspect of a multi-layered defense-in-depth. If your
+chroot tree has enough tools in it for a cracker to gain root access, then
+it's no good; so you want to keep the contents to the minimum necessary. In
+particular, don't include any setuid-root executables!
+</p></blockquote></div><p>
+The recent &ldquo;Towelroot&rdquo; vulnerability demonstrated an ordinary C program
+compiled into a binary executable with no special permissions that was able
+to escalate privilege to root on a great many Linux systems by exploiting a
+mutex bug. If your jail includes the ability to download a binary image and
+mark it executable, such a flaw could allow an attacker to smash out of the
+jail and take ownership of your system. Beware of providing such tools.
+</p><p>
+If you would like to copy utilities from your host operating system for use
+in the jail, you can use the <tt  >ldd</tt> command to find their shared object
+dependencies. For example, to move a functional copy of GNU AWK into the
+jail, examine the dependent objects:
+
+
+<pre     class="programlisting">
+# ldd /bin/gawk
+    linux-vdso.so.1 =&gt;  (0x00007ffe9f488000)
+    libdl.so.2 =&gt; /lib64/libdl.so.2 (0x00007f7033e38000)
+    libm.so.6 =&gt; /lib64/libm.so.6 (0x00007f7033b36000)
+    libc.so.6 =&gt; /lib64/libc.so.6 (0x00007f7033776000)
+    /lib64/ld-linux-x86-64.so.2 (0x00007f7034053000)
+</pre>
+</p><p>
+These object targets are usually soft links, requiring a chain of files and
+links to be moved, demonstrated by the library below:
+
+<pre     class="programlisting">
+# ll /lib64/libdl.so.2
+lrwxrwxrwx. 1 root root 13 Mar 10  2015 
+ &#8618;/lib64/libdl.so.2 -&gt; libdl-2.17.so
+# ll /lib64/libdl-2.17.so 
+-rwxr-xr-x. 1 root root 19512 Mar  6  2015 
+ &#8618;/lib64/libdl-2.17.so
+</pre>
+</p><p>
+To copy these objects and re-create their links on Oracle Linux 7.1, follow
+these steps:
+
+<pre     class="programlisting">
+mkdir /home/jail/lib64
+cd /home/jail/lib64
+
+cp /lib64/libdl-2.17.so .
+ln -s libdl-2.17.so libdl.so.2
+
+cp /lib64/libm-2.17.so .
+ln -s libm-2.17.so libm.so.6
+
+cp /lib64/libc-2.17.so .
+ln -s libc-2.17.so libc.so.6
+
+cp /lib64/ld-2.17.so .
+ln ld-2.17.so ld-linux-x86-64.so.2
+</pre>
+</p><p>
+Then, copy the gawk binary and create a test script:
+
+<pre     class="programlisting">
+cp /bin/gawk /home/jail/sbin
+
+echo '#!/sbin/gawk -f
+
+BEGIN { 
+print "Content-type: text/plain"
+print ""
+print "Hello, world!"
+print ""
+for(x in ENVIRON) print x,ENVIRON[x]
+}' &gt; /home/jail/htdocs/awk.xyz
+chmod 755 /home/jail/htdocs/awk.xyz
+</pre>
+</p><p>
+If you load http://localhost/awk.xyz, you will see the output of the script
+above. This means that, with the added libraries, you are free to write CGI
+scripts in GNU AWK if you wish, even if you remove BusyBox:
+
+<pre     class="programlisting">
+Hello, world!
+
+HTTP_ACCEPT text/html,application/xhtml+xml,
+&#8618;application/xml;q=0.9,*/*;q=0.8
+AWKPATH .:/usr/share/awk
+REMOTE_ADDR ::1
+HTTP_ACCEPT_ENCODING gzip, deflate
+SERVER_PORT 80
+SERVER_PROTOCOL HTTP/1.1
+HTTP_ACCEPT_LANGUAGE en-US,en;q=0.5
+CGI_PATTERN **.xyz
+SCRIPT_NAME /awk.xyz
+HTTP_HOST localhost
+GATEWAY_INTERFACE CGI/1.1
+SERVER_SOFTWARE thttpd/2.27.0 Oct 3, 2014
+SERVER_NAME localhost.localdomain
+PATH /usr/local/bin:/usr/ucb:/bin:/usr/bin
+HTTP_USER_AGENT Mozilla/5.0 (X11; Linux x86_64; 
+ &#8618;rv:38.0) Gecko/20100101
+Firefox/38.0
+REQUEST_METHOD GET
+</pre>
+</p><p>
+GNU AWK is not the best example as it does provide network connectivity.
+Brian Kernighan's &ldquo;One True AWK&rdquo; might be a better choice at it lacks the
+extended network functions.
+</p><p>
+Let's consider additional startup parameters, using systemd to control
+the thttpd server. If you don't have systemd, examine the following unit
+file and replicate it with your init system. First, if you are still
+running thttpd, kill it:
+
+<pre     class="programlisting">
+
+kill $(&lt;/home/jail/logs/thttpd.pid)
+
+</pre>
+</p><p>
+Then, direct systemd to start it:
+
+<pre     class="programlisting">
+echo "[Unit]
+Description=thttpd web service
+After=syslog.target
+
+[Service]
+ExecStart=/bin/ksh -c 'ulimit -H -f 48828; ulimit 
+ &#8618;-H -m 48828; /home/jail/sbin/thttpd -C 
+ &#8618;/home/jail/etc/thttpd.conf'
+Type=forking
+#Restart=always
+
+[Install]
+WantedBy=multi-user.target" &gt; /etc/systemd/system/
+&#8618;thttpd.service
+
+systemctl start thttpd.service
+</pre>
+</p><p>
+Note above the <tt  >ulimit</tt> commands executed by the Korn shell before launching
+thttpd (you may need to install this shell):
+
+<pre     class="programlisting">
+ulimit -H -f 48828
+ulimit -H -m 48828
+</pre>
+</p><p>
+These commands set maximum limits for memory and files written by thttpd
+and all of its child processes. These are specified in blocks of 1,024
+bytes and equate to 50 megabytes of maximum usage. These are hard limits
+that cannot be raised. The reason for imposing these limits will become
+clear in the next section.
+</p><p>
+The thttpd Web server records activity with the system syslog when able, but
+when running in a chroot(), the /dev/log socket does not exist unless
+created manually. The rsyslog d&aelig;mon can be instructed to listen on an
+additional socket in /home/jail/dev/log, like so:
+
+<pre     class="programlisting">
+echo '$ModLoad imuxsock
+$AddUnixListenSocket /home/jail/dev/log
+$umask 0000' &gt; /etc/rsyslog.d/thttpd.conf
+
+mkdir /home/jail/dev
+chmod 755 /home/jail/dev
+chcon -v --type=device_t /home/jail/dev
+
+systemctl restart rsyslog.service
+systemctl restart thttpd.service
+</pre>
+</p><p>
+After restarting, you should see thttpd entries in /var/log/messages. If
+you are running on an older Linux system that uses sysklogd, the following
+option will be of interest to you:
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+-a socket:
+Using this argument you can specify additional sockets from that syslogd
+has to listen to [sic]. This is needed if you're going to let some
+d&aelig;mon
+run within a chroot() environment. You can use up to 19 additional sockets.
+If your environment needs even more, you have to increase the symbol
+MAXFUNIX within the syslogd.c source file.
+</p></blockquote></div><p>
+You also may find it useful to move or copy the /home/jail/sbin/thttpd
+binary to a location outside of the chroot(). If a copy remains in the
+jail, it can be tested at startup and compared to the protected copy. If
+the files differ, your startup script can mail an alert
+that your jail has been compromised. The thttpd.conf file might be
+similarly treated.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0x12716d0"></a>
+Upload.cgi</h2></div></div><p>
+In 2000, Jeroen C. Kessels released Upload-2.6.tar.gz, which you easily can
+find using
+the major search engines. Although the software is quite old, it is
+likely the most concise implementation of RFC 1867 available (from the
+perspective of system resources).
+</p><p>
+Assuming that you have a copy of Upload-2.6.tar.gz, run the default compile
+with these commands:
+
+<pre     class="programlisting">
+tar xvzf Upload-2.6.tar.gz
+cd Upload-2.6/sources/
+make
+ldd upload
+</pre>
+</p><p>
+Note that the <tt  >ldd</tt> command should not be run as root on untrusted
+software, as documented in the manual page (run the build as a regular,
+non-root user).
+</p><p>
+The final <tt  >ldd</tt> above will list the shared object dependencies for the
+binary:
+
+<pre     class="programlisting">
+linux-vdso.so.1 =&gt;  (0x00007ffcbe5e1000)
+libc.so.6 =&gt; /lib64/libc.so.6 (0x00007fbeffdad000)
+/lib64/ld-linux-x86-64.so.2 (0x00007fbf00183000)
+</pre>
+</p><p>
+If you previously loaded libraries above for GNU AWK, you will have all of
+the needed shared objects in place to run this program in the chroot(). If
+you have not elected to place copies of the shared objects in
+/home/jail/lib64, recompile the program with static linkage (assuming
+that your compiler is capable of it&mdash;some distributions lack the static
+libc.a):
+
+<pre     class="programlisting">
+gcc -static -O -o upload.static upload.c
+</pre>
+</p><p>
+Copy your chosen binary to /home/jail, and set the configuration:
+
+
+<pre     class="programlisting">
+cp upload /home/jail/upload.cgi
+cp ../html/BadPage.html /home/jail/htdocs/test-fail.html
+cp ../html/OkPage.html /home/jail/htdocs/test-good.html
+
+sed 's/action=[^ ]*/action="test.xyz"/' ../html/index.html &gt; \
+    /home/jail/htdocs/test.html
+
+cd /home/jail/htdocs
+ln -s ../upload.cgi test.xyz
+
+echo 'Config          = Default
+  Root          = /upload
+  FileMask      = *
+  IgnoreSubdirs = YES
+  Overwrite     = YES
+  LogFile       = /logs/upload.log
+  OkPage        = /htdocs/test-good.html
+  BadPage       = /htdocs/test-fail.html
+  Debug         = 0' &gt; test.cfg
+</pre>
+</p><p>
+If you now point your browser at http://localhost/test.html, you will see a
+file upload form; test it with a random file. With luck, you should see a
+success page, and the file that you transferred should appear in
+/home/jail/upload. You also should see a log of the transfer in
+/home/jail/logs/upload.log.
+</p><p>
+You can use the curl binary for batch transfers with this
+mechanism&mdash;for
+example:
+
+<pre     class="programlisting">
+curl -F file=@/etc/passwd http://localhost/test.xyz
+</pre>
+</p><p>
+Curl should return the HTML to your standard output:
+
+<pre     class="programlisting">
+
+&lt;html&gt;
+&lt;body&gt;
+&lt;center&gt;
+&lt;h1&gt;Success!&lt;/h1&gt;
+&lt;hr&gt;
+
+File uploaded: passwd&lt;br&gt;
+Bytes uploaded: 2024
+&lt;p&gt;
+
+&lt;/center&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+
+</pre>
+</p><p>
+Uploaded files were configured to be stored in
+/home/jail/upload in this case:
+
+
+<pre     class="programlisting">
+# ll /home/jail/upload
+total 1012
+-rw-r--r--. 1 nobody nobody 1028368 Oct 25 10:26 foo.txt
+-rw-r--r--. 1 nobody nobody    2024 Oct 25 10:29 passwd
+</pre>
+</p><p>
+This configuration is powerful in the respect that it removes a client's
+ability to browse your file store if you so choose. In FTP or its
+descendants, the ability to <tt  >PUT</tt> into a batch
+directory also grants <tt  >GET</tt>;
+with this mechanism, you can constrain your clients to transmit only, with
+no capability to catalog or retrieve any content.
+</p><p>
+One potential problem with this upload program is memory consumption. Let's
+examine the source code to upload.c:
+
+
+<pre     class="programlisting">
+/* Allocate sufficient memory for the incoming data. */
+Content = (char *)malloc(InCount + 1);
+...
+p1 = Content;
+RealCount = 0;
+/* For some reason fread() of Borland C 4.52 barfs if the 
+   bytecount is bigger than 2.5Mb, so I have to do it 
+   like this. */
+while (fread(p1++,1,1,stdin) == 1) {
+  RealCount++;
+  if (RealCount &gt;= InCount) break;
+  }
+*p1 = '\0';
+</pre>
+</p><p>
+You can see above that the entire file is read from the network (off
+standard input) and stored in memory. This could be a potential &ldquo;denial of
+service&rdquo; exploit, thus the 50mb ulimits set at the end of the previous
+section. Adjust these ulimits to meet your needs but prevent abuse. It
+also might be possible to use the <tt  >tmpfile()</tt> function to spool to disk
+instead of memory, but extensive modifications to the C code would be
+required.
+</p><p>
+Because there isn't much code behind upload.cgi, it is relatively easy to
+extend. Consider these additional blocks for the
+<tt  >ShowOkPage()</tt> function:
+
+
+<pre     class="programlisting">
+if (strnicmp(p1,"&lt;insert sha256sum&gt;",18) == 0) {
+    char scratch[BUFSIZ];
+    FILE *H;
+
+    *p1 = '\0';
+    sprintf(scratch,"%s%s",Root,LastFileName);
+    strcpy(s1, "/sbin/sha256sum '"); strcat(s1, scratch); 
+     &#8618;strcat(s1, "'");
+
+    if((H = popen(s1, "r")) != NULL &amp;&amp; fgets(scratch, BUFSIZ, 
+     &#8618;H) != NULL)
+    { sprintf(s1,"%s%s%s",Line,scratch,p1+18); strcpy(Line,s1);
+     &#8618;fclose(H); }
+}
+
+if (strnicmp(p1,"&lt;insert md5sum&gt;",15) == 0) {
+    char scratch[BUFSIZ];
+    FILE *H;
+
+    *p1 = '\0';
+    sprintf(scratch,"%s%s",Root,LastFileName);
+    strcpy(s1, "/sbin/md5sum '"); strcat(s1, scratch); 
+     &#8618;strcat(s1, "'");
+
+    if((H = popen(s1, "r")) != NULL &amp;&amp; fgets(scratch, 
+     &#8618;BUFSIZ, H) != NULL)
+    { sprintf(s1,"%s%s%s",Line,scratch,p1+15); 
+     &#8618;strcpy(Line,s1); fclose(H); }
+}
+</pre>
+</p><p>
+Compiling in these fragments allows you to report the md5 and
+sha256 signatures of the on-disk data received from the client optionally,
+if you so
+specify in the template, enabling the client to confirm that the server's
+on-disk data is correct:
+
+<pre     class="programlisting">
+$ curl -F file=@Upload-2.6.tar.gz  
+ &#8618;http://localhost/test.xyz
+&lt;html&gt;
+&lt;body&gt;
+&lt;center&gt;
+&lt;h1&gt;Success!&lt;/h1&gt;
+&lt;hr&gt;
+
+File uploaded: Upload-2.6.tar.gz&lt;br&gt;
+Bytes uploaded: 2039&lt;br&gt;
+sha256sum: bed3540744b2486ff431226eba16c487dcdbd4e60
+&#8618;2268349fdf8b7f1fb25ad38
+/upload/Upload-2.6.tar.gz
+&lt;br&gt;
+md5sum: d703c20032d76611e7e88ebf20c3687a  
+ &#8618;/upload/Upload-2.6.tar.gz
+
+&lt;p&gt;
+
+&lt;/center&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</pre>
+</p><p>
+Such a data verification feature is not available in any standard file
+transfer tool, but was easily implemented in this elderly code because the
+approach is flexible. Adding custom processing on file receipt would be a
+nightmare for FTP, but it's relatively straightforward for
+upload.cgi. The
+need for such features is echoed in Solaris ZFS, which performs aggressive
+checksums on all disk writes&mdash;controller firmware makes mistakes, and the
+ability to report such errors is mandatory for some applications. Also note
+the signatures for Jeroen C. Kessels' package above, and further be warned
+that md5 signatures are vulnerable to tampering
+(<a href="http://www.mathstat.dal.ca/~selinger/md5collision" target="_self">www.mathstat.dal.ca/~selinger/md5collision</a>)&mdash;they are useful for
+detecting media errors, but they do not guarantee data to be free of
+malicious alteration.
+</p><p>
+Other useful changes to the upload.c code include a prefix always added to
+the incoming filename read from the .CFG file (I added this feature in
+three lines), and replacement of
+<tt  >strcat()</tt>/<tt  >strcpy()</tt> functions with the safer
+<tt  >strlcat()</tt>/<tt  >strlcpy()</tt> from OpenBSD's libc
+(<a href="http://www.sudo.ws/todd/papers/strlcpy.html" target="_self">www.sudo.ws/todd/papers/strlcpy.html</a>).
+</p><p>
+There is also an extended CGI processing library
+(<a href="http://www.boutell.com/cgic" target="_self">www.boutell.com/cgic</a>) in the C programming
+language written by Tom Boutell (author of the GD graphics library). The
+CGI-C library offers more efficient RFC 1867 processing (without excessive
+memory consumption), but building applications with it is beyond the scope
+of this discussion.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0x1406178"></a>
+Stunnel TLS</h2></div></div><p>
+Because thttpd has no encryption support, those living in areas where
+encryption is legal (<a href="http://www.cryptolaw.org" target="_self">www.cryptolaw.org</a>) can use
+Michal Trojnara's stunnel &ldquo;shim&rdquo; network
+encryption d&aelig;mon to provide https services on port 443. First, install the
+package from the standard Oracle Linux repositories:
+
+<pre     class="programlisting">
+yum install stunnel
+</pre>
+</p><p>
+You also can install stunnel from source. The package pulled by yum is in
+fact quite old (4.56, one major version behind the current 5.25), but it
+also includes stunnel security contexts for SELinux, so it is recommended
+that you install the package even if you plan to build a newer release.
+</p><p>
+After installation, stunnel will require a keypair for TLS. The public
+portion of the key can be signed by a Certificate Authority (CA) if you
+wish, which will allow error-free operation with most browsers. You 
+also may use a &ldquo;self-signed&rdquo; key that will present browser errors, but will
+allow encryption.
+</p><p>
+Free signed SSL certificates should be available by the time you read
+this article from the Web site for the Let's Encrypt project
+(<a href="https://letsencrypt.org" target="_self">https://letsencrypt.org</a>). Instructions should
+appear shortly on how to generate and maintain signed keys that are honored
+as valid by most browsers. Preliminary documentation on the Let's Encrypt
+Web site indicates that the tools will use .PEM files, which likely can be
+used by stunnel.
+</p><p>
+If you want to purchase a valid key for stunnel, there is a guide on
+the stunnel Web site on having your key signed by a CA
+(<a href="https://www.stunnel.org/howto.html" target="_self">https://www.stunnel.org/howto.html</a>).
+</p><p>
+For more informal use, you can generate a self-signed key with the
+following commands:
+
+<pre     class="programlisting">
+cd /etc/pki/tls/certs
+make stunnel.pem
+</pre>
+</p><p>
+The process of key generation will ask a number of questions:
+
+
+<pre     class="programlisting">
+Generating a 2048 bit RSA private key
+........................................+++
+.................................+++
+writing new private key to '/tmp/openssl.hXP3gW'
+-----
+You are about to be asked to enter information that will 
+be incorporated into your certificate request.
+What you are about to enter is what is called a 
+Distinguished Name or a DN. There are quite a few fields 
+but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [XX]:US
+State or Province Name (full name) []:IL
+Locality Name (eg, city) [Default City]:Chicago
+Organization Name (eg, company) 
+ &#8618;[Default Company Ltd]:ACME Corporation
+Organizational Unit Name (eg, section) []:Widget Division
+Common Name (eg, your name or your server's hostname) 
+ &#8618;[]:darkstar
+Email Address []:linus@posix.org
+</pre>
+</p><p>
+The key produced above will be set for expiration 365 days from the day
+it was created. If you want to generate a key with a longer life, you
+can call openssl directly:
+
+<pre     class="programlisting">
+openssl req -new -x509 -days 3650 -nodes -out 
+ &#8618;stunnel.pem -keyout stunnel.pem
+</pre>
+</p><p>
+The key will look something like this (abbreviated):
+
+
+<pre     class="programlisting">
+# cat /etc/pki/tls/certs/stunnel.pem
+-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC23m+w0BLxI2zB
+/p8/TiuFcEurTLbLCQwcO/FE+vNcJpddckuF6/VgpBAJk+d9i7NZNqrjMH711H18
+3AYhewZTCbRUMQE3ndaYEIxSt4Qhbm8XbfUfx6Fmg4CnWh/XzE7B8Z7XbHpwRQ4d
+kQOzICzb1nt96QKdWoAob73+hv7qdi3UjJ3/20z3Cx5LWfWoa32Y50//tvBjBtcQ
+H7QpiE2tfLWHTQ5tztkqVY/MZJWVgoT5LnqQlZeZB/C4izSYNo9EGAnw4ThaFJ/y
+NdvmyK6sYaO3Dq4eFO78O+zzqyfhPCtcfb8lMuRTZa8uiv7ziVf0A3eGSwKYonUf
+ ...
+-----END PRIVATE KEY-----
+-----BEGIN CERTIFICATE-----
+MIID/TCCAuWgAwIBAgIJALT/9skCvdR5MA0GCSqGSIb3DQEBCwUAMIGUMQswCQYD
+VQQGEwJVUzELMAkGA1UECAwCSUwxEDAOBgNVBAcMB0NoaWNhZ28xGTAXBgNVBAoM
+EEFDTUUgQ29ycG9yYXRpb24xGDAWBgNVBAsMD1dpZGdldCBEaXZpc2lvbjERMA8G
+A1UEAwwIZGFya3N0YXIxHjAcBgkqhkiG9w0BCQEWD2xpbnVzQHBvc2l4Lm9yZzAe
+Fw0xNTEwMzAwMzI2NTJaFw0yNTEwMjcwMzI2NTJaMIGUMQswCQYDVQQGEwJVUzEL
+MAkGA1UECAwCSUwxEDAOBgNVBAcMB0NoaWNhZ28xGTAXBgNVBAoMEEFDTUUgQ29y
+cG9yYXRpb24xGDAWBgNVBAsMD1dpZGdldCBEaXZpc2lvbjERMA8GA1UEAwwIZGFy
+/JMRW5oa/+TFZIRcacTxgAw=
+ ...
+-----END CERTIFICATE-----
+</pre>
+</p><p>
+The PRIVATE KEY section above is the most sensitive portion of the file; ensure that it is not seen or copied by anyone you do not trust, and
+any recordings on backup media should be encrypted. The <tt  >BEGIN
+CERTIFICATE</tt>
+section is presented to TLS clients when they connect to stunnel.
+</p><p>
+It also is wise to compute custom primes for the Diffie-Hellman key
+exchange algorithm, following guidance from the stunnel manual page:
+
+<pre     class="programlisting">
+openssl dhparam 2048 &gt;&gt; stunnel.pem
+</pre>
+</p><p>
+The previous command will add another section to your stunnel.pem file that
+looks like this:
+
+
+<pre     class="programlisting">
+-----BEGIN DH PARAMETERS-----
+MIIBCAKCAQEAoHi5jzY5ZVwGCFFm1EhVsePXxNwCSs/eQbaC3rc+iXENL8xk21uq
+6eSwYIQWUeDN/h6wBBDe6dpFoNDJQeqKCmUa8aojGHnkcqsJBdVUKVF5/7rWb1Yi
+TzvbeZt8UvYnNUErJEpgBMiKPDYipE2BZ6k61WwkK6WV6svGAHpIc3o/9kU+72uf
+dPFaNIygAb2HLaJYvXq9OYGvrMsmyZTh3fnpg2RiZSVJf+i4BfyeLiYkwnSZozAS
+2rQ4hf2E5WY6jiAcNZBLKvqR8lUuIaXd9+VkiCSV0c2pXzb2ElxOk8sheAHliwip
+SaKC694z9l63eNKQW2J4WI97wkil0qa4MwIBAg==
+-----END DH PARAMETERS-----
+</pre>
+</p><p>
+Once the key is in place in /etc/pki/tls/certs/stunnel.pem, a stunnel
+configuration file must be created, like so:
+
+<pre     class="programlisting">
+echo 'FIPS    = no
+options = NO_SSLv2
+options = NO_SSLv3
+options = CIPHER_SERVER_PREFERENCE
+ciphers =
+ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+
+&#8618;AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:
+&#8618;RSA+AES:RSA+3DES:!aNULL:!MD5:!DSS
+syslog  = yes
+#debug  = 6 #/var/log/secure
+chroot  = /var/empty
+setuid  = nobody
+setgid  = nobody
+cert    = /etc/pki/tls/certs/stunnel.pem
+connect = 127.0.0.1:80' &gt; /etc/stunnel/https.conf
+</pre>
+</p><p>
+The cipher settings above are from Hynek Schlawack's Web site on the
+subject (<a href="https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers" target="_self">https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers</a>), and they represent the current best practice for TLS encryption.
+It is wise to visit this site from time to time for news and advice on TLS,
+or perhaps consider following Hynek's Twitter feed.
+</p><p>
+The <tt  >FIPS</tt> and <tt  >NO_SSL</tt> options above are the default settings starting with
+stunnel version 5. If you are running the version 4.56 package bundled with
+Oracle Linux, you must provide them for best practice TLS.
+</p><p>
+The above configuration sets stunnel as an inetd-style service that is
+launched for each connection. Each process will be in a chroot() in
+/var/empty. It also is possible to run stunnel as a standing d&aelig;mon
+that
+forks for each new client. If you do so, remember to restart the
+d&aelig;mon each time an OpenSSL update arrives and the chroot() might need more
+careful preparation. If you use the inetd approach, updates will
+apply to all new connections immediately after your updates, but you must
+use care not to exceed NPROC under high usage. There is a performance
+penalty for running in inetd-style, but the ease of security administration
+is likely worthwhile for all but heavy usage.
+</p><p>
+The following commands configure stunnel for inetd-style socket activation
+under systemd:
+
+
+<pre     class="programlisting">
+echo '[Unit]
+Description=https stunnel
+[Socket]
+ListenStream=443
+Accept=yes
+[Install]
+WantedBy=sockets.target' &gt; /etc/systemd/system/https.socket
+
+echo '[Unit]
+Description=https stunnel service
+[Service]
+ExecStart=-/usr/bin/stunnel /etc/stunnel/https.conf
+StandardInput=socket' &gt; /etc/systemd/system/https@.service
+
+systemctl enable https.socket
+systemctl start https.socket
+</pre>
+</p><p>
+At this point, use your browser to visit https://localhost, and you will
+see your index page. Visit https://localhost/test.html, and you can upload
+over a secure channel. You also can use curl:
+
+
+<pre     class="programlisting">
+curl -k -F file=@/etc/group https://localhost/test.xyz
+</pre>
+</p><p>
+Note above the <tt  >-k</tt> option, which disables client CA validation for a
+server certificate. You will need this option if you are using a
+self-signed key or if your curl binary lacks access to an appropriate
+repository of CAs (provided by your operating system):
+
+<pre     class="programlisting">
+&lt;html&gt;
+&lt;body&gt;
+&lt;center&gt;
+&lt;h1&gt;Success!&lt;/h1&gt;
+&lt;hr&gt;
+
+File uploaded: group&lt;br&gt;
+Bytes uploaded: 842&lt;br&gt;
+sha256sum: 460917231dd5201d4c6cb0f959e1b49c101ea
+&#8618;9ead3ab91e904eac4d758ebad4a
+/upload/group
+&lt;br&gt;
+md5sum: 31aa58285489369c8a340d47a9c8fc49  
+ &#8618;/upload/group
+
+&lt;p&gt;
+
+&lt;/center&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</pre>
+</p><p>
+If you are using an older Linux distribution that uses xinetd, this
+configuration might prove useful:
+
+<pre     class="programlisting">
+service https
+{
+    disable      =   no
+    socket_type	 =   stream
+    wait         =   no
+    user         =   root
+    server       =   /usr/sbin/stunnel
+    server_args	 =   /etc/stunnel/https.conf
+}
+</pre>
+</p><p>
+And if you are in an environment that is still using inetd, this line will
+enable stunnel:
+
+<pre     class="programlisting">
+https stream nobody nowait root /usr/sbin/stunnel 
+ &#8618;stunnel /etc/stunnel/https.conf
+</pre>
+</p><p>
+If you have problems with stunnel, try using telnet to connect to port
+443&mdash;you may see helpful status messages there. For example:
+
+
+<pre     class="programlisting">
+# cd /etc/stunnel/
+
+# mv https.conf https.conf.tmp
+
+# busybox-x86_64 telnet localhost 443
+Clients allowed=500
+stunnel 4.56 on x86_64-redhat-linux-gnu platform
+Compiled/running with OpenSSL 1.0.1e-fips 11 Feb 2013
+Threading:PTHREAD Sockets:POLL,IPv6 SSL:ENGINE,OCSP,
+&#8618;FIPS Auth:LIBWRAP
+Reading configuration from file 
+ &#8618;/etc/stunnel/https.conf
+Cannot read configuration
+ 
+Syntax:
+stunnel [] ] -fd  | -help | -version | -sockets
+      - use specified config file
+    -fd    - read the config file from a file descriptor
+    -help     - get config file help
+    -version  - display version and defaults
+    -sockets  - display default socket options
+str_stats: 1 block(s), 24 data byte(s), 58 control byte(s)
+Connection closed by foreign host
+</pre>
+</p><p>
+Note that if you reference files (keys or configuration files) that are not
+in the standard paths above, the &ldquo;enforcing&rdquo; SELinux on Oracle Linux 7.1
+might deny read permissions. If you see such errors in your syslog, try
+applying the following:
+
+
+<pre     class="programlisting">
+chcon -v --type=stunnel_etc_t /alternate/path/to/https.conf
+chcon -v --type=stunnel_etc_t /alternate/path/to/stunnel.pem
+</pre>
+</p><p>
+If your local Linux firewall is enabled, you can open the port for stunnel
+on https and allow remote browsers to connect. If you leave port 80 closed,
+you are enforcing TLS-encrypted communication for all connections:
+
+<pre     class="programlisting">
+iptables -I INPUT -p tcp --dport 443 --syn -j ACCEPT
+</pre>
+</p><p>
+Please note that one drawback to https with stunnel is that the
+<tt  >REMOTE_ADDR</tt>
+environment variable shown in the above CGI scripts always will be set to
+127.0.0.1. If you want to determine the source of a particular connection
+or transfer from the thttpd logs, you must cross-reference them with
+the stunnel connection logs. However, this property might be useful for
+upload.cgi&mdash;if <tt  >getenv("REMOTE_ADDR") !=
+"127.0.0.1"</tt>, you should call
+the <tt  >exit()</tt> function. The net effect is that the Web
+site can be visible in 
+clear text on both port 80 and via TLS on port 443, but file uploads will fail if
+attempted in clear text.
+</p><p>
+Finally, if your client must ensure the identity of the server, but you do
+not want to obtain a signed certificate, you can run a remote stunnel on
+the client that forces verification on a particular key.
+</p><p>
+Extract and save the <tt  >CERTIFICATE</tt> section from your server's stunnel .PEM
+(abbreviated below):
+
+
+<pre     class="programlisting">
+-----BEGIN CERTIFICATE-----
+MIID/TCCAuWgAwIBAgIJALT/9skCvdR5MA0GCSqGSIb3DQEBCwUAMIGUMQswCQYD
+VQQGEwJVUzELMAkGA1UECAwCSUwxEDAOBgNVBAcMB0NoaWNhZ28xGTAXBgNVBAoM
+EEFDTUUgQ29ycG9yYXRpb24xGDAWBgNVBAsMD1dpZGdldCBEaXZpc2lvbjERMA8G
+A1UEAwwIZGFya3N0YXIxHjAcBgkqhkiG9w0BCQEWD2xpbnVzQHBvc2l4Lm9yZzAe
+VYckA2gQ+70yXXxpFSD4n2ecq3ebNtej07zR2wAtAkt/JtuGiUjbl1m4ZFTPoTwr
+ ...
+xDYMcezEgopMzYMihv6CQ0CEU+qL+92CYtEDsd1hzn74SlBK9HMKjMLrbBZPhbE4
+/JMRW5oa/+TFZIRcacTxgAw=
+-----END CERTIFICATE-----
+</pre>
+</p><p>
+Transfer this file to your client, and set the client's stunnel
+configuration file:
+
+<pre     class="programlisting">
+echo 'FIPS    = no
+client  = yes
+verify  = 4
+cafile  = /path/to/publickey.pem
+[client-https]
+accept  = 127.0.0.1:65432
+connect = your.remote.server.com:443' &gt; 
+ &#8618;stunnel-verify.conf
+</pre>
+</p><p>
+The configuration above will run on Windows and a variety of other
+platforms. If you are running on a UNIX variant, consider also adding the
+chroot() option in a similar manner as was set on the server. Note,
+however,
+that if you intend to use the HUP signal to reload the stunnel
+configuration, you must copy all of the required files inside the
+chroot() to which you have confined stunnel. Although this likely would never
+be done in an inetd-style configuration, this is one of several drawbacks
+for chroot() operation.
+</p><p>
+Clients then can point their browser at http://localhost:65432, and they
+will be routed over TLS to the remote Web server. The curl utility 
+similarly can use the local 65432 port in clear text, allowing stunnel to handle
+the TLS session.
+</p><p>
+When client connections are launched, the client stunnel will open a
+connection to the server's port 443, then thoroughly exercise the server's
+key to ensure the correct identity and prevent a &ldquo;man in the
+middle&rdquo; from
+intercepting the transmitted data.
+</p><p>
+The curl utility does have a number of options to import certificate
+stores, but it does not appear capable of verifying a specific certificate
+as I have just demonstrated with stunnel.
+</p><p>
+The author of stunnel also noted that the rsync utility and protocol can be
+used for anonymous write access. The standard network configuration for
+rsync is clear text, but rsync also can be wrapped in either OpenSSH or
+stunnel. A dated guide for transferring files with rsync over stunnel can
+be found here: <a href="http://www.netbits.us/docs/stunnel_rsync.html" target="_self">www.netbits.us/docs/stunnel_rsync.html</a>. A benefit of RFC 1867 is that curl is the only utility
+required for command-line transfers; a more complex configuration is
+required for an rsync binary to be wrapped in services provided by an
+stunnel binary.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0x1407c48"></a>Acknowledgement</h2></div></div><p>
+Special thanks to Michal Trojnara, the author of stunnel, for his helpful
+comments on this article and his greater work in stunnel development.
+Commercial support, licensing and consulting for stunnel is available from
+his organization. Please visit <a href="http://www.stunnel.org/support.html" target="_self">www.stunnel.org/support.html</a> for his
+latest release.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0x1407da8"></a>
+Hurry Up and Downgrade</h2></div></div><p>
+The classic UNIX file transfer utilities are woefully inadequate to
+ensuring identity, integrity and privacy. FTP fails so completely with
+these questions that the only justification for its continued use is the
+general familiarity with the command set. It is unbelievable that modern IT
+has been thus constrained for so long.
+</p><p>
+We need a file transport protocol with casual dropoff, integrity checking,
+encryption, privilege separation (of the TLS state machine and the HTTP
+file processing), chroot() security and hooks for custom processing on
+arrival. There is no mainstream utility that offers all of those features.
+</p><p>
+Until such time, RFC 1867 will allow you to &ldquo;roll your own&rdquo; transport.
+While this protocol has many implementations (Perl, PHP, Python and so on),
+it is rare to find any with chroot() security. Hopefully, this does not
+remain the case.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd7e580.0x140a248"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Charles Fisher has an electrical engineering degree from the University of
+Iowa and works as a systems and database administrator for a Fortune 500
+mining and manufacturing corporation. He has previously published both
+journal articles and technical manuals on Linux for
+<span   class="emphasis"><em>UnixWorld</em></span> and other McGraw-Hill publications.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../261/toc261.html">Issue Table of Contents</a>
+    <a class="link3" href="../261/11940.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,545 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>I2C Drivers, Part I</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The I2C bus helps you monitor the health of your system. Here's how&#10;to develop a driver that will get you all the hardware info you&#10;need to know.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1f50580.0x2047ab0"></a>I2C Drivers, Part I</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #116, December 2003</div></div><div><p>
+The I2C bus helps you monitor the health of your system. Here's how
+to develop a driver that will get you all the hardware info you
+need to know.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f50580.0x2048298"></a></h2></div></div><p>
+In the June and August 2003 issues of <i  >Linux Journal</i>,
+my column covered the Linux kernel driver model, and the I2C subsystem
+was used as an example. This month, we discuss what the I2C subsystem
+does and how to write a driver for it.
+</p><p>
+I2C is the name for a two-wire serial bus protocol originally
+developed by Phillips. It commonly is used in embedded systems
+so different components can communicate; PC motherboards use I2C to talk to
+different sensor chips. Those sensors typically report back fan speeds,
+processor temperatures and a whole raft of system hardware information.
+The protocol also is used in some RAM chips to report information about
+the DIMM itself back to the operating system.
+</p><p>
+The I2C kernel code has lived outside of the main kernel tree for much
+of its development life&mdash;it originally was written back in the 2.0
+days. The 2.4 kernel contains a bit of I2C support, mainly for some video
+drivers. With the 2.6 kernel, a large portion of the I2C code has made
+it into the main kernel tree, thanks to the effort of a number of kernel
+developers who changed the interfaces to be more acceptable to the
+kernel community. A few drivers still live only in
+the external CVS tree and have not been moved into the main
+kernel.org tree, but it is only a matter of time before they, too, are ported.
+</p><p>
+The I2C kernel code is broken up into a number of logical pieces: the
+I2C core, I2C bus drivers, I2C algorithm drivers and I2C chip drivers.
+We ignore how the I2C core operates in this article and focus instead on
+how to write a bus and algorithm driver. In Part II, we will cover how
+to write an I2C chip driver.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f50580.0x2048500"></a>I2C Bus Drivers</h2></div></div><p>
+An I2C bus driver is described by a
+struct named i2c_adapter, which is defined in the
+include/linux/i2c.h file. Only the following fields
+need to be set up by the bus driver:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+struct module *owner; &mdash;set to the value (THIS_MODULE) that
+allows the proper module reference counting.
+</p></li><li><p>
+unsigned int class; &mdash;the type of I2C class devices that this driver
+supports. Usually this is set to the value I2C_ADAP_CLASS_SMBUS.
+</p></li><li><p>
+struct i2c_algorithm *algo; &mdash;a pointer to the struct i2c_algorithm
+structure that describes the way data is transferred through this I2C
+bus controller. More information on this structure is provided below.
+</p></li><li><p>
+char name[I2C_NAME_SIZE]; &mdash;set to a descriptive name of the I2C
+bus driver. This value shows up in the sysfs filename associated with this I2C adapter.
+</p></li></ul></div><p>
+The code below comes from an example I2C adapter driver called
+tiny_i2c_adap.c, available from the <i  >Linux Journal</i> FTP
+site [<a href="../listings/116/7136.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue116/7136.tgz</a>] and shows how the
+struct i2c_adapter is set up:
+
+<pre     class="programlisting">
+
+static struct i2c_adapter tiny_adapter = {
+    .owner  = THIS_MODULE,
+    .class  = I2C_ADAP_CLASS_SMBUS,
+    .algo   = &amp;tiny_algorithm,
+    .name   = "tiny adapter",
+};
+
+</pre>
+</p><p>
+To register this I2C adapter, the driver calls the function
+i2c_add_adapter with a pointer to the
+struct i2c_adapter:
+
+<pre     class="programlisting">
+
+retval = i2c_add_adapter(&amp;tiny_adapter);
+
+</pre>
+</p><p>
+If the I2C adapter lives on a type of device that has a
+struct device associated with it, such as a PCI or
+USB device, then before the call to
+i2c_add_adapter, the adapter device's parent pointer
+should be set to that device. This pointer configuration can be seen in the following line
+from the drivers/i2c/busses/i2c-piix4.c driver:
+
+<pre     class="programlisting">
+
+/* set up sysfs linkage to our parent device */
+piix4_adapter.dev.parent = &amp;dev-&gt;dev;
+
+</pre>
+</p><p>
+If this parent pointer is not set up, the I2C adapter is
+positioned on the legacy bus and shows up in the
+sysfs tree at /sys/devices/legacy.
+Here is what happens to our example driver when it is registered:
+</p><pre     class="screen">
+$ tree /sys/devices/legacy/
+/sys/devices/legacy/
+|-- detach_state
+|-- floppy0
+|   |-- detach_state
+|   `-- power
+|       `-- state
+|-- i2c-0
+|   |-- detach_state
+|   |-- name
+|   `-- power
+|       `-- state
+`-- power
+    `-- state
+</pre><p>
+As discussed in the previous kernel driver model columns, the
+I2C adapter also shows up in the
+/sys/class/i2c-adapter directory:
+</p><pre     class="screen">
+$ tree /sys/class/i2c-adapter/
+/sys/class/i2c-adapter/
+`-- i2c-0
+    |-- device -&gt; ../../../devices/legacy/i2c-0
+    `-- driver -&gt; ../../../bus/i2c/drivers/i2c_adapter
+</pre><p>
+To unregister an I2C adapter, the driver should call the function
+i2c_del_adapter with a pointer to the struct i2c_adapter, like this:
+
+<pre     class="programlisting">
+
+i2c_del_adapter(&amp;tiny_adapter);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f50580.0x2048df0"></a>I2C Algorithm Drivers</h2></div></div><p>
+An I2C algorithm is used by the I2C bus driver to talk to the
+I2C bus. Most I2C bus drivers define their own I2C
+algorithms and use them, as they are tied closely to how the bus driver talks
+to that specific type of hardware. For some classes of I2C bus drivers,
+a number of I2C algorithm drivers already have been written. Examples
+of these are ITE adapters found in
+drivers/i2c/i2c-algo-ite.c, IBM PPC 405 adapters found in
+drivers/i2c/i2c-algo-ibm_ocp.c and a generic
+I2C bit shift algorithm found in drivers/i2c/i2c-algo-bit.c. All of
+these already written algorithms have their own functions with which an I2C bus
+driver needs to register to use.
+For more information on these, please see all of the
+drivers/i2c/i2c-algo-*.c files in the kernel tree.
+</p><p>
+For our example driver, we are going to create our own I2C algorithm
+driver. An algorithm driver is defined by a
+struct i2c_algorithm structure and is defined in the
+include/linux/i2c.h file. Here is a
+description of some of the commonly used fields:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+char name[32];: the name of the algorithm.
+</p></li><li><p>
+unsigned int id;: description of the type of algorithm this
+structure defines. These different types are
+defined in the include/linux/i2c-id.h file and
+start with the characters I2C_ALGO_.
+</p></li><li><p>
+int (*master_xfer)(struct i2c_adapter *adap,struct i2c_msg msgs[], int num);:
+a function pointer to be set if this
+algorithm driver can do I2C direct-level accesses.
+If it is set, this function is called whenever
+an I2C chip driver wants to communicate with the chip
+device. If it is set to NULL, the
+smbus_xfer function is used instead.
+</p></li><li><p>
+int (*smbus_xfer) (struct i2c_adapter *adap, u16 addr, unsigned short flags,
+char read_write, u8 command, int size, union i2c_smbus_data *data);:
+a function pointer to be set if this
+algorithm driver can do SMB bus accesses. Most PCI-based I2C bus drivers are able to do this, and
+they should set this function pointer. If it is set,
+this function is called whenever an I2C chip
+driver wants to communicate with the chip device.
+If it is set to NULL, the master_xfer
+function is used instead.
+</p></li><li><p>
+u32 (*functionality) (struct i2c_adapter *);: a function pointer called by
+the I2C core to determine what kind of reads and writes the I2C
+adapter driver can do.
+</p></li></ul></div><p>
+In our example I2C adapter driver, the i2c_adapter structure referenced
+the tiny_algorithm variable. That structure is
+defined as the following:
+
+<pre     class="programlisting">
+
+static struct i2c_algorithm tiny_algorithm = {
+    .name           = "tiny algorithm",
+    .id             = I2C_ALGO_SMBUS,
+    .smbus_xfer     = tiny_access,
+    .functionality  = tiny_func,
+};
+
+</pre>
+</p><p>
+The tiny_func function is small and tells the
+I2C core what types of I2C messages this algorithm can support. For
+this driver, we want to be able to support a few different I2C message
+types:
+
+<pre     class="programlisting">
+
+static u32 tiny_func(struct i2c_adapter *adapter)
+{
+    return I2C_FUNC_SMBUS_QUICK |
+           I2C_FUNC_SMBUS_BYTE |
+           I2C_FUNC_SMBUS_BYTE_DATA |
+           I2C_FUNC_SMBUS_WORD_DATA |
+           I2C_FUNC_SMBUS_BLOCK_DATA;
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f50580.0x2049478"></a></h2></div></div><p>
+All of the different I2C message types are defined in
+include/linux/i2c.h and start with the characters
+I2C_FUNC_.
+</p><p>
+The tiny_access function is called when an I2C
+client driver wants to talk to the I2C bus. Our example function is quite
+simple; it merely logs all of the requests the I2C chip driver
+makes to the syslog and reports success back to the caller. This log
+allows you to see all of the different addresses and data types that an
+I2C chip driver may request. The implementation looks like:
+
+
+<pre     class="programlisting">
+
+static s32 tiny_access(struct i2c_adapter *adap,
+                       u16 addr,
+                       unsigned short flags,
+                       char read_write,
+                       u8 command,
+                       int size,
+                       union i2c_smbus_data *data)
+{
+    int i, len;
+
+    dev_info(&amp;adap-&gt;dev, "%s was called with the "
+             "following parameters:\n",
+             __FUNCTION__);
+    dev_info(&amp;adap-&gt;dev, "addr = %.4x\n", addr);
+    dev_info(&amp;adap-&gt;dev, "flags = %.4x\n", flags);
+    dev_info(&amp;adap-&gt;dev, "read_write = %s\n",
+             read_write == I2C_SMBUS_WRITE ?
+             "write" : "read");
+    dev_info(&amp;adap-&gt;dev, "command = %d\n",
+             command);
+
+    switch (size) {
+    case I2C_SMBUS_PROC_CALL:
+        dev_info(&amp;adap-&gt;dev,
+                 "size = I2C_SMBUS_PROC_CALL\n");
+        break;
+    case I2C_SMBUS_QUICK:
+        dev_info(&amp;adap-&gt;dev,
+                 "size = I2C_SMBUS_QUICK\n");
+        break;
+    case I2C_SMBUS_BYTE:
+        dev_info(&amp;adap-&gt;dev,
+                 "size = I2C_SMBUS_BYTE\n");
+        break;
+    case I2C_SMBUS_BYTE_DATA:
+        dev_info(&amp;adap-&gt;dev,
+                 "size = I2C_SMBUS_BYTE_DATA\n");
+        if (read_write == I2C_SMBUS_WRITE)
+            dev_info(&amp;adap-&gt;dev,
+                     "data = %.2x\n", data-&gt;byte);
+        break;
+    case I2C_SMBUS_WORD_DATA:
+        dev_info(&amp;adap-&gt;dev,
+                 "size = I2C_SMBUS_WORD_DATA\n");
+        if (read_write == I2C_SMBUS_WRITE)
+            dev_info(&amp;adap-&gt;dev,
+                     "data = %.4x\n", data-&gt;word);
+        break;
+    case I2C_SMBUS_BLOCK_DATA:
+        dev_info(&amp;adap-&gt;dev,
+                 "size = I2C_SMBUS_BLOCK_DATA\n");
+        if (read_write == I2C_SMBUS_WRITE) {
+            dev_info(&amp;adap-&gt;dev, "data = %.4x\n",
+                     data-&gt;word);
+            len = data-&gt;block[0];
+            if (len &lt; 0)
+                len = 0;
+            if (len &gt; 32)
+                len = 32;
+            for (i = 1; i &lt;= len; i++)
+                dev_info(&amp;adap-&gt;dev,
+                         "data-&gt;block[%d] = %x\n",
+                         i, data-&gt;block[i]);
+        }
+        break;
+    }
+    return 0;
+}
+
+</pre>
+</p><p>
+Now that the tiny_i2c_adap driver is built and loaded, what can it do?
+On its own, it cannot do anything. An I2C bus driver needs an I2C client driver in
+order to do anything besides sit in the
+sysfs tree. So, if the lm75
+I2C client driver is loaded, it tries to use the
+tiny_i2c_adap driver to find the chip for which it was
+written:
+
+
+<pre     class="screen">
+$ modprobe lm75
+$ tree /sys/bus/i2c/
+/sys/bus/i2c/
+|-- devices
+|   |-- 0-0048 -&gt; ../../../devices/legacy/i2c-0/0-0048
+|   |-- 0-0049 -&gt; ../../../devices/legacy/i2c-0/0-0049
+|   |-- 0-004a -&gt; ../../../devices/legacy/i2c-0/0-004a
+|   |-- 0-004b -&gt; ../../../devices/legacy/i2c-0/0-004b
+|   |-- 0-004c -&gt; ../../../devices/legacy/i2c-0/0-004c
+|   |-- 0-004d -&gt; ../../../devices/legacy/i2c-0/0-004d
+|   |-- 0-004e -&gt; ../../../devices/legacy/i2c-0/0-004e
+|   `-- 0-004f -&gt; ../../../devices/legacy/i2c-0/0-004f
+`-- drivers
+    |-- i2c_adapter
+    `-- lm75
+        |-- 0-0048 -&gt; ../../../../devices/legacy/i2c-0/0-0048
+        |-- 0-0049 -&gt; ../../../../devices/legacy/i2c-0/0-0049
+        |-- 0-004a -&gt; ../../../../devices/legacy/i2c-0/0-004a
+        |-- 0-004b -&gt; ../../../../devices/legacy/i2c-0/0-004b
+        |-- 0-004c -&gt; ../../../../devices/legacy/i2c-0/0-004c
+        |-- 0-004d -&gt; ../../../../devices/legacy/i2c-0/0-004d
+        |-- 0-004e -&gt; ../../../../devices/legacy/i2c-0/0-004e
+        `-- 0-004f -&gt; ../../../../devices/legacy/i2c-0/0-004f
+</pre>
+</p><p>
+Because the tiny_i2c_adap driver responds with a
+success to every read and write request it is asked to accomplish,
+the lm75 I2C chip driver thinks it has found an lm75 chip at every known possible I2C address for this chip.
+This abundance of addresses is why I2C devices 0-0048 through 0-004f have been created. If we
+look at the directory for one of these devices, the sensor files for this
+chip driver are shown:
+
+<pre     class="screen">
+$ tree /sys/devices/legacy/i2c-0/0-0048/
+/sys/devices/legacy/i2c-0/0-0048/
+|-- detach_state
+|-- name
+|-- power
+|   `-- state
+|-- temp_input
+|-- temp_max
+`-- temp_min
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f50580.0x2049840"></a></h2></div></div><p>
+The detach_state file and
+power directory is created by the kernel driver core
+and is used for power management. It is not created by the
+lm75 driver. The functions of the other files in this directory are
+described below.
+</p><p>
+If we ask the lm75 driver for the current
+value of temp_max, we receive the following:
+
+<pre     class="screen">
+$ cat /sys/devices/legacy/i2c-0/0-0048/temp_max
+1000
+</pre>
+</p><p>
+To get that value, the lm75 driver asked the
+tiny_i2c_adap driver to read some addresses on the
+I2C bus. This request is shown in the syslog:
+
+
+<pre     class="screen">
+$ dmesg
+i2c_adapter i2c-0: tiny_access was called with the following parameters:
+i2c_adapter i2c-0: addr = 0048
+i2c_adapter i2c-0: flags = 0000
+i2c_adapter i2c-0: read_write = read
+i2c_adapter i2c-0: command = 0
+i2c_adapter i2c-0: size = I2C_SMBUS_WORD_DATA
+i2c_adapter i2c-0: tiny_access was called with the following parameters:
+i2c_adapter i2c-0: addr = 0048
+i2c_adapter i2c-0: flags = 0000
+i2c_adapter i2c-0: read_write = read
+i2c_adapter i2c-0: command = 3
+i2c_adapter i2c-0: size = I2C_SMBUS_WORD_DATA
+i2c_adapter i2c-0: tiny_access was called with the following parameters:
+i2c_adapter i2c-0: addr = 0048
+i2c_adapter i2c-0: flags = 0000
+i2c_adapter i2c-0: read_write = read
+i2c_adapter i2c-0: command = 2
+i2c_adapter i2c-0: size = I2C_SMBUS_WORD_DATA
+</pre>
+</p><p>
+The log file shows that the tiny_access function was
+called three times. The first command wanted to read a word of data
+from register 0 out of the device with the address 0048. The second and
+third reads asked for register 3 and register 2 from the same device.
+The commands match up with the following code from the
+drivers/i2c/chips/lm75.c file in the
+lm75_update_client function:
+
+<pre     class="programlisting">
+
+data-&gt;temp_input = lm75_read_value(client,
+                                   LM75_REG_TEMP);
+data-&gt;temp_max = lm75_read_value(client,
+                                LM75_REG_TEMP_OS);
+data-&gt;temp_hyst = lm75_read_value(client,
+                              LM75_REG_TEMP_HYST);
+
+</pre>
+</p><p>
+The lm75_read_value function in that same file
+contains the following code:
+
+<pre     class="programlisting">
+
+/* All registers are word-sized, except for the
+   configuration register. LM75 uses a high-byte
+   first convention, which is exactly opposite to
+   the usual practice. */
+static int lm75_read_value(struct i2c_client
+                           *client, u8 reg)
+{
+    if (reg == LM75_REG_CONF)
+        return i2c_smbus_read_byte_data(client,
+                                        reg);
+    else
+        return swap_bytes(
+               i2c_smbus_read_word_data(client,
+                                        reg));
+}
+
+</pre>
+</p><p>
+Therefore, when the lm75 driver wants to read the value of
+the max temperature, it calls the lm75_read_value
+function with the register number, which then calls the I2C core
+function i2c_smbus_read_word_data. That I2C core
+function looks up on which I2C bus the client device is, and then it calls
+the I2C algorithm associated with that specific I2C bus to do the data
+transfer. This is the method, then, by which our tiny_i2c_adap driver is
+asked to complete the transfer.
+</p><p>
+If this same sysfs file is written to, the lm75
+driver asks the tiny_i2c_adap driver to write some
+data to a specific address on the I2C bus in the same way the read was
+requested. This request also is shown in the syslog:
+
+
+<pre     class="screen">
+$ echo 300 &gt; /sys/devices/legacy/i2c-0/0-0048/temp_max
+$ dmesg
+i2c_adapter i2c-0: tiny_access was called with the following parameters:
+i2c_adapter i2c-0: addr = 0048
+i2c_adapter i2c-0: flags = 0000
+i2c_adapter i2c-0: read_write = write
+i2c_adapter i2c-0: command = 3
+i2c_adapter i2c-0: size = I2C_SMBUS_WORD_DATA
+i2c_adapter i2c-0: data = 8000
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1f50580.0x25d17f0"></a>Conclusion</h2></div></div><p>
+This month we covered the basics of the I2C driver subsystem and explained
+how to write a simple I2C bus and I2C algorithm driver that work
+with any existing I2C client driver. The complete driver, dmn-09-i2c-adap.c,
+is available from the <i  >Linux Journal</i> FTP site at
+<a href="../listings/116/7136.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue116/7136.tgz</a>.
+In Part II, we will cover how to
+write an I2C chip driver.
+
+</p></div></div>
+<div class="authorblurb"><p>
+Greg Kroah-Hartman currently is the Linux kernel maintainer for a
+variety of different driver subsystems. He works
+for IBM, doing Linux kernel-related things and can
+be reached at <a href="mailto:greg@kroah.com">greg@kroah.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../116/toc116.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

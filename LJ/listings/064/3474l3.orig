@@ -1,0 +1,103 @@
+package Apache::TagNew;
+use strict;
+use Apache::Constants qw(OK DECLINED NOT_FOUND);
+use Apache::Session::DBI;
+sub handler
+  {
+    # Get the Apache request object
+    my $r = shift;
+    # Only handle text/html files
+    return DECLINED unless ($r->content_type 
+    eq "text/html");
+    # Get the user's session ID, if it exists
+    my $id = $r->header_in('Cookie');
+    $id =~ s/SESSION_ID=(\w*)/$1/;
+    # Get the user's session, if it exists
+    my %session;
+    tie %session, 'Apache::Session::DBI', $id,
+      {
+       DataSource => 'dbi:mysql:test:localhost:3306',
+       UserName   => '',
+       Password   => ''
+      };
+
+    # Set the session information for this URL
+    my $document_uri = $r->uri;
+    $session{$document_uri} = time;
+    # Create a cookie based on the ID, and send that 
+    # as part of the return header
+    my $session_cookie = 
+    "SESSION_ID=$session{_session_id};";
+    $r->header_out("Set-Cookie" => 
+    $session_cookie);
+    # Get the file we're trying to send
+    if (open(FILE, $r->filename))
+      {
+	# Send an appropriate MIME header
+	$r->send_http_header;
+	# Slurp up files at once
+	undef $/;
+	# Grab the file's contents
+	my ($contents) = (<FILE>);
+	# Tag hyperlinks as new
+	$contents =~ 
+	s|<a\s+href=['"]?(\S+?)['"]?\s*>([\s\S]+?)</a>
+	|label_url($r, $1, $2, \%session)|eig;
+	# Print the contents
+	$r->print($contents);
+	# Close the file handle
+	close FILE;
+
+	# Indicate that all went well
+	return OK;
+      }
+    # produce an appropriate error message
+    else
+      {
+	return NOT_FOUND;
+      }
+  }
+
+
+# Subroutine for tagging URLs
+sub label_url
+  {
+    # Get the URL and the text
+    my $r = shift;
+    my $url = shift;
+    my $text = shift;
+    my $session = shift;
+    my %session = %{$session};
+    my $label;
+    # If the URL does not begin with "http://", 
+    #then we can assume it
+    # is on our system
+    if ($url !~ m|^http://|)
+      {
+	# If the first character of our URL is not a /,
+	# then we must prepend the current directory to it
+	if ($url !~ m|^/|)
+	  {
+	    # Get the current directory, based on the URL
+	    my $current_directory = $r->uri;
+	    $current_directory =~ s|^(\S+/)[\w.]+$|$1|;
+
+	    # Now prepend it
+	    $url = $current_directory . $url;
+	  }
+	# When was the last time we saw this URL?
+	my $last_time = (time - $session{$url}) / 86400;
+	# When was this file last modified?
+	my $full_filename = $r->document_root . $url;
+	my $ctime = -M $full_filename;
+	# Check to see when we last accessed this URL
+	if ($ctime < $last_time)
+	  {
+	    $label = "<font color=\"red\">New!</font>";
+	  }
+      }
+
+    # Return a value to the caller
+    return "<a href=\"$url\">$text</a> $label";
+  }
+1;

@@ -1,0 +1,96 @@
+Listing 2. Custom iptables Startup Script<remark
+role="output-file">10929l2.qrk</remark></title>
+
+<programlisting>
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides:          iptables_custom
+# Required-Start:    $networking
+# Required-Stop:
+# Default-Start:
+# Default-Stop:      0 6
+# Short-Description: Custom bridged iptables rules
+### END INIT INFO
+
+PATH=/sbin:/bin
+IPTABLES=/sbin/iptables
+LOCALIP=10.0.0.253
+LOCALLAN=10.0.0.0/24
+WEBPROXY=10.0.0.111
+
+. /lib/lsb/init-functions
+
+do_start () {
+      log_action_msg "Loading custom bridged iptables rules"
+
+      # Flush active rules, custom tables
+      $IPTABLES --flush
+      $IPTABLES --delete-chain
+
+      # Set default-deny policies for all three default tables
+      $IPTABLES -P INPUT DROP
+      $IPTABLES -P FORWARD DROP
+      $IPTABLES -P OUTPUT DROP
+
+      # Don't restrict loopback (local process intercommunication)
+      $IPTABLES -A INPUT -i lo -j ACCEPT
+      $IPTABLES -A OUTPUT -o lo -j ACCEPT
+
+      # Block attempts at spoofed loopback traffic
+      $IPTABLES -A INPUT -s $LOCALIP -j DROP
+
+      # pass DHCP queries and responses
+      $IPTABLES -A FORWARD -p udp --sport 68 --dport 67 -j ACCEPT
+      $IPTABLES -A FORWARD -p udp --sport 67 --dport 68 -j ACCEPT
+
+      # Allow SSH to firewall from the local LAN
+      $IPTABLES -A INPUT -p tcp -s $LOCALLAN --dport 22 -j ACCEPT
+      $IPTABLES -A OUTPUT -p tcp --sport 22 -j ACCEPT
+
+      # pass HTTP and HTTPS traffic only to/from the web proxy
+      $IPTABLES -A FORWARD -p tcp -s $WEBPROXY --dport 80 -j ACCEPT
+      $IPTABLES -A FORWARD -p tcp --sport 80 -d $WEBPROXY -j ACCEPT
+      $IPTABLES -A FORWARD -p tcp -s $WEBPROXY --dport 443 -j ACCEPT
+      $IPTABLES -A FORWARD -p tcp --sport 443 -d $WEBPROXY -j ACCEPT
+
+      # pass DNS queries and their replies
+      $IPTABLES -A FORWARD -p udp -s $LOCALLAN --dport 53 -j ACCEPT
+      $IPTABLES -A FORWARD -p tcp -s $LOCALLAN --dport 53 -j ACCEPT
+      $IPTABLES -A FORWARD -p udp --sport 53 -d $LOCALLAN -j ACCEPT
+      $IPTABLES -A FORWARD -p tcp --sport 53 -d $LOCALLAN -j ACCEPT
+
+      # cleanup-rules
+      $IPTABLES -A INPUT -j LOG --log-prefix "Dropped by default (INPUT):"
+      $IPTABLES -A INPUT -j DROP
+      $IPTABLES -A OUTPUT -j LOG --log-prefix "Dropped by default (OUTPUT):"
+      $IPTABLES -A OUTPUT -j DROP
+      $IPTABLES -A FORWARD -j LOG --log-prefix "Dropped by default (FORWARD):"
+      $IPTABLES -A FORWARD -j DROP
+}
+
+do_unload () {
+      $IPTABLES --flush
+      $IPTABLES -P INPUT ACCEPT
+      $IPTABLES -P FORWARD ACCEPT
+      $IPTABLES -P OUTPUT ACCEPT
+}
+
+case "$1" in
+  start)
+        do_start
+        ;;
+  restart|reload|force-reload)
+        echo "Reloading bridging iptables rules"
+        do_unload
+        do_start
+        ;;
+  stop)
+        echo "DANGER: Unloading firewall's Packet Filters!"
+        do_unload
+        ;;
+  *)
+        echo "Usage: $0 start|stop|restart" >&2
+        exit 3
+        ;;
+esac
+

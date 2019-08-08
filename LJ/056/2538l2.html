@@ -1,0 +1,253 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>Building a Web Weather Station</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h4>Listing 2. Perl Script</h4>
+  <pre>
+#
+# ws.pl -- Take data and HTML template and produce
+#          an output HTML file.
+#
+
+$TEMPLATE='/home/weather/WWW/wsTemplate.html';
+
+$twentyfourhours = 86400;  #seconds in a day
+
+# Filename for today's data
+$DATADIR="/home/weather/data";
+($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+   localtime(time);
+$TODAY= sprintf "%02d%02d%02d", $mon+1, $mday, $year;
+$DATAFILE="$DATADIR/$TODAY";
+
+# Calculate yesterday's filename
+($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+   localtime(time-$twentyfourhours);
+$YESTERDAY= sprintf "%02d%02d%02d", $mon+1, $mday, $year;
+$MYESTERDAYFILE="$DATADIR/$YESTERDAY.max";
+$mYESTERDAYFILE="$DATADIR/$YESTERDAY.min";
+
+$CBP_CORRECTION = 6.68;  # Correction for atmospheric pressure
+          # derived with help from local weather expert
+
+# Match these patterns in the template file.
+# Fill in the appropriate information
+#  from the latest data record.
+# %TIME% %DATE%
+# %FTEMP%  (Farenheit) %CTEMP% (Celcius) %HUMIDITY%
+# %BP% %CBP% (pressure and corrected pressure)
+# %WSPEED% %KWSPEED% %WDIRECTION%  (speed in MPH and KPH)
+# %RAIN%
+# YM - yesterday Max, Ym - yesterday Min
+# %YMTEMP% %YmTEMP% %YMHUMIDITY% %YmHUMIDITY%
+# %YRAIN%
+
+if( -r $DATAFILE)
+{
+   $lastline = `tail -1 $DATAFILE`;
+}
+else
+{
+   die "No current datafile $DATAFILE";
+}
+
+($time, $date, $wdir, $wspeed, $aux, $intemp, $outtemp, $hum, $bp,
+ $raind, $rainm, $rain_rate) = split(' ',$lastline);
+
+# Get stuff from yesterday's Max file
+if( -r $MYESTERDAYFILE)
+{
+   $maxline = `tail -1 $MYESTERDAYFILE`;
+}
+($Max, $Mdate, $Mwdir, $Mwspeed, $Maux, $Mintemp, $Mouttemp, $Mhum, $Mbp,
+ $Mraind, $Mrainm, $Mrain_rate) = split(' ',$maxline);
+
+# Get stuff from yesterday's Min file
+if( -r $mYESTERDAYFILE)
+{
+   $minline = `tail -1 $mYESTERDAYFILE`;
+}
+($max, $mdate, $mwdir, $mwspeed, $maux, $mintemp, $mouttemp, $mhum, $mbp,
+ $mraind, $mrainm, $mrain_rate) = split(' ',$minline);
+
+
+# I do some messaging of the data to remove some indicators
+#  and expand others.
+$wspeed =~ s/MPH//;
+$wdir =~ s/E/east /g;
+$wdir =~ s/N/north /g;
+$wdir =~ s/W/west /g;
+$wdir =~ s/S/south /g;
+$outtemp =~ s/F//;
+$outtemp =~ s/^0//;
+$Mouttemp =~ s/F//;
+$Mouttemp =~ s/^0//;
+$mouttemp =~ s/F//;
+$mouttemp =~ s/^0//;
+$intemp =~ s/F//;
+$intemp =~ s/^0//;
+$hum =~ s/%//;
+$hum =~ s/^0//;
+$mhum =~ s/%//;
+$mhum =~ s/^0//;
+$Mhum =~ s/%//;
+$Mhum =~ s/^0//;
+$bpdir = "rising" if ($bp =~ /R/);
+$bpdir = "steady" if ($bp =~ /S/);
+$bpdir = "falling" if ($bp =~ /F/);
+$bp =~ s/[A-Z]//;
+$raind =~ s/\"D//;
+$Mraind =~ s/\"D//;
+$rainm =~ s/\"M//;
+$rain_rate =~ s/\"R//;
+
+$outctemp = sprintf("%3.1f",ftoc($outtemp));
+$dewpoint = sprintf("%3.0f",dewpoint($outtemp,$hum));
+
+$cbp = &amp;cbp($bp);
+
+$kwspeed = sprintf("%2.0f", $wspeed * 1.609);
+
+open(T,"$TEMPLATE") or die "no such file $TEMPLATE\n";
+
+while (&lt;T&gt;)
+{
+   # For each line in the template file...
+   # Do the actual template replacements
+   s/%TIME%/$time/;
+   s/%DATE%/$date/;
+   s/%FTEMP%/$outtemp/;
+   s/%CTEMP%/$outctemp/;
+   s/%HUMIDITY%/$hum/;
+   s/%DEWPOINT%/$dewpoint/;
+   s/%CBP%/$cbp $bpdir /;
+   s/%BP%/$bp/;
+   s/%WSPEED%/$wspeed/;
+   s/%KWSPEED%/$kwspeed/;
+   s/%WDIRECTION%/$wdir/;
+   s/%RAIN%/$raind/;
+   s/%YMHUMIDITY%/$Mhum/;
+   s/%YmHUMIDITY%/$mhum/;
+   s/%YMTEMP%/$Mouttemp/;
+   s/%YmTEMP%/$mouttemp/;
+   s/%YRAIN%/$Mraind/;
+
+   # Print this doctored-up line.
+   print $_;
+}
+
+# Subroutine for correction of atmospheric pressure
+sub cbp
+{
+   local($in) = @_;
+   return(sprintf("%2.2f", $in + $CBP_CORRECTION));
+}
+
+# Subroutines for F--&gt;C  and C--&gt;F temp conversions
+sub ctof
+{
+   local ($C) = @_;
+   $F = (9/5 * $C) + 32;
+   return $F;
+}
+
+sub ftoc
+{
+   local ($F) = @_;
+   $C = 5/9 * ($F - 32);
+   return $C;
+}
+
+# Subroutine to calculate dewpoint
+sub dewpoint
+{
+   local ($F, $H) = @_;
+
+   $rh = $H/100; # RH. Fraction, [0..1] not %.
+   $t = ftoc($F); #Celsius Temperature
+
+   $es = 6.112 * exp(17.67 * $t / ($t + 243.5));
+   $e = $rh * $es;
+   $loge = log($e/6.112);
+   $dp = 243.5 * $loge/(17.67 - $loge);
+        return ctof($dp);
+}
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../056/toc056.html">Issue Table of Contents</a>
+    <a class="link3" href="../056/2538.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

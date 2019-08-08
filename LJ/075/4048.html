@@ -1,0 +1,360 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Linux System Calls</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    How to use the mechanism provided by the IA32 architecture&#10;    for handling system calls.&#10;    "><meta name="keywords" content="kernel, system, call, IA32, achitecture, interrupts, exceptions, Java"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x14b0580.0x15a7ab0"></a>Linux System Calls</h1></div><div><div class="author"><h3 class="author">Moshe Bar</h3></div><div class="issuemoyr">Issue #75, July 2000</div></div><div><p>
+    How to use the mechanism provided by the IA32 architecture
+    for handling system calls.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a8660"></a></h2></div></div><p>This article aims to give the reader,
+either a kernel novice or a seasoned programmer, a better
+understanding of the dynamics of system calls in Linux. Wherever
+code sections are mentioned, I refer to the 2.3.52 (soon to be 2.4)
+series of kernels unless otherwise noted.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a8768"></a>The Linux Kernel in Brief</h2></div></div><p>The most widespread CPU architecture is the IA32, a.k.a. x86,
+which is the architecture of the 386, 486, the Pentiums I, Pro, II
+and III, AMD's competing K6 and Athlon lines, plus CPUs from others
+such as VIA/Cyrix and Integrated Device Technologies. Because it is
+the most widespread, it will be taken as the illustrative example
+here. First, I will cover the mechanisms provided by the IA32 type
+of CPU for handling system calls, and then show how Linux uses
+those mechanisms. To review a few broad terms:</p><div class="itemizedlist"><ul type="disc"><li><p>A <span   class="bold"><b>kernel</b></span> is the
+operating system software running in protected mode and having
+access to the hardware's privileged registers. The kernel is not a
+separate process running on the system. It is the guts of the
+operating system, which controls the scheduling of processes to
+achieve multitasking, and provides a set of routines, constantly in
+memory, to which every user-space process has access.</p></li><li><p>Some operating systems employ a
+<span   class="bold"><b>microkernel architecture</b></span>, wherein
+device drivers and other code are loaded and executed on demand and
+are not necessarily always in memory.</p></li><li><p>A <span   class="bold"><b>monolithic
+architecture</b></span> is more common among UNIX implementations;
+it is the design employed by classic designs such as BSD.</p></li></ul></div><p>The Linux kernel is mostly a monolithic kernel: i.e., all
+device drivers are part of the kernel proper. Unlike BSD, a Linux
+kernel's device drivers can be &ldquo;loadable&rdquo;, i.e., they can be
+loaded and unloaded from memory through user commands.
+</p><p>Basically, multitasking is accomplished in this way: the
+kernel switches control between processes rapidly, using the clock
+interrupt (and other means) to trigger a switch from one process to
+another. When a hardware device issues an interrupt, the interrupt
+handler is found within the kernel. When a process takes an action
+that requires it to wait for results, the kernel steps in and puts
+the process into an appropriate sleeping or waiting state and
+schedules another process in its place.</p><p>Besides multitasking, the kernel also contains the routines
+which implement the interface between user programs and hardware
+devices, virtual memory, file management and many other aspects of
+the system.</p><p>Kernel routines to achieve all of the above can be called
+from user-space code in a number of ways. One direct method to
+utilize the kernel is for a process to execute a system call. There
+are 116 system calls; documentation for these can be found in the
+man pages.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a8d40"></a>System Calls and Event Classes on the
+IA32</h2></div></div><p>A system call is a request by a running task to the kernel to
+provide some sort of service on its behalf. In general, the kernel
+services invoked by system calls comprise an abstraction layer
+between hardware and user-space programs, allowing a programmer to
+implement an operating environment without having to tailor his
+program(s) too specifically to one single brand or precise specific
+combination of system hardware components. System calls also serve
+this generalization function across programming languages; e.g.,
+the <span   class="bold"><b>read</b></span> system call will read
+data from a file descriptor. To the programmer, this looks like
+another C function, but in actuality, the code for read is
+contained within the kernel.</p><p>The IA32 CPU recognizes two classes of events needing special
+processor attention: interrupts and exceptions. Both cause a forced
+context switch to a new procedure or task.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a8ef8"></a>Interrupts</h2></div></div><p>Interrupts can occur at unexpected times during the execution
+of a program and are used to respond to signals; they are signals
+that processor attention is needed from hardware. When a hardware
+device issues an interrupt, the interrupt handler is found within
+the kernel. Next month, we will discuss interrupts in more
+detail.</p><p>Two sources of interrupts are recognized by the IA32:
+maskable interrupts, for which vectors are determined by the
+hardware, and non-maskable interrupts (NMI Interrupts, or
+NMIs).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a9058"></a>Exceptions</h2></div></div><p>Exceptions are either processor-detected or issued (thrown)
+from software. When a procedure or method encounters an abnormal
+condition (an exception condition) it can't handle, it may throw an
+exception. Exceptions of either type are caught by handler routines
+(<b  >_exception handlers_</b>) positioned along the
+thread's procedure or method invocation stack. This may be the
+calling procedure or method, or if that doesn't include code to
+handle the exception condition, its calling procedure or method and
+so on. If one of the threads of your program throws an exception
+that isn't caught by any procedure (or method), then that thread
+will expire.</p><p>An exception tells a calling procedure that an abnormal
+(though not necessarily rare) condition has occurred, e.g., a
+method was invoked with an invalid argument. When you throw an
+exception, you are performing a kind of structured &ldquo;go to&rdquo; from
+the place in your program where the abnormal condition was detected
+to a place where it can be handled. Exception handlers should be
+stationed at program-module levels in accordance with how general a
+range of errors each is capable of handling in such a way that as
+few exception handlers as possible will cover as wide a variety of
+exceptions as are going to be encountered in field application of
+your programs.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a9210"></a>An Example of Exceptions as Objects from
+Java</h2></div></div><p>In Java, exceptions are objects. In addition to throwing
+objects whose class is declared in java.lang, you can throw objects
+of your own design. To create your own class of throwable objects,
+you need to declare it as a subclass of some member of the
+<b  >Throwable</b> family. In general, however, the
+throwable classes you define should extend class
+<b  >Exception</b>--they should be &ldquo;exceptions&rdquo;.
+Usually, the class of the exception object indicates the type of
+abnormal condition encountered. For example, if a thrown exception
+object has class <b  >illegalArgumentException</b>, that
+indicates someone passed an illegal argument to a method.</p><p>When you throw an exception, you instantiate and throw an
+object whose class, declared in java.lang, descends from
+<b  >Throwable</b>, which has two direct subclasses:
+<b  >Exception</b> and <b  >Error</b>. Errors
+(members of the <b  >Error</b> family) are usually thrown
+for more serious problems, such as
+<b  >OutOfMemoryError</b>, that may not be easy to
+handle. Errors are usually thrown by the methods of the Java API or
+the Java Virtual Machine. In general, code you write should throw
+only exceptions, not errors.</p><p>The Java Virtual Machine uses the class of the exception
+object to decide which catch clause, if any, should be allowed to
+handle the exception. The catch clause can also get information on
+the abnormal condition by querying the exception object directly
+for information you embedded in it during instantiation (before
+throwing it). The Exception class allows you to specify a detailed
+message as a string that can be retrieved by invoking
+<span   class="bold"><b>getMessage</b></span> on the exception
+object.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a96e0"></a>Vectors</h2></div></div><p>Each IA32 interrupt or exception has a number, which is
+referred to in the IA32 literature as its
+<span   class="emphasis"><em>vector</em></span>. The NMI interrupt and the
+processor-detected exceptions have been assigned vectors in the
+range 0 through 31, inclusive. The vectors for maskable interrupts
+are determined by the hardware. External interrupt controllers put
+the vector on the bus during the interrupt-acknowledge cycle. Any
+vector in the range 32 through 255, inclusive, can be used for
+maskable interrupts or programmed exceptions.</p><p>The <span   class="bold"><b>startup_32</b></span> code found in
+/usr/src/linux/boot/head.S starts everything off at boot time by
+calling <span   class="bold"><b>setup_idt</b></span>. This routine
+sets up an IDT (Interrupt Descriptor Table) with 256 entries, each
+four bytes long, total 1024 bytes, offsets 0-255. It should be
+noted that the IDT contains vectors to both interrupt handlers and
+exception handlers, so &ldquo;IDT&rdquo; is something of a misnomer, but
+that's the way it is.</p><p>No interrupt entry points are actually loaded by startup_32,
+as that is done only after paging has been enabled and the kernel
+has been relocated to 0xC000000. At times, mostly during boot, the
+kernel must be loaded into certain addresses, because the
+underlying BIOS architecture demands it. After control is passed to
+the kernel exclusively, the Linux kernel can put itself wherever it
+wants. Usually this is very high up in memory, but below the 2GB
+limit.</p><p>When <span   class="bold"><b>start_kernel</b></span> (found in
+/usr/src/linux/init/main.c) is called, it invokes
+<span   class="bold"><b>trap_init</b></span> (found in
+/usr/src/linux/kernel/traps.c).
+<span   class="bold"><b>trap_init</b></span> sets up the IDT via the
+macro <span   class="bold"><b>set_trap_gate</b></span> (found in
+/usr/include/asm/system.h) and initializes the interrupt descriptor
+table as shown in the &ldquo;Offset Descriptionis&rdquo; table.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x15a9b58"></a>Offset Descriptions</h2></div></div><p><a href="4048t1.html" target="_self">Table 1</a></p><p>At this point, the interrupt vector for the system calls is
+not set up. It is initialized by
+<span   class="bold"><b>sched_init</b></span> (found in
+/usr/src/linux/kernel/sched.c). To set interrupt 0x80 to be a
+vector to the <span   class="bold"><b>_system_call</b></span> entry
+point, call:</p><pre     class="programlisting">
+set_system_gate (0x80, &amp;system_call)
+</pre><p>The priority of simultaneously seen interrupts and exceptions
+is shown in the sidebar &ldquo;Runtime Priority of Interrupts&rdquo;.
+</p><p><a href="4048s1.html" target="_self">Runtime Priority of
+Interrupts</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x19a2170"></a>The System Call Interface</h2></div></div><p>The Linux system call interface is vectored through a stub in
+libc (often glibc) and is exclusively &ldquo;register-parametered&rdquo;,
+i.e., the stack is not used for parameter passing. Each call within
+the libc library is generally a syscall<span   class="emphasis"><em>X</em></span>
+macro, where <span   class="emphasis"><em>X</em></span> is the number of parameters
+used by the actual routine. Under Linux, the execution of a system
+call is invoked by a maskable interrupt or exception class transfer
+(e.g., &ldquo;throwing&rdquo; an exception object), caused by the instruction
+in 0x80. Vector 0x80 is used to transfer control to the kernel.
+This interrupt vector is initialized during system startup, along
+with other important vectors such as the system clock vector. On
+the assembly level (in user space), it looks like Listing 1.
+Nowadays, this code is contained in the glibc2.1 library. 0x80 is
+hardcoded into both Linux and glibc, to be the system call number
+which transfers control to the kernel. At bootup, the kernel has
+set up the IDT vector 0x80 to be a &ldquo;call gate&rdquo; (see
+arch/i386/kernel/traps.c:trap_init):</p><p><a href="4048l1.html" target="_self">Listing 1</a></p><pre     class="programlisting">
+set_system_gate(SYSCALL_VECTOR,&amp;system_call)
+</pre><p>The vector layout is defined in include/asm-i386/hw_irq.h.
+</p><p>Not until the int <b  >$0x80</b> is executed does
+the call transfer to the kernel entry point _system_call. This
+entry point is the same for all system calls. It is responsible for
+saving all registers, checking to make sure a valid system call was
+invoked, then ultimately transferring control to the actual system
+call code via the offsets in the
+<b  >_sys_call_table</b>. It is also responsible for
+calling <span   class="bold"><b>_ret_from_sys_call</b></span> when
+the system call has been completed, but before returning to user
+space.</p><p>Actual code for the system_call entry point can be found in
+/usr/src/linux/kernel/sys_call.S and the code for many of the
+system calls can be found in /usr/src/linux/kernel/sys.c. Code for
+the rest is distributed throughout the source files. Some system
+calls, like <span   class="bold"><b>fork</b></span>, have their own
+source file (e.g., kernel/fork.c).</p><p>The next instruction the CPU executes after the int
+<b  >$0x80</b> is the <b  >pushl %eax</b> in
+<span   class="bold"><b>entry.S:system_call</b></span>. There, we
+first save all user-space registers, then we range-check
+<b  >%eax</b> and call
+<b  >sys_call_table[%eax]</b>, which is the actual system
+call.</p><p>Since the system call interface is exclusively
+register-parametered, six parameters at most can be used with a
+single system call. <b  >%eax</b> is the syscall number;
+<b  >%ebx</b>, <b  >%ecx</b>,
+<b  >%edx</b>, <b  >%esi</b>,
+<b  >%edi</b> and <b  >%ebp</b> are the six
+generic registers used as param0-5; and <b  >%esp</b>
+cannot be used because it's overwritten by the kernel when it
+enters ring 0 (i.e., kernel mode).</p><p>In case more parameters are needed, some structure can be
+placed wherever you want within your address space and pointed to
+from a register (not the instruction pointer, nor the stack
+pointer; the kernel-space functions use the stack for parameters
+and local variables). This case is extremely rare, though; most
+system calls have either no parameters or only one.</p><p>Once the system call returns, we check one or more status
+flags in the process structure; the exact number will depend on the
+system call. <span   class="bold"><b>creat</b></span> might leave a
+dozen flags (existing, created, locked, etc.), whereas a
+<span   class="bold"><b>sync</b></span> might return only one.</p><p>If no work is pending, we restore user-space registers and
+return to user space via <b  >iret</b>. The next
+instruction after the <b  >iret</b> is the user-space
+<b  >popl %ebx</b> instruction shown in Listing 1.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x19a2e80"></a>More Complex System Calls</h2></div></div><p>Some system calls are more complex then others because of
+variable-length argument lists. Examples of a complex system call
+include <span   class="bold"><b>open</b></span> and
+<span   class="bold"><b>ioctl</b></span>. However, even complex
+system calls must use the same entry point; they just have more
+overhead for parameter setup. Each syscall macro expands to an
+assembly routine which sets up the calling stack frame and calls
+_system_call through an interrupt, via the instruction int $0x80.
+For example, the setuid system call is coded as</p><pre     class="programlisting">
+_syscall1(int,setuid,uid_t,uid)
+</pre><p>which expands to the assembly code shown in Listing 2.
+</p><p><a href="4048l2.html" target="_self">Listing 2</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x19a3198"></a>The User-Space System Call Code Library</h2></div></div><p>The user-space call code library can be found in
+/usr/src/libc/syscall. The hard-coding of the parameter layout and
+actual system call numbers is not a problem, because system calls
+are never really changed; they are only &ldquo;introduced&rdquo; and
+&ldquo;obsoleted&rdquo;. An obsoleted system call is marked with the
+<b  >old_</b> prefix in the system call table for
+entry.S, and reference to it is removed from the next glibc. Once
+no application uses that system call anymore, its slot is marked
+&ldquo;unused&rdquo; and is potentially reusable for a newly introduced
+system call.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x19a32f8"></a>Tracing System Calls</h2></div></div><p>If a user wishes to trace a program, it is equally important
+to know what happens during system calls. Thus, the trace of a
+program usually includes a trace through the system calls as well.
+This is done through <b  >SIGSTOP</b> and
+<b  >SIGCHLD</b> ping-ponging between parent (tracing
+process) and child (traced process). When a traced process is
+executed, every system call is preceded by a
+<span   class="bold"><b>sys_ptrace</b></span> call. This makes the
+traced process send a SIGCHILD to the tracing process each time a
+system call is made. The traced process immediately enters the
+<b  >TASK_STOPPED</b> state (a flag is set in the
+task_struct structure). The tracing process can then examine the
+entire address space of the traced process through the use of
+<span   class="bold"><b>_ptrace</b></span>, which is a multi-purpose
+system call. The tracing process sends a SIGSTOP to allow execution
+again.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x19a35b8"></a>How to Add Your Own System Calls</h2></div></div><p>Adding your own system calls is actually quite easy. Follow
+this list of steps to do so. Remember, if you do not make these
+system calls available on all the machines you want your program to
+run on, the result will be non-portable code.</p><div class="itemizedlist"><ul type="disc"><li><p>Create a directory under the /usr/src/linux/
+directory to hold your code.</p></li><li><p>Put any include files in /usr/include/sys/ and
+/usr/include/linux/.</p></li><li><p>Add the relocatable module produced by the link of
+your new kernel code to the <b  >ARCHIVES</b> and the
+subdirectory to the <b  >SUBDIRS</b> lines of the
+top-level Makefile. See fs/Makefile, target fs.o for an
+example.</p></li><li><p>Add a <b  >#define
+__NR_<i><tt>xx</tt></i></b> to unistd.h to assign
+a call number for your system call, where <span   class="emphasis"><em>xx</em></span>,
+the index, is something descriptive relating to your system call.
+It will be used to set up the vector through sys_call_table to
+invoke your code.</p></li><li><p>Add an entry point for your system call to the
+sys_call_table in sys.h. It should match the index
+(<span   class="emphasis"><em>xx</em></span>) you assigned in the previous step.</p></li><li><p>The NR_syscalls variable will be recalculated
+automatically.</p></li><li><p>Modify any kernel code in kernel/fs/mm/, etc. to
+take into account the environment needed to support your new
+code.</p></li><li><p>Run <b  >make</b> from the top source
+code directory level to produce the new kernel incorporating your
+new code.</p></li></ul></div><p>At this point, you must either add a syscall to your
+libraries, or use the proper
+<span   class="bold"><b>_syscalln</b></span> macro in your user
+program in order for your programs to access the new system call.
+The <span   class="emphasis"><em>386DX Microprocessor Programmer's Reference
+Manual</em></span> is a helpful reference, as is James Turley's
+<span   class="emphasis"><em>Advanced 80386 Programming Techniques</em></span>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x14b0580.0x19a4060"></a>Linux/IA32 Kernel System Calls</h2></div></div><p>A list of Linux/IA32 kernel system calls can be found, with
+the listings, in the archive file
+<a href="../listings/075/4048.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue75/4048.tgz</a>.
+Note: these are not libc &ldquo;user-space system calls&rdquo;, but real
+kernel system calls provided by the Linux kernel. Information
+source is GNU libc project,
+<a href="http://www.gnu.org" target="_self">http://www.gnu.org/</a>.</p></div></div>
+<div class="authorblurb"><p>
+       email: <a href="mailto:moshe@moelabs.com">moshe@moelabs.com</a>
+       </p><p>
+      <span   class="bold"><b>Moshe Bar</b></span>
+      (moshe@moelabs.com) is an
+      Israeli system administrator and OS researcher who started learning
+      UNIX on a PDP-11 with AT&amp;T UNIX Release 6 back in 1981. He
+      holds an M.Sc. in computer science. His new book Linux
+      Kernel Internals will be published this year. You may visit Moshe's
+      web site at
+      <a href="http://www.moelabs.com" target="_self">http://www.moelabs.com/</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../075/toc075.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

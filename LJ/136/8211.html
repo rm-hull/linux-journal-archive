@@ -1,0 +1,354 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Memory Ordering in Modern Microprocessors, Part I</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;One important difference among CPU families is how they&#10;allow memory accesses to be reordered. Linux has to support them all.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x128a580.0x1381ab0"></a>
+Memory Ordering in Modern Microprocessors, Part I</h1></div><div><div class="author"><h3 class="author">
+Paul
+ E. 
+McKenney
+</h3></div><div class="issuemoyr">Issue #136, August 2005</div></div><div><p>
+One important difference among CPU families is how they
+allow memory accesses to be reordered. Linux has to support them all.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x1382298"></a></h2></div></div><p>
+Since the 2.0 kernel release, Linux has supported a large number of SMP
+systems based on a variety of CPUs. Linux has done an excellent job of
+abstracting differences among these CPUs, even in kernel code. This
+article is an overview of one important difference: how CPUs allow
+memory accesses to be reordered in SMP systems.
+</p><p>
+Memory accesses are among the slowest of a CPU's operations, due to
+the fact that Moore's law has increased CPU instruction performance
+at a much greater rate than it has increased memory performance. This
+difference in performance increase means that memory operations have been
+getting increasingly expensive compared to simple register-to-register
+instructions. Modern CPUs sport increasingly large caches in order to
+reduce the overhead of these expensive memory accesses.
+</p><p>
+These caches can be thought of as simple hardware hash tables with fixed
+size buckets and no chaining, as shown in Figure 1. This cache has
+16 lines and two ways for a total of 32 entries, each entry
+containing a single 256-byte cache line, which is a 256-byte-aligned
+block of memory. This cache line size is a little on the large size,
+but it makes the hexadecimal arithmetic much simpler. In hardware parlance,
+this is a two-way set-associative cache. It is analogous to a software
+hash table with 16 buckets, where each bucket's hash chain is
+limited to two elements at most. Because this cache is implemented in
+hardware, the hash function is extremely simple: extract four bits from
+the memory address.
+</p><p>
+In Figure 1, each box corresponds to a cache entry that can contain a
+256-byte cache line. However, a cache entry can be empty, as indicated
+by the empty boxes in the figure. The rest of the boxes are flagged with
+the memory address of the cache line they contain. Because the cache
+lines must be 256-byte aligned, the low eight bits of each address are
+zero. The choice of hardware hash function means the next-higher
+four bits match the line number.
+</p><p>
+The situation depicted in Figure 1 might arise
+if the program's code was located at address
+0x43210E00 through 0x43210EFF, and this program
+accessed data sequentially from 0x12345000 through
+0x12345EFF. Suppose that the program now was to
+access location 0x12345F00. This location hashes to
+line 0xF, and both ways of this line are empty, so the
+corresponding 256-byte line can be accommodated. If
+the program was to access location 0x1233000,
+which hashes to line 0x0, the corresponding 256-byte
+cache line can be accommodated in way 1. However,
+if the program were to access location 0x1233E00,
+which hashes to line 0xE, one of the existing lines
+must be ejected from the cache to make room for the
+new cache line. This background on hardware caching
+allows us to look at why CPUs reorder memory accesses.
+</p><div       class="mediaobject"><img src="8211f1.jpg"><div class="caption"><p>
+Figure 1. CPU Cache Structure for a Cache with 16 Lines and
+Two Entries Per Line
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x13826b8"></a>
+Why Reorder Memory Accesses?</h2></div></div><p>
+In a word, performance! CPUs have become so fast that the large
+multimegabyte caches cannot keep up with them. Therefore, caches often
+are partitioned into nearly independent banks, as shown in Figure 2.
+This allows each of the banks to run in parallel, thus keeping up better
+with the CPU. Memory normally is divided among the cache banks by
+address. For example, all the even-numbered cache lines might be processed
+by bank 0 and all of the odd-numbered cache lines by bank 1.
+</p><p>
+However, this hardware parallelism has a dark side:
+memory operations now can complete out of order,
+which can result in some confusion, as illustrated
+in Figure 3. CPU 0 might write first to location
+0x12345000, an even-numbered cache line, and then to
+location 0x12345100, an odd-numbered cache line. If
+bank 0 is busy with earlier requests but bank 1 is
+idle, the first write is visible to CPU 1 after
+the second write. In other words, the writes are
+perceived out of order by CPU 1. Reads can be
+reordered in a similar manner. This reordering
+can cause many textbook parallel algorithms to fail.
+</p><div       class="mediaobject"><img src="8211f2.jpg"><div class="caption"><p>
+Figure 2. Hardware parallelism divides one large cache into multiple
+banks.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x13829d0"></a>
+Memory Reordering and SMP Software</h2></div></div><p>
+A few machines offer sequential consistency, in
+which all operations happen in the order specified
+by the code and where all CPUs' views of these
+operations are consistent with a global ordering of the
+combined operations. Sequentially consistent systems
+have some nice properties, but high performance
+does not tend to be one of them. The need for global
+ordering severely constrains the hardware's ability
+to exploit parallelism, and therefore, commodity CPUs
+and systems do not offer sequential consistency.
+</p><p>
+On these systems, three orderings must be accounted for:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Program order: the order in which the memory operations are specified in
+the code running on a given CPU.
+</p></li><li><p>
+Execution order: the order in which the individual memory-reference
+instructions are executed on a given CPU. The execution order can
+differ from program order due to both compiler and CPU-implementation
+optimizations.
+</p></li><li><p>
+Perceived order: the order in which a given CPU perceives its and other
+CPUs' memory operations. The perceived order can differ from the
+execution order due to caching, interconnect and memory-system
+optimizations. Different CPUs might well perceive the same memory
+operations as occurring in different orders.
+</p></li></ol></div><div       class="mediaobject"><a href="8211f3.large.jpg"><img src="8211f3.jpg"></a><div class="caption"><p>
+Figure 3. CPUs can do things out of order.
+</p></div></div><p>
+Popular memory-consistency models include x86's process consistency,
+in which writes from a given CPU are seen in order by all CPUs, and weak
+consistency, which permits arbitrary reorderings limited only by explicit
+memory-barrier instructions. For more information on memory-consistency
+models, see Gharachorloo's exhaustive technical report, listed in
+the on-line Resources.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x1382fa8"></a>
+Summary of Memory Ordering</h2></div></div><p>
+When it comes to how memory ordering works on different CPUs, there is
+good news and bad news. The bad news is each CPU's memory ordering is
+a bit different. The good news is you can count on a few things:
+</p><div class="orderedlist"><ol type="1"><li><p>
+A given CPU always perceives its own memory operations as
+occurring in program order. That is, memory-reordering issues arise
+only when a CPU is observing other CPUs' memory operations.
+</p></li><li><p>
+An operation is reordered with a store only if the operation
+accesses a different location than does the store.
+</p></li><li><p>
+Aligned simple loads and stores are atomic.
+</p></li><li><p>
+Linux-kernel synchronization primitives contain any needed memory
+barriers, which is a good reason to use these primitives.
+</p></li></ol></div><p>
+The most important differences are called out in Table 1. More
+detailed descriptions of specific CPUs' features will be addressed
+in a later installment. Parenthesized CPU names indicate modes that
+are allowed architecturally but rarely used in practice. The cells
+marked with a Y indicate weak memory ordering; the more Ys, the
+more reordering is possible. In general, it is easier to port SMP code
+from a CPU with many Ys to a CPU with fewer Ys, though your mileage
+may vary. However, code that uses standard synchronization
+primitives&mdash;spinlocks, semaphores, RCU&mdash;should not need explicit memory
+barriers, because any required barriers already are present in these
+primitives. Only tricky code that bypasses these synchronization
+primitives needs barriers. It is important to note that most atomic
+operations, for example, atomic_inc() and atomic_add(), do not include
+any memory barriers.
+</p><p>
+In Table 1, the first four columns indicate whether a given CPU allows the four
+possible combinations of loads and stores to be reordered. The next
+two columns indicate whether a given CPU allows loads and stores to be
+reordered with atomic instructions. With only eight CPUs, we have five
+different combinations of load-store reorderings and three of the four
+possible atomic-instruction reorderings.
+</p><div       class="mediaobject"><img src="8211t1.jpg"><div class="caption"><p>
+Table 1. Summary of Memory Ordering
+</p></div></div><p>
+The second-to-last column, dependent reads reordered,
+requires some explanation, which will be undertaken in
+the second installment of this series. The short
+version is Alpha requires memory barriers
+for readers as well as for updaters of linked data
+structures. Yes, this does mean that Alpha in
+effect can fetch the data pointed to before it fetches
+the pointer itself&mdash;strange but true. Please see the
+&ldquo;Ask the Wizard&rdquo; column on the manufacturer's site,
+listed in Resources, if you think that I am making
+this up. The benefit of this extremely weak memory
+model is Alpha can use simpler cache hardware,
+which in turn permitted higher clock frequencies in
+Alpha's heyday.
+</p><p>
+The last column in Table 1 indicates whether a given CPU has a incoherent instruction
+cache and pipeline. Such CPUs require that special instructions be executed
+for self-modifying code. In absence of these instructions, the CPU
+might execute the old rather than the new version of the code. This
+might seem unimportant&mdash;after all, who writes self-modifying code these
+days? The answer is that every JIT out there does. Writers of JIT code
+generators for such CPUs must take special care to flush instruction
+caches and pipelines before attempting to execute any newly generated
+code. These CPUs also require that the exec() and page-fault code flush
+the instruction caches and pipelines before attempting to execute any
+binaries just read into memory, lest the CPU end up executing the prior
+contents of the affected pages.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x1383738"></a>
+How Linux Copes</h2></div></div><p>
+One of Linux's great advantages is it runs on
+a wide variety of different CPUs. Unfortunately,
+as we have seen, these CPUs sport a wide variety
+of memory-consistency models. So what is a portable
+kernel to do?
+</p><p>
+Linux provides a carefully chosen set of memory-barrier primitives,
+as follows:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+smp_mb(): &ldquo;memory barrier&rdquo; that orders both loads and stores. This
+means loads and stores preceding the memory barrier are committed to memory
+before any loads and stores following the memory barrier.
+</p></li><li><p>
+smp_rmb(): &ldquo;read memory barrier&rdquo; that orders only loads.
+</p></li><li><p>
+smp_wmb(): &ldquo;write memory barrier&rdquo; that orders only stores.
+</p></li><li><p>
+smp_read_barrier_depends(): forces subsequent operations that
+depend on prior operations to be ordered. This primitive is a no-op
+on all platforms except Alpha.
+</p></li></ul></div><p>
+The smp_mb(), smp_rmb() and smp_wmb() primitives also force the compiler
+to eschew any optimizations that would have the effect of reordering
+memory optimizations across the barriers. The smp_read_barrier_depends()
+primitive must do the same, but only on Alpha CPUs.
+</p><p>
+These primitives generate code only in SMP kernels; however, each
+also has a UP version&mdash;mb(), rmb(), wmb() and read_barrier_depends(),
+respectively&mdash;that generate a memory barrier even in UP kernels. The smp_
+versions should be used in most cases. However, these latter primitives
+are useful when writing drivers, because memory-mapped I/O accesses must remain
+ordered even in UP kernels. In absence of memory-barrier instructions,
+both CPUs and compilers happily would rearrange these accesses. At
+best, this would make the device act strangely; at worst, it would crash
+your kernel or, in some cases, even damage your hardware.
+</p><p>
+So most kernel programmers need not worry about the memory-barrier
+peculiarities of each and every CPU, as long as they stick to these
+memory-barrier interfaces. If you are working deep in a given CPU's
+architecture-specific code, of course, all bets are off.
+</p><p>
+But it gets better. All of Linux's locking primitives, including spinlocks,
+reader-writer locks, semaphores and read-copy updates (RCUs), include any needed barrier
+primitives. So if you are working with code that uses these primitives,
+you don't even need to worry about Linux's memory-ordering primitives.
+That said, deep knowledge of each CPU's memory-consistency model
+can be helpful when debugging, to say nothing of writing
+architecture-specific code or synchronization primitives.
+</p><p>
+Besides, they say a little knowledge is a dangerous thing. Just
+imagine the damage you could do with a lot of knowledge! For those
+who want to understand more about individual CPUs' memory consistency
+models, the next installment will describe those of the most popular
+and prominent CPUs.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x177c0c0"></a>
+Conclusions</h2></div></div><p>
+As noted earlier, the good news is Linux's memory-ordering
+primitives and synchronization primitives make it unnecessary for most
+Linux kernel hackers to worry about memory barriers. This is especially
+good news given the large number of CPUs and systems that Linux supports
+and the resulting wide variety of memory-consistency models. However,
+there are times when knowing about memory barriers can be helpful,
+and I hope that this article has served as a good introduction to them.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x177c1c8"></a>
+Acknowledgements</h2></div></div><p>
+I owe thanks to many CPU architects for patiently explaining the
+instruction- and memory-reordering features of their CPUs, particularly
+Wayne Cardoza, Ed Silha, Anton Blanchard, Tim Slegel, Juergen Probst,
+Ingo Adlung and Ravi Arimilli. Wayne deserves special thanks for his
+patience in explaining Alpha's reordering of dependent loads, a lesson
+that I resisted learning quite strenuously!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x128a580.0x177c2d0"></a>
+Legal Statement</h2></div></div><p>
+This work represents the view of the author and does not necessarily
+represent the view of IBM. IBM, zSeries and Power PC are trademarks or
+registered trademarks of International Business Machines Corporation
+in the United States, other countries, or both. Linux is a registered
+trademark of Linus Torvalds. i386 is a trademarks of Intel Corporation
+or its subsidiaries in the United States, other countries, or both.
+Other company, product, and service names may be trademarks or service
+marks of such companies. Copyright (c) 2005 by IBM Corporation.
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../136/8331.html" target="_self">/article/8331</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Paul E. McKenney is a Distinguished Engineer with IBM's Linux
+Technology Center. He has worked on NUMA and SMP algorithms and,
+in particular, RCU for longer than he cares to admit. In his
+spare time, he jogs and supports the usual house-wife-and-kids
+habit.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../136/toc136.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

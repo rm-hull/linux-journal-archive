@@ -1,0 +1,773 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel Korner</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Use this bidirectional, versatile method to pass&#10;data between kernel and user space.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x13ab580.0x14a2ab0"></a>Kernel Korner</h1></div><div><h3 class="subtitle"><i>
+Why and How to Use Netlink Socket</i></h3></div><div><div class="author"><h3 class="author">
+Kevin
+ Kaichuan 
+He
+</h3></div><div class="issuemoyr">Issue #130, February 2005</div></div><div><p>
+Use this bidirectional, versatile method to pass
+data between kernel and user space.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a33a0"></a></h2></div></div><p>
+Due to the complexity of developing and maintaining the kernel,
+only the most essential and performance-critical code are placed in
+the kernel. Other things, such as GUI, management and control code,
+typically are programmed as user-space applications. This practice of
+splitting the implementation of certain features between kernel and user
+space is quite common in Linux. Now the question is how can kernel
+code and user-space code communicate with each other?
+</p><p>
+The answer is the various IPC methods that exist between kernel
+and user space, such as system call, ioctl, proc filesystem or
+netlink socket. This article discusses netlink socket and reveals
+its advantages as a network feature-friendly IPC.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a3500"></a>
+Introduction</h2></div></div><p>
+Netlink socket is a special IPC used for transferring information
+between kernel and user-space processes. It provides a full-duplex
+communication link between the two by way of standard socket APIs
+for user-space processes and a special kernel API for kernel
+modules. Netlink socket uses the address family AF_NETLINK,
+as compared to AF_INET used by TCP/IP socket. Each netlink socket
+feature defines its own protocol type in the kernel header file
+include/linux/netlink.h.
+</p><p>
+The following is a subset of features and their protocol types
+currently supported by the netlink socket:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+NETLINK_ROUTE: communication channel between user-space routing
+d&aelig;mons,
+such as BGP, OSPF, RIP and kernel packet forwarding module. User-space
+routing d&aelig;mons update the kernel routing table through this netlink
+protocol type.
+</p></li><li><p>
+NETLINK_FIREWALL: receives packets sent by the IPv4 firewall code.
+</p></li><li><p>
+NETLINK_NFLOG: communication channel for the user-space iptable management
+tool and kernel-space Netfilter module.
+</p></li><li><p>
+NETLINK_ARPD: for managing the arp table from user space.
+</p></li></ul></div><p>
+Why do the above features use netlink instead of system calls, ioctls
+or proc filesystems for communication between user and kernel worlds?
+It is a nontrivial task to add system calls, ioctls or proc
+files for new features; we risk polluting the kernel
+and damaging the stability of the system. Netlink socket is
+simple, though: only a constant, the protocol type, needs to be added to
+netlink.h. Then, the kernel module and application can talk using socket-style APIs immediately.
+</p><p>
+Netlink is asynchronous because, as with any other socket API,
+it provides a socket queue to smooth the burst of messages. The system
+call for sending a netlink message queues the message to the receiver's
+netlink queue and then invokes the receiver's reception handler. The
+receiver, within the reception handler's context, can decide whether
+to process the message immediately or leave the message in the queue
+and process it later in a different context. Unlike netlink, system calls require
+synchronous processing. Therefore, if we use a system call to pass a message
+from user space to the kernel, the kernel scheduling granularity may be
+affected if the time to process that message is long.
+</p><p>
+The code implementing a system call in the kernel is linked statically to
+the kernel in compilation time; thus, it is not appropriate to include
+system call code in a loadable module, which is the case for most device
+drivers. With netlink socket, no compilation time dependency exists
+between the netlink core of Linux kernel and the netlink application living
+in loadable kernel modules.
+</p><p>
+Netlink socket supports multicast, which is another benefit over system
+calls, ioctls and proc. One process can multicast a
+message to a netlink group address, and any number of other processes
+can listen to that group address. This provides a near-perfect
+mechanism for event distribution from kernel to user space.
+</p><p>
+System call and ioctl are simplex IPCs in the sense that a session for
+these IPCs can be initiated only by user-space applications. But, what if a
+kernel module has an urgent message for a user-space application? There
+is no way of doing that directly using these IPCs. Normally, applications
+periodically need to poll the kernel to get the state changes, although
+intensive polling is expensive. Netlink solves this problem gracefully
+by allowing the kernel to initiate sessions too. We call it the duplex
+characteristic of the netlink socket.
+</p><p>
+Finally, netlink socket provides a BSD socket-style API that is well
+understood by the software development community. Therefore, training
+costs are less
+as compared to using the rather cryptic system call APIs and ioctls.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a3b88"></a>
+Relating to the BSD Routing Socket</h2></div></div><p>
+In BSD TCP/IP stack implementation, there is a special socket called
+the routing socket. It has an address family of AF_ROUTE, a protocol family of
+PF_ROUTE and a socket type of SOCK_RAW. The routing socket in BSD is
+used by processes to add or delete routes in the kernel routing table.
+</p><p>
+In Linux, the equivalent function of the routing socket is provided by the
+netlink socket protocol type NETLINK_ROUTE.
+Netlink socket provides a functionality superset of
+BSD's routing socket.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a3ce8"></a>
+Netlink Socket APIs</h2></div></div><p>
+The standard socket APIs&mdash;socket(), sendmsg(), recvmsg() and
+close()&mdash;can be used by user-space applications to access netlink
+socket. Consult
+the man pages for detailed definitions of these APIs. Here, we
+discuss how to choose parameters for these APIs only in the context
+of netlink socket. The APIs should be familiar to anyone who has
+written an ordinary network application using TCP/IP sockets.
+</p><p>
+To create a socket with socket(), enter:
+
+<pre     class="programlisting">
+int socket(int domain, int type, int protocol)
+</pre>
+</p><p>
+The socket domain (address family) is AF_NETLINK, and the type of socket
+is either SOCK_RAW or SOCK_DGRAM, because netlink is a datagram-oriented
+service.
+</p><p>
+The protocol (protocol type) selects for which netlink feature the socket
+is used. The following are some predefined netlink protocol types:
+NETLINK_ROUTE, NETLINK_FIREWALL, NETLINK_ARPD, NETLINK_ROUTE6 and
+NETLINK_IP6_FW. You also can add your own netlink protocol type easily.
+</p><p>
+Up to 32 multicast groups can be defined for each netlink protocol
+type. Each multicast group is represented by a bit mask, 1&lt;&lt;i, where
+0&lt;=i&lt;=31. This is extremely useful when a group of processes and the
+kernel process coordinate to implement the same feature&mdash;sending
+multicast netlink messages can reduce the number of system calls used
+and alleviate applications from the burden of maintaining the multicast
+group membership.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a3fa8"></a>
+bind()</h2></div></div><p>
+As for a TCP/IP socket, the netlink bind() API associates a local
+(source) socket address with the opened socket. The netlink address
+structure is as follows:
+
+<pre     class="programlisting">
+struct sockaddr_nl
+{
+  sa_family_t    nl_family;  /* AF_NETLINK   */
+  unsigned short nl_pad;     /* zero         */
+  __u32          nl_pid;     /* process pid */
+  __u32          nl_groups;  /* mcast groups mask */
+} nladdr;
+</pre>
+
+</p><p>
+When used with bind(), the nl_pid field of the sockaddr_nl can be filled
+with the calling process' own pid. The nl_pid serves here as
+the local address of this netlink socket. The application is responsible
+for picking a unique 32-bit integer to fill in nl_pid:
+
+<pre     class="programlisting">
+NL_PID Formula 1:  nl_pid = getpid();
+</pre>
+</p><p>
+Formula 1 uses the process ID of the application as nl_pid, which is a
+natural choice if, for the given netlink protocol type, only one netlink
+socket is needed for the process.
+</p><p>
+In scenarios where different threads of the same process want to
+have different netlink sockets opened under the same netlink protocol,
+Formula 2 can be used to generate the nl_pid:
+
+<pre     class="programlisting">
+
+NL_PID Formula 2: pthread_self() &lt;&lt; 16 | getpid();
+
+</pre>
+</p><p>
+In this way, different pthreads of the same process each can have their own
+netlink socket for the same netlink protocol type.
+In fact, even within a single pthread it's possible to create multiple
+netlink sockets for the same protocol type. Developers need to
+be more creative, however, in generating a unique nl_pid, and we don't consider
+this to be a normal-use case.
+</p><p>
+If the application wants to receive netlink messages of the protocol
+type that are destined for certain multicast groups, the bitmasks of all
+the interested multicast groups should be ORed together to form the
+nl_groups field of sockaddr_nl. Otherwise, nl_groups should be zeroed
+out so the application receives only the unicast netlink message
+of the protocol type destined for the application.
+After filling in the nladdr, do the bind as follows:
+
+<pre     class="programlisting">
+
+bind(fd, (struct sockaddr*)&amp;nladdr, sizeof(nladdr));
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a43c8"></a>
+Sending a Netlink Message</h2></div></div><p>
+In order to send a netlink message to the kernel or other user-space
+processes, another struct sockaddr_nl nladdr needs to be supplied as
+the destination address, the same as sending a UDP packet with sendmsg().
+If the message is destined for the kernel, both nl_pid and nl_groups should
+be supplied with 0.
+</p><p>
+If the message is a unicast message destined for another process, the
+nl_pid is the other process' pid and nl_groups is 0, assuming nlpid
+Formula 1 is used in the system.
+</p><p>
+If the message is a multicast message destined for one or multiple
+multicast groups, the bitmasks of all the destination multicast groups
+should be ORed together to form the nl_groups field.
+We then can supply the netlink address to the struct msghdr msg
+for the sendmsg() API, as follows:
+
+<pre     class="programlisting">
+
+struct msghdr msg;
+msg.msg_name = (void *)&amp;(nladdr);
+msg.msg_namelen = sizeof(nladdr);
+
+</pre>
+</p><p>
+The netlink socket requires its own message header as well. This is for
+providing a common ground for netlink messages of all protocol types.
+</p><p>
+Because the Linux kernel netlink core assumes the existence of the following
+header in each netlink message, an application must supply this header
+in each netlink message it sends:
+
+<pre     class="programlisting">
+
+struct nlmsghdr
+{
+  __u32 nlmsg_len;   /* Length of message */
+  __u16 nlmsg_type;  /* Message type*/
+  __u16 nlmsg_flags; /* Additional flags */
+  __u32 nlmsg_seq;   /* Sequence number */
+  __u32 nlmsg_pid;   /* Sending process PID */
+};
+
+</pre>
+</p><p>
+nlmsg_len has to be completed with the total length of the netlink
+message, including the header, and is required by netlink core. nlmsg_type can be
+used by applications and is an opaque value to netlink core. nlmsg_flags
+is used to give additional control to a message; it is read and updated
+by netlink core. nlmsg_seq and nlmsg_pid are used by applications to
+track the message, and they are opaque to netlink core as well.
+</p><p>
+A netlink message thus consists of nlmsghdr and the message payload. Once a
+message has been entered, it enters a buffer pointed to by the nlh
+pointer. We also can
+send the message to the struct msghdr msg:
+
+<pre     class="programlisting">
+
+struct iovec iov;
+
+iov.iov_base = (void *)nlh;
+iov.iov_len = nlh-&gt;nlmsg_len;
+
+msg.msg_iov = &amp;iov;
+msg.msg_iovlen = 1;
+
+</pre>
+</p><p>
+After the above steps, a call to sendmsg() kicks out the netlink message:
+
+<pre     class="programlisting">
+
+sendmsg(fd, &amp;msg, 0);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a4898"></a>
+Receiving Netlink Messages</h2></div></div><p>
+A receiving application needs to allocate a buffer large enough to
+hold netlink message headers and message payloads. It then fills the struct
+msghdr msg as shown below and uses the standard recvmsg() to receive the
+netlink message, assuming the buffer is pointed to by nlh:
+
+<pre     class="programlisting">
+
+struct sockaddr_nl nladdr;
+struct msghdr msg;
+struct iovec iov;
+
+iov.iov_base = (void *)nlh;
+iov.iov_len = MAX_NL_MSG_LEN;
+msg.msg_name = (void *)&amp;(nladdr);
+msg.msg_namelen = sizeof(nladdr);
+
+msg.msg_iov = &amp;iov;
+msg.msg_iovlen = 1;
+recvmsg(fd, &amp;msg, 0);
+
+</pre>
+</p><p>
+After the message has been received correctly, the nlh should point to
+the header of the just-received netlink message. nladdr should hold
+the destination address of the received message, which consists of
+the pid and the multicast groups to which the message is sent. And, the
+macro NLMSG_DATA(nlh), defined in netlink.h, returns a pointer to the
+payload of the netlink message.
+A call to close(fd) closes the netlink socket identified by file
+descriptor fd.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x14a4a50"></a>
+Kernel-Space Netlink APIs</h2></div></div><p>
+The kernel-space netlink API is supported by the netlink core in the
+kernel, net/core/af_netlink.c. From the kernel side, the API is
+different from the user-space API.
+The API can be used by kernel modules to access the netlink socket and
+to communicate with user-space applications.
+Unless you leverage the existing netlink socket protocol types, you
+need to add your own protocol type by adding a constant to netlink.h. For
+example, we can add a netlink protocol type for testing purposes by inserting this
+line into netlink.h:
+
+<pre     class="programlisting">
+#define NETLINK_TEST  17
+</pre>
+</p><p>
+Afterward, you can reference the added protocol type anywhere in
+the Linux kernel.
+</p><p>
+In user space, we call socket() to create a netlink socket,
+but in kernel space, we call the following API:
+
+<pre     class="programlisting">
+
+struct sock *
+netlink_kernel_create(int unit,
+           void (*input)(struct sock *sk, int len));
+
+</pre>
+</p><p>
+The parameter unit is, in fact, the netlink protocol type, such as
+NETLINK_TEST. The function pointer, input, is a callback function
+invoked when a message arrives at this netlink socket.
+</p><p>
+After the kernel has created a netlink socket for protocol NETLINK_TEST,
+whenever user space sends a netlink message of the NETLINK_TEST protocol
+type to the kernel, the callback function, input(), which is registered by
+netlink_kernel_create(), is invoked.
+The following is an example implementation of the callback function
+input:
+
+<pre     class="programlisting">
+
+void input (struct sock *sk, int len)
+{
+ struct sk_buff *skb;
+ struct nlmsghdr *nlh = NULL;
+ u8 *payload = NULL;
+
+ while ((skb = skb_dequeue(&amp;sk-&gt;receive_queue))
+       != NULL) {
+ /* process netlink message pointed by skb-&gt;data */
+ nlh = (struct nlmsghdr *)skb-&gt;data;
+ payload = NLMSG_DATA(nlh);
+ /* process netlink message with header pointed by
+  * nlh	and payload pointed by payload
+  */
+ }
+}
+
+</pre>
+</p><p>
+This input() function is called in the context of the sendmsg() system call
+invoked by the sending process. It is okay to process the netlink message
+inside input() if it's fast. When the processing of netlink
+message takes a long time, however, we want to keep it out of input() to avoid
+blocking other system calls from entering the kernel. Instead, we can
+use a dedicated kernel thread to perform the following steps
+indefinitely. Use <tt  >skb = skb_recv_datagram(nl_sk)</tt>
+where <tt  >nl_sk</tt> is the netlink socket returned by
+netlink_kernel_create().
+Then, process the netlink message pointed to by skb-&gt;data.
+</p><p>
+This kernel thread sleeps when there is no netlink message in nl_sk.
+Thus, inside the callback function input(), we need to wake up only the
+sleeping kernel thread, like this:
+
+<pre     class="programlisting">
+
+void input (struct sock *sk, int len)
+{
+  wake_up_interruptible(sk-&gt;sleep);
+}
+
+</pre>
+</p><p>
+This is a more scalable communication model between user space and
+kernel. It also improves the granularity of context switches.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x149b860"></a>
+Sending Netlink Messages from the Kernel</h2></div></div><p>
+Just as in user space, the source netlink address and destination
+netlink address need to be set when sending a netlink message. Assuming
+the socket buffer holding the netlink message to be sent is struct
+sk_buff *skb, the local address can be set with:
+
+<pre     class="programlisting">
+
+NETLINK_CB(skb).groups = local_groups;
+NETLINK_CB(skb).pid = 0;   /* from kernel */
+
+</pre>
+</p><p>
+The destination address can be set like this:
+
+<pre     class="programlisting">
+
+NETLINK_CB(skb).dst_groups = dst_groups;
+NETLINK_CB(skb).dst_pid = dst_pid;
+
+</pre>
+</p><p>
+Such information is not stored in skb-&gt;data. Rather, it is stored in the
+netlink control block of the socket buffer, skb.
+</p><p>
+To send a unicast message, use:
+
+<pre     class="programlisting">
+
+int
+netlink_unicast(struct sock *ssk, struct sk_buff
+                *skb, u32 pid, int nonblock);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x149bb78"></a></h2></div></div><p>
+where <tt  >ssk</tt> is the netlink socket returned by netlink_kernel_create(),
+<tt  >skb-&gt;data</tt> points to the netlink message to be sent and
+<tt  >pid</tt> is the receiving application's pid, assuming NLPID Formula 1 is used.
+<tt  >nonblock</tt> indicates whether the API should block when the receiving buffer
+is unavailable or immediately return a failure.
+</p><p>
+You also can send a multicast message. The following API
+delivers a netlink message to both the process specified by pid and
+the multicast groups specified by group:
+
+<pre     class="programlisting">
+
+void
+netlink_broadcast(struct sock *ssk, struct sk_buff
+         *skb, u32 pid, u32 group, int allocation);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x149be90"></a></h2></div></div><p>
+<tt  >group</tt> is the ORed bitmasks of all the receiving multicast groups.
+<tt  >allocation</tt> is the kernel memory allocation type. Typically, GFP_ATOMIC
+is used if from interrupt context; GFP_KERNEL if otherwise. This is due to the
+fact that the API may need to allocate one or many socket buffers to
+clone the multicast message.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x149c048"></a>
+Closing a Netlink Socket from the Kernel</h2></div></div><p>
+Given the struct sock *nl_sk returned by netlink_kernel_create(), we
+can call the following kernel API to close the netlink socket in the kernel:
+
+<pre     class="programlisting">
+
+sock_release(nl_sk-&gt;socket);
+
+</pre>
+</p><p>
+So far, we have shown only the bare minimum code framework to illustrate the
+concept of netlink programming. We now will use our NETLINK_TEST netlink
+protocol type and assume it already has been added to the kernel header
+file.
+The kernel module code listed here contains only the netlink-relevant part, so it should be inserted into a complete kernel
+module skeleton, which you can find from many other reference sources.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x149c200"></a>
+Unicast Communication between Kernel and
+Application</h2></div></div><p>
+In this example, a user-space process sends a netlink message to the
+kernel module, and the kernel module echoes the message back to the
+sending process. Here is the user-space code:
+
+<pre     class="programlisting">
+
+#include &lt;sys/socket.h&gt;
+#include &lt;linux/netlink.h&gt;
+
+#define MAX_PAYLOAD 1024  /* maximum payload size*/
+struct sockaddr_nl src_addr, dest_addr;
+struct nlmsghdr *nlh = NULL;
+struct iovec iov;
+int sock_fd;
+
+void main() {
+ sock_fd = socket(PF_NETLINK, SOCK_RAW,NETLINK_TEST);
+
+ memset(&amp;src_addr, 0, sizeof(src_addr));
+ src__addr.nl_family = AF_NETLINK;
+ src_addr.nl_pid = getpid();  /* self pid */
+ src_addr.nl_groups = 0;  /* not in mcast groups */
+ bind(sock_fd, (struct sockaddr*)&amp;src_addr,
+      sizeof(src_addr));
+
+ memset(&amp;dest_addr, 0, sizeof(dest_addr));
+ dest_addr.nl_family = AF_NETLINK;
+ dest_addr.nl_pid = 0;   /* For Linux Kernel */
+ dest_addr.nl_groups = 0; /* unicast */
+
+ nlh=(struct nlmsghdr *)malloc(
+		         NLMSG_SPACE(MAX_PAYLOAD));
+ /* Fill the netlink message header */
+ nlh-&gt;nlmsg_len = NLMSG_SPACE(MAX_PAYLOAD);
+ nlh-&gt;nlmsg_pid = getpid();  /* self pid */
+ nlh-&gt;nlmsg_flags = 0;
+ /* Fill in the netlink message payload */
+ strcpy(NLMSG_DATA(nlh), "Hello you!");
+
+ iov.iov_base = (void *)nlh;
+ iov.iov_len = nlh-&gt;nlmsg_len;
+ msg.msg_name = (void *)&amp;dest_addr;
+ msg.msg_namelen = sizeof(dest_addr);
+ msg.msg_iov = &amp;iov;
+ msg.msg_iovlen = 1;
+
+ sendmsg(fd, &amp;msg, 0);
+
+ /* Read message from kernel */
+ memset(nlh, 0, NLMSG_SPACE(MAX_PAYLOAD));
+ recvmsg(fd, &amp;msg, 0);
+ printf(" Received message payload: %s\n",
+	NLMSG_DATA(nlh));
+
+ /* Close Netlink Socket */
+ close(sock_fd);
+}
+
+</pre>
+</p><p>
+And, here is the kernel code:
+
+<pre     class="programlisting">
+
+struct sock *nl_sk = NULL;
+
+void nl_data_ready (struct sock *sk, int len)
+{
+  wake_up_interruptible(sk-&gt;sleep);
+}
+
+void netlink_test() {
+ struct sk_buff *skb = NULL;
+ struct nlmsghdr *nlh = NULL;
+ int err;
+ u32 pid;
+
+ nl_sk = netlink_kernel_create(NETLINK_TEST,
+                                   nl_data_ready);
+ /* wait for message coming down from user-space */
+ skb = skb_recv_datagram(nl_sk, 0, 0, &amp;err);
+
+ nlh = (struct nlmsghdr *)skb-&gt;data;
+ printk("%s: received netlink message payload:%s\n",
+        __FUNCTION__, NLMSG_DATA(nlh));
+
+ pid = nlh-&gt;nlmsg_pid; /*pid of sending process */
+ NETLINK_CB(skb).groups = 0; /* not in mcast group */
+ NETLINK_CB(skb).pid = 0;      /* from kernel */
+ NETLINK_CB(skb).dst_pid = pid;
+ NETLINK_CB(skb).dst_groups = 0;  /* unicast */
+ netlink_unicast(nl_sk, skb, pid, MSG_DONTWAIT);
+ sock_release(nl_sk-&gt;socket);
+}
+
+</pre>
+</p><p>
+After loading the kernel module that executes the kernel code above,
+when we run the user-space executable, we should see the following
+dumped from the user-space program:
+
+<pre     class="programlisting">
+Received message payload: Hello you!
+</pre>
+</p><p>
+And, the following message should appear in the output of dmesg:
+
+<pre     class="programlisting">
+netlink_test: received netlink message payload:
+Hello you!
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x149c570"></a>
+Multicast Communication between Kernel and Applications</h2></div></div><p>
+In this example, two user-space applications are listening to
+the same netlink multicast group. The kernel module pops up a
+message through netlink socket to the multicast group, and all the
+applications receive it. Here is the user-space code:
+
+
+<pre     class="programlisting">
+
+#include &lt;sys/socket.h&gt;
+#include &lt;linux/netlink.h&gt;
+
+#define MAX_PAYLOAD 1024  /* maximum payload size*/
+struct sockaddr_nl src_addr, dest_addr;
+struct nlmsghdr *nlh = NULL;
+struct iovec iov;
+int sock_fd;
+
+void main() {
+ sock_fd=socket(PF_NETLINK, SOCK_RAW, NETLINK_TEST);
+
+ memset(&amp;src_addr, 0, sizeof(local_addr));
+ src_addr.nl_family = AF_NETLINK;
+ src_addr.nl_pid = getpid();  /* self pid */
+ /* interested in group 1&lt;&lt;0 */
+ src_addr.nl_groups = 1;
+ bind(sock_fd, (struct sockaddr*)&amp;src_addr,
+      sizeof(src_addr));
+
+ memset(&amp;dest_addr, 0, sizeof(dest_addr));
+
+ nlh = (struct nlmsghdr *)malloc(
+                          NLMSG_SPACE(MAX_PAYLOAD));
+ memset(nlh, 0, NLMSG_SPACE(MAX_PAYLOAD));
+
+ iov.iov_base = (void *)nlh;
+ iov.iov_len = NLMSG_SPACE(MAX_PAYLOAD);
+ msg.msg_name = (void *)&amp;dest_addr;
+ msg.msg_namelen = sizeof(dest_addr);
+ msg.msg_iov = &amp;iov;
+ msg.msg_iovlen = 1;
+
+ printf("Waiting for message from kernel\n");
+
+ /* Read message from kernel */
+ recvmsg(fd, &amp;msg, 0);
+ printf(" Received message payload: %s\n",
+        NLMSG_DATA(nlh));
+ close(sock_fd);
+}
+
+</pre>
+</p><p>
+And, here is the kernel code:
+
+<pre     class="programlisting">
+
+#define MAX_PAYLOAD 1024
+struct sock *nl_sk = NULL;
+
+void netlink_test() {
+ sturct sk_buff *skb = NULL;
+ struct nlmsghdr *nlh;
+ int err;
+
+ nl_sk = netlink_kernel_create(NETLINK_TEST,
+                               nl_data_ready);
+ skb=alloc_skb(NLMSG_SPACE(MAX_PAYLOAD),GFP_KERNEL);
+ nlh = (struct nlmsghdr *)skb-&gt;data;
+ nlh-&gt;nlmsg_len = NLMSG_SPACE(MAX_PAYLOAD);
+ nlh-&gt;nlmsg_pid = 0;  /* from kernel */
+ nlh-&gt;nlmsg_flags = 0;
+ strcpy(NLMSG_DATA(nlh), "Greeting from kernel!");
+ /* sender is in group 1&lt;&lt;0 */
+ NETLINK_CB(skb).groups = 1;
+ NETLINK_CB(skb).pid = 0;  /* from kernel */
+ NETLINK_CB(skb).dst_pid = 0;  /* multicast */
+ /* to mcast group 1&lt;&lt;0 */
+ NETLINK_CB(skb).dst_groups = 1;
+
+ /*multicast the message to all listening processes*/
+ netlink_broadcast(nl_sk, skb, 0, 1, GFP_KERNEL);
+ sock_release(nl_sk-&gt;socket);
+}
+
+</pre>
+</p><p>
+Assuming the user-space code is compiled into the executable
+nl_recv, we can run two instances of nl_recv:
+
+<pre     class="programlisting">
+
+./nl_recv &amp;
+Waiting for message from kernel
+./nl_recv &amp;
+Waiting for message from kernel
+
+</pre>
+</p><p>
+Then, after we load the kernel module that executes the kernel-space code,
+both instances of nl_recv should receive the following message:
+
+<pre     class="programlisting">
+Received message payload: Greeting from kernel!
+Received message payload: Greeting from kernel!
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x13ab580.0x149c8e0"></a>Conclusion</h2></div></div><p>
+Netlink socket is a flexible interface for communication between
+user-space applications and kernel modules. It provides an easy-to-use
+socket API to both applications and the kernel. It provides advanced
+communication features, such as full-duplex, buffered I/O, multicast and
+asynchronous communication, which are absent in other kernel/user-space
+IPCs.
+</p></div></div>
+<div class="authorblurb"><p>
+Kevin Kaichuan He (<a href="mailto:hek_u5@yahoo.com">hek_u5@yahoo.com</a>) is a principal software engineer
+at Solustek Corp. He currently is working on embedded system,
+device driver and networking protocols projects. His
+previous work experience includes senior software engineer
+at Cisco Systems and research assistant at CS, Purdue University.
+In his spare time, he enjoys digital photography, PS2 games and literature.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../130/toc130.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

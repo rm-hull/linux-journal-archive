@@ -1,0 +1,440 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Opendedup: Open-Source Deduplication Put to the Test
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Take a look at a new use-case study for open-source deduplication.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x27c8580.0x28bfac0"></a>
+Opendedup: Open-Source Deduplication Put to the Test
+</h1></div><div><div class="author"><h3 class="author">
+Jeramiah
+ 
+Bowling
+</h3></div><div class="issuemoyr">Issue #228, April 2013</div></div><div><p>
+Take a look at a new use-case study for open-source deduplication.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28c0250"></a></h2></div></div><p>
+Data growth is a fact of life. In the digital age, we consume storage
+space at an exponential rate. From business data to consumer content, the
+demand for storage has never been higher. During the last two decades, great
+strides have been made to increase disk capacity and performance. At the
+same time, there has been research to develop more efficient ways to store
+data on disk. The culmination of this research is deduplication or dedup.
+</p><p>
+Deduplication is simply the process of eliminating redundant data on
+disk. It can be hardware- or software-based and performed at either the
+file or block levels of a storage system. It entails identifying common
+data and writing it only once to disk. Then, if identical data needs
+to be written to the disk in the future, instead of writing it twice,
+it will use a pointer to the data already on the disk.
+</p><p>
+Until recently, the dedup field was tightly guarded by a few big-name
+vendors. Entry dedup systems start at five figures and quickly climb
+from there. It was cost-prohibitive for most of the SMB market. Now
+there is an open-source challenger in Opendedup&mdash;a project that
+develops the (user) Space Deduplication File System (SDFS). SDFS
+provides many of the features of commercial dedup products at none of
+the cost. 
+</p><p>
+In this article, I walk through how to build a server with
+a deduped SDFS volume and then review the results of several real-world
+test scenarios designed to gauge how well Opendedup actually dedupes.
+These scenarios were not intended as performance tests (speed, reads,
+writes and so forth). Plenty of performance statistics are hosted at
+the project's site. Instead, these tests were aimed at achieving the
+highest rate of deduplication with the sample data. Bear in
+mind when reading this article that &ldquo;your mileage may vary&rdquo;. If you are
+considering piloting, or already have decided on implementing Opendedup,
+you may have different successes or failures.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28c04b8"></a>
+Dedup 101</h2></div></div><p>
+Before proceeding, let me discuss how dedup works. Let's say you have
+two letters saved in electronic form. Both letters have the same header
+(address, date and so on) and closing, but they have different greetings and
+bodies. On a normal disk, both letters would occupy their full size on the
+disk. On a deduped volume, the first letter is written in its entirety, and
+the second contains just the greeting and body with pointers to the header
+and closing in the first letter. Both appear with the correct header,
+greeting, body and closing when opened. If you observe the file sizes
+of both files, you'll see that the second file's size is smaller than
+the original file's size. If you were to create additional letters with
+the same header and closing, those new files occupy even less space. As
+you add more duplicate/common data to the disk, you save more space (Table
+1).
+</p><div class="table"><a name="N0x27c8580.0x28c05c0"></a><p class="title"><b>Table 1. Space-Saving Example Comparison</b></p><table     summary="Table 1. Space-Saving Example Comparison11256t1.qrk" border="1"><colgroup><col><col><col><col></colgroup><thead><tr><th>Size</th><th>Deduped</th><th>Size/Normal Size</th><th>Savings</th></tr></thead><tbody><tr><td>Letter A</td><td>20K</td><td>20K/20K</td><td>0K</td></tr><tr><td>Letter B</td><td>16K</td><td>36K/40K</td><td>4K</td></tr><tr><td>Letter C</td><td>16K</td><td>52K/60K</td><td>8K</td></tr><tr><td>Letter D</td><td>16K</td><td>68K/80K</td><td>12K</td></tr></tbody></table></div><p>
+At first glance, this may not seem like much of a saving, but when dealing
+with large data sets, you can store huge amounts of data on a minuscule
+amount of space. It is quite possible to achieve a 20x dedup rate at
+which you can store 10TB of data on 500GB of disk space.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28c1118"></a>
+Server Build</h2></div></div><p>
+All of the server builds for this article were built using Ubuntu
+12.04x64. At least 2GB of memory was used on each build. This is the
+minimum amount required, but to get the best performance out of your
+server, you should have an ample supply of memory as the dedup process
+is memory-intensive. AMD and Intel multicore platforms were used in
+the process, and SDFS ran flawlessly on both. I also mixed SATA and SAS
+drive types in my builds. As expected, SAS was snappier in response time,
+but deduplication rates were nearly identical on both. I don't believe
+there is any improved deduplication in using SAS over SATA. In the end,
+it will come down to your intended use of dedup. If you are looking for
+low-cost backups, SATA is the way to go. If you want to run live VMs off
+your deduped volumes, SAS will give you the performance you'll need.
+</p><p>
+Once your hardware is ready, install Ubuntu server 12.04x64 from
+CD, accepting all the defaults and making any regional changes
+necessary. Accept the default layout for the disk. Let the setup
+program auto-format your partitions (ext4), as this has no bearing on
+SDFS. SDFS runs as a module under FUSE (File System in User Space)
+in a separate space from the kernel, so the underlying filesystem is
+almost irrelevant.
+</p><p>
+After the base install is complete, run the following command to install
+the necessary packages using apt-get (make sure use to use sudo to run
+all of the following commands):
+
+<pre     class="programlisting">
+apt-get install openjdk-7-jre attr nfs-kernel-server 
+ &#8618;samba libselinux-dev libsepol1
+</pre>
+</p><p>
+Set Java to the correct version using the <tt  >update-alternatives
+- -config java</tt> command and select version 1.7. Then edit the
+/etc/security/limits.conf file to include the following lines at the
+bottom of the file:
+
+<pre     class="programlisting">
+soft nofile 65535
+hard nofile 65535
+</pre>
+</p><p>
+Next download and extract SDFS and FUSE:
+
+
+<pre     class="programlisting">
+wget http://Opendedup.googlecode.com/files/sdfs-1.2.1_amd.deb
+wget http://Opendedup.googlecode.com/files/opendedup-fuse-2.9.tar.gz
+tar -xzf opendedup-fuse-2.9.tar.gz
+</pre>
+</p><p>
+Install the FUSE and the Opendedup packages:
+
+<pre     class="programlisting">
+cd opendedup-fuse-2.9
+sudo dpkg -i fuse_2.9.0-opendedup_amd64.deb
+sudo dpkg -i fuse-utils_2.9.0-opendedup_all.deb
+sudo dpkg -i libfuse2_2.9.0-opendedup_amd64.deb
+sudo dpkg -i libfuse-dev_2.9.0-opendedup_amd64.deb
+cd ..
+sudo dpkg -i sdfs-1.2.1_amd64.deb
+</pre>
+</p><p>
+If you run into any dependency issues, run <tt  >apt-get f
+install</tt> to resolve
+them. With everything installed, create an SDFS volume and mount it to
+a directory off root named /shared:
+
+<pre     class="programlisting">
+sudo mkfs.sdfs  - -volume-name=deduped - -volume-capacity=20GB 
+mdkir /shared
+mount.sdfs -m /shared -v deduped
+</pre>
+</p><p>
+You now have local access to this folder, but you'll want to share it
+using NFS. In order to do so, create another directory to bind and share
+your local mount from:
+
+<pre     class="programlisting">
+mkdir -p /export/shared
+mount - -bind /shared /export/shared
+</pre>
+</p><p>
+I skip configuring idmapd.conf and /etc/exports here, as there is plenty of
+documentation on NFS to cover them. Once NFS is configured, restart the
+service using the <tt  >/etc/init.d/nfs-kernel-server restart</tt>
+command. Note: if you are mounting your SDFS volumes manually, you
+must use the <tt  >sdfs.mount</tt> command before running the <tt  >mount -
+-bind</tt> command,
+and then you must restart NFS for your clients to be able to use it.
+</p><p>
+If all went well, the clients now should be able to mount the deduped
+NFS share.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28c1958"></a>
+Calculating Metrics</h2></div></div><p>
+With the server built, let's discuss how to measure dedup
+performance. SDFS possesses a built-in tool, sdfscli, that provides
+dedup-related information. However, I do not like the output it
+generates as I think it can be confusing, and I found it inaccurate at
+times. Instead, I chose to produce my own output using metrics that are
+commonly found on commercial dedup devices: % savings and dedup rate.
+% savings represents the percentage of space reduced by deduplication. For
+example, if you have a file that should take up 100K, but it occupies
+only 60K deduped, you have a 40% space savings. Dedup rate is a multiplier
+that generalizes how well your device/volume is deduplicating. With a
+2x dedup rate, you can write two files for the disk space of one.
+</p><p>
+The quickest way to generate the data required for these metrics
+is simply to use the <tt  >du</tt> and <tt  >df</tt>
+commands. <tt  >du</tt> reports the deduped size of the volume,
+while <tt  >df</tt> reports the full size listed by the system
+(that is, if the volume was not deduped). This value is taken from the Used
+column of the <tt  >df</tt> output. With these numbers, you can
+use the following formulas to determine the % savings and dedup rates
+for your SDFS volume:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+% savings = 1 &mdash; (Size of Volume reported by du/Size of Volume reported by df) x 100
+</p></li><li><p>
+Dedup rate = Size of Volume reported by df/Size of Volume reported by du
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28b8710"></a>
+Scenario 1: File Storage</h2></div></div><p>
+For the first scenario, I tested how well SDFS dedupes when used as a
+file server. I created two separate data folders for the test. The first
+contained approximately 730MB of dissimilar data. The second folder
+contained 1.4GB of largely homogeneous data. Each folder contained
+a mix of various Microsoft Office documents, images and Adobe .pdf
+files. I left each folder alone for a while and then came back
+and recorded the size of each folder using the <tt  >du</tt> and
+<tt  >df</tt> commands. The files were deduped as they were copied
+to the SDFS volume. This is the default mode of deduplication also known
+as inline. Inline dedup is memory- and processor-intensive, so bear that
+in mind with large copies. There is an alternative dedup mode called
+&ldquo;batch&rdquo; mode that runs dedup as a scheduled process. The dedup results
+for each folder are listed below.
+</p><p>
+Volume/Folder 1 &mdash; 730MB:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+9.22%
+</p></li><li><p>
+1.10x dedup rate
+</p></li></ul></div><p>
+Volume/Folder 2 &mdash; 1.4GB:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+5.71%
+</p></li><li><p>
+1.06x dedup rate
+</p></li></ul></div><p>
+The results were not surprising as SDFS is not ideal for, nor is it
+advertised as, a traditional file storage platform. Additionally, there
+were a large number of .pdf files in the each folder (25%&ndash;30%). Adobe .pdf
+files are natively compressed, which means they are difficult to dedup.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28b8d98"></a>
+Scenario 2: Backups &mdash; 5 days &mdash; tar/rsync/Backup Exec</h2></div></div><p>
+The next scenario involved using a deduped volume as storage for
+backups. Deduplication theoretically should be well suited for backups,
+because backup sets usually contain multiple versions of the same
+files. The more sets (days, months and so on) you maintain, the better the
+compression will be. In this scenario, I tested three backup programs: tar,
+rsync and Symantec's Backup Exec 2010. For each test, I used the same 730MB
+folder from the first scenario. I backed up the same folder five times
+to a deduped volume to simulate a week's worth of backups. In between
+each backup, I increased the size of the folder between 20&ndash;40MB. All of
+the data was backed up in full. No incremental or differential methods
+were used. I did this for two reasons: one, to minimize the amount of
+time needed to generate the results; and two, I felt it added unnecessary
+variables that could throw off the results with such a small data set.
+</p><p>
+In the first test with tar, I created five separate tar archives&mdash;one
+for each day. In running the backups, I intentionally avoided gzipping
+the .tar files to improve the dedup rate. After finishing the test,
+I witnessed a 55% savings/2.26x dedup rate on the volume.
+</p><p>
+For the next test with rsync, I ran the backups to a different destination
+folder with each job. This gave me the ability to restore the directory
+in its entirety from any day. Again, I did not enable compression on
+the job. After all jobs were completed, I noted results of 74%/3.96x.
+</p><p>
+With Backup Exec I shared my dedup volume with SAMBA and configured it
+as a backup-to-disk folder. Backup Exec utilizes .bkf files when backing
+up to disk, which are, for all intents and purposes, treated like tape
+media. Using a .bkf size of 200MB without compression on the first five jobs,
+I achieved 53%/2.14 x. I followed this up with another five jobs using
+1GB .bkfs and achieved an identical rate of 53.3%/2.14x. I tried two
+different .bkf sizes to see if there was any effect on the dedup rate,
+but there was not.
+</p><p>
+Of the backup options, rsync performed the best. This was likely due
+to the fact that rsync created five copies of the same data in its native
+format. In this capacity, you are using the deduped volume for file
+storage in its simplest form. With one copy of the original folder
+and four subsequent copies, you almost could predict a 4x dedup rate.
+This example reinforces a truism with deduplication: more identical data
+= more dedup. After my testing, I did find some discussions revolving
+around certain backup programs producing highly unique backup files
+(.bkfs, .tar) that can hinder dedup performance. This may explain the
+low dedup numbers for tar and Backup Exec. However, there did not appear
+to be any workarounds.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28b9058"></a>
+Scenario 3: VMDK Files</h2></div></div><p>
+For the last scenario, I tested deduplication on VMware by hosting guest
+virtual hard drives (.vmdk files) on SDFS volumes with ESXi 4.1 and 5.1
+hosts. Each VM was built and/or cloned on an SDFS volume exported with
+NFS. Following the developer's recommendation, I created new volumes
+and changed their default chunk size from 128K to 4K. Chunk size affects
+how data is organized and compared by the dedup engine. The default of
+128K is sufficient for most files, but 4K is the recommended for virtual
+machines. Chunk size is set at the time of volume creation, so I created
+volumes using the following command:
+
+
+<pre     class="programlisting">
+mkfs.sdfs --volume-name=4ksdfsvmdk --volume-capacity=100GB 
+ &#8618;--io-chunk-size=4 --io-max-file-write-buffers=32
+</pre>
+</p><p>
+It is also recommended to change its deduplication type from inline (&ldquo;on
+the fly&rdquo;) to batch prior to powering on and installing the guest OS. This
+reduces the initial performance hit you take on your dedup server by
+disabling dedup during the install&mdash;a time when the host is writing
+a large amount of data to disk. To set the .vmdk files to batch, I ran
+the following command after each base VM was created through vSPhere,
+but before it was powered on:
+
+<pre     class="programlisting">
+setfattr -n user.cmd.dedupAll -v 556:false 
+ &#8618;/export/datastore/folderondatastore/vmhdname.vmdk
+</pre>
+</p><p>
+After each VM was powered on and the OS install was complete, I powered the VM back down and changed its .vmdk files back to inline:
+
+<pre     class="programlisting">
+setfattr -n user.cmd.dedupAll -v 556:true 
+ &#8618;/export/datastore/folderondatastore/vmhdname.vmdk
+</pre>
+</p><p>
+For the tests I created a base Windows XP VM and a base Ubuntu desktop
+VM and made four clones of each. After each clone was created, I powered
+it on and made a minor change, like installing an update or creating a
+document so that its disk would not be identical to the original VM's
+disk. While creating the clones, I discovered they were provisioned as
+thin disks that commit only the amount of storage used by the OS to disk,
+not the full amount allocated to them. This turned out to be a function
+of NFS and VMware that could not be changed.
+</p><p>
+On the ESXi 4.1 server, the dedup rates for the XP clones were 95%/23x
+and 92%/13x for the Ubuntu clones, which were very impressive. However,
+when it came to the ESXi 5.1 server, the results were very different.
+For some reason, every time I cloned a workstation from the SDFS/NFS
+volume, the ESXi host created linked clones. Linked clones are a new
+space-saving feature of 5.1 where cloned disks contain only deltas to
+an original reference/base disk (that is, your first non-cloned VM used to
+create your clones). This threw off any dedup stats I tried to generate
+using <tt  >du</tt> and <tt  >df</tt>, and as a result, I could not generate rates for the 5.1
+guests. I tried to work around the issue, but was unable to find a way
+to overcome it. If I had more time, I would have liked to see if KVM or
+Xen would treat the SDFS/NFS volumes the same way, as there is definitely
+overlap between SDFS and the linked clones feature of 5.1.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28b9528"></a>
+Replication</h2></div></div><p>
+I also tested Opendedup's built-in replication abilities. Replication in
+Opendedup is based on a master-slave relationship set at volume creation
+time. You create the master volume first, then the slave. After the
+slave volume is created, you set your network-specific information in the
+replication.props file, and then you can replicate on-demand or on a schedule
+using the sdfsreplicate service. I was very impressed with how easy the
+process was to set up and configure. The actual process takes deduped
+blocks from the master, tars them and then replicates them on port 6442 to
+the slave where they are decompressed. After the initial replication,
+only deltas are sent over the wire. This design makes
+replication ultra-efficient and a great candidate for off-site data
+transport.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28b9688"></a>
+Conclusions</h2></div></div><p>
+After looking at the results of all of my tests, SDFS has its ups and
+downs. It has a lot of promise, but you will see better results if you
+target your deployment. If you use rsync or another backup method that
+backs up your data up in its original format, SDFS works very well. It
+also performed admirably as a virtual storage platform (notwithstanding
+the linked clone issue), which is what SDFS was originally intended for. If
+you factor the built-in replication abilities into the equation, SDFS ends
+up having real utility. On the downside, the project is still
+fairly young. Although there have been steady improvements to the project,
+I often found the documentation dated and the knowledge base limited. I
+have confidence that as more people use the product and provide feedback,
+this will improve. If you steer your Opendedup deployment to what it
+does well and don't mind getting under the hood, you should be fine. Just
+don't expect a bulletproof solution out of the gate.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x27c8580.0x28b9790"></a></h2></div></div><div class="sidebar"><p class="title"><b>Resources</b></p><p>
+Main Opendedup Site: <a href="http://www.opendedup.org" target="_self">www.opendedup.org</a>
+</p><p>
+Opendedup Google Code Site: <a href="http://code.google.com/p/opendedup" target="_self">code.google.com/p/opendedup</a>
+</p><p>
+Opendedup Google Group: <a href="http://groups.google.com/group/dedupfilesystem-sdfs-user-discuss" target="_self">groups.google.com/group/dedupfilesystem-sdfs-user-discuss</a>
+</p><p>
+tar: <a href="http://www.gnu.org/software/tar" target="_self">www.gnu.org/software/tar</a>
+</p><p>
+rsync: <a href="http://www.samba.org/ftp/rsync/rsync.html" target="_self">www.samba.org/ftp/rsync/rsync.html</a>
+</p><p>
+Backup Exec: <a href="http://www.symantec.com/business/theme.jsp?themeid=backup-exec-2010" target="_self">www.symantec.com/business/theme.jsp?themeid=backup-exec-2010</a>
+</p><p>
+VMware: <a href="http://www.vmware.com" target="_self">www.vmware.com</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Jeramiah Bowling has been a systems administrator and network engineer
+for more than 12 years. He works for a regional accounting and auditing firm
+in Hunt Valley, Maryland, and holds numerous industry certifications
+including the CISSP. Your comments are welcome at
+<a href="mailto:jb50c@yahoo.com">jb50c@yahoo.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../228/toc228.html">Issue Table of Contents</a>
+    <a class="link3" href="../228/11256.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

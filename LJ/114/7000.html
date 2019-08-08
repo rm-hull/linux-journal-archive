@@ -1,0 +1,351 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Revisiting Old APIs</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;&#10;Some of the kernel APIs we covered in their 2.5&#10;form have changed a little before being nailed&#10;down for 2.6. Here's the updated information on&#10;the 2.6 versions.&#10;&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1eb3580.0x1faaab0"></a>Revisiting Old APIs</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #114, October 2003</div></div><div><p>
+
+Some of the kernel APIs we covered in their 2.5
+form have changed a little before being nailed
+down for 2.6. Here's the updated information on
+the 2.6 versions.
+
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1eb3580.0x1fab1e8"></a></h2></div></div><p>
+It has been over a year since this column started, and due to
+the rapid rate of Linux kernel development, much of what was
+written back then is now wrong. This month, we
+cover the changes in the different kernel APIs that have been
+discussed previously.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1eb3580.0x1fab2f0"></a>tty Changes</h2></div></div><p>
+The tty layer had been one of the most stable kernel APIs
+around, and it showed. The lack of proper reference counting,
+the locking shoved in where it looked needed and the
+strange way tty devices were allocated are all due to its age.
+Thankfully, Al Viro recently cleaned up a lot of the old cruft in the
+tty layer in the 2.5 kernel series. Because of this, a
+number of things have changed for anyone wanting to write a new
+tty driver.
+</p><p>
+In the August and October 2002 issues of <i  >LJ</i>
+[available at <a href="../100/5896.html" target="_self">/article/5896</a>
+and <a href="../102/6226.html" target="_self">/article/6226</a>], we discussed the tty layer and how
+to fill up the struct tty_driver structure
+with all the necessary function callbacks. Since then, a new structure,
+struct tty_operations, has been created to
+hold all of the function callbacks. The
+struct tty_driver still contains the older
+function pointers, so a new function has been created to copy
+these pointers over, tty_set_operations.
+Hopefully, this duplication will be eliminated soon.
+</p><p>
+A number of variables have been removed from the
+struct tty_driver. The
+table, termios, termios_locked and refcount
+fields are gone. The tty layer now
+handles all of the proper locking and reference counting, without
+forcing the individual tty drivers to allocate the space for
+these locks.
+</p><p>
+The magic and num variables no longer need to be set explicitly
+by the tty driver. These variables now are set in a new
+function, alloc_tty_driver, that must be called by all tty drivers to allocate the
+space for the tty driver. The number of different
+tty devices this driver is going to support is passed as a
+parameter to the function. For example, the tiny tty driver
+introduced in the original tty articles would create
+the struct tty_driver as:
+
+<pre     class="programlisting">
+
+/* allocate the tty driver */
+tiny_tty_driver = alloc_tty_driver(TINY_TTY_MINORS);
+
+</pre>
+</p><p>
+In the past, picking the proper name for the tty driver was
+difficult, as the devfs kernel option overloaded the use of the
+name field. Christoph Hellwig finally fixed this mess by
+introducing a new variable in the
+struct tty_driver structure called
+devfs_name. Now, the name
+field should be set to a simple, small name that shows up in
+the tty proc files. The devfs_name should
+be set to the name that devfs uses to generate the device
+node for this driver.
+</p><p>
+In the 2.5 kernel series, the
+MOD_INC_USE_COUNT and
+MOD_DEC_USE_COUNT macros were declared too
+racy, and almost all usage of them in the kernel was removed.
+In order to do this, module reference counting was pushed a
+layer higher than the original calls. This allows the kernel to
+increment a module's reference count before the kernel jumps
+into the module. Likewise, when the kernel is finished with the
+module, it knows to decrement the count automatically.
+</p><p>
+This module change was done in the tty layer, so no tty driver
+should contain the MOD_* macros.
+Instead, an owner variable was added to the
+struct tty_driver to show what module owns
+the tty driver. The following line shows how to set this variable properly:
+
+<pre     class="programlisting">
+
+tiny_tty_driver-&gt;owner = THIS_MODULE;
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1eb3580.0x1fab818"></a></h2></div></div><p>
+This tells the tty core what module is related to this tty
+driver.
+</p><p>
+As for these tty changes, here is how to initialize and
+register a tty driver with the kernel properly:
+
+
+
+<pre     class="programlisting">
+
+#define TINY_TTY_MAJOR240 /* experimental range */
+#define TINY_TTY_MINORS	255
+                        /* use the whole major up */
+
+static struct tty_operations serial_ops = {
+    .open =       tiny_open,
+    .close =      tiny_close,
+    .write =      tiny_write,
+    .write_room = tiny_write_room,
+};
+
+static struct tty_driver *tiny_tty_driver;
+
+static int __init tiny_init(void)
+{
+    /* allocate the tty driver */
+    tiny_tty_driver =
+        alloc_tty_driver(TINY_TTY_MINORS);
+
+    /* initialize the tty driver */
+    tiny_tty_driver-&gt;owner = THIS_MODULE;
+    tiny_tty_driver-&gt;driver_name = "tiny_tty";
+    tiny_tty_driver-&gt;name = "ttty";
+    tiny_tty_driver-&gt;devfs_name = "tts/ttty%d";
+    tiny_tty_driver-&gt;major = TINY_TTY_MAJOR,
+    tiny_tty_driver-&gt;type = TTY_DRIVER_TYPE_SERIAL,
+    tiny_tty_driver-&gt;subtype = SERIAL_TYPE_NORMAL,
+    tiny_tty_driver-&gt;flags =
+        TTY_DRIVER_REAL_RAW | TTY_DRIVER_NO_DEVFS,
+    tiny_tty_driver-&gt;init_termios = tty_std_termios;
+    tiny_tty_driver-&gt;init_termios.c_cflag =
+        B9600 | CS8 | CREAD | HUPCL | CLOCAL;
+    tty_set_operations(tiny_tty_driver, &amp;serial_ops);
+    if (tty_register_driver(tiny_tty_driver)) {
+       printk(KERN_ERR
+              "failed to register tiny tty driver");
+       return -1;
+    }
+
+    printk(KERN_INFO DRIVER_DESC " " DRIVER_VERSION);
+    return 0;
+}
+
+static void __exit tiny_exit (void)
+{
+    tty_unregister_driver(tiny_tty_driver);
+}
+
+module_init(tiny_init);
+module_exit(tiny_exit);
+
+</pre>
+</p><p>
+tty callout devices also are now removed entirely from the
+kernel. Any tty driver living in the 2.5 kernel tree that used
+callout support has had it removed.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1eb3580.0x1faba80"></a>Fewer ioctls</h2></div></div><p>
+Along with the tty structure changes, a few tty ioctls have been
+removed, specifically the
+TIOCMGET,
+TIOCMBIS,
+TIOCMBIC and
+TIOCMSET ioctls. They have been replaced
+with two new function callbacks, tiocmget
+and tiocmset, that have been added to the
+struct tty_operations structure. These
+functions are defined as:
+
+<pre     class="programlisting">
+
+int (*tiocmget)(struct tty_struct *tty,
+                struct file *file);
+int (*tiocmset)(struct tty_struct *tty,
+                struct file *file,
+                unsigned int set,
+                unsigned int clear);
+
+</pre>
+</p><p>
+The tiocmget function is called when the tty
+core or a user wants to know what the current line settings
+are for a specific tty port. This works almost exactly like the
+old TIOCMGET ioctl call did. The line status
+is defined as the different MSR_* values,
+but instead of being copied back into user space, as the old
+ioctl required the driver to do, they merely are returned from
+the function call. Here's an example of how a
+tiocmget function could look:
+
+<pre     class="programlisting">
+
+int
+tiny_tiocmget(struct tty_struct *tty,
+              struct file *file)
+{
+    struct tiny_private *tp = tty-&gt;private;
+    unsigned int msr = tp-&gt;msr;
+    unsigned int mcr = tp-&gt;mcr;
+    unsigned int result = 0;
+
+    result = ((mcr &amp; MCR_DTR)    ? TIOCM_DTR: 0)
+                                    /* DTR is set */
+              | ((mcr &amp; MCR_RTS) ? TIOCM_RTS: 0)
+                                    /* RTS is set */
+              | ((msr &amp; MSR_CTS) ? TIOCM_CTS: 0)
+                                    /* CTS is set */
+              | ((msr &amp; MSR_CD)  ? TIOCM_CAR: 0)
+                         /* Carrier detect is set */
+              | ((msr &amp; MSR_RI)  ? TIOCM_RI:  0)
+                         /* Ring Indicator is set */
+              | ((msr &amp; MSR_DSR) ? TIOCM_DSR: 0);
+                                    /* DSR is set */
+
+    return result;
+
+</pre>
+</p><p>
+The tiocmset function is called when the tty
+core or a user wants to set or clear any of the different line
+settings. This single function replaces the
+TIOCMBIS,
+TIOCMBIC and
+TIOCMSET ioctl calls. The
+set and clear variables in
+this function are used to tell which line settings to set and
+which to clear. The same line setting cannot be asked to be
+cleared and set at the same time, so the order in which variables are
+processed does not matter. An example of the
+tiocmset function is:
+
+<pre     class="programlisting">
+
+int
+tiny_tiocmset(struct tty_struct *tty,
+              struct file *file,
+              unsigned int set, unsigned int clear)
+{
+    struct tiny_private *tp = tty-&gt;private;
+
+    if (set &amp; TIOCM_RTS)
+        mcr |= MCR_RTS;
+    if (set &amp; TIOCM_DTR)
+        mcr |= MCR_RTS;
+    if (set &amp; TIOCM_LOOP)
+        mcr |= MCR_LOOPBACK;
+
+    if (clear &amp; TIOCM_RTS)
+        mcr &amp;= ~MCR_RTS;
+    if (clear &amp; TIOCM_DTR)
+        mcr &amp;= ~MCR_RTS;
+    if (clear &amp; TIOCM_LOOP)
+        mcr &amp;= ~MCR_LOOPBACK;
+
+    /* set the new MCR value in the device */
+    tp-&gt;mcr = mcr;
+    return 0;
+}
+
+</pre>
+</p><p>
+The usbserial core also has been affected a bit by these tty core
+changes. The tiocmget and
+tiocmset functions have been added to the
+struct usb_serial_device_type structure.
+The tty calls to these functions are passed down to the lower
+usbserial drivers, if the usbserial driver provides those
+callbacks.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1eb3580.0x1fabd98"></a>Acknowledgements</h2></div></div><p>
+I would like to thank Al Viro, Christoph Hellwig and Russell
+King for finally starting to work on cleaning up the tty layer
+to raise it to the proper standards of the rest of the
+kernel. Their changes have been instrumental in simplifying the
+tty driver interface, allowing driver authors to focus on the
+specific hardware implementations and not worry about the
+kernel interactions as much as before.
+</p></div></div>
+<div class="authorblurb"><p>
+Greg Kroah-Hartman
+currently is the Linux kernel maintainer for a variety of
+different driver subsystems. He works for IBM, doing Linux
+kernel-related things, and can be reached at <a href="mailto:greg@kroah.com">greg@kroah.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../114/toc114.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,269 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Miscellaneous Character Drivers</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Alessandro tells us how to register a small device needing a&#10;    single entry point with the misc driver.&#10;    "><meta name="keywords" content="driver, kernel"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x15b0580.0x16a7ab0"></a>Miscellaneous Character Drivers</h1></div><div><div class="author"><h3 class="author">Alessandro Rubini</h3></div><div class="issuemoyr">Issue #51, July 1998</div></div><div><p>
+    Alessandro tells us how to register a small device needing a
+    single entry point with the misc driver.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15b0580.0x16a82f0"></a></h2></div></div><p>Sometimes people need to write &ldquo;small&rdquo;
+device drivers, to support custom hacks&mdash;either hardware or
+software ones. To this end, as well as to host some real drivers,
+the Linux kernel exports an interface to allow modules to register
+their own small drivers. The <span   class="bold"><b>misc</b></span>
+driver was designed for this purpose. The code introduced here is
+meant to run with version 2.0 of the Linux kernel.
+</p><p>In UNIX, Linux and similar operating systems, every device is
+identified by two numbers: a &ldquo;major&rdquo; number and a &ldquo;minor&rdquo;
+number. These numbers can be seen by invoking <b  >ls -l
+/dev</b>. Every device driver registers its major number with
+the kernel and is completely responsible for managing its minor
+numbers. Use of any device with that major number will fall on the
+same device driver, regardless of the minor number. As a result,
+every driver needs to register a major number, even if it only
+deals with a single device, like a pointing tool.</p><p>Since the kernel keeps a static table of device drivers,
+frivolous allocation of major numbers is rather wasteful of RAM.
+The Linux kernel, therefore, offers a simplified interface for
+simple drivers&mdash;those that will register a single entry point. Note
+that, in general, allocating the whole name space of a major number
+to every device is beneficial. This allows the handling of multiple
+terminals, multiple serial ports and several disk partitions
+without any overhead in the kernel proper: a single driver takes
+care of all of them, and uses the minor number to
+differentiate.</p><p>Major number 10 is officially assigned to the
+<span   class="bold"><b>misc</b></span> driver. Modules can register
+individual minor numbers with the misc driver and take care of a
+small device, needing only a single entry point.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15b0580.0x16a8608"></a>Registering a Minor Number</h2></div></div><p>The misc driver exports two functions for user modules to
+register and unregister their own minor number:</p><pre     class="programlisting">
+#include &lt;linux/miscdevice.h&gt;
+int misc_register(struct miscdevice * misc);
+int misc_deregister(struct miscdevice * misc);
+</pre><p>Each user module can use the register function to create its
+own entry point for a minor number, and deregister to release
+resources at unload time.
+</p><p>The miscdevice.h file also declares <b  >struct
+miscdevice</b> in the following way:</p><pre     class="programlisting">
+struct miscdevice {
+        int minor;
+        const char *name;
+        struct file_operations *fops;
+        struct miscdevice *next, *prev;
+};
+</pre><p>The five fields have the following meaning:
+<div class="itemizedlist"><ul type="disc"><li><p><b  >minor</b> is the minor number being
+registered. Every misc device must feature a different minor
+number, because such a number is the only link between the file in
+/dev and the driver.</p></li><li><p><b  >name</b> is the name for this
+device, meant for human consumption: users will find the name in
+the /proc/misc file.</p></li><li><p><b  >fops</b> is a pointer to the file
+operations which must be used to act on the device. File operations
+have been described in a previous &ldquo;Kernel Korner&rdquo; in April 1996.
+(That article is available on the web at
+http://www.linuxjournal.com/issue24/kk24.html.) Anyway, the topic
+is refreshed later in this article.</p></li><li><p><b  >next</b> and <b  >prev</b>
+are used to manage a circularly-linked list of registered
+drivers.</p></li></ul></div>
+
+The code calling <span   class="bold"><b>misc_register</b></span> is
+expected to clear <b  >prev</b> and
+<b  >next</b> before invoking the function and to fill
+the first three fields with sensible values.
+</p><p>The real question with the misc device driver is &ldquo;what is a
+sensible value for the <b  >minor</b> field?&rdquo; Assignment
+of minor numbers is performed in two ways: either you can use an
+&ldquo;officially assigned&rdquo; number, or you can resort to dynamic
+assignment. In the latter case, your driver asks for a free minor
+number, and the kernel returns one.</p><p>The typical code sequence for assigning a dynamic minor
+number is as follows:</p><pre     class="programlisting">
+static struct miscdevice my_dev;
+int init_module(void)
+{
+    int retval;
+    my_dev.minor = MISC_DYNAMIC_MINOR;
+    my_dev.name = "my";
+    my_dev.fops = &amp;my_fops;
+    retval = misc_register(&amp;my_dev);
+    if (retval) return retval;
+    printk("my: got minor %i\n",my_dev.minor);
+    return 0;
+}
+</pre><p>Needless to say, a real module will perform some other tasks
+within <span   class="bold"><b>init_module</b></span>. After
+successful registration, the new misc device will appear in
+/proc/misc. This informative file reports which misc drivers are
+available and their minor numbers. After loading
+<span   class="emphasis"><em>my</em></span>, the file will include the following line:
+<pre     class="programlisting">
+63 my
+</pre>
+
+
+This shows that 63 is the minor number returned. If you want to
+create an entry point in /dev for your misc module, you can use a
+script like the one shown in <a href="2920l1.html" target="_self">Listing
+1.</a> The script takes care of creating the device node and
+giving it the desired permission and ownership.
+</p><p>You might choose to find an unused minor number and hardwire
+it in your driver. This would save invoking a script to load the
+module, but the practice is strongly discouraged. To keep the code
+compact, drivers/char/misc.c doesn't check for duplication of minor
+numbers. If the number you chose is later assigned to an official
+driver, you'll be in trouble when you try to access both your
+module and the official one.</p><p>If the same minor number is registered twice, only the first
+one will be accessible from user space. Although seemingly unfair,
+this can't be considered a kernel bug, as no data structure is
+corrupted. If you wish to register a safe minor number, you should
+use dynamic allocation.</p><p>The file Documentation/devices.txt in the kernel source tree
+lists all of the official device numbers, including all the minor
+numbers for the misc driver.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15b0580.0x16a9318"></a>Kernel Configuration</h2></div></div><p>If you have tried to write your own misc driver but
+<span   class="emphasis"><em>insmod</em></span> returned <b  >unresolved symbol
+misc_register</b>, you have a problem in your kernel
+configuration.</p><p>Originally, the misc driver was designed as a wrapper for all
+the &ldquo;busmouse&rdquo; drivers&mdash;the kernel drivers for every non-serial
+pointer device. The driver was only compiled if the current
+configuration included at least one such mouse driver. Just before
+version 2.0, the generality of the implementation was widely
+accepted, and the driver was renamed from &ldquo;mouse&rdquo; to &ldquo;misc&rdquo;. It
+is still true, however, that the driver is not available unless you
+chose to compile at least one of the misc devices as either a
+module or a native driver.</p><p>If you don't have any such devices installed on your system,
+you can still load your custom misc modules, provided you reply
+affirmatively, while configuring your kernel, to the
+question:</p><pre     class="programlisting">
+Support for user misc device modules (CONFIG_UMISC)
+</pre><p>This option indicates that the misc driver is to be compiled
+even if no misc device has been selected, thus allowing run-time
+insertion of third-party modules. The file /proc/misc and support
+for dynamic minor numbers were implemented when this option was
+introduced, as there's little point in having custom modules unless
+the allocation of a minor number is safe.
+</p><p>Note that if your kernel is configured to load busmice only
+as modules, everything will work with the exception of /proc/misc.
+The /proc file is created only if miscdevice.c is directly linked
+in the kernel. <b  >CONFIG_UMISC</b> takes care of this
+situation as well.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15b0580.0x16a96e0"></a>How Operations are Dispatched</h2></div></div><p>Every time a process interacts with a device driver, the
+implementation of the system call gives control to the correct
+driver by means of the
+<span   class="bold"><b>file_operations</b></span> structure. This
+structure is carried around by <span   class="bold"><b>struct
+file</b></span>: every open file descriptor is associated to one
+such structure, and <b  >file.f_op</b> points to its own
+file_operations structure.</p><p>This setup is similar to object-oriented languages: every
+object (here, every file) declares how to act on itself, so that
+high-level code is independent of the actual file being accessed.
+The Linux kernel is full of object-oriented programming in its
+implementations, and several &ldquo;operations&rdquo; structures exist in it,
+one for each different &ldquo;object&rdquo; (inodes, memory regions,
+etc.).</p><p>Back to the misc driver. How does
+<b  >my_dev.fops</b> participate in the game? At open
+time, the kernel allocates a new
+<span   class="bold"><b>file</b></span> structure to describe the
+object being opened, and initializes its operations structure
+according to what the file is. Sockets, FIFOs, disk files and
+devices get their own, different, operations. When a device is
+opened, its operations are looked up according to the major device
+number by referencing an array. The
+<span   class="bold"><b>open</b></span> method within the driver is
+then called. Any other system call that acts on a file will then
+use <b  >file.f_op</b> without checking any other source
+of information. As a result, a driver can replace the value of
+<b  >file.f_op</b> to tailor the behaviour of a
+<b  >struct file</b> to some inner feature, even if that
+feature is at a finer grain than the major number, and thus is not
+visible from the kernel proper.</p><p>The open method of the misc driver is able to dispatch
+operations to the actual low-level driver by modifying
+<b  >file.f_op</b>; the assigned value is the one in
+<b  >my_dev.f_op</b>. After the operations have been
+overridden, the method calls
+<b  >file.f_op-&gt;open()</b>, so that the low-level
+driver can perform its own initialization. Every other system call
+invoked on the file will use the new value of
+<b  >file.f_op</b>, and the low-level driver keeps
+complete control over its device.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15b0580.0x16a05f8"></a>An Example: Keyboard LEDs</h2></div></div><p>Since the discussion up to now has been much too
+philosophical, it's time to move to a working example. The
+<span   class="emphasis"><em>kiss</em></span> module (Keyboard Informative Status
+Signals) is a simple tool to play with the keyboard LEDs. It
+registers itself as a misc device using dynamic minor-number
+assignment and is controlled by writing textual commands to it. It
+accepts several one-byte commands, such as &ldquo;N&rdquo; and &ldquo;n&rdquo; (to turn
+the Num-Lock LED on and off), the digits from 0 to 7 (to display
+binary numbers in that range using the LEDs) and so on.</p><p>I don't think there's any need to include source code here,
+as the driver does little more than the
+<span   class="bold"><b>misc_register</b></span> code shown above.
+Most of the additional code deals with interpretation of the
+commands and actual lighting of the LEDs. The tar file with source
+code and a <b  >README</b> file can be retrieved from
+ftp://ftp.linuxjournal.com/pub/lj/listings/issue51/2920.tgz.</p><p>As usual, the sample module that accompanies this article is
+pretty simple and is of little interest in the real world. This
+time, however, I think it can be of some interest. As a matter of
+fact, custom hardware in my computer includes three LEDs to monitor
+the number of running processes. In my opinion, this is useful
+information when you are wondering why the computer is not
+responding&mdash;a situation quite common whenever you write buggy
+drivers or drivers that print too many diagnostic messages.</p></div></div>
+<div class="authorblurb"><p>Alessandro is still using Linux 2.0, because he's
+      spending his spare time building his own misc devices with a
+      soldering iron. He enjoys open source and open air, and reads
+      e-mail as rubini@linux.it.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../051/toc051.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

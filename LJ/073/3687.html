@@ -1,0 +1,424 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Dynamic Class Loading for C++ on Linux</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    A technique for developers that will provide them with much&#10;    flexibility in design.&#10;    "><meta name="keywords" content="class, C++, design, polymorphism, function"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x160b580.0x1702ab0"></a>Dynamic Class Loading for C++ on Linux</h1></div><div><div class="author"><h3 class="author">James Norton</h3></div><div class="issuemoyr">Issue #73, May 2000</div></div><div><p>
+    A technique for developers that will provide them with much
+    flexibility in design.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x160b580.0x1703558"></a></h2></div></div><p>Linux has much to offer as a development
+platform: a robust operating environment with tested tools. Linux
+also boasts implementations of just about every programming
+language available. I think it is safe to say, however, that among
+compiled languages, C is the language of choice for most Linux
+developers. Consequently, other languages such as C++ seem to be
+somewhat neglected in most discussions of Linux development.
+</p><p>The dynamic class loading technique provides developers with
+a great deal of flexibility in their designs. Dynamic class loading
+is a means of providing extensibility without sacrificing
+robustness.</p><p>In this article, we will design a simple application that
+defines a single class, a shape class we wish to use in a drawing
+package. As we shall see, dynamic class loading allows us to
+provide a smooth extension path through which users of the
+application can add new types of shapes without needing to modify
+the original application code.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x160b580.0x1703710"></a>Polymorphism</h2></div></div><p>The basic idea behind dynamic class loading is the concept of
+polymorphism. Anyone familiar with C++ should be familiar with this
+concept, so I will discuss it here only briefly. In short,
+polymorphism is the ability of an object belonging to a derived
+class to act as an object belonging to the base class. This is the
+familiar &ldquo;is a&rdquo; relationship of OOP (object-oriented programming)
+parlance. For example, in the following code snippet,
+<span   class="bold"><b>circle</b></span> is a class derived from the
+base class <span   class="bold"><b>shape</b></span> (see Listing 1),
+so the object <b  >my_circle</b> can act as a shape
+object, invoking the shape member function
+<span   class="bold"><b>draw</b></span>.</p><p><a href="3687l1.html" target="_self">Listing 1</a></p><pre     class="programlisting">
+class shape { public:
+   void draw();
+};
+class circle : public shape { };
+int main(int argc, char **argv){
+   circle my_circle;
+   my_circle.draw();
+}
+</pre><p>While this has all the usual advantages, e.g., code reuse,
+the real power of polymorphism comes into play when draw is
+declared to be virtual or pure virtual, as follows:
+<pre     class="programlisting">
+class shape{ public:
+   virtual void draw()=0;
+};
+class circle : public shape { public:
+   void draw();
+}
+</pre>
+
+
+Here, circle has declared its own draw function, which can define
+behavior appropriate for a circle. Similarly, we could define other
+classes derived from shape, which provide their own versions of
+draw. Now, because all the classes implement the shape interface,
+we can create collections of objects that can provide different
+behavior invoked in a consistent manner (calling the draw member
+function). An example of this is shown here.
+<pre     class="programlisting">
+shape *shape_list[3];   // the array that will
+                            // pointer to our shape objects
+shape[0] = new circle;  // three types of shapes
+shape[1] = new square;  // we have defined
+shape[2] = new triangle;
+for(int i = 0; i &lt; 3; i++){
+   shape_list[i].draw();
+}
+</pre>
+
+
+When we invoke the draw function for each object on the list, we do
+not need to know anything about each object; C++ handles the
+details of invoking the correct version of draw. This is a very
+powerful technique, allowing us to provide extensibility in our
+designs. Now we can add new classes derived from shape to provide
+whatever behavior we desire. The key here is that we have separated
+the interface (the prototype for shape) from the implementation.
+</p><p>While this technique is very powerful, it does suffer from a
+drawback in that we must recompile (or at least relink) our code
+when we add new derived classes. It would be more convenient if we
+could simply load in new classes at runtime. Then, anyone using our
+code libraries could provide new shape classes (with new draw
+functions) without even needing our original source code. The good
+news, and the subject of this article, is that we can.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x160b580.0x1703be0"></a>dlopen and Dynamic Class Loading</h2></div></div><p>While C++ has no direct mechanism under Linux for loading in
+classes at runtime, there is a direct mechanism for loading C
+libraries at runtime: the dl functions
+<span   class="bold"><b>dlopen</b></span>,
+<span   class="bold"><b>dlsym</b></span>,
+<span   class="bold"><b>dlerror</b></span> and
+<span   class="bold"><b>dlclose</b></span>. These functions provide
+access to the dynamic linker <span   class="bold"><b>ld</b></span>. A
+complete description of these functions is provided in the
+appropriate man page, so they are presented here only
+briefly.</p><p>The prototypes for the functions are as follows:</p><pre     class="programlisting">
+void *dlopen(const char
+void *dlsym(void *handle, char *symbol);
+const char *dlerror();
+int dlclose(void *handle);
+</pre><p>The dlopen function opens the file given in
+<span   class="emphasis"><em>filename</em></span> so that the symbols in the file can
+be accessed via the dlsym function. <b  >flag</b> can
+take one of two values: <b  >RTLD_LAZY</b> or
+<b  >RTLD_NOW</b>. If <b  >flag</b> is set to
+<b  >RTLD_LAZY</b>, dlopen returns without attempting to
+resolve any symbols. If <b  >flag</b> is set to
+<b  >RTLD_NOW</b>, dlopen attempts to resolve any
+undefined symbols in the file. Failure to resolve a symbol causes
+the call to fail, returning a NULL.
+<span   class="bold"><b>dlerror</b></span> can be used to provide an
+error message explaining the failure. The dlsym function is used to
+obtain a pointer to the functions (or other symbols) provided by
+the library. <b  >handle</b> is the pointer to the thing
+being referenced, and <b  >symbol</b> is the actual
+string name of the item referenced, as it is stored in the file.
+</p><p>Given that we can use these functions to access functions in
+a C library, how do we use them to access classes in a C++ library?
+There are several problems to overcome. One is that we must be able
+to locate the symbols we need in the library. This is trickier than
+it might seem because of the difference between the way symbols are
+stored in C and C++ files. Secondly, how can we create objects
+belonging to the classes we load? Finally, how can we access those
+objects in a useful manner? I will answer these three questions in
+reverse.</p><p>Since we do not have the prototypes for the classes we load
+dynamically, how can we access them in our code? The answer to this
+lies in the description of polymorphism in the preceding section.
+We access the functionality of the new classes through the common
+interface provided by their base class. Following the examples
+above, any new shape classes would provide a draw function that
+would allow an object of that class to render itself.</p><p>Fine; we can use pointers to the base class to access objects
+from the derived classes. How do we create the objects in the first
+place? We don't know anything about the classes that might be
+loaded, other than the fact that they conform to the shape
+interface. For instance, suppose we dynamically load a library that
+provides a class called <span   class="bold"><b>hexapod</b></span>.
+We can't write</p><pre     class="programlisting">
+shape *my_shape = new hexapod;
+</pre><p>if we don't know the class name ahead of time.
+</p><p>The solution is that our main program doesn't create the
+objects, at least not directly. The same library that provides the
+class derived from shape must provide a way to create objects of
+the <span   class="bold"><b>new</b></span> class. This could be done
+using a <span   class="bold"><b>factory</b></span> class, as in the
+factory design pattern (see Resources) or more directly using a
+single function. To keep things simple, we will use a single
+function here. The prototype for this function is the same for all
+shape types:</p><pre     class="programlisting">
+shape *maker();
+</pre><p><span   class="bold"><b>maker</b></span> takes no arguments and
+returns a pointer to the constructed object. For our hexapod class,
+maker might look like this:
+<pre     class="programlisting">
+shape *maker(){
+   return new hexapod;
+}
+</pre>
+
+
+It is perfectly legal for us to use
+<span   class="bold"><b>new</b></span> to create the object, since
+maker is defined in the same file as hexapod.
+</p><p>Now, when we use dlopen to load a library, we can use dlsym
+to obtain a pointer to the maker function for that class. We can
+then use this pointer to construct objects of the class. For
+example, suppose we want to dynamically link a library called
+libnewshapes.so which provides the hexapod class. We proceed as
+follows:</p><pre     class="programlisting">
+void *hndl = dlopen("libnewshapes.so", RTLD_NOW);
+if(hndl == NULL){
+   cerr &lt;&lt; dlerror() &lt;&lt; endl;
+   exit(-1);
+}
+void *mkr = dlsym(hndl, "maker");
+</pre><p>The pointer to maker must be of type <b  >void
+*</b>, since that is the type returned by dlsym. Now we can
+create objects of the hexapod class by invoking
+<span   class="bold"><b>mkr</b></span>:
+<pre     class="programlisting">
+shape *my_shape = static_cast&lt;shape *()&gt;(mkr)();
+</pre>
+
+
+We are required to cast mkr to a pointer to a function returning
+<b  >shape&nbsp;*</b> when we invoke it.
+</p><p>Some readers may see a problem with the code as written thus
+far: the dlsym call is likely to fail because it cannot resolve
+<b  >"maker"</b>. The problem is that C++ function names
+are mangled to support function overloading, so the maker function
+may have a different name in the library. We could figure out the
+mangling scheme and search for the mangled symbol instead, but
+fortunately there is a much simpler solution. We need only tell the
+compiler to use C-style linkage using the
+<b  >extern&nbsp;"C"</b> qualifier, as shown in Listing
+2.</p><p><a href="3687l2.html" target="_self">Listing 2</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x160b580.0x1704c60"></a>Autoregistration</h2></div></div><p>Loading the maker functions into an array associates a
+position in the array with each maker. While this may be useful in
+some cases, we can obtain more flexibility using an associative
+array to hold the makers. The Standard Template Library (STL)
+<span   class="bold"><b>map</b></span> class works well for this, as
+we can then assign key values to the makers and access them via
+these values. For example, we may desire to assign string names to
+each class and use these names to invoke the appropriate maker. In
+this case, we can create a map such as this:</p><pre     class="programlisting">
+typedef shape *maker_ptr();
+ map &lt;string, maker_ptr&gt; factory;
+</pre><p>Now when we want to create a particular shape, we can invoke
+the proper maker using the shape name:
+<pre     class="programlisting">
+shape *my_shape = factory[
+</pre>
+
+
+We can extend this technique to make it even more flexible. Rather
+than loading the class makers in and explicitly assigning a key
+value to them, why not let the class designers do the work for us?
+Using a little bit of ingenuity, we can have the makers register
+themselves with the factory automatically, using whatever key value
+the class designer chooses. (There are a couple of warnings here.
+The key must be of the same type as all the other keys, and the key
+value must be unique.)
+</p><p>One way to accomplish this would be to include a function in
+each shape library that registers the maker for us, and then call
+this function every time we open a shape library. (According to the
+dlopen man page, if your library exports a function called
+<span   class="bold"><b>_init</b></span>, this function will be
+executed when the library is opened. This may seem to be the ideal
+place to register our maker, but currently the mechanism is broken
+on Linux systems. The problem is a conflict with a standard linker
+object file, crt.o, which exports a function called _init.) As long
+as we are consistent with the name of this function, the mechanism
+works well. I prefer to forego that approach in favor of one that
+will register the maker simply by opening the library. This
+approach is known as &ldquo;self-registering objects&rdquo; and was
+introduced by Jim Beveridge (see Resources).</p><p>We can create a proxy class used solely to register our
+maker. The registration occurs in the constructor for the class, so
+we need to create only one instance of the proxy class to register
+the maker. The prototype for the class is as follows:</p><pre     class="programlisting">
+class proxy {
+public:
+   proxy(){
+      factory["shape name"] = maker;
+   }
+};
+</pre><p>Here, we assume factory is a global map exported by the main
+program. Using
+<span   class="bold"><b>gcc</b></span>/<span   class="bold"><b>egcs</b></span>,
+we would be required to link with the <b  >rdynamic</b>
+option to force the main program to export its symbols to the
+libraries loaded with dlopen.
+</p><p>Next, we declare one instance of the proxy:</p><pre     class="programlisting">
+proxy p;
+</pre><p>Now when we open the library, we pass the
+<b  >RTLD_NOW</b> flag to dlopen, causing
+<b  >p</b> to be instantiated, thus registering our
+maker. If we want to create a circle, we invoke the circle maker
+like so:
+<pre     class="programlisting">
+shape *my_circle = factory["circle"];
+</pre>
+
+
+The autoregistration process is powerful because it allows us to
+design the main program without having explicit knowledge of the
+classes we will support. For instance, after the main program
+dynamically loads any shape libraries, it could create a shape
+selection menu using all the keys registered in the factory. Now
+the user can select &ldquo;circle&rdquo; from a menu list, and the program
+will associate that selection with the proper maker. The main
+program does not need any information about the circle class as
+long as the class supports the shape API and its maker is properly
+defined.
+</p><p><a href="3687l3.html" target="_self">Listing 3</a></p><p>Listings 1 through 5 pull together the concepts presented
+thus far. The shape class defined in Listing 1 is the base class
+for all shapes. Listings 2 and 3 are the source code for
+dynamically loadable libraries that provide circle and square
+shapes, respectively.</p><p><a href="3687l4.html" target="_self">Listing 4</a></p><p>Listing 4 is the main program that is extensible through
+dynamically loaded libraries. It scans the current directory for
+any .so files (libraries) and opens them. The libraries then
+register their makers with the global factory provided by the main
+program. The program then dynamically constructs a menu for the
+user with the shape names registered by the libraries. Using the
+menu, the user can construct shapes, draw the shapes constructed,
+or exit the program. Listing 5 is the makefile used to build the
+project.</p><p><a href="3687l5.html" target="_self">Listing 5</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x160b580.0x16fbee8"></a>Real-World Examples</h2></div></div><p>Recently, I have had two occasions to use this technique. In
+the first case, I was developing a moving object simulation. I
+wanted to provide users with the ability to add new types of moving
+objects without having access to the main source. In order to
+accomplish this, I defined a base class called entity, which
+provides the interface definition for any moving object in the
+simulation. A simplified version of the entity prototype is shown
+below.</p><pre     class="programlisting">
+class entity {
+private:
+   float xyz[3];  // position of the object
+public:
+   activate(float)=0; // tell the object to move
+   render()=0;  // tell the object to draw itself
+};
+</pre><p>Thus, all entities have at least a position in three-space,
+and all entities can draw themselves. Most entities will have many
+other state variables besides position and may have many other
+member functions besides <span   class="bold"><b>activate</b></span>
+and <span   class="bold"><b>render</b></span>, but these are not
+accessible through the entity interface.
+</p><p>New entity types can be defined, incorporating whatever
+motion dynamics the user desires. At runtime, the program loads all
+the libraries in a subdirectory called Entity and makes them
+available to the simulation.</p><p>The second example comes from a recent project in which we
+wanted to create a library that could load and save images of
+various formats. We wanted the library to be extensible, so we
+created a base <span   class="bold"><b>image_handler</b></span> class
+for loading and saving images.</p><pre     class="programlisting">
+class image_handler{
+public:
+   virtual Image loadImage(char *)=0;
+   virtual int saveImage(char *, Image &amp;)=0;
+};
+</pre><p>The image_handler has two public functions, used to load and
+save images, respectively. The
+<span   class="bold"><b>Image</b></span> class is the library's basic
+object type for images. It provides access to the image data and
+some basic image-manipulation functions.
+</p><p>In this case, we were not interested in creating multiple
+objects of each type of image_handler. Instead, we wanted one
+instance of each image_handler that would handle loading and saving
+images of that type. Rather than registering a maker for each
+handler, we created a single instance of the handler in its library
+and registered a pointer to it with a global map. The map is no
+longer a factory, since it does not produce objects per se; it is
+more of a generic image loader/saver. The keys used here were
+strings representing file extensions (tif, jpg, etc.). Because a
+file format can have one of several different extensions (e.g.,
+tiff, TIFF), each handler registers itself multiple times with the
+global map, once for each extension.</p><p>Using the library, a main program can load or save an image
+simply by invoking the correct handler via the file
+extension:</p><pre     class="programlisting">
+map &lt;string, handler, less&lt;string&gt;&gt; handler_map;
+char *filename = "flower.tiff";
+char ext[MAX_EXT_LEN];
+<span   class="emphasis"><em>howEverYouWantToParseTheExtensions</em></span>(filename, ext);&lt;\n&gt;
+// after parsing "flower.tiff" ext = "tiff"&lt;\n&gt;
+Image img1 = handler_map[ext]-&gt;loadImage(filename);
+// process data here
+handler_map[ext]-&gt;saveImage(filename, img1);
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x160b580.0x16fc4c0"></a>Conclusion</h2></div></div><p>Dynamic class loading allows us to create more extensible and
+more robust code. By using dynamic class loading combined with
+well-thought-out base class designs, we provide users with a
+practical means of extending our code.</p><p><a href="3687s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="3687aa.jpg"></div>
+
+      <span   class="bold"><b>James Norton</b></span>
+      spent most of his adult life
+      avoiding real life by hiding out in school, first at Florida State
+      University and then at Tulane University. The good life ended when
+      he was awarded a Ph.D. in Electrical Engineering through what could
+      only have been some sort of clerical error. He currently does
+      research and systems development for Newsreal, Inc. He can be
+      reached by e-mail at jnorton4@home.com.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../073/toc073.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

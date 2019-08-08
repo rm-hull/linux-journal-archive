@@ -1,0 +1,400 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+<head>
+<title>LJ 73: Shell Functions and Path Variables, Part 3
+</title>
+</head>
+<body bgcolor="#FFFFFF" text="000000">
+<!-- yahoo bar begins -->
+<font size="2" face="verdana, arial, helvetica, sans-serif" color="#000000">
+<A HREF"=/index.html" target=_top>Home</A> &nbsp;&gt;&nbsp; 
+<A HREF="../index.html">Magazine</A> &nbsp;&gt;&nbsp; 
+<A HREF="index.html">#73 May 2000</A> &nbsp;&gt;&nbsp; 
+<b>
+Shell Functions and Path Variables, Part 3
+</b>
+<BR><b>Tuesday, March 21, 2000 | Last Updated 11:46:45 AM</b>
+</font><p>
+<!-- yahoo bar ends -->
+<!-- BEGIN banner ad -->
+<CENTER><BR>
+<img alt="&nbsp;&nbsp;" src="/images/redblock.gif" width="9" height="60" border="0"><!--#include virtual="/cgi-bin/banner-random.pl?dimensions=Large&width=468&height=60" -->
+</CENTER><BR CLEAR=all>
+<!-- THIS ASSUMES THE SIZE OF THE AD ITSELF IS width="468" height="60" border="0" !!! -->
+<!-- END banner ad -->
+<p>
+<h1><font color="navy">Shell Functions and Path Variables, Part 3</font></h1>
+<p>
+<i>
+A continuation of our introduction to path variables and elements.
+</i><p>
+<i>
+by Steve Collyer
+</i>
+<p>
+In this final article in the series, I'll describe the remaining path
+handling functions and point out a few implementation issues. Before I
+do that, however, I will describe a utility called <B>makepath</B>. This reads
+either standard input or its argument list, builds a colon-separated
+path variable (pathvar) from those lines read and echoes it to standard output. For example:
+<p>
+<pre>
+$ makepath /bin /usr/bin /opt/kde/bin
+/bin:/usr/bin:/opt/kde/bin
+</pre>
+<B>makepath</B> is used in several of the pathvar utilities to reconstruct
+a pathvar after its path elements (pathels) have been altered. I won't show you the
+innards of makepath, as they're somewhat tangential to the main topic
+and rather trivial.
+<p>
+<H3>listpath</H3>
+<p>
+First, let's look at <B>listpath</B>, which echoes the pathels making up a pathvar
+on separate lines, as in:
+<p>
+<pre>
+$ listpath -p MANPATH
+/usr/man
+/usr/local/man
+/opt/CC/man
+</pre>
+Using listpath has two advantages over merely echoing <tt>$MANPATH</tt>.
+First, it's much easier to read the pathels when they appear on separate lines;
+and secondly, you can pipe its output through <B>grep</B>:
+<p>
+<pre>
+$ listpath | grep bin 
+/opt/kde/bin
+/usr/local/bin
+/bin
+</pre>
+There is no option-handling code we did not see in the
+<B>addpath</B>
+function, so let's look at the main code:
+<p>
+<pre>
+eval echo 
+</pre>
+This is very simple. We just echo the contents of the specified pathvar
+into the <B>colon2line</B> function (included in the tar file mentioned at the
+end of this article), which turns the embedded : characters
+into newline characters. I described the operation of this piece of
+code in some detail in Part 2, so I won't repeat it here.
+Take a look at that article
+(<A HREF="http://www.linuxjournal.com/lj.issues/issue72/3768.html" TARGET="_blank">http://www.linuxjournal.com/lj.issues/issue72/3768.html</A>)
+if you're not sure why the <B>eval</B> is there.
+<p>
+<H3>delpath</H3>
+<p>
+We have already seen the addpath function, which performs an idempotent
+addition of a pathel to a pathvar. The converse of this behaviour
+is provided by <B>delpath</B>, which removes pathels from a pathvar. So,
+for example:
+<p>
+<pre>
+delpath /opt/CC/test/bin
+</pre>
+will remove the /opt/CC/test/bin directory from <tt>$PATH</tt> and:
+<p>
+<pre>
+delpath -e &quot;(bill|steve)&quot; -p MANPATH
+</pre>
+will remove all pathels matching the <B>egrep</B>-style regular expression
+<tt>&quot;(bill|steve)&quot;</tt> from <tt>$MANPATH</tt>. The command
+<p>
+<pre>
+delpath -n
+</pre>
+removes all non-existent directories from <tt>$PATH</tt>.
+<p>
+Although delpath is not a function you are likely to need often,
+there is one place where it can be useful. Many UNIX machines have
+a file called /etc/PATH, which is sourced by /etc/profile. It sets
+up a default PATH containing directories required by all users. Too
+often, though, /etc/PATH is not modified for years at a time, and the
+directories added either no longer exist or are not truly required by
+all. In this case, you can call delpath at the start of an appropriate
+login script (.profile or .bash_profile) to remove the directories
+you do not need.
+<p>
+Let's look at the delpath code. I'll skip most of the option handling,
+as
+much of it is identical to that in addpath.
+<p>
+<pre>
+MATCH=&quot;-x&quot;            # default
+[ -n &quot;$opt_e&quot; ] &amp;&amp; MATCH= # make grep use regexps
+FILTER=              # default
+[ -n &quot;$opt_n&quot; ] &amp;&amp; FILTER=&quot;| realpath_filter&quot;
+</pre>
+Here, we see the final section of the option handling. The
+<tt>MATCH</tt> variable
+determines whether we handle the supplied path description as
+a regular expression or not. It is used later as an option to grep;
+<tt>grep -x</tt> tells grep to perform exact string matches.
+<p>
+The <tt>FILTER</tt> variable implements the <tt>-n</tt>
+option, i.e., the ``remove non-existent
+directories'' behaviour. If the user supplies the <tt>-n</tt> option, <tt>FILTER</tt>
+contains a string which pipes the output of a previous command through
+a program called <B>realpath_filter</B>. This program reads directory names
+from its standard input and writes the name to standard output only if
+it is an existing directory. I'll leave it as an easy exercise for the
+reader to implement such a filter.
+<p>
+The remainder of delpath is as follows:
+<p>
+<pre>
+eval listpath -p $pathvar $FILTER |
+  grep -v -E $MATCH &quot;$1&quot;&gt; /tmp/makepath_in.$$
+eval $pathvar=$(makepath &lt; /tmp/makepath_in.$$)
+rm /tmp/makepath_in.$$
+</pre>
+The function does its work in three stages. The first command generates a
+file in /tmp containing those directories that are not to be deleted. The
+second command rebuilds the pathvar from that file using makepath.
+Finally we remove the file; we don't want it cluttering up the file system
+after the function finishes. (The shell expands <tt>$$</tt> to the process ID of
+the shell running the command; I'll assume it is 20610 in this article.)
+<p>
+Let's look at the first line. Essentially, it uses <B>listpath</B> to break
+the appropriate pathvar into separate lines, and grep to remove those
+we don't want. It's slightly complicated, however, by the presence
+of the <tt>FILTER</tt> variable. Suppose the user types:
+<p>
+<pre>
+delpath -e &quot;^opt&quot;
+</pre>
+which means ``remove all directories starting with the <tt>opt</tt>
+string from
+<tt>$PATH</tt>''. In this case, pathvar will contain
+<tt>PATH</tt>, while <tt>MATCH</tt> and <tt>FILTER</tt>
+will be empty. The first line will therefore expand to:
+<p>
+<pre>
+eval listpath -p PATH |
+  grep -v -E &quot;^opt&lt;&quot; &gt; /tmp/makepath_in.20610
+</pre>
+This is straightforward--listpath writes the pathels in
+<tt>PATH</tt> into
+the grep command, which we use to echo non-matching lines only
+(<tt>-v</tt>).
+We redirect the output into our temporary file, which will contain those
+pathels not starting with <tt>opt</tt>. In this case, the leading
+eval is unnecessary. However, if the user types
+<p>
+<pre>
+delpath -n
+</pre>
+to remove all non-existent directories from <tt>$PATH</tt>, then the first line
+expands to
+<p>
+<pre>
+eval listpath -p PATH | realpath_filter |
+grep -v -E &quot;&quot; &gt; /tmp/makepath_in.20610
+</pre>
+During the initial processing of the line (i.e., before the eval has
+forced re-evaluation), the shell saw the pipe symbol preceding the grep,
+but it did not see the pipe symbol preceding realpath_filter. As things
+stand at the moment, the shell sees the first | as a literal character
+and will pass it as an argument to listpath. This happened because
+the shell looks for | characters before it expands variables, and the |
+character preceding realpath_filter was stored in a variable. The second
+evaluation caused by the eval ensures the pipeline that runs the
+realpath_filter command is constructed.
+<p>
+We now have a file containing only the required pathels. The
+second line in delpath rebuilds the pathvar from that file, using the
+following code:
+<p>
+<pre>
+eval $pathvar=$(makepath &lt; /tmp/makepath_in.$$)
+</pre>
+This shouldn't cause us too many problems. First, makepath simply reads
+the lines in the file, builds a colon-separated pathvar and echoes it.
+We run makepath in command-substitution mode (that's the
+<tt>$(...)</tt> which I
+described in Part 2), so makepath's output is used as the
+right-hand side of the variable assignment. The initial eval is
+required due to the order in which the shell evaluates a command. Because
+it looks for assignment statements before expanding variables, it won't
+recognize that the command contains a valid assignment. The eval ensures
+the assignment takes place the second time the line is processed.
+<p>
+<H3>uniqpath</H3>
+<p>
+Suppose you log on to your UNIX system and discover, for reasons
+beyond your control, that PATH is full of duplicate entries. (Humour me. It
+does happen. Maybe your system administrator modified /etc/PATH inadvisedly).
+Let's
+assume these duplicates are making your PATH undesirably long. Is
+there anything you can do to clean things up? Yes, you can type at the
+prompt:
+<p>
+<pre>
+$ uniqpath
+</pre>
+This will remove any duplicate entries from your path, leaving the order
+of the remaining pathels intact. For example:
+<p>
+<pre>
+$ NEWP=fred:bill:steve:fred:dave:bill
+$ uniqpath -p NEWP
+$ echo $NEWP
+fred:bill:steve:dave
+</pre>
+Let's skip the options-handling code again, and look at the meat:
+<p>
+<pre>
+npath=$(listpath -p $pathvar | awk '{seen[$0]++;
+if (seen[$0]==1){print}}')
+    eval $pathvar=$(makepath &quot;$npath&quot;)
+</pre>
+As usual, <tt>$pathvar</tt> contains the name of the pathvar
+we want to
+modify. The code is rather similar to that of delpath. The first
+line generates a variable (<tt>npath</tt>) containing the unique
+path elements,
+and the second line rebuilds the pathvar from those elements using
+makepath. We don't use an external file to store the pathels,
+but keep everything in shell variables. This is done in order
+to demonstrate an alternative technique--there is no deeper reason.
+<p>
+The first line runs listpath to break the pathvar into separate lines
+and pipes them through an <B>awk</B> filter which removes duplicate pathels.
+You may be wondering why we don't just use the <B>uniq</B> program
+instead of
+awk's magic. It's because uniq will remove duplicate lines from its
+input only if they happen to be adjacent. In our case, the duplicate pathels
+will generally not be adjacent, so <B>uniq</B> won't work.
+``Aha,'' you say, ``why
+not use <tt>sort -u</tt>? That will sort the lines and remove
+duplicates.'' True
+enough, however, it may also modify the directory search order, if we ran
+<B>uniqpath</B> to alter <tt>PATH</tt>. Usually, people care about the order
+in which
+their PATH directories are searched, and it's a bad idea to modify it.
+<p>
+Thus, we have the awk solution. This uses a powerful feature of awk known as
+an associative array or hash (if you have a Perl background). If you're
+a C programmer, you'll know what an array is: a group of objects
+of the same type, indexed by an integer. The contents of an array can
+be accessed by expressions like values[0] or values[20], which refer to
+the first and twenty-first elements, respectively. A hash is rather like
+an array which can be indexed by an arbitrary string of characters. So,
+in awk notation, we could write
+<p>
+<pre>
+age[&quot;bill&quot;]=27
+</pre>
+to assign 27 to the hash element indexed by the string <tt>bill</tt>
+in the
+hash called <tt>age</tt>. Let's look at the awk code shown above.
+<p>
+Between the single quotes, we have a block of code run each
+time awk reads a new line from its standard input. When awk reads
+a line, it is stored in a special variable called <tt>$0</tt>, and we
+use <tt>$0</tt> as
+an index into a hash called <tt>seen</tt>. (We haven't declared
+this anywhere--that's okay in awk. Variables spring into existence, with numerical
+value 0, when they appear in the code). We use the <tt>seen</tt> hash
+to tell
+us whether awk has already seen an identical line of input since it started
+executing. Let's see what happens in the <tt>NEWP</tt> example
+shown above.
+<p>
+First, listpath splits <tt>NEWP</tt> into lines containing the following strings:
+``fred'', ``bill'', ``steve'', ``fred'', ``dave'' and ``bill'', which are read in that
+order by awk. <B>awk</B> stores each line it reads in <tt>$0</tt>,
+so <tt>$0</tt> takes on
+the values ``fred'', ``bill'' and so on, in turn. Each time a line is read,
+the corresponding element of the <tt>seen</tt> hash is incremented
+(by the line
+<tt>seen[$0]++</tt>) and is printed only if it has been seen exactly
+once (by the print statement in the <tt>if</tt> block, which prints
+<tt>$0</tt> to standard
+output by default). If we look at the hash element <tt>seen[&quot;fred&quot;]</tt>, this is
+initially 0 and is then set to 1 when awk reads the first ``fred'' line,
+remains
+at 1 for the next two lines, and is set to 2 when awk reads the second
+``fred'' line. It is printed only when it is seen for the first time.
+C programmers should note how syntactically elegant this solution
+is and how little code is required when compared to the equivalent in C.
+<p>
+<H3>edpath</H3>
+<p>
+The final pathvar function we're going to see is <B>edpath</B>.
+This breaks
+the pathels in a pathvar into separate lines, writes them to a temporary
+file and runs an editor on that file. You can edit the pathels to
+your heart's content and quit from the editor when you're finished. The
+pathvar is then reconstructed from the modified lines in the file. <B>edpath</B>
+allows you to perform arbitrary modifications on a pathvar. I use it
+most often when I wish to swap the order of directories in <tt>PATH</tt>.
+<p>
+The code for edpath is fairly straightforward (ignoring once again the
+boring details of option handling):
+<p>
+<pre>
+TEMP=/tmp/edpath.out.$$
+VAR=\$$pathvar  # VAR=&quot;$LIBPATH&quot; for example
+eval export OLD$pathvar=$VAR  # store old path in 
+                              # e.g. OLDPATH
+listpath -p $pathvar &gt; $TEMP  # write path
+                              #  elements to file
+${EDITOR:-vi} $TEMP           # edit the file eval
+$pathvar=$(makepath &lt; $TEMP) # reconstruct path
+/bin/rm -f $TEMP           # remove temporary file
+</pre>
+Let's skip the first three lines for now. The real work is done by the
+block of code starting with listpath. This follows a similar pattern
+as delpath and uniqpath. First, we separate the pathels in the pathvar
+using listpath, but this time, we redirect the output into a temporary
+file. The next line edits that file. The expression <tt>${EDITOR:-vi}</tt> may
+be unfamiliar; it means ``Use the value of the <tt>EDITOR</tt>
+variable if it is
+non-null, else use vi.'' This allows the user to specify his favourite
+editor by setting the <tt>EDITOR</tt> environment variable (to Emacs, perhaps)
+but uses vi if he has not done so. Note that the <B>edit</B> command is run
+in the foreground, so the shell will wait until the editor process
+terminates before running any more commands from the shell function.
+When this occurs, the modified pathvar will be reconstructed by the
+line starting with <tt>eval</tt>. If you read the description of delpath
+given above, you'll know how this line works.
+<p>
+Lines 2 and 3 of the code are a safety net. They store the initial value
+of the pathvar to be edited in a new environment variable. If the user
+is editing <tt>PATH</tt>, for example, then the code creates a
+variable called <tt>OLDPATH</tt>. If the user makes unwanted
+modifications to her <tt>PATH</tt>, she can simply type:
+<p>
+<pre>
+$ PATH=$OLDPATH
+</pre>
+and all will be well.
+<p>
+<H3>Conclusion</H3>
+<p>
+UNIX can present a bewildering array of tools and techniques, and
+it's almost
+impossible for any individual to be intimately familiar with all of them.
+In my experience, the best developers carry around a large bag of simple
+but useful techniques and are able to combine them rapidly into a
+working solution. You don't need to know every detail of every tool to
+do useful work, but you do need a bag of tricks you understand.
+<p>
+Please feel free to use any of the ideas I've described in this series.
+You can get a hold of the source code to the shell functions
+from <A HREF="ftp://ftp.demon.co.uk/pub/unix/misc/pathfunc.tgz" TARGET="_blank">ftp://ftp.demon.co.uk/pub/unix/misc/pathfunc.tgz</A>. Let me know if you
+find any bugs, would like a new feature added, or make an
+improvement.
+<p>
+<blockquote><i>
+Stephen Collyer (stephen@twocats.demon.co.uk)
+is a freelance software developer working in the UK. His interests
+include scripting languages and distributed and thread-based systems.
+Occasionally, he finds the time to talk to his wife and
+two remarkably attractive and highly intelligent children.
+<p>
+</body>
+</html>

@@ -1,0 +1,289 @@
+Listing 3: view-ranking.pl, which allows users to examine the rankings
+for a given item.
+
+#!/usr/bin/perl -wT
+
+# view-ranking.pl, from Linux Journal
+# Written by Reuven M. Lerner (reuven@lerner.co.il)
+
+# Released under the GNU General Public License, available from
+# http://www.gnu.org/copyleft/gpl.html
+
+use strict;
+use diagnostics;
+use CGI::Pretty qw(:standard);
+use CGI::Carp qw(fatalsToBrowser);
+use DBI;
+
+# Declare some variables that we will use a lot
+my $sql;
+my $sth;
+my $result;
+my $success;
+my @items = ();
+
+# Where is "rank-something.pl"?
+my $rank_something = "/cgi-bin/rank-something.pl";
+
+# Create a new instance of CGI
+my $query = new CGI;
+
+# Send a MIME header to the user
+print $query->header("text/html");
+
+# Connect to the database
+my $dbh = DBI->connect("DBI:mysql:test:localhost") ||
+    die qq{DBI error from connect: "$DBI::errstr"};
+
+# ------------------------------------------------------------
+# Get all of the categories, for future entries
+
+$sql  = "SELECT category_id, category_name ";
+$sql .= "FROM RankCategories ";
+
+$sth = $dbh->prepare($sql) 
+    || die "Cannot prepare: $DBI::errstr";
+
+$result = $sth->execute
+    || die "Cannot execute: $DBI::errstr";
+
+my %categories = ();
+while (my $row = $sth->fetchrow_arrayref)
+{
+    # Get the elements that we retrieved
+    my ($id, $name) = @$row;
+
+    # Put information about this item in a hash
+    $categories{$id} = $name;
+}
+
+$sth->finish;
+
+# ------------------------------------------------------------
+# If invoked with GET, print a form allowing users to choose a category
+if ($query->request_method eq "GET")
+{
+    print $query->start_html(-title => "Choose a category");
+    print h1("Choose a category");
+
+    print startform(-method => "POST",
+		    -action => $query->url);
+
+    print p("Select a category to view:",
+	    popup_menu(-name => 'category_id',
+		       -values => [sort {$categories{$a} cmp $categories{$b}} 
+				   keys %categories],
+		       -override => 1,
+		       -labels => \%categories));
+
+    print submit(-value => 'View items in this category');
+    print endform;
+
+    $dbh->disconnect;
+    exit;
+}
+
+# ------------------------------------------------------------
+# If invoked with POST, there are two possibilities: Either we need to
+# produce a listing of items in the category, we need to produce a
+# report on a particular item.
+
+elsif ($query->request_method eq "POST")
+{
+    # ------------------------------------------------------------
+    # If item_id is submitted, then the user wants to see a full
+    # report for a particular item
+
+    my $item_id = $query->param("item_id") || 0;
+
+    if ($item_id)
+    {
+	# Get (and print) basic information about this item
+	$sql  = "SELECT C.category_name, I.item_name, ";
+	$sql .= "       I.item_description, AVG(R.rank)";
+	$sql .= "FROM RankItems I, RankCategories C, ";
+	$sql .= "     Rankings R ";
+	$sql .= "WHERE I.category_id = C.category_id ";
+	$sql .= "AND   I.item_id = $item_id ";
+	$sql .= "AND   I.item_id = R.item_id ";
+	$sql .= "GROUP BY I.item_id = R.item_id ";
+
+	$sth = $dbh->prepare($sql) 
+	    || die "Cannot prepare: $DBI::errstr";
+
+	$result = $sth->execute
+	    || die "Cannot execute: $DBI::errstr";
+
+	my $returned_row = $sth->fetchrow_arrayref;
+	$sth->finish;
+
+	# If we get something back, then get all of the rankings
+	# for this item after printing item information
+	if ($returned_row)
+	{
+	    my ($category_name, $item_name, $item_description, $rank)
+		= @$returned_row;
+
+	    print $query->start_html(-title => $item_name);
+
+	    print h1($item_name);
+	    print p("Category: $category_name");
+	    print p(i($item_description));
+	    print p(b("Average rank"), ":$rank");
+	    print p(a({href => 
+		       "$rank_something?existing_item_id=$item_id"},
+		      "You can rank this item, too!"));
+	    print hr, p(i("The following are in chronological order:"));
+
+	    # Now retrieve all of the rankings
+	    $sql  = "SELECT ranker_name, email, comments, rank ";
+	    $sql .= "FROM Rankings ";
+	    $sql .= "WHERE item_id = $item_id ";
+	    $sql .= "ORDER BY entry_datetime ";
+
+	    $sth = $dbh->prepare($sql) 
+		|| die "Cannot prepare: $DBI::errstr";
+
+	    $result = $sth->execute
+		|| die "Cannot execute: $DBI::errstr";
+
+	    print "<dl>\n";
+
+	    # Iterate through (and print) each comment
+	    while (my $row_ref = $sth->fetchrow_arrayref)
+	    {
+		my ($name, $email, $comments, $rank) = 
+		    @$row_ref;
+
+		print p(dt(a({href => "mailto:$email"},
+			     $name), "*" x $rank, " ($rank)"),
+			dd($comments));
+	    }
+
+	    print "</dl>\n";
+
+	    $sth->finish;
+	    $dbh->disconnect;
+	    exit;
+	}
+	else
+	{
+	    print $query->start_html(-title => "No ranks for this item");
+	    print p("No one has yet ranked this item.", 
+		    a({href => 
+		       "$rank_something?existing_item_id=$item_id"},
+		      "You can be the first!"));
+
+	    $sth->finish;
+	    $dbh->disconnect;
+	    exit;
+	}
+
+
+	my %categories = ();
+	while (my $row = $sth->fetchrow_arrayref)
+	{
+	    # Get the elements that we retrieved
+	    my ($id, $name) = @$row;
+
+	    # Put information about this item in a hash
+	    $categories{$id} = $name;
+	}
+    }
+
+    # ------------------------------------------------------------
+    # Otherwise, allow the user to choose an item from this category
+    else
+    {
+	my $category_id = $query->param("category_id") || 0;
+
+	unless ($category_id)
+	{
+	    print $query->start_html(-title => "Error: Missing information");
+	    print h1("Error: Missing information");
+
+	    print h1("Error: No item ID or category ID");
+	    print p("POST without either item_id or category_id.");
+
+	    $dbh->disconnect;
+	    exit;
+	}
+
+	# Get a description of this category
+	$sql  = "SELECT category_name, category_description ";
+	$sql .= "FROM RankCategories ";
+	$sql .= "WHERE category_id = $category_id ";
+
+	$sth = $dbh->prepare($sql) 
+	    || die "Cannot prepare: $DBI::errstr";
+
+	$result = $sth->execute
+	    || die "Cannot execute: $DBI::errstr";
+
+	my ($category_name, $category_description) = 
+	    $sth->fetchrow_array;
+
+	print $query->start_html(-title => "Choose an item");
+	print h1("Choose an item");
+
+	print p("Category:", b($category_name));
+	print p($category_description);
+
+	# List items in the selected category
+	$sql  = "SELECT I.item_id, I.item_name ";
+	$sql .= "FROM RankItems I, Rankings R ";
+	$sql .= "WHERE category_id = $category_id ";
+	$sql .= "ORDER BY I.item_id ";
+
+	$sth = $dbh->prepare($sql) 
+	    || die "Cannot prepare: $DBI::errstr";
+
+	$result = $sth->execute
+	    || die "Cannot execute: $DBI::errstr";
+
+	my %items = ();
+	while (my $row = $sth->fetchrow_arrayref)
+	{
+	    # Get the elements that we retrieved
+	    my ($id, $name, $count, $average) = @$row;
+
+	    # Put information about this item in a hash
+	    $items{$id} = $name;
+	}
+
+	if ($sth->rows == 0)
+	{
+	    print p(i("No items have been entered into this category."));
+	}
+
+	else
+	{
+	    print p(i("The following are in alphabetical order:"));
+
+	    print startform(-method => "POST",
+			    -action => $query->url);
+
+	    print popup_menu(-name => "item_id",
+			     -values => [(sort {$items{$a} cmp $items{$b}} 
+					  keys %items)],
+			     -labels => {%items}, 
+			     -override => 1);
+
+	    print submit(-value => 'View this item');
+	    print endform;
+	}
+
+	$sth->finish;
+    }
+}
+
+
+# Take care of odd, unknown request methods
+else
+{
+    print h1("Error: Unknown request method");
+    print p("This program must be invoked with GET or POST.");
+}
+
+$dbh->disconnect;
+exit;

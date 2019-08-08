@@ -1,0 +1,355 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Paranoid Penguin: Using iptables for Local Security</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Mick explains how to use the owner match extension for iptables to prevent local users from violating your network's security protocols.&#10;    "><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x28d2580.0x29c9ab0"></a>Paranoid Penguin: Using iptables for Local Security</h1></div><div><div class="author"><h3 class="author">Mick Bauer</h3></div><div class="issuemoyr">Issue #100, August 2002</div></div><div><p>
+    Mick explains how to use the owner match extension for iptables to prevent local users from violating your network's security protocols.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28d2580.0x29ca298"></a></h2></div></div><p>Most of us think of iptables strictly as
+a firewall tool for keeping remote attackers at bay. But did you
+know it also can be used to keep local users in line? The
+experimental match extension owner adds new iptables options that
+can be used to help prevent local users from sending packets
+through other local users' network processes.
+</p><p>For example, suppose one of root's cron jobs uses Stunnel to
+send files to a remote rsync process. While that tunnel is open,
+any local user also may use it to access the remote rsync server.
+<span   class="bold"><b>iptables</b></span> can help you prevent such
+sponging; this month's column shows how.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28d2580.0x29ca450"></a>The Problem</h2></div></div><p>Tunneling utilities comprise one of the most important new
+categories of security tools at our disposal. They allow us to wrap
+insecure services, such as Telnet, IMAP and POP3, in encrypted
+virtual &ldquo;tunnels&rdquo;, transparently and effectively. I've written at
+length in these pages about the Secure Shell and its powerful
+port-forwarding capabilities; Stunnel and SSLWrap are similar free
+tools that can be used for this purpose under Linux.</p><p>But what happens when you set up such a tunnel on a
+multi-user system? What's to stop unauthorized local users from
+sending their own traffic through the tunnel? Until recently,
+practically nothing. Since most tunneling utilities work by
+creating a new local listener (e.g., localhost:992) for the near
+side of the tunnel, and since normally any local user can connect
+to a local listening-port, it's usually up to the server
+application at the other end of the tunnel to authenticate
+users.</p><p>For example, suppose I use Stunnel to create a secure sockets
+layer (SSL) tunnel from my local system &ldquo;crueller&rdquo; to the remote
+system &ldquo;strudel&rdquo;, over which I'm going to run Telnet. (Never mind
+that this sort of transaction is simpler with SSH; maybe I don't
+want SSH installed locally for some reason.) On the remote host,
+which is already running the Telnet d&aelig;mon (via inetd) on TCP
+port 23, I run Stunnel in d&aelig;mon mode with this
+command:</p><pre     class="programlisting">
+stunnel -d 992 -r localhost:23 -p \
+/etc/stunnel/strudel.pem
+</pre><p>On the local host, I'll run Stunnel in client mode, also
+listening on the local port TCP 992 but forwarding connections to
+TCP port 992 on strudel:
+<pre     class="programlisting">
+stunnel -c -d 992 -r strudel:992
+</pre>
+
+
+If you've never used Stunnel before and these two commands mean
+nothing to you, don't worry. The important thing to understand is
+that to use this example tunnel to Telnet securely from crueller to
+strudel, I'll use this command on crueller:
+<pre     class="programlisting">
+telnet localhost 992
+</pre>
+
+
+At this point, I'll be prompted for a user name and password by
+strudel, and unlike with normal Telnet, my login credentials will
+be encrypted by Stunnel rather than transmitted over the network as
+clear text. (The remote Stunnel process will decrypt the packets
+and hand them to strudel's local Telnet process. This happens for
+the <span   class="emphasis"><em>entire</em></span> Telnet transaction, not just the
+authentication part; Stunnel acts as a middleman for both parties
+during the entire transaction, a middleman who neither knows nor
+cares what he's tunneling as long as it's TCP.)
+</p><p>So far so good; I've got encryption, which I didn't have
+without Stunnel, and I've got a modest amount of authentication by
+virtue of Telnet itself. The problem is that
+<span   class="emphasis"><em>any</em></span> user on crueller can Telnet to the local
+Stunnel listener on TCP 992 and try to log in to strudel. Maybe I'm
+worried about someone guessing my strudel password and maybe I'm
+not; but how to stop them from sending <span   class="emphasis"><em>any</em></span>
+packets down the tunnel to begin with? With iptables and its new
+owner match extension, that's how.</p><p><a href="6091s1.html" target="_self">Stunnel Who?</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28d2580.0x29ca978"></a>The Tool</h2></div></div><p><span   class="bold"><b>iptables</b></span>' owner match
+extension adds four match criteria to the iptables command:</p><div class="itemizedlist"><ul type="disc"><li><p>&mdash;uid-owner <span   class="emphasis"><em>UID</em></span>: matches
+packets generated by a process whose user ID is
+<span   class="emphasis"><em>UID</em></span>.</p></li><li><p>&mdash;gid-owner <span   class="emphasis"><em>GID</em></span>: matches
+packets generated by a process whose group ID is
+<span   class="emphasis"><em>GID</em></span>.</p></li><li><p>&mdash;pid-owner <span   class="emphasis"><em>PID</em></span>: matches
+packets generated by a process whose process ID is
+<span   class="emphasis"><em>PID</em></span>.</p></li><li><p>&mdash;sid-owner <span   class="emphasis"><em>SID</em></span>: matches
+packets generated by a process whose session ID is
+<span   class="emphasis"><em>SID</em></span>.</p></li></ul></div><p>Of these four, the first two are the most useful for our
+purposes here.</p><p>The owner match extension isn't necessarily included in your
+distribution's stock kernel; it's considered an experimental
+feature (by the Linux kernel team, not necessarily by the iptables
+team), so you may need to compile it yourself. Its source code,
+however, <span   class="emphasis"><em>is</em></span> part of the standard 2.4 kernel
+codebase, so this is done easily with any recent version of your
+distribution's (2.4.x) kernel source package.</p><p>When recompiling your kernel, you'll need to set several
+things explicitly. First, under Code maturity level options, select
+&ldquo;Prompt for development and/or incomplete code/drivers&rdquo;.</p><p>Next, in addition to the other network protocols and features
+you customarily select in Networking options, make sure to select
+&ldquo;Network Packet Filtering&rdquo;. This will enable the subgroup IP:
+Netfilter Configuration, shown in Figure 1. You may compile these
+options either into the kernel (by selecting them with an asterisk)
+or as modules (with an M), but most people compile them as modules
+because all are seldom used at one time.</p><div       class="mediaobject"><img src="6091f1.jpg"><div class="caption"><p>
+Figure 1. Compiling a Kernel with owner Match Extension Support
+</p></div></div><p>Naturally you can select as many of the Netfilter modules as
+you like. They don't take up much disk space, and if compiled as
+modules they needn't be loaded unless necessary. The one we're most
+concerned with right now, though, is owner Match Support.</p><p>The rest of the procedure for compiling and installing the
+Linux kernel and its modules is well documented elsewhere (notably
+in the kernel source's own README file). Once you've compiled,
+installed and rebooted with your kernel, you can use your shiny new
+owner module, which will be named ipt_owner.</p><p>To load this module, use the modprobe command:</p><pre     class="programlisting">
+modprobe ipt_owner
+</pre><p>In practice you'll probably want to load your iptables rules
+from a startup script in /etc/inet.d. If so, make sure you add the
+above modprobe line to the beginning of this script (i.e., above
+any iptables commands that use owner matches).
+</p><p>Note: neither Bastille-Linux's automated firewall
+configuration functionality nor SuSE Linux's SuSEfirewall scripts
+support owner matching without major hacking. This should hardly be
+surprising; they and other simple packet-filter rule generators are
+intended primarily for low-impact internet protection, not for the
+advanced control of local user access. For the latter, you need to
+write your own iptables rules.</p><p>Let's return to our example Stunnel client, crueller. Suppose
+crueller's kernel has been compiled with the ipt_owner module.
+You've loaded this module with modprobe and, for the time being,
+iptables isn't configured, i.e., nothing's being filtered
+yet.</p><p>Suppose further that you wish to restrict use of the
+Telnet-over-Stunnel socket we considered at the beginning of the
+article to root only. (You may recall we set up a Stunnel listener
+on crueller at TCP port 992, which encrypts and forwards packets to
+the same TCP port on strudel.)</p><p>If crueller isn't a firewall, we may be able to get away with
+an accept-by-default policy for the OUTPUT chain. On firewalls, all
+chains should have a drop-by-default or reject-by-default policy,
+but single-homed (single-network-interface) bastion hosts may
+sometimes have a more permissive stance on outbound traffic. If
+this is the case on crueller, then we need only one filtering rule
+to achieve the desired restriction:</p><pre     class="programlisting">
+iptables -A OUTPUT -p tcp --dport 992 -d localhost \
+-m owner ! --uid-owner root -j REJECT
+</pre><p>Let's dissect that command line one field at a time:
+<div class="itemizedlist"><ul type="disc"><li><p>-A OUTPUT: tells iptables we want to add a rule at
+the end of the chain OUTPUT. Since owner matches apply only to
+packets originating locally, and since outbound traffic is handled
+in the OUTPUT chain, this is the only chain in which you can use
+owner matches.</p></li><li><p>-p tcp: tells iptables to match only TCP packets
+and to load iptables' TCP options.</p></li><li><p>&mdash;dport 992: this TCP-specific option tells
+iptables to match only TCP packets destined for port 992.</p></li><li><p>-d localhost: tells iptables to match packets
+destined for the localhost (i.e., the loopback interface
+127.0.0.1).</p></li><li><p>-m owner: tells iptables to load the owner match
+extension.</p></li><li><p>! --uid-owner root: tells iptables to match only
+packets not created by processes owned by root.</p></li><li><p>-j REJECT: tells iptables to reject packets that
+meet all match expressions in this line.</p></li></ul></div>
+
+</p><p>In summary, this rule tells the kernel (via iptables) to drop
+packets sent to the local TCP port 992 unless they're sent by one
+of root's processes.</p><p>Suppose now that crueller has the more cautious default
+OUTPUT policy of DROP rather than ACCEPT. A drop-by-default policy
+is preferable on most iptables installations; the Principle of
+Least Privilege is one of the most important concepts in
+information security (i.e., &ldquo;that which is not explicitly
+permitted must be denied&rdquo;).</p><p>Now, however, we'll need a longer OUTPUT chain. Starting
+again with an empty chain, first we'll need to tell iptables to
+pass packets belonging to sessions it has already accepted:</p><pre     class="programlisting">
+iptables -I OUTPUT 1 -m state --state \
+ESTABLISHED,NEW -j ACCEPT
+</pre><p>The -state match extension provides iptables with crucial
+state-tracking abilities, allowing iptables to evaluate packets in
+relation to actual sessions and data streams. Aside from the
+desirability of this intelligence for its own sake, it also
+drastically reduces the number of rules you need to specify in
+order to accommodate a single transaction. Without state tracking,
+you'd need two rules rather than one to allow, for example, an
+outbound Telnet transaction; one each in the OUTPUT and INPUT
+chains. This is why the above rule should nearly always be used at
+the top of any chain whose default policy is DROP.
+</p><p>Next, we need to allow Stunnel itself to connect to
+strudel:</p><pre     class="programlisting">
+stunnel -A OUTPUT -p tcp -dport 992 -d strudel \
+-j ACCEPT
+</pre><p>This command appends a new rule to the bottom of the OUTPUT
+chain that permits outbound connections to TCP port 992 on strudel.
+</p><p>Finally, we enter a command similar to the one in the
+accept-by-default example, but this one is for the target ACCEPT
+rather than REJECT and for the absence of the negating exclamation
+point before the --uid-owner option:</p><pre     class="programlisting">
+iptables -A OUTPUT -p tcp --dport 992 -d localhost \
+-m owner --uid-owner root -j ACCEPT
+</pre><p><a href="6091s2.html" target="_self">Remote Users and Tunnel
+Ports</a>
+</p><p>Let's look at one more example.
+<span   class="bold"><b>rsync</b></span> is a powerful file-transfer
+utility that can perform differential file transfers. It can
+compare a remote file with a local copy and download only those
+parts that differ. <span   class="bold"><b>rsync</b></span> can be
+used in conjunction with SSH or, you guessed it, with
+Stunnel.</p><p>Suppose you've got a cron job on crueller that uses rsync to
+compare the file stuff.txt on strudel with a local copy and
+downloads any differences. Suppose further that stuff.txt contains
+some sensitive stuff, so you use Stunnel to encrypt these
+transfers. But only the local administrators, all of whom belong to
+the group &ldquo;wheel&rdquo;, need to control the script or use the
+tunnel.</p><p>On strudel, rsync is running in d&aelig;mon mode, having been
+configured to share a module (virtual volume) named attic. Assuming
+/etc/rsyncd.conf is properly configured (the specifics of which are
+beyond this article's scope), the command to run rsync in
+d&aelig;mon mode is simply:</p><pre     class="programlisting">
+rsync --daemon
+</pre><p>In addition, strudel also has a Stunnel listener on TCP port
+273 that decrypts and forwards traffic to the rsync process (which
+is itself listening on TCP port 873). The command to run Stunnel
+this way on strudel would be:
+<pre     class="programlisting">
+stunnel -d 273 -r localhost:873 -p /etc/stunnel/
+    strudel.pem
+</pre>
+
+
+On crueller, a corresponding client-mode Stunnel listener would be
+invoked like this:
+<pre     class="programlisting">
+stunnel -c -d 273 -r strudel:273
+</pre>
+
+
+Okay, we now have a tunnel set up whereby packets sent to TCP port
+273 on crueller will be encrypted and sent to TCP port 273 on
+strudel, where they'll be decrypted and forwarded to strudel's
+local rsync process on TCP 873.
+</p><p>In the absence of iptables rules, if the ordinary user
+plebian on crueller tries to use the tunnel, he or she will
+succeed:</p><pre     class="programlisting">
+rsync --port=273 -v localhost::attic/stuff.txt .
+stuff.txt
+wrote 508 bytes  read 575 bytes  2166.00 bytes/sec
+total size is 48188  speedup is 44.49
+</pre><p>Unless, that is, we add an iptables rule on crueller that
+restricts local use of the rsync tunnel to members of the group
+wheel:
+<pre     class="programlisting">
+iptables -A OUTPUT -p tcp -d localhost --dport 272 \
+-m owner ! --gid-owner wheel -j REJECT
+</pre>
+
+
+Now, plebian's attempt to pilfer the new stuff.txt file will fail:
+<pre     class="programlisting">
+rsync --port=273 -v localhost::attic/stuff.txt .
+rsync: failed to connect to localhost:
+    Connection refused
+rsync error: error in socket IO (code 10)
+    at clientserver.c(97)
+</pre>
+
+
+But if wheel group member admin7 tries to connect, this will
+succeed:
+<pre     class="programlisting">
+rsync --port=272 -v localhost::chumly/stuff.txt .
+stuff.txt
+wrote 508 bytes  read 575 bytes  2166.00 bytes/sec
+total size is 48188  speedup is 44.49
+</pre>
+
+
+Hopefully, you noticed that this presumes a default allow policy.
+If OUTPUT instead uses a default drop policy, we'd need a rule in
+the OUTPUT chain allowing an outbound connection to TCP 273 on
+strudel. The OUTPUT chain also would need to begin with an allow
+established/related sessions rule. Since both these rules would
+resemble strongly those in the previous example, I won't bother
+showing them here.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x28d2580.0x2dc48a8"></a>Miscellaneous Notes on owner Matching and
+Stunnel</h2></div></div><p>As you can see, the uses of --uid-owner and --gid-owner are
+pretty straightforward. One thing I haven't mentioned yet is that
+both options accept names, as I've shown in the examples, or
+numeric IDs.</p><p>Another issue I've dodged is TCP Wrappers-style access
+controls. On any system that uses TCP Wrappers (or whose stunnel
+binary was compiled with support for libwrapper), you must add
+appropriate entries to /etc/hosts.allow for Stunnel to work
+properly, whether you run Stunnel in client mode or d&aelig;mon
+mode on that host. This is a good thing; rather than being one more
+thing capable of preventing Stunnel from working, you should think
+of it as another layer of your security onion.</p><p>Finally, I'm leaving it to you to tinker with --pid-owner and
+--sid-owner. I will give you a hint, though. Many d&aelig;mons
+write their parent PID in a predictable place on startup, that is,
+/var/run/sshd.pid. By reading such a PID file into a variable in
+your iptables startup script, you can match packets originating
+from a specific process. Good luck!</p><p><a href="6091s3.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p><span   class="bold"><b>Mick
+      Bauer</b></span>
+      (<a href="mailto:mick@visi.com">mick@visi.com</a>) is a
+      network security consultant for Upstream Solutions, Inc., based in
+      Minneapolis, Minnesota. He is the author of the upcoming O'Reilly
+      book Building Secure Servers With Linux, composer of the &ldquo;Network
+      Engineering Polka&rdquo; and a proud parent (of children).</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../100/toc100.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

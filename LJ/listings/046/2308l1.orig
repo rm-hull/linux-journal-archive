@@ -1,0 +1,419 @@
+/* ====================================================================
+ * Copyright (c) 1995 The Apache Group.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer. 
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *
+ * 3. All advertising materials mentioning features or use of this
+ *    software must display the following acknowledgment:
+ *    "This product includes software developed by the Apache Group
+ *    for use in the Apache HTTP server project (http://www.apache.org/)."
+ *
+ * 4. The names "Apache Server" and "Apache Group" must not be used to
+ *    endorse or promote products derived from this software without
+ *    prior written permission.
+ *
+ * 5. Redistributions of any form whatsoever must retain the following
+ *    acknowledgment:
+ *    "This product includes software developed by the Apache Group
+ *    for use in the Apache HTTP server project (http://www.apache.org/)."
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE APACHE GROUP ``AS IS'' AND ANY
+ * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE APACHE GROUP OR
+ * IT'S CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ * ====================================================================
+ *
+ * This software consists of voluntary contributions made by many
+ * individuals on behalf of the Apache Group and was originally based
+ * on public domain software written at the National Center for
+ * Supercomputing Applications, University of Illinois, Urbana-Champaign.
+ * For more information on the Apache Group and the Apache HTTP server
+ * project, please see <http://www.apache.org/>.
+ *
+ */
+
+
+/*
+ * URL counting
+ *
+ * Track all incoming requests for each URL.  Maintains a database
+ * containing each URL accessed, count of times accessed, and last
+ * time counter has been reset.  If the URL is a directory, then
+ * the file that it is redirected to is counted.
+ *
+ * The values for count of times accessed, and last time counter was
+ * reset are made available to the to the document via variables called
+ * URL_COUNT and URL_COUNT_RESET, respectively.
+ * Another variable URL_COUNT_DB is set to the database file used.
+ *
+ * Config file directives:
+ *
+ *     CounterType           Msql
+ *     CounterAutoAdd        On or Off  Automatically add missing URL's
+ *     CounterDB	     Database and Table for counter
+ *
+ * The following pertain to a per server (or virtual server) configuration:
+ *
+ *     ServerCounterType     Msql
+ *     ServerCounterAutoAdd  On or Off  Automatically add missing URL's
+ *     ServerCounterDB	     Database and Table for counter
+ *
+ * Brian Kolaci, bk@galaxy.net, 1-14-95
+ *
+ * file lock feature patched to run correctly on BSDI
+ * by Dan Kogai (dankogai@dan.co.jp) 1996/11/23
+ *
+ * rewritten to use mSQL by Randy Yarger (randy@yarger.tcimet.net) 5-18-1997
+ */
+
+#include "httpd.h"
+#include "http_config.h"
+#include "http_core.h"
+#include "http_log.h"
+#include "http_protocol.h"
+#include <ndbm.h>
+#include <msql.h>
+
+module cntr_module;
+
+/*
+ *  Data structions
+ */
+typedef enum { CntrMsql } CounterType;
+typedef struct {
+	unsigned long	count;
+	char*		date;
+} cntr_results;
+
+typedef struct {
+	int	cntr_default;
+	CounterType	cntr_type;
+	int	cntr_auto_add;
+	char*	cntr_db;
+	char*	cntr_table;
+} cntr_config_rec;
+
+#define	DEF_CNTRTYPE	01
+#define	DEF_CNTRAA	02
+#define	DEF_CNTRDB	04
+#define	DEF_ALL		(DEF_CNTRTYPE|DEF_CNTRAA|DEF_CNTRDB)
+
+/*
+ *  Set defaults
+ */
+#define DEFAULT_CNTR_TYPE	CntrMsql
+#define DEFAULT_TIME_FORMAT	"%A, %d-%b-%y %T %Z"
+#define DEFAULT_DIRCNTR_DB	""
+#define DEFAULT_DIRCNTR_TABLE	""
+#define DEFAULT_SVRCNTR_DB	""
+#define DEFAULT_SVRCNTR_TABLE	""
+
+/*
+ * Create config data structure
+ */
+void* create_cntr_dir_config_rec( pool* p, char* d )
+{
+	/*
+	 * Set the defaults
+	 */
+	cntr_config_rec * rec =
+		(cntr_config_rec*)pcalloc(p, sizeof(cntr_config_rec));
+	rec->cntr_type = DEFAULT_CNTR_TYPE;
+	rec->cntr_auto_add = 0;
+	rec->cntr_db = DEFAULT_DIRCNTR_DB ? pstrdup(p, DEFAULT_DIRCNTR_DB) : NULL;
+	rec->cntr_table = DEFAULT_DIRCNTR_TABLE ? pstrdup(p, DEFAULT_DIRCNTR_TABLE) : NULL;
+	rec->cntr_default = DEF_ALL;
+
+	return(rec);
+}
+
+void* create_cntr_srv_config_rec( pool* p, server_rec* d )
+{
+	/*
+	 * Set the defaults
+	 */
+	cntr_config_rec * rec =
+		(cntr_config_rec*)pcalloc(p, sizeof(cntr_config_rec));
+	rec->cntr_type = DEFAULT_CNTR_TYPE;
+	rec->cntr_auto_add = 0;
+	rec->cntr_file = DEFAULT_SVRCNTR_DB ? pstrdup(p, DEFAULT_SVRCNTR_DB) : NULL;
+	rec->cntr_file = DEFAULT_SVRCNTR_TABLE ? pstrdup(p, DEFAULT_SVRCNTR_TABLE) : NULL;
+	rec->cntr_default = DEF_ALL;
+
+	return(rec);
+}
+
+void*   merge_config_rec( pool* p, void* parent, void* sub )
+{
+	cntr_config_rec * par = (cntr_config_rec *)parent;
+	cntr_config_rec * chld = (cntr_config_rec *)sub;
+	cntr_config_rec * mrg = (cntr_config_rec *)palloc(p, sizeof(*mrg));
+	if (chld->cntr_default & DEF_CNTRTYPE)
+		mrg->cntr_type = par->cntr_type;
+	else
+		mrg->cntr_type = chld->cntr_type;
+	if (chld->cntr_default & DEF_CNTRAA)
+		mrg->cntr_auto_add = par->cntr_auto_add;
+	else
+		mrg->cntr_auto_add = chld->cntr_auto_add;
+	if (chld->cntr_default & DEF_CNTRDB) {
+		mrg->cntr_db = par->cntr_db;
+		mrg->cntr_table = par->cntr_table;
+	} else {
+		mrg->cntr_db = chld->cntr_db;
+		mrg->cntr_table = chld->cntr_table;
+	}
+	mrg->cntr_default = 0;
+	return(mrg);
+}
+
+const char* set_cntr_type( cmd_parms* cmd, void* ct, char* arg )
+{
+	void* ret = NULL;
+	cntr_config_rec* conf = (cntr_config_rec*)ct;
+
+	if (!strcasecmp(arg, "msql"))
+		conf->cntr_type = CntrMsql;
+	else
+		ret = "CounterType must be Msql";
+	conf->cntr_default &= ~DEF_CNTRTYPE;
+
+	return(ret);
+}
+
+const char* set_cntr_autoadd( cmd_parms* cmd, void* ct, int arg )
+{
+	cntr_config_rec* conf = (cntr_config_rec*)ct;
+	conf->cntr_auto_add = arg;
+	conf->cntr_default &= ~DEF_CNTRAA;
+	return(NULL);
+}
+
+const char* set_cntr_db( cmd_parms* cmd, void* ct, char* arg1, char* arg2 )
+{
+	void* ret = NULL;
+	cntr_config_rec* conf = (cntr_config_rec*)ct;
+
+	conf->cntr_db = arg1;
+	conf->cntr_table = arg2;
+	conf->cntr_default &= ~DEF_CNTRFILE;
+
+	return(ret);
+}
+
+const char* set_svr_cntr_type( cmd_parms* cmd, void* ct, char* arg )
+{
+	return(set_cntr_type(cmd, get_module_config(cmd->server->module_config, &cntr_module), arg));
+}
+
+const char* set_svr_cntr_autoadd( cmd_parms* cmd, void* ct, int arg )
+{
+	return(set_cntr_autoadd(cmd,
+		get_module_config(cmd->server->module_config, &cntr_module), arg));
+}
+
+const char* set_svr_cntr_db( cmd_parms* cmd, void* ct, char* arg1, char* arg2 )
+{
+	return(set_cntr_db(cmd,
+		get_module_config(cmd->server->module_config, &cntr_module), arg1, arg2));
+}
+
+command_rec cntr_cmds[] = {
+{ "CounterType", set_cntr_type, NULL, ACCESS_CONF, TAKE1, NULL },
+{ "CounterAutoAdd", set_cntr_autoadd, NULL, ACCESS_CONF, FLAG, NULL },
+{ "CounterDB", set_cntr_db, NULL, ACCESS_CONF, TAKE2,
+    "Name of counter Msql database followed by the name of the table" },
+
+{ "ServerCounterType", set_svr_cntr_type, NULL, RSRC_CONF, TAKE1, NULL },
+{ "ServerCounterAutoAdd", set_svr_cntr_autoadd, NULL, RSRC_CONF, FLAG, NULL },
+{ "ServerCounterDB", set_svr_cntr_db, NULL, RSRC_CONF, TAKE2,
+    "Name of counter Msql database followed by the name of the table" },
+
+{ NULL }
+};
+
+char*	cntr_incmsql( pool* p, cntr_results* results,
+		      cntr_config_rec* r, char* uri )
+{
+	int dbh = 0;
+	int msql_result = 0;
+	char in_query[HUGE_STRING_LEN];
+	char out_query[HUGE_STRING_LEN];
+	m_result *msql_out;
+	m_row msql_data;
+
+	/* Connect to local Msql server */
+	dbh = msqlConnect(NULL);
+	if (dbh == -1)
+		return(pstrcat(p, "Failed to connect to local Msql server: ", msqlErrMsg, NULL));
+
+	/* Select database given to us */
+	msql_result = msqlSelectDB(dbh, r->cntr_db);
+	if (msql_result == -1) {
+		msqlClose(dbh);
+		return(pstrcat(p, "Failed to connect to database ", r->cntr_db, ": ", msqlErrMsg, NULL));
+	}
+	sprintf(in_query,"SELECT cntr_count, cntr_date FROM %s WHERE uri='%s'", r->cntr_table, uri);
+	msql_result = msqlQuery(dbh, in_query);
+	if (msql_result == -1) {
+		msqlClose(dbh);
+		return(pstrcat(p, "SELECT Query Failed: ", msqlErrMsg, NULL));
+	}
+	msql_out = msqlStoreResult();	
+	msql_result = msqlNumRows(msql_out);
+	if (msql_result) {
+		msql_data = msqlFetchRow(msql_out);
+		results->count = atoi(msql_data[0]) + 1;
+		results->date = msql_data[1];
+		sprintf(out_query,"UPDATE %s SET cntr_count=%lu WHERE uri='%s'", r->cntr_table, results->count, uri);
+		msql_result = msqlQuery(dbh,out_query);
+		if (msql_result == -1) {
+			msqlFreeResult(msql_out);
+			msqlClose(dbh);
+			return(pstrcat(p, "UPDATE Query Failed: ", msqlErrMsg, NULL));
+		}
+	} else if (r->cntr_auto_add) {
+		results->count = 1;
+		results->date = ht_time(p, time(0L), DEFAULT_TIME_FORMAT, 0);
+		sprintf(out_query,"INSERT INTO %s (uri, cntr_count, cntr_date) VALUES ('%s', %lu, '%s')",
+			r->cntr_table, uri, results->count, results->date);
+		msql_result = msqlQuery(dbh,out_query);
+		if (msql_result = -1) {
+			msqlFreeResult(msql_out);
+			msqlClose(dbh);
+			return(pstrcat(p, "INSERT Query Failed: ", msqlErrMsg, " : ", out_query, NULL));
+		}
+	}
+	msqlFreeResult(msql_out);
+	msqlClose(dbh);
+	return(OK);
+      }
+
+char*	cntr_inc( pool* p, cntr_results* results,
+		 cntr_config_rec* r, char* uri )
+{
+  /* Normalize the URI stripping out double "//" */
+  char* puri = pstrdup(p, uri);
+  char* ptr = puri;
+  while (ptr && *ptr) {
+    if (*ptr == '/' && *(ptr+1) == '/') {
+      char* q = ptr + 1;
+      while (*q = *(q+1))
+	q++;
+    } else
+      ptr++;
+  }
+
+  if (r->cntr_type == CntrMsql)
+    return cntr_incmsql(p, results, r, puri);
+  else
+    return NULL;
+}
+
+int	cntr_update( request_rec* r )
+{
+  char* buf;
+  char* dbfile;
+  int ret = OK;
+  cntr_results * res;
+  cntr_config_rec *svr, *dir;
+  cntr_results *sres, *dres;
+
+  /*
+   *  Get actual file, if locally redirected
+   */
+  while (r->next)
+    r = r->next;
+  /*
+   * Skip if missing URI or this is an included request
+   */
+  if (!r->uri || !strcmp(r->protocol, "INCLUDED"))
+    return(DECLINED);
+  if (!S_ISREG(r->finfo.st_mode))
+    return(DECLINED);
+
+  /*
+   * Get each of the counter files
+  */
+  svr = get_module_config(r->server->module_config, &cntr_module);
+  dir = get_module_config(r->per_dir_config, &cntr_module);
+
+  /*
+   * Return if no counter database
+   */
+  if (!*svr->cntr_db && !*dir->cntr_db)
+    return(DECLINED);
+
+  /*
+   * Allocate result structures
+   */
+  sres = (cntr_results*)pcalloc(r->pool, sizeof(cntr_results));
+  dres = (cntr_results*)pcalloc(r->pool, sizeof(cntr_results));
+
+  /*
+   * Bump up server configured counter
+   */
+  if (*svr->cntr_db)
+    if (buf = cntr_inc(r->pool, sres, svr, r->uri))
+      log_error(buf, r->server);
+
+  /*
+   * Increment the directory counter file using the full
+   * file name instead of the URL
+   */
+  if (*dir->cntr_db)
+    if (buf = cntr_inc(r->pool, dres, dir, r->filename))
+      log_error(buf, r->server);
+
+
+  /*
+   * Now set the environment variables, take the server config
+   * as preference over the directory config.
+   */
+  res = (sres->count) ? sres : dres;
+  dbfile = "Msql";
+  buf = pcalloc(r->pool, 16);
+  sprintf(buf, "%lu", res->count);
+  table_set(r->subprocess_env, "URL_COUNT", buf);
+  table_set(r->subprocess_env, "URL_COUNT_RESET", res->date);
+  table_set(r->subprocess_env, "URL_COUNT_DB", dbfile);
+
+  return ret;
+}
+
+
+module cntr_module = {
+  STANDARD_MODULE_STUFF,
+  NULL,				/* initializer */
+  create_cntr_dir_config_rec,	/* dir config creater */
+  NULL, 			/* dir merger --- default is to override */
+  create_cntr_srv_config_rec,	/* server config */
+  NULL,				/* merge server config */
+  cntr_cmds,			/* command table */
+  NULL,				/* handlers */
+  NULL,				/* filename translation */
+  NULL,				/* check_user_id */
+  NULL,				/* check auth */
+  NULL,				/* check access */
+  NULL,				/* type_checker */
+  cntr_update,			/* fixups */
+  NULL				/* logger */
+};

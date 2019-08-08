@@ -1,0 +1,435 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Introduction to MapReduce with Hadoop on Linux
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;You're an ace at log forensics, but what tool will you reach for when you&#10;are given 100 10GB files and an hour to process them? Probably&#10;not sed or grep.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1313580.0x140aac0"></a>
+Introduction to MapReduce with Hadoop on Linux
+</h1></div><div><div class="author"><h3 class="author">
+Adam
+ 
+Monsen
+</h3></div><div class="issuemoyr">Issue #228, April 2013</div></div><div><p>
+You're an ace at log forensics, but what tool will you reach for when you
+are given 100 10GB files and an hour to process them? Probably
+not sed or grep.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x140b250"></a></h2></div></div><p>
+When your data and work grow, and you still want to produce results in a
+timely manner, you start to think big. Your one beefy server reaches its
+limits. You need a way to spread your work across many computers. You
+truly need to scale out.
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+In pioneer days they used oxen for heavy pulling, and when
+one ox couldn't budge a log, they didn't try to grow a larger ox. We
+shouldn't be trying for bigger computers, but for more systems of
+computers.&mdash;Grace Hopper
+</p></blockquote></div><p>
+Clearly, cluster computing is old news. What's changed? Today:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+We collect more data than ever before.
+</p></li><li><p>
+Even small-to-medium-size businesses can benefit from tools like Hadoop and
+MapReduce.
+</p></li><li><p>
+You don't have to have a PhD to create and use your own cluster. 
+</p></li><li><p>
+Many decent free/libre open-source tools can help you easily cluster commodity
+hardware.
+</p></li></ul></div><p>
+Let me start with some simple examples that will run on one machine and
+scale to meet larger demands. You can try them on your laptop and then
+transition to a larger cluster&mdash;like one you've built with commodity
+Linux machines, your company or university's Hadoop cluster or Amazon
+Elastic MapReduce.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x140b7d0"></a>
+Parallel Problems</h2></div></div><p>
+Let's start with problems that can be divided into smaller
+independent units of work. These problems are roughly classified as
+&ldquo;embarrassingly parallel&rdquo; and are&mdash;as the term
+suggests&mdash;suitable for
+parallel processing. Examples:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Classify e-mail messages as spam.
+</p></li><li><p>
+Transcode video.
+</p></li><li><p>
+Render an Earth's worth of map tile images.
+</p></li><li><p>
+Count logged lines matching a pattern.
+</p></li><li><p>
+Figure out errors per day of week for a particular application.
+</p></li></ul></div><p>
+Now the hard work begins. Parallel computing is complex. Race conditions,
+partial failure and synchronization impede our progress. Here's where
+MapReduce saves our proverbial bacon.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x140bda8"></a>
+MapReduce by Example</h2></div></div><p>
+MapReduce is a coding pattern that abstracts much of the tricky bits of
+scalable computations. We're free to focus on the problem at hand, but
+it takes practice. So let's practice!
+</p><p>
+Say you have 100 10GB log files from some custom
+application&mdash;roughly a petabyte of data. You do a quick test and estimate
+it will take your desktop days do grep every line (assuming you even could
+fit the data on your desktop). And, that's before you add in logic to
+group by host and calculate totals. Your tried-and-true shell utilities
+won't help, but MapReduce can handle this without breaking a sweat.
+</p><p>
+First let's look at the raw data. Log lines from the custom application
+look like this:
+
+<pre     class="programlisting">
+localhost: restarting
+dsl5.example.com: invalid user 'bart'
+dsl5.example.com: invalid user 'charlie'
+dsl5.example.com: invalid user 'david'
+dsl8.example.net: invalid password for user 'admin'
+dsl8.example.net: user 'admin' logged in
+</pre>
+</p><p>
+The log format is hostname, colon, message. Your boss suspects someone
+evil is trying to brute-force attack the application. The same host
+trying many different user names may indicate an attack. He wants totals
+of &ldquo;invalid user&rdquo; messages grouped by hostname. Filtering the above
+log lines should yield:
+
+<pre     class="programlisting">
+dsl5.example.com        3
+</pre>
+</p><p>
+With gigabytes of log files, your trusty shell tools do just fine. For a
+terabyte, more power is needed. This is a job for Hadoop and MapReduce.
+</p><p>
+Before getting to Hadoop, let's summon some Python and test locally on a
+small dataset. I'm assuming you have a recent Python installed. I tested
+with Python 2.7.3 on Ubuntu 12.10.
+</p><p>
+The first program to write consumes log lines from our custom
+application. Let's call it map.py:
+
+<pre     class="programlisting">
+#!/usr/bin/python
+import sys
+for line in sys.stdin:
+  if 'invalid user' in line:
+    host = line.split(':')[0]
+    print '%s\t%s' % (host, 1)
+</pre>
+</p><p>
+map.py prints the hostname, a tab character and the number 1 any time
+it sees a line containing the string &ldquo;invalid user&rdquo;. Write the example
+log lines to log.txt, then test map.py:
+
+<pre     class="programlisting">
+
+chmod 755 map.py
+./map.py &lt; log.txt
+
+</pre>
+</p><p>
+The output is:
+
+<pre     class="programlisting">
+dsl5.example.com        1
+dsl5.example.com        1
+dsl5.example.com        1
+</pre>
+</p><p>
+Output of map.py will be piped into our next program, reduce.py:
+
+<pre     class="programlisting">
+#!/usr/bin/python
+import sys
+last_host = None
+last_count = 0
+host = None
+for line in sys.stdin:
+  host, count = line.split('\t')
+  count = int(count)
+  if last_host == host:
+    last_count += count
+  else:
+    if last_host:
+      print '%s\t%s' % (last_host, last_count)
+    last_host = host
+    last_count = count
+if last_host == host:
+  print '%s\t%s' % (last_host, last_count)
+</pre>
+</p><p>
+reduce.py totals up consecutive lines of a particular host. Let's assume
+lines are grouped by hostname. If we see the same hostname, we increment
+a total. If we encounter a different hostname, we print the total so
+far and reset the total and hostname. When we exhaust standard input, we
+print the total if necessary. This assumes lines with the same hostname
+always appear consecutively. They will, and I'll address why later. Test
+by piping it together with map.py like so:
+
+<pre     class="programlisting">
+
+chmod 755 reduce.py
+./map.py &lt; log.txt | sort | ./reduce.py
+
+</pre>
+</p><p>
+Later, I'll explain why I added sort to the pipeline. This prints:
+
+<pre     class="programlisting">
+dsl5.example.com        3
+</pre>
+</p><p>
+Exactly what we want. A successful test! Our test log lines contain three
+&ldquo;invalid user&rdquo; messages for the host dsl5.example.com. Later we'll get
+this local test running on a Hadoop cluster.
+</p><p>
+Let's dive a little deeper. What exactly does map.py do? It transforms
+unstructured log data into tab-separated key-value pairs. It emits a
+hostname for a key, a tab and the number 1 for a value (again, only for
+lines with &ldquo;invalid user&rdquo; messages). Note that any number of log lines
+could be fed to any number of instances of the map.py program&mdash;each line
+can be examined independently. Similarly, each output line of map.py
+can be examined independently.
+</p><p>
+Output from map.py becomes input for reduce.py. The output of reduce.py
+(hostname, tab, number) looks very similar to its input. This is by
+design. Key-value pairs may be reduced multiple times, so reduce.py
+must handle this gracefully. If we were to re-reduce our final answer,
+we would get the exact same result. This repeatable, predictable behavior
+of reduce.py is known as idempotence.
+</p><p>
+We just tested with one instance of reduce.py, but you could imagine
+many instances of reduce.py handling many lines of output from
+map.py. Note that this works only if lines with the same hostname appear
+consecutively. In our test, we enforce this constraint by adding sort
+to the pipeline. This simulates how our code behaves within Hadoop
+MapReduce. Hadoop will group and sort input to reduce.py similarly.
+</p><p>
+We don't have to bother with how execution will proceed and how many
+instances of map.py and reduce.py will run. We just follow the MapReduce
+pattern and Hadoop does the rest.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x140c8a8"></a>
+MapReduce with Hadoop</h2></div></div><p>
+Hadoop is mostly a Java framework, but the magically awesome Streaming
+utility allows us to use programs written in other languages. The program
+must only obey certain conventions for standard input and output (which
+we've already done).
+</p><p>
+You'll need Java 1.6.x or later (I used OpenJDK 7). The rest can and
+should be performed as a nonroot user.
+</p><p>
+Download the latest stable Hadoop tarball (see Resources). Don't
+use a distro-specific (.rpm or .deb) package. I'm assuming you downloaded
+hadoop-1.0.4.tar.gz. Unpack this and change into the hadoop-1.0.4
+directory. The directory hadoop-1.0.4 and the files map.py, reduce.py
+and log.txt should be in /tmp. If not, adjust the paths in the examples
+below as necessary.
+</p><p>
+Run the job on Hadoop like so:
+
+<pre     class="programlisting">
+cd /tmp/hadoop-1.0.4
+bin/hadoop jar \
+  contrib/streaming/hadoop-streaming-1.0.4.jar \
+  -mapper /tmp/map.py -reducer /tmp/reduce.py \
+  -input /tmp/log.txt -output /tmp/output
+</pre>
+</p><p>
+Hadoop will log some stuff to the console. Look for the following:
+
+<pre     class="programlisting">
+...
+INFO streaming.StreamJob:  map 0%  reduce 0%
+INFO streaming.StreamJob:  map 100%  reduce 0%
+INFO streaming.StreamJob:  map 100%  reduce 100%
+INFO streaming.StreamJob: Output: /tmp/output
+</pre>
+</p><p>
+This means our job completed successfully. I see a file called
+/tmp/output/part-00000, which contains just what we expect:
+
+<pre     class="programlisting">
+dsl5.example.com        3
+</pre>
+</p><p>
+Now is a good time to pause, smile and reward yourself with a quad-shot
+grande iced caramel macchiato. You're a rockstar.
+</p><div       class="mediaobject"><a href="11456f1.large.jpg"><img src="11456f1.jpg"></a><div class="caption"><p>
+Figure 1. Here's what we did during the map and reduce steps. The transformations we
+performed allow us to run many mappers and reducers on as many machines
+as we want. Hadoop takes care of the gory details. It starts mappers
+and reducers, passes data between them and spits out the answer.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x1403768"></a>
+Clustered MapReduce</h2></div></div><p>
+If you've got everything working so far, try starting your own cluster
+too! Running Hadoop on a single physical machine with multiple Java
+virtual machines is called pseudo-distributed operation.
+</p><p>
+Pseudo-distributed operation requires some configuration. The user you're
+running Hadoop as must also be able to make SSH passwordless connections
+to localhost. Installing and configuring this is beyond the scope of this
+article, but you'll find more information in the &ldquo;Single Node
+Setup&rdquo;
+tutorial mentioned in Resources. If you started with the 1.0.4 tarball
+release recommended above, the tutorial should work verbatim on any
+standard GNU/Linux distribution.
+</p><p>
+If you set up pseudo-distributed (or distributed) Hadoop, you'll gain
+the benefit of two spartan-but-useful Web interfaces. The NameNode Web
+interface allows you to browse logs and browse the Hadoop distributed
+filesystem. The JobTracker Web interface allows you to monitor MapReduce
+jobs and debug problems.
+</p><div       class="mediaobject"><a href="11456f2.large.jpg"><img src="11456f2.jpg"></a><div class="caption"><p>
+Figure 2. NameNode Web Interface
+</p></div></div><div       class="mediaobject"><a href="11456f3.large.jpg"><img src="11456f3.jpg"></a><div class="caption"><p>
+Figure 3. JobTracker Web Interface
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x1403d40"></a>
+Beautifully Simple Python MapReduce</h2></div></div><p>
+You may wonder why reduce.py (above) is a convoluted mini-state
+machine. This is because hostnames change in the input lines provided by
+Hadoop. The Dumbo Python library (see Resources) hides this detail of
+Hadoop. Dumbo lets us focus even more tightly on our mapping and reducing.
+</p><p>
+In Dumbo, our MapReduce implementation becomes:
+
+
+<pre     class="programlisting">
+def mapper(key, value):
+  if 'invalid user' in value:
+    yield value.split(':')[0], 1
+
+def reducer(key, values):
+  yield key, sum(values)
+
+if __name__ == '__main__':
+  import dumbo
+  dumbo.run(mapper, reducer)
+</pre>
+</p><p>
+The state machine is gone. Dumbo takes care of grouping by key (hostname).
+</p><p>
+Save the above code in a file called /tmp/smart.py. Install Dumbo. See
+Resources for a link, and don't worry, it's easy. Once Dumbo is installed,
+run the code:
+
+<pre     class="programlisting">
+cd /tmp
+dumbo start smart.py -hadoop hadoop-1.0.4 \
+  -input log.txt -output totals \
+  -outputformat text
+</pre>
+</p><p>
+Finally, examine the output:
+
+<pre     class="programlisting">
+cat totals/part-00000
+</pre>
+</p><p>
+The content should match our earlier result from Hadoop Streaming.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x1404160"></a>
+Non-Use Cases</h2></div></div><p>
+Hadoop is great for one-time jobs and off-line batch processing, especially
+where the data is already in the Hadoop filesystem and will be read many
+times. My first example makes more sense if you assume this. Perhaps
+the job must be run daily and must finish within a few minutes.
+</p><p>
+Consider some cases when Hadoop is the wrong tool. Small dataset? Don't
+bother. In a one-meter race between a rocket and a scooter, the scooter
+is gone before the rocket's engines are started. Transactional data
+storage for a Web site? Try MySQL or MongoDB instead.
+</p><p>
+Hadoop also won't help you process data as it arrives. This is often
+referred to as &ldquo;real time&rdquo; or &ldquo;streaming&rdquo;. For
+that, consider Storm (see
+Resources for more information).
+</p><p>
+With practice, you'll quickly be able to discern when Hadoop is the right
+tool for the job.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1313580.0x1404420"></a></h2></div></div><div class="sidebar"><p class="title"><b>Resources</b></p><p>
+You can download the latest stable Hadoop tarball from
+<a href="http://hadoop.apache.org/releases.html#Download" target="_self">hadoop.apache.org/releases.html#Download</a>.
+</p><p>
+See <a href="http://hadoop.apache.org/docs/current/single_node_setup.html" target="_self">hadoop.apache.org/docs/current/single_node_setup.html</a> for
+information on how to run a pseudo-distributed Hadoop cluster.
+</p><p>
+Check out Dumbo at <a href="http://projects.dumbotics.com/dumbo" target="_self">projects.dumbotics.com/dumbo</a>
+if you want to do more with MapReduce in Python. See
+<a href="https://github.com/klbostee/dumbo/wiki/Building-and-installing" target="_self">https://github.com/klbostee/dumbo/wiki/Building-and-installing</a> for install
+instructions and <a href="https://github.com/klbostee/dumbo/wiki/Short-tutorial" target="_self">https://github.com/klbostee/dumbo/wiki/Short-tutorial</a>
+for an excellent tutorial.
+</p><p>
+See <a href="https://github.com/nathanmarz/storm" target="_self">https://github.com/nathanmarz/storm</a> for information on Storm,
+a real-time distributed computing system.
+</p><p>
+To run Storm and Hadoop and manage both centrally, check out the Mesos
+project at <a href="http://www.mesosproject.org" target="_self">www.mesosproject.org</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Adam Monsen is a seasoned software engineer and FLOSS zealot. He lives
+with his wonderful wife and children in Seattle, Washington. He blogs
+semi-regularly at <a href="http://adammonsen.com" target="_self">adammonsen.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../228/toc228.html">Issue Table of Contents</a>
+    <a class="link3" href="../228/11456.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

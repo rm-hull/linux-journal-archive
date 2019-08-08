@@ -1,0 +1,219 @@
+/*
+ * showdate.c -- show date and time as per the command line options specified
+ *
+ * Written by Sandeep Sahore <ssahore@yahoo.com>
+ *
+ * The showdate program computes and prints the date in the past, present, or future
+ * offset from the current date according to the command line options specified. The
+ * default output format is to display the date and time according to the "%c" format
+ * specification of the UNIX date(1) command however this can modified by giving the
+ * "-f" switch along with a format string. If invoked without any command line options
+ * the program abends and displays usage.
+ *
+ * $Id: showdate.c,v 1.6 2002/06/18 23:04:01 ssahore Exp $
+ */
+
+#include <stdio.h>
+#include <ctype.h>
+#include <stdlib.h>
+#include <time.h>
+
+void ckarg(char *, char);                      /* check arguments given to the command-line options */
+char *progname(char *);                        /* get the basename of the program */
+char *eofarg(char *);                          /* find the end of argument string */
+void ckfarg(char *);                           /* check the validity of options in the format string */
+void usage(char *);                            /* print usage upon error */
+void ckopts(int);                              /* abend if both "-e" and "-f" options are given */
+
+char *prog, *cp;                               /* store the command name in the variable prog */
+time_t limit;                                  /* store the value when timekeeping overflows */
+
+int main(int argc, char *argv[])
+{
+    int c, flag, epoch;
+    struct tm *ptm;
+    char *optarg, *farg, buf[BUFSIZ];
+    time_t limit, esec, stp, *tp = &stp;
+
+    epoch = flag = 0;
+    prog = *argv;
+    esec = time(tp);
+    ptm = localtime(tp);
+
+    prog = progname(prog);
+
+    if (argc == 1)                             /* print usage and abend if invoked without arguments */
+        usage(prog);
+
+    limit = (~limit < 0) ? ~(~limit << (sizeof(time_t) * 8) - 1) : ~limit;
+
+    while (--argc > 0 && (*++argv)[0] == '-') {
+
+        /* abend if a standalone dash is encountered */
+        if (!*(argv[0] + 1))
+            usage(prog);
+
+        while (c = *++argv[0])
+            switch (c)
+            {
+                /* process the date and time options alongwith their arguments */
+                case 'y': case 'm': case 'd': case 'h': case 'M': case 's':
+                    if (*++argv[0])
+                        optarg = argv[0];
+                    else
+                        optarg = *++argv, argc--;
+                    ckarg(optarg, c);
+
+                    if (c == 'y')
+                        ptm->tm_year += atoi(optarg);
+                    else if (c == 'm')
+                        ptm->tm_mon += atoi(optarg);
+                    else if (c == 'd')
+                        ptm->tm_mday += atoi(optarg);
+                    else if (c == 'h')
+                        ptm->tm_hour += atoi(optarg);
+                    else if (c == 'M')
+                        ptm->tm_min += atoi(optarg);
+                    else if (c == 's')
+                        ptm->tm_sec += atoi(optarg);
+
+                    argv[0] = eofarg(optarg);
+                    break;
+
+                /* display the seconds elapsed since the UNIX epoch */
+                case 'e':
+                    ckopts(flag);
+                    epoch++;
+                    break;
+
+                /* formatting directives to tweak the default output */
+                case 'f':
+                    ckopts(epoch);
+                    if (*++argv[0])
+                        farg = argv[0];
+                    else {
+                        if (farg = *++argv)
+                            argc--;
+                        else
+                            fprintf(stderr, "%s: argument required for  option -- %c\n",
+                                prog, c), usage(prog);
+                    }
+                    ckfarg(farg);
+                    argv[0] = eofarg(farg);
+                    flag++;
+                    break;
+
+                default:
+                    fprintf(stderr, "%s: illegal option -- %c\n", prog, c);
+                    usage(prog);
+            }
+    }
+
+    /* abend if arguments are leftover */
+    if (argc)
+        usage(prog);
+/*
+ * after checking system limits print desired date and time
+ */
+    if (mktime(ptm) < 0)
+        fprintf(stderr, "%s: required time exceeds system limit\n", prog);
+    else {
+        if (flag)
+            strftime(buf, sizeof buf, farg, ptm);
+        else if (epoch)
+            fprintf(stderr,"seconds since epoch %lu", mktime(ptm));
+        else
+            strftime(buf, sizeof buf, "%c", ptm);
+        printf("%s\n", buf);
+    }
+    return 0;
+}
+/*
+ * check arguments supplied to each of the command line options
+ */
+void ckarg(char *optarg, char c)
+{
+    char *temp = optarg;
+
+    if (*optarg == '-' || *optarg == '+' || isdigit(*optarg))
+            ++optarg;
+    else if (!*optarg)
+        fprintf(stderr, "%s: argument required for option -%c\n",
+            prog, c), usage(prog);
+    else
+        fprintf(stderr, "%s: error in processing argument %s\n",
+            prog, temp), usage(prog);
+
+    while (*optarg) {
+        if (isdigit(*optarg))
+            ++optarg; 
+        else
+            fprintf(stderr, "%s: error in processing argument %s\n",
+                prog, temp), usage(prog);
+    }
+}
+/*
+ * check arguments given to the "-f" command line option
+ */
+void ckfarg(char *farg)
+{
+    int c;
+
+    while (c = *farg++)
+        if (c == '%')
+            if (c = *farg++)
+                switch (c)
+                {
+                    case 'a': case 'A': case 'b': case 'B': case 'c': case 'C': case 'd': case 'e':
+                    case 'E': case 'H': case 'I': case 'j': case 'm': case 'M': case 'n': case 'N':
+                    case 'o': case 'p': case 'R': case 'S': case 't': case 'u': case 'U': case 'V':
+                    case 'w': case 'W': case 'x': case 'X': case 'y': case 'Y': case 'Z': case '%':
+                        break;
+                    default:
+                        fprintf(stderr, "%s: bad format character - %c\n", prog, c);
+                        exit(2);
+                }
+}
+/*
+ * end abnormally if both "-e" and "-f" options are given
+ */
+void ckopts(int flag)
+{
+    if (flag)
+        fprintf(stderr, "%s: cannot specify both -e and -f options\n",
+            prog), usage(prog);
+}
+/*
+ * find the end of the argument string
+ */
+char *eofarg(char *optarg)
+{
+    while(*optarg)
+        ++optarg;
+    return --optarg;
+}
+/*
+ * get the basename of the program
+ */
+char *progname(char *cp)
+{
+    while (*cp)
+        ++cp;
+    --cp;
+
+    while (*cp) {
+        if (*cp == '/')
+            return ++cp; 
+        --cp;
+    } 
+    return ++cp;
+}
+/*
+ * print usage and abend if an error is encountered during processing
+ */
+void usage(char *prog)
+{
+    fprintf(stderr, "usage: %s\n\t[-y [+|-]years]\n\t[-m [+|-]months]\n\t[-d [+|-]days]\n\t"
+        "[-h [+|-]hours]\n\t[-M [+|-]minutes]\n\t[-s [+|-]seconds]\n\t[-e | -f format]\n", prog);
+    exit(1);
+}

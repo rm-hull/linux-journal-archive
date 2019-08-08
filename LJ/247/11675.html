@@ -1,0 +1,551 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Sharing Admin Privileges for Many Hosts Securely 
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The ssh-agent program can hold your decrypted authentication keys&#10;in memory. This makes a lot of things possible&mdash;one of them is&#10;controlling shared accounts on large numbers of hosts.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x24eb580.0x25e2ac0"></a>
+Sharing Admin Privileges for Many Hosts Securely 
+</h1></div><div><div class="author"><h3 class="author">
+J. D. 
+ 
+Baldwin
+</h3></div><div class="issuemoyr">Issue #247, November 2014</div></div><div><p>
+The ssh-agent program can hold your decrypted authentication keys
+in memory. This makes a lot of things possible&mdash;one of them is
+controlling shared accounts on large numbers of hosts.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x25e3250"></a></h2></div></div><p>
+The problem:
+you have a large team of admins, with a substantial turnover rate. Maybe
+contractors come and go. Maybe you have tiers of access, due to
+restrictions based on geography, admin level or even citizenship (as with
+some US government contracts). You need to give these people
+administrative access to dozens (perhaps hundreds) of hosts, and you can't
+manage all their accounts on all the hosts.
+</p><p>
+This problem arose in the large-scale enterprise in which I work, and our
+team worked out a solution that:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Does <span   class="emphasis"><em>not</em></span> require updating accounts on more than one host whenever a
+team member arrives or leaves.
+</p></li><li><p>
+Does <span   class="emphasis"><em>not</em></span> require deletion or replacement of Secure
+Shell (SSH) keys.
+</p></li><li><p>
+Does <span   class="emphasis"><em>not</em></span> require management of individual SSH keys.
+</p></li><li><p>
+Does <span   class="emphasis"><em>not</em></span> require distributed sudoers or other privileged-access
+management tools (which may not be supported by some Linux-based
+appliances anyway).
+</p></li><li><p>
+And most important,
+does <span   class="emphasis"><em>not</em></span> require sharing of passwords or key
+passphrases.
+</p></li></ul></div><p>
+It works between any UNIX or Linux platforms that understand SSH key trust
+relationships. I personally have made use of it on a half-dozen different
+Linux distros, as well as Solaris, HP-UX, Mac OS X and some BSD variants.
+</p><p>
+In our case, the hosts to be managed were several dozen Linux-based
+special-purpose appliances that did not support central account management
+tools or sudo. They are intended to be used (when using the shell at all)
+as the root account.
+</p><p>
+Our environment also (due to a government contract) requires a two-tier
+access scheme. US citizens on the team may access any host as root.
+Non-US citizens may access only a subset of the hosts. The techniques
+described in this article may be extended for <span   class="emphasis"><em>N</em></span> tiers without any real
+trouble, but I describe the case N == 2 in this article.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x25e3b40"></a>The Scenario</h2></div></div><p>
+I am going to assume you, the reader, know how to set up an SSH trust
+relationship so that an account on one host can log in directly, with no
+password prompting, to an account on another. (Basically, you simply
+create a key pair and copy the public half to the remote host's
+~/.ssh/authorized_keys file.) If you don't know how to do this, stop
+reading now and go learn. A Web search for &ldquo;ssh trust setup&rdquo; will yield
+thousands of links&mdash;or, if you're old-school, the AUTHENTICATION section
+of the ssh(1) man page will do. Also see ssh-copy-id(1), which can greatly
+simplify the distribution of key files.
+</p><p>
+Steve Friedl's Web site has an excellent Tech Tip on these basics, plus some
+material on SSH agent-forwarding, which is a neat trick to centralize SSH
+authentication for an individual user. The Tech Tip is available at
+<a href="http://www.unixwiz.net/techtips/ssh-agent-forwarding.html" target="_self">www.unixwiz.net/techtips/ssh-agent-forwarding.html</a>.
+</p><p>
+I describe key-caching below, as it is not very commonly used and is
+the heart of the technique described herein.
+</p><p>
+For illustration, I'm assigning names to players (individuals assigned to
+roles), the tiers of access and &ldquo;dummy&rdquo; accounts.
+</p><p>
+Hosts:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+darter &mdash; the hostname of the central management host on which all the
+end-user and utility accounts are active, all keys are stored and caching
+takes place; also, the sudoers file controlling access to utility accounts
+is here.
+</p></li><li><p>
+n1, n2, ... &mdash; hostnames of target hosts for which access is to be granted
+for <span   class="emphasis"><em>all</em></span> team members (&ldquo;n&rdquo; for
+&ldquo;non-special&rdquo;).
+</p></li><li><p>
+s1, s2, ... &mdash; hostnames of target hosts for which access is to be granted
+only to <span   class="emphasis"><em>some</em></span> team members (&ldquo;s&rdquo; for
+&ldquo;special&rdquo;).
+</p></li></ul></div><p>
+Accounts (on darter only):
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+univ &mdash; the name of the utility account holding the SSH keys that all
+target hosts (u1, u2, ...) will trust.
+</p></li><li><p>
+spec &mdash; the name of the utility account holding the SSH keys that only
+special, restricted-access, hosts (s1, s2, ...) will trust.
+</p></li><li><p>
+joe &mdash; let's say the name of the guy administering the whole scheme
+is &ldquo;Joe&rdquo; and his account is &ldquo;joe&rdquo;. Joe is a
+trusted admin with &ldquo;the keys to
+the kingdom&rdquo;&mdash;he cannot be a restricted user.
+</p></li><li><p>
+andy, amy &mdash; these are users who are allowed to log in to all hosts.
+</p></li><li><p>
+alice
+</p></li><li><p>
+ned, nora &mdash; these are users who are allowed to log in
+<span   class="emphasis"><em>only</em></span> to &ldquo;n&rdquo;
+(non-special) hosts; they never should be allowed to log in to special
+hosts s1, s2, ...
+</p></li><li><p>
+nancy  
+</p></li></ul></div><p>
+You will want to create shared, unprivileged utility accounts on darter for
+use by unrestricted and restricted admins. These (per our convention) will
+be called &ldquo;univ&rdquo; and &ldquo;rstr&rdquo;, respectively. No one should actually directly
+log in to univ and rstr, and in fact, these accounts should not have
+passwords or trusted keys of their own. All logins to the shared utility
+accounts should be performed with su(1) from an existing individual account
+on darter.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x25e4b68"></a>
+The Setup</h2></div></div><p>
+Joe's first act is to log in to darter and &ldquo;become&rdquo; the univ account:
+
+<pre     class="programlisting">
+$ sudo su - univ
+</pre>
+</p><p>
+Then, under that shared utility account, Joe creates a .ssh directory and
+an SSH keypair. This key will be trusted by the root account on every
+target host (because it's the &ldquo;univ&rdquo;-ersal key):
+
+<pre     class="programlisting">
+$ mkdir .ssh    # if not already present
+$ ssh-keygen -t rsa -b 2048 -C "universal access 
+ &#8618;key gen YYYYMMDD" -f
+.ssh/univ_key
+   Enter passphrase (empty for no passphrase):
+</pre>
+</p><p>
+<span   class="emphasis"><em>Very important:</em></span> Joe assigns a strong passphrase to this key. The
+passphrase to this key will not be generally shared.
+</p><p>
+(The field after <tt  >-C</tt> is merely a comment; this format reflects my personal
+preference, but you are of course free to develop your own.)
+</p><p>
+This will generate two files in .ssh: univ_key (the private key file) and
+univ_key.pub (the public key file). The private key file is encrypted,
+protected by the very strong passphrase Joe assigned to it, above.
+</p><p>
+Joe logs out of the univ account and into rstr. He executes the same
+steps, but creates a keypair named rstr_key instead of univ_key. He
+assigns a strong passphrase to the private key file&mdash;it can be the same
+passphrase as assigned to univ, and in fact, that is probably preferable
+from the standpoint of simplicity.
+</p><p>
+Joe copies univ_key.pub and rstr_key.pub to a common location for
+convenience.
+</p><p>
+For every host to which access is granted for everyone (n1, n2, ...), Joe
+uses the target hosts' root credentials to copy <span   class="emphasis"><em>both</em></span> univ_key.pub and
+rstr_key.pub (on separate lines) to the file .ssh/authorized_keys under the
+root account directory.
+</p><p>
+For every host to which access is granted for only a few (s1, s2, ...), Joe
+uses the target hosts' root credentials to copy <span   class="emphasis"><em>only</em></span> rstr_key.pub (on a
+single line) to the file .ssh/authorized_keys under the root account
+directory.
+</p><p>
+So to review, now, when a user uses <tt  >su</tt> to &ldquo;become&rdquo; the univ account, he or
+she can log in to <span   class="emphasis"><em>any</em></span> host, because univ_key.pub exists in the
+authorized_keys file of n1, n2, ... and s1, s2, ....
+</p><p>
+However, when a user uses <tt  >su</tt> to &ldquo;become&rdquo; the rstr account, he or she can
+log in <span   class="emphasis"><em>only</em></span> to n1, n2, ..., because those hosts' authorized_keys files
+contain rstr_key.pub, but <span   class="emphasis"><em>not</em></span> univ_key.pub.
+</p><p>
+Of course, in order to unlock the access in both cases, the user will need
+the strong passphrase with which Joe created the keys. That seems to
+defeat the whole purpose of the scheme, but there's a trick to get around
+it.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x29dd7b0"></a>
+The Trick</h2></div></div><p>
+First, let's talk about key-caching.
+Any user who uses SSH keys whose key files are protected by a passphrase
+may cache those keys using a program called ssh-agent. ssh-agent does not
+take a key directly upon invocation. It is invoked as a standalone
+program without any parameters (at least, none useful to us here).
+</p><p>
+The output of ssh-agent is a couple environment variable/value pairs,
+plus an echo command, suitable for input to the shell. If you invoke it
+&ldquo;straight&rdquo;, these variables will not become part of the environment. For
+this reason, ssh-agent always is invoked as a parameter of the shell
+built-in <tt  >eval</tt>:
+
+<pre     class="programlisting">
+$ eval $(ssh-agent)
+Agent pid 29013
+</pre>
+</p><p>
+(The output of <tt  >eval</tt> also includes an echo statement to show you the PID of
+the agent instance you just created.)
+</p><p>
+Once you have an agent running, and your shell knows how to communicate
+with it (thanks to the environment variables), you may cache keys with it
+using the command <tt  >ssh-add</tt>. If you give
+<tt  >ssh-add</tt> a key file, it will prompt
+you for the passphrase. Once you provide the correct passphrase, ssh-agent
+will hold the unencrypted key in memory. Any invocation of SSH will check
+with ssh-agent before attempting authentication. If the key in memory
+matches the public key on the remote host, trust is established, and the
+login simply happens with no entry of passwords or passphrases.
+</p><p>
+(As an aside: for those of you who use the Windows terminal program PuTTY,
+that tool provides a key-caching program called Pageant, which performs
+much the same function. PuTTY's equivalent to ssh-keygen is a utility
+called PuTTYgen.)
+</p><p>
+All you need to do now is set it up so the univ and rstr accounts set
+themselves up on every login to make use of persistent instances of
+ssh-agent. Normally, a user manually invokes ssh-agent upon login, makes
+use of it during that session, then kills it, with <tt  >eval
+$(ssh-agent -k)</tt>,
+before exiting. Instead of manually managing it, let's write into each
+utility account's .bash_profile some code that does the following:
+</p><div class="orderedlist"><ol type="1"><li><p>
+First, check whether there is a current instance of ssh-agent for the
+current account.
+</p></li><li><p>
+If not, invoke ssh-agent and capture the environment variables in a
+special file in /tmp. (It should be in /tmp because the contents of /tmp
+are cleared between system reboots, which is important for managing cached
+keys.)
+</p></li><li><p>
+If so, find the file in /tmp that holds the environment variables
+and source it into the shell's environment.
+(Also, handle the error case where the agent is running and the /tmp file
+is not found by killing ssh-agent and starting from scratch.)
+</p></li></ol></div><p>
+All of the above assumes the key already has been unlocked and cached. (I
+will come back to that.)
+</p><p>
+Here is what the code in .bash_profile looks like for the univ account:
+
+
+<pre     class="programlisting">
+/usr/bin/pgrep -u univ 'ssh-agent' &gt;/dev/null
+
+RESULT=$?
+
+if [[ $RESULT -eq 0 ]]  # ssh-agent is running
+then
+    if [[ -f /tmp/.env_ssh.univ ]]   # bring env in to session
+    then
+        source /tmp/.env_ssh.univ
+    else    # error condition
+        echo 'WARNING:  univ ssh agent running, no environment 
+         &#8618;file found'
+        echo '          ssh-agent being killed and restarted ... '
+        /usr/bin/pkill -u univ 'ssh-agent' &gt;/dev/null
+        RESULT=1     # due to kill, execute startup code below
+    fi
+
+if [[ $RESULT -ne 0 ]] # ssh-agent not running, start 
+ &#8618;it from scratch
+then
+    echo "WARNING:  ssh-agent being started now; 
+     &#8618;ask Joe to cache key"
+    /usr/bin/ssh-agent &gt; /tmp/.env_ssh.univ
+    /bin/chmod 600 /tmp/.env_ssh.univ
+    source /tmp/.env_ssh.univ
+fi
+</pre>
+</p><p>
+And of course, the code is identical for the rstr account, except
+s/univ/rstr/ everywhere.
+</p><p>
+Joe will have to intervene <span   class="emphasis"><em>once</em></span> whenever darter (the central management
+host on which all the user accounts and the keys reside) is restarted. Joe
+will have to log on and become univ and execute the command:
+
+<pre     class="programlisting">
+$ ssh-add ~/.ssh/univ_key
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x29de258"></a></h2></div></div><p>
+and then enter the passphrase. Joe then logs in to the rstr account and
+executes the same command against ~/.ssh/rstr_key. The command <tt  >ssh-add
+-l</tt> lists cached keys by their fingerprints and filenames, so if there is
+doubt about whether a key is cached, that's how to find out. A single
+agent can cache multiple keys, if you have a use for that, but it doesn't
+come up much in my environment.
+</p><p>
+Once the keys are cached, they will stay cached. (<tt  >ssh-add -t
+&lt;N&gt;</tt> may be
+used to specify a timeout of <span   class="emphasis"><em>N</em></span> seconds, but you won't want to use that
+option for this shared-access scheme.) The cache must be rebuilt for each
+account whenever darter is rebooted, but since darter is a Linux host, that
+will be a rare event. Between reboots, the single instance (one per
+utility account) of ssh-agent simply runs and holds the key in memory.
+The
+last time I entered the passphrases of our utility account keys was more
+than
+500 days ago&mdash;and I may go several hundred more before having to do so
+again.
+</p><p>
+The last step is setting up sudoers to manage access to the utility
+accounts. You don't <span   class="emphasis"><em>really</em></span> have to do this. If you like, you can set
+(different) passwords for univ and rstr and simply let the users hold them.
+Of course, shared passwords aren't a great idea to begin with. (That's one
+of the major points of this whole scheme!) Every time one of the users of
+the univ account leaves the team, you'll have to change that password and
+distribute the new one (hopefully securely and out-of-band) to all the
+remaining users.
+</p><p>
+No, managing access with sudoers is a better idea. This article isn't here
+to teach you all of&mdash;or any of&mdash;the ins and outs of sudoers' Extremely
+Bizarre Nonsensical Frustration (EBNF) syntax. I'll just give you the
+cheat code.
+</p><p>
+Recall that Andy, Amy, Alice and so on were all allowed to access all hosts.
+These users are permitted to use sudo to execute the <tt  >su -
+univ</tt> command.
+Ned, Nora, Nancy and so on are permitted to access only the restricted list of
+hosts. They may log in only to the rstr account using the <tt  >su -
+rstr</tt>
+command. The sudoers entries for these might look like:
+
+
+<pre     class="programlisting">
+User_Alias  UNIV_USERS=andy,amy,alice,arthur        # trusted
+User_Alias  RSTR_USERS=ned,nora,nancy,nyarlathotep  # not so much
+
+# Note that there is no harm in putting andy, amy, etc. into
+# RSTR_USERS as well. But it also accomplishes nothing.
+
+Cmnd_Alias  BECOME_UNIV = /bin/su - univ
+Cmnd_Alias  BECOME_RSTR = /bin/su - rstr
+
+UNIV_USERS   ALL= BECOME_UNIV
+RSTR_USERS   ALL= BECOME_RSTR
+</pre>
+</p><p>
+Let's recap. Every host n1, n2, n3 and so on has <span   class="emphasis"><em>both</em></span> univ and rstr key files in
+authorized_keys.
+</p><p>
+Every host s1, s2, s3 and so on has <span   class="emphasis"><em>only</em></span> the univ key file in
+authorized_keys.
+</p><p>
+When darter is rebooted, Joe logs in to both the univ and rstr accounts and
+executes the ssh-add command with the private key file as a parameter. He
+enters the passphrase for these keys when prompted.
+</p><p>
+Now Andy (for example) can log in to darter, execute:
+
+<pre     class="programlisting">
+$ sudo su - univ
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x29dea40"></a></h2></div></div><p>
+and authenticate with his password. He now can log in as root to
+<span   class="emphasis"><em>any</em></span> of
+n1, n2, ..., s1, s2, ... without further authentication. If Andy needs to
+check the functioning of ntp (for example) on each of 20 hosts, he can
+execute a loop:
+
+<pre     class="programlisting">
+$ for H in n1 n2 n3 [...] n10 s1 s2 s3 [...] s10
+&gt; do
+&gt;    ssh -q root@$H 'ntpdate -q timeserver.domain.tld'
+&gt; done
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x29debf8"></a></h2></div></div><p>
+and it will run without further intervention.
+</p><p>
+Similarly, nancy can log in to darter, execute:
+
+<pre     class="programlisting">
+$ sudo su - rstr
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x29dedb0"></a></h2></div></div><p>
+and log in to any of n1, n2 and so on, execute similar loops, and so forth.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x29deeb8"></a>
+Benefits and Risks</h2></div></div><p>
+Suppose Nora leaves the team. You simply would edit sudoers to delete her from
+RSTR_USERS, then lock or delete her system account.
+</p><p>
+&ldquo;But Nora was fired for misconduct! What if she kept a copy of the
+keypair?&rdquo;
+</p><p>
+The beauty of this scheme is that access to the two key files
+<span   class="emphasis"><em>does not matter</em></span>. Having the public key file isn't
+important&mdash;put the public
+key file on the Internet if you want. It's public!
+</p><p>
+Having the encrypted copy of the private key file doesn't matter. Without
+the passphrase (which only Joe knows), that file may as well be the output
+of /dev/urandom. Nora never had access to the raw key file&mdash;only the
+caching agent did.
+</p><p>
+Even if Nora kept a copy of the key files, she cannot use them for access.
+Removing her access to darter removes her access to every target host.
+</p><p>
+And the same goes, of course, for the users in UNIV_USERS as well.
+</p><p>
+There are two caveats to this, and make sure you understand them well.
+</p><p>
+Caveat the first: it (almost) goes without saying that anyone with root
+access to darter obviously can just become root, then <tt  >su -
+univ</tt> at any
+time. If you give someone root access to darter, you are giving that
+person full access to all the target hosts as well. That, after all, is
+the meaning of saying the target hosts &ldquo;trust&rdquo; darter. Furthermore, a user
+with root access who does not know the passphrase to the keys still
+can recover the raw keys from memory with a little moderately sophisticated
+black magic. (Linux memory architecture and clever design of the agent
+prevent non-privileged users from recovering their own agents' memory
+contents in order to extract keys.)
+</p><p>
+Caveat the second: obviously, anyone holding the passphrase can make (and
+keep) an unencrypted copy of the private keys. In our example, only Joe
+had that passphrase, but in practice, you will want two or three trusted
+admins to know the passphrase so they can intervene to re-cache the keys
+after a reboot of darter.
+</p><p>
+If anyone with root access to your central management host (darter, in this
+example) <span   class="emphasis"><em>or</em></span> anyone holding private key passphrases should leave the team,
+you will have to generate new keypairs and replace the contents of
+authorized_keys on every target host in your enterprise. (Fortunately, if
+you are careful, you can use the old trust relationship to create the new
+one.)
+</p><p>
+For that reason, you will want to entrust the passphrase only to
+individuals whose positions on your team are at least reasonably stable.
+The techniques described in this article are probably not suitable for a
+high-turnover environment with no stable &ldquo;core&rdquo; admins.
+</p><p>
+One more thing about this:
+you don't need to be managing tiered or any kind of shared access for this
+basic trick to be useful. As I noted above, the usual way of using
+an SSH
+key-caching agent is by invoking it at session start, caching your key,
+then killing it before ending your session. However, by including the code
+above in your own .bash_profile, you can create your own file in /tmp,
+check for it, load it if present and so on. That way, the host always has just
+one instance of ssh-agent running, and your key is cached in it permanently
+(or until the next reboot, anyway).
+</p><p>
+Even if you don't want to cache your key <span   class="emphasis"><em>that</em></span> persistently, you still
+can make use of a single ssh-agent and cache your key with the timeout (-t)
+option mentioned earlier; you still will be saving yourself a step.
+</p><p>
+Note that if you do this, however, anyone with root on that host will have
+access to any account of yours that trusts your account on that
+machine&mdash; so <span   class="emphasis"><em>caveat actor</em></span>. (I use this trick only on personal boxes that only I
+administer.)
+</p><p>
+The trick for personal use is becoming obsolete, as Mac OS X (via SSHKeyChain)
+and newer versions of GNOME (via Keyring) automatically
+<span   class="emphasis"><em>know</em></span> the first
+time you SSH to a host with which you have a key-based authentication set
+up, then ask you your passphrase and cache the key for the rest of your GUI
+login session. Given the lack of default timeouts and warnings about root
+users' access to unlocked keys, I am not sure this is an unmixed
+technological advance. (It is possible to configure timeouts in both
+utilities, but it requires that users find out about the option, and take
+the effort to configure it.)
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x28f13e0"></a>Acknowledgements</h2></div></div><p>
+I gratefully acknowledge the technical review and helpful suggestions of
+David Scheidt and James Richmond in the preparation of this article.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24eb580.0x28f14e8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+J.D. Baldwin has been a UNIX, Linux and Web user and administrator
+going back to SunOS 1.1 (1984), Slackware 3.0 (1995) and Apache
+1.2 (1997). He currently works in network security for a large
+multinational company. J.D. is a graduate and former faculty
+member of the US Naval Academy and has an MS in Computer
+Science from the University of Maryland. He lives with his wife
+in their empty nest in southwest Michigan. You can reach him at
+<a href="mailto:baldwin@panix.com">baldwin@panix.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../247/toc247.html">Issue Table of Contents</a>
+    <a class="link3" href="../247/11675.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

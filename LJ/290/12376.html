@@ -1,0 +1,603 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"/>
+<link href="https://fonts.googleapis.com/css?family=Lateef" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+<title>ModSecurity and nginx</title>
+
+<link href="../../css/archive.css" type="text/css" rel="stylesheet"/>
+<script type="text/javascript" src="../../js/archive.js"></script>
+<script type="text/javascript" src="../../js/highlight.js"></script>
+</head>
+
+<body class="from_sigil">
+  
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+
+  <div class="tophrdiv">
+  </div>
+
+  
+  <div id="top_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+<h1 class="title">ModSecurity and nginx</h1>
+
+<h2 class="sigil_not_in_toc">nginx is the web server that's replacing Apache in more and more of the
+world's websites. Until now, nginx has not been able to benefit from the
+security ModSecurity provides. Here's how to install ModSecurity
+and get it working with nginx. By Elliot Cooper</h2>
+
+<p>
+Earlier this year the popular open-source web application firewall,
+ModSecurity, released version 3 of its software. Version 3 is a
+significant departure from the earlier versions, because it's now
+modularized. Before version 3, ModSecurity worked only with the Apache
+web server as a dependent module, so there was no way for other HTTP
+applications to utilize ModSecurity. Now the core functionality of
+ModSecurity, the HTTP filtering engine, exists as a standalone library,
+libModSecurity, and it can be integrated into any other application via
+a "connector". A connector is a small piece of code that allows any
+application to access libModSecurity.
+</p>
+
+<p>
+A Web Application Firewall (WAF) is a type of firewall for HTTP
+requests. A standard firewall inspects data packets as they arrive and
+leave a network interface and compares the properties of the packets
+against a list of rules. The rules dictate whether the firewall will
+allow the packet to pass or get blocked.
+</p>
+
+<p>
+ModSecurity performs the same task as a standard firewall, but instead of
+looking at data packets, it inspects HTTP traffic as it arrives at the
+server. When an HTTP request arrives at the server, it's first routed
+through ModSecurity before it's routed on to the destination application,
+such as Apache2 or nginx. ModSecurity compares the inbound HTTP request
+against a list of rules. These rules define the form of a malicious or
+harmful request, so if the incoming request matches a rule, ModSecurity
+blocks the request from reaching the destination application where it
+may cause harm.
+</p>
+
+<p>
+The following example demonstrates how ModSecurity protects a WordPress
+site. The following HTTP request is a non-malicious request for the
+index.php file as it appears in Apache2's log files:
+
+</p>
+<pre><code>
+GET /index.php HTTP/1.1
+</code>
+</pre>
+<p></p>
+
+<p>
+This request does not match any rules, so ModSecurity allows it onto the web server.
+</p>
+
+<p>
+WordPress keeps much of its secret information, such as the database
+password, in a file called wp-config.php, which is located in the same
+directory as the index.php file. A careless system administrator may
+leave this important file unprotected, which means a web server
+like Apache or nginx happily will serve it. This is because they will
+serve any file that is not protected by specific configuration. This
+means that the following malicious request:
+
+</p>
+<pre><code>
+GET /wp-config.php HTTP/1.1
+</code>
+</pre>
+<p></p>
+
+<p>
+will be served by Apache to whomever requests it.
+</p>
+
+<p>
+This is where ModSecurity offers protection to an application accepting
+HTTP data. In this case, the free, core ModSecurity ruleset contains
+rules to deny any HTTP request that attempts to access any sensitive
+file in a WordPress installation. The core ruleset also contains rules
+for another popular CMS, Drupal.
+</p>
+
+<p>
+The core ruleset also contains rules covering the many other ways
+that HTTP requests can be constructed maliciously to gain access or
+confidential information from a website. These methods include SQL
+injection, vulnerability scanning, Java and PHP exploits and many
+more. ModSecurity also supports custom rules, so you can protect your
+HTTP application against specifically targeted attacks by writing your
+own rules.
+</p>
+
+<p>
+First let's install the core ModSecurity library,
+libModSecurity, and then let's install the nginx connector that enables
+nginx to use ModSecurity. Before version 3, it wasn't possible to
+use ModSecurity with nginx. If you are using Apache2, you should continue
+to use ModSecurity version 2, as the Apache2 connector is still quite
+buggy and not recommended for production use.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Compiling and Installing libModSecurity</h3>
+
+<p>
+ModSecurity3 isn't available via the package manager for any of the
+major Linux distributions. Instead, you'll need to clone the ModSecurity GitHub
+repository and build the library from its source code. Before you can do
+that though, you must install all of the required build tools and dependencies. The
+following list of packages provides all of the required and most of
+the optional discrepancies on Debian and Ubuntu distributions:
+bison, flex, make, automake, gcc, pkg-config, libtool, doxygen, git, curl, zlib1g-dev, libxml2-dev, libpcre3-dev, build-essential, libyajl-dev, yajl-tools, liblmdb-dev, rdmacm-utils, libgeoip-dev, libcurl4-openssl-dev, liblua5.2-dev, libfuzzy-dev, openssl and libssl-dev.
+</p>
+
+<p>
+Note that some of those packages have different names on Red Hat-based
+distributions. This <a href="https://github.com/SpiderLabs/ModSecurity/wiki/Compilation-recipes-for-v3.x">page</a> will help you figure out what the specific
+package names are.
+</p>
+
+<p>
+After installing those packages, you can move on to compiling the
+library. These instructions are distribution-agnostic.
+</p>
+
+<p>
+First, clone the libModSecurity git repository, which will download
+all the source code you need to build the libModSecurity. Use
+the /opt/ directory as the destination for all source code. Move to the
+/opt/ directory, and clone the libModSecurity git repository with the
+following commands:
+
+</p>
+<pre><code>
+cd /opt/
+git clone https://github.com/SpiderLabs/ModSecurity
+</code>
+</pre>
+<p></p>
+
+<p>
+Next, move into the new directory that you created when you
+cloned the ModSecurity repository, and switch to the v3 branch. You'll
+also need to pull in a couple necessary sub-modules:
+
+</p>
+<pre><code>
+cd ModSecurity
+git checkout v3/master
+git submodule init
+git submodule update
+</code>
+</pre>
+<p></p>
+
+<p>
+You're now ready to build libModSecurity. This should be a familiar
+process to anyone who has compiled a program from source code. You need
+only the following three commands to compile and install the library:
+
+</p>
+<pre><code>
+sh build.sh
+./configure
+make
+make install
+</code>
+</pre>
+<p></p>
+
+<p>
+The <code>make</code> command takes a few minutes if you are running this on
+a modest virtual server. The libModSecurity library now is installed
+at /usr/local/modsecurity/lib/libmodsecurity.so. However, it can't do
+anything until you install an application and connector that will redirect
+the HTTP data to the libModSecurity library along with some rules. The next
+section looks at installing the nginx connector and the core ruleset provided by the ModSecurity developers.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Compiling the nginx Connector</h3>
+
+<p>
+Let's compile the nginx connector by utilizing nginx's capability of
+dynamic loading of third-party modules. nginx has been able to do this
+since version 1.11.5. This version or one higher is not available from
+the standard repositories of most of the major distributions. nginx
+provides repositories for the current stable releases of Red Hat/CentOS,
+Debian and Ubuntu that contain a version that supports dynamic module
+loading. This <a href="https://www.nginx.com/resources/wiki/start/topics/tutorials/install">page</a> lists these repositories along with information for adding the nginx repository to your
+distribution. After you have added the nginx repository to your repository
+configuration, you need to install nginx using your package manager. When
+you have installed nginx, find the version you installed
+with this command:
+
+</p>
+<pre><code>
+nginx -v
+</code>
+</pre>
+<p></p>
+
+<p>
+When you have the version number, change to the /opt/ directory and download
+the source code that matched your nginx version from this <a href="http://nginx.org/download">page</a>,
+and unpack the archive that you downloaded.
+</p>
+
+<p>
+Next, you need to clone the git repository for the ModSecurity nginx
+connector. From the /opt/ directory, run the following command to clone
+this repository:
+
+</p>
+<pre><code>
+git clone https://github.com/SpiderLabs/ModSecurity-nginx
+</code>
+</pre>
+
+
+<p>
+Now change into the new directory that you created when you unpacked
+the nginx source archive. In that directory, run the following commands
+to compile the connector:
+
+</p>
+<pre><code>
+./configure --with-compat 
+ ↪--add-dynamic-module=/opt/ModSecurity-nginx
+make modules
+</code>
+</pre>
+<p></p>
+
+<p>
+Now you need to copy the connector module into the nginx modules directory
+with this command:
+
+</p>
+<pre><code>
+cp objs/ngx_http_modsecurity_module.so /etc/nginx/modules/
+</code>
+</pre>
+<p></p>
+
+<p>
+Now that you've compiled the nginx connector and copied it to the right
+location, you need to configure nginx to use it. In addition, you also
+need to download the rules that libModSecurity will use to filter the HTTP data.
+</p>
+
+<p>
+First, move to the nginx configuration directory:
+
+</p>
+<pre><code>
+cd /etc/nginx/
+</code>
+</pre>
+<p></p>
+
+<p>
+and add the following line to the nginx's main configuration file at
+/etc/nginx/nginx.conf:
+
+</p>
+<pre><code>
+load_module modules/ngx_http_modsecurity_module.so;
+</code>
+</pre>
+<p></p>
+
+<p>
+You need to put this line in the first section under the line that begins
+<code>pid</code> and not in either the <code>events</code> or <code>http</code> sections.
+</p>
+
+<p>
+Next, create a new directory and load the ModSecurity rules
+and configuration into it:
+
+</p>
+<pre><code>
+mkdir /etc/nginx/modsec
+cd /etc/nginx/modsec
+git clone https://github.com/SpiderLabs/
+↪owasp-modsecurity-crs.git
+</code>
+</pre>
+<p></p>
+
+<p>
+Use the ModSecurity rules configuration file that was downloaded
+from the git repository by renaming it with the following command:
+
+</p>
+<pre><code>
+mv /etc/nginx/modsec/owasp-modsecurity-crs/
+↪crs-setup.conf.example /etc/nginx/modsec/
+↪owasp-modsecurity-crs/crs-setup.conf
+</code>
+</pre>
+<p></p>
+
+<p>
+Now you need to copy the ModSecurity configuration file from the directory
+where you built libModSecurity to /etc/nginx/modsec/:
+
+</p>
+<pre><code>
+cp /opt/ModSecurity/modsecurity.conf-recommended 
+ ↪/etc/nginx/modsec/modsecurity.conf
+</code>
+</pre>
+<p></p>
+
+<p>
+Finally, create a new configuration file that loads these two
+configuration files and all the rules files. This file will be invoked
+by a couple lines in an nginx server configuration block, which will
+invoke the use of ModSecurity. Create and start editing this file with
+a text editor:
+
+</p>
+<pre><code>
+nano /etc/nginx/modsec/main.conf
+</code>
+</pre>
+<p></p>
+
+<p>
+Add the following three lines to this file:
+
+</p>
+<pre><code>
+Include /etc/nginx/modsec/modsecurity.conf
+Include /etc/nginx/modsec/owasp-modsecurity-crs/crs-setup.conf
+Include /etc/nginx/modsec/owasp-modsecurity-crs/rules/*.conf
+</code>
+</pre>
+<p></p>
+
+<p>
+You've now completed building and installing nginx,
+libModSecurity, the nginx connector and ModSecurity rules. Now
+you can start or re-start nginx to load the new configuration. If everything is
+working, you won't see any errors printed when you restart nginx.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Testing ModSecurity</h3>
+
+<p>
+Let's test ModSecurity by adding a couple lines to the "default"
+server and making a request that will be blocked by ModSecurity. The
+default server configuration is the configuration that nginx uses on
+installation and is listening only on localhost and not on the internet-facing network interface. This makes it secure to start nginx before
+any custom server configuration has been created, because the default
+configuration is inaccessible from the internet.
+</p>
+
+<p>
+The default server configuration is located at
+/etc/nginx/conf.d/default.conf. Open this file with a text editor, and
+add the following two lines under the <code>server_name</code> line:
+
+</p>
+<pre><code>
+modsecurity on;
+modsecurity_rules_file /etc/nginx/modsec/main.conf;
+</code>
+</pre>
+<p></p>
+
+<p>
+Restart nginx again to load this new configuration. Now, all you
+need to do to test that ModSecurity is working is make an HTTP request
+that matches a banned rule.
+</p>
+
+<p>
+ModSecurity has two modes of operation. The default is that it will
+only log any queries that match banned rules but allow them to pass
+to the application. This mode allows system administrators to run
+ModSecurity for a period and ensure that no false positive requests are
+getting blocked that would interfere with the normal operation of the
+website. ModSecurity records these requests that match banned rules
+to /var/log/modsec_audit.log.
+</p>
+
+<p>
+You can create an HTTP request that will be recorded to that log file by
+using <code>curl</code> to make a request that contains a banned user agent header. The
+following command makes an HTTP request that contains the header
+"User-Agent: masscan". This is a banned user agent, so ModSecurity
+records that it witnessed a banned HTTP request. This command looks like:
+
+</p>
+<pre><code>
+curl -H "User-Agent: masscan" http://localhost/
+</code>
+</pre>
+<p></p>
+
+<p>
+nginx returns the default welcome page as raw HTML, but ModSecurity
+creates a lengthy log entry in /var/log/modsec_audit.log that begins:
+
+</p>
+<pre><code>
+ModSecurity: Warning. Matched "Operator `PmFromFile' 
+ ↪with parameter `scanners-user-agents.data' against 
+ &amp;rarrhkk;variable `REQUEST_HEADERS:User-Agent' (Value: `masscan' )
+</code>
+</pre>
+<p></p>
+
+<p>
+This indicates that ModSecurity successfully intercepted and matched
+the malicious HTTP request.
+</p>
+
+<p>
+When you want to toggle ModSecurity from logging malicious
+HTTP requests to blocking them actively, edit the line in
+/etc/nginx/modsec/modsecurity.conf from:
+
+</p>
+<pre><code>
+SecRuleEngine DetectionOnly
+</code>
+</pre>
+<p></p>
+
+<p>
+to:
+
+</p>
+<pre><code>
+SecRuleEngine On
+</code>
+</pre>
+<p></p>
+
+<p>
+and restart nginx. Now the same <code>curl</code> request will result in a 403 error:
+
+</p>
+<pre><code>
+curl -H "User-Agent: masscan" http://localhost/
+&lt;html&gt;
+&lt;head&gt;&lt;title&gt;403 Forbidden&lt;/title&gt;&lt;/head&gt;
+&lt;body bgcolor="white"&gt;
+&lt;center&gt;&lt;h1&gt;403 Forbidden&lt;/h1&gt;&lt;/center&gt;
+&lt;hr&gt;&lt;center&gt;nginx/1.12.2&lt;/center&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code>
+</pre>
+<p></p>
+
+<p>
+The blocked request also will be logged to /var/log/modsec_audit.log.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Additional ModSecurity Connectors</h3>
+
+<p>
+The new modular nature of ModSecurity means that any application that
+accepts or processes HTTP data can use ModSecurity and its rules to
+analyze HTTP data. At the time of this writing, ModSecurity v3 has been of release quality only for
+a few months, so there aren't many additional connectors that enable
+applications to hook into libModSecurity.
+</p>
+
+<p>
+The Google Summer of Code has produced a couple interesting new
+connectors. The first extends the ability of Snort v3 to use the
+ModSecurity rules. Snort is an intrusion-detection and real-time
+packet-sniffing and logging application. This connector allows Snort to
+send captured HTTP data to libModSecurity and get it checked against
+the ModSecurity ruleset. The home page for this project is <a href="https://akoul.github.io">here</a>.
+</p>
+
+<p>
+A second Google-sponsored connector targets the node.js server. Node.js
+is a JavaScript runtime that enables the creation of scalable
+network applications. This connector routes all inbound HTTP
+requests via ModSecurity, thereby adding a security layer to the Node
+application. You can read more about this project at its <a href="https://m2n.me/gsoc">home page</a>.
+</p>
+
+<p>
+The release of ModSecurity v3 has transformed ModSecurity from an
+Apache module to a flexible application that is easily leveraged by
+any application that accepts HTTP data. Given that more and more of the
+applications that people depend on are moving from their local computers into
+data centers, the need to ensure the security of those applications and
+that data is becoming increasingly important.
+</p>
+
+<h3 class="sigil_not_in_toc">About the Author</h3>
+
+<p>
+Elliot Cooper has worked for 18 years as a Linux systems administrator and
+technical documentation writer for several Linux and open-sourced-based
+UK hosting and domain registration companies. He currently is working as
+a part-time English Teacher for the University of Da Nang in Vietnam,
+writing technical content and providing remote technical support for a
+Linux hosting company. When he's not working, he enjoys blogging about
+Linux server administration, reading and eating out with friends.
+You can contact him via his <a href="https://elliotcooper.com">personal website</a> or <a href="https://bash-prompt.net">blog</a>.
+</p>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../290/toc290.html">Issue Table of Contents</a>
+    <a class="link3" href="../290/12376.html">Article</a>
+  </div>
+  <div class="bottomhrdiv"></div>
+
+  <div id="bottom_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+</body>
+</html>

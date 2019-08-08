@@ -1,0 +1,121 @@
+Listing 3. Adding Amazon Information
+
+<% require 'cgi' %>
+<% require 'net/http' %>
+<% require 'rexml/document' %>
+<% cgi = CGI.new %>
+<% isbn = cgi['isbn'] %>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>Where you can find used copies of ISBN <%= isbn %></title>
+    <script
+
+src="http://maps.google.com/maps?file=api&v=1&key=ABQIAAAAQQK9JhAXQ9eq-G55qgu1
+ExTnGAXa-Bs2i826H4DeSQaC3Vqy-xSjDFaTYAO0N5YPQWIEeUbqJMhhbA"
+    type="text/javascript"></script>
+  </head>
+  <body>
+    <h2>Here is your map</h2>
+    <div id="map" style="width: 800px; height: 600px"></div>
+    <script type="text/javascript">
+
+    var map = new GMap(document.getElementById("map"));
+    map.centerAndZoom(new GPoint(-87.740070, 42.037030), 13);
+
+    map.addControl(new GSmallMapControl());
+    map.addControl(new GMapTypeControl());
+
+<% final_list = [ ] %>
+
+
+<%  amazon_params = {'Service' => 'AWSECommerceService',
+    'Operation' => 'ItemLookup',
+    'AWSAccessKeyId' => 'XXX',
+    'ItemId' => isbn,
+    'ResponseGroup' => 'Medium,OfferFull',
+    'MerchantId' => 'All'}.map {|key,value|
+    "#{key}=#{value}"}.join("&")
+
+  amazon_response = Net::HTTP.get_response('webservices.amazon.com',
+                                           '/onca/xml?' <<
+                                           amazon_params)
+
+  xml = REXML::Document.new(amazon_response.body)
+
+
+  # Get the vendors, and use that information to get their locations
+  cities = [ ]
+  xml.root.elements.each("Items/Item/Offers/Offer/Seller/SellerId") do
+|seller|
+    # Now get information about each vendor
+    amazon_vendor_params = {'Service' => 'AWSECommerceService',
+    'Operation' => 'SellerLookup',
+    'AWSAccessKeyId' => 'XXX',
+    'SellerId' => seller.text}.map {|key,value|
+    "#{key}=#{value}"}.join("&")
+
+    vendor_response = Net::HTTP.get_response('webservices.amazon.com',
+                         '/onca/xml?' <<
+                         amazon_vendor_params)
+    vendor_xml = REXML::Document.new(vendor_response.body)
+
+    vendor_city =
+vendor_xml.root.elements["/SellerLookupResponse/Sellers/Seller/Location/City"]
+.text
+
+    vendor_state =
+vendor_xml.root.elements["/SellerLookupResponse/Sellers/Seller/Location/State"
+].text
+
+
+    cities << "#{vendor_city},#{vendor_state},US"
+  end
+
+  cities.each_with_index do |city, index|
+     geocoder_response =
+        Net::HTTP.get_response('brainoff.com',
+"/geocoder/rest/?city=#{city.gsub(' ','+')}")
+      geocoder_xml = REXML::Document.new(geocoder_response.body)
+
+      next if geocoder_xml.root.nil?
+
+      longitude =
+          geocoder_xml.root.elements["/rdf:RDF/geo:Point/geo:long"].text
+      latitude =
+        geocoder_xml.root.elements["/rdf:RDF/geo:Point/geo:lat"].text
+
+      final_list << {'city' => city, 'longitude' => longitude,
+'latitude' => latitude } %>
+
+    var myMarker<%= index %> = new GMarker(new GPoint(<%= longitude %>,
+<%= latitude %>));
+    map.addOverlay(myMarker<%= index %>);
+
+<% end %>
+    </script>
+
+<body>
+
+<h2>Your cities</h2>
+<table border="1">
+    <tr>
+        <th>City</th>
+        <th>Longitude</th>
+        <th>Latitude</th>
+    </tr>
+
+<% final_list.each do |city| %>
+    <tr>
+        <td><%= city['city'].gsub(",", ", ") %></td>
+        <td><%= city['longitude'] %></td>
+        <td><%= city['latitude'] %></td>
+    </tr>
+<% end %>
+
+</table>
+
+</body>
+</html>
+

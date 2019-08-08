@@ -1,0 +1,252 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Memory Allocation</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Memory allocation of some sort is required in practically&#10;    any program, but in the Linux kernel it is more complex than&#10;    in user-lever code&mdash;for good reason.&#10;    "><meta name="keywords" content="kernel, memory, programs"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1a78580.0x1b6fab0"></a>Memory Allocation</h1></div><div><div class="author"><h3 class="author">Michael K. Johnson</h3></div><div class="issuemoyr">Issue #16, August 1995</div></div><div><p>
+    Memory allocation of some sort is required in practically
+    any program, but in the Linux kernel it is more complex than
+    in user-lever code&mdash;for good reason.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a78580.0x1b704a8"></a></h2></div></div><p>Memory allocation in the Linux kernel is
+complex, because there are significant constraints involved&mdash;and
+different ways of allocating memory have different constraints.
+This means that anyone writing Linux kernel code needs to
+understand the various ways of allocating memory, including the
+tradeoffs involved. This makes for for more efficient use of memory
+and CPU time&mdash;you can specify exactly what you need&mdash;but it also
+makes for more demanding programming.
+</p><p>There are essentially five different ways of allocating
+memory in the kernel. That's a white lie, but it is close enough to
+the truth for anyone who needs to read this article to learn about
+kernel memory allocation. Three (which provide dynamic allocation)
+are generally useful, and two (which provide static allocation) are
+deprecated, and are mostly historical artifacts that should not be
+used. We will discuss the advantages and limitations of the useful
+ways first, and will only briefly mention the two deprecated ways
+at the end of this article so that you know what to avoid.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a78580.0x1b70608"></a>Memory Allocation Strategies</h2></div></div><p>There are a few rules that apply no matter what form of
+dynamic kernel memory allocation you attempt to do. Whenever you
+attempt to allocate memory in kernel space, you
+<span   class="bold"><b>must</b></span> be prepared for an allocation
+error. Always check the value returned from the allocation
+function, and if it is 0, you will need to handle it cleanly,
+somehow. User-space code can be terminated with a segmentation
+violation if it ignores memory allocation errors, but the kernel
+can easily crash, bringing down the whole system.</p><p>There are several common error-handling strategies. One
+strategy is to attempt to allocate critical memory at the top of a
+function, where you are less likely to have committed yourself and
+can more likely return an error cleanly. This is usually the best
+way to handle the problem.</p><p>Another strategy, usually used together with allocation at
+the top of the function, is to allocate an &ldquo;easy&rdquo; amount of memory
+for the memory management system to provide, and then parcel it out
+for various purposes during the life of the function, effectively
+doing its own memory management. Several subsystems in the kernel
+do this, such as the high-level SCSI drivers and the network code.
+Both include special memory allocation functions which are only
+supposed to be used in those subsystem. These are not documented
+here, under the assumption that documentation for those subsystems
+should document subsystem-specific memory allocation
+routines.</p><p>Yet another strategy, which will only work if you are not in
+&ldquo;critical&rdquo; sections of code, is to allow the kernel to schedule
+another process by calling <b  >schedule()</b> and then
+to try again later, when schedule returns. Note that some kinds of
+allocation are not safe to call even once from within critical
+code; that will be covered when we discuss the individual
+functions.</p><p>The fundamental rule is not to write algorithms that commit
+themselves to completing without having been guaranteed the
+resources they need in order to complete. Memory is one of the
+scarcest and most commonly needed of the resources that must be
+guaranteed, and the only way to guarantee that memory will be
+available is to allocate it.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a78580.0x1b70920"></a>Kmalloc</h2></div></div><p>The <b  >kmalloc()</b> function allocates memory at
+two levels: it uses a &ldquo;bucket&rdquo; system to allocate memory in units
+up to nearly a page (4Kb on the i86) in length, and uses a &ldquo;buddy&rdquo;
+system on lists of different sizes of contiguous chunks of memory
+to allocate memory in units up to 128Kb (on the i86) in length.
+Only in recent kernels has it been able to allocate memory in units
+over 4Kb in length, and allocating large amounts of memory with
+kmalloc is very likely to fail, especially in low-memory
+situations, and especially on machines with less memory.</p><p>Kmalloc is very flexible, as demonstrated by its calling
+convention:</p><pre     class="programlisting">
+void * kmalloc(unsigned int size, int priority);
+</pre><p>Note the <b  >priority</b> argument: this is what
+makes kmalloc so flexible; it is possible to use kmalloc in very
+constrained circumstances such as from an interrupt handler.
+Interrupt-driven code, or code that cannot be pre-empted, but still
+needs to allocate memory, can call kmalloc with the
+<b  >GFP_ATOMIC</b> priority. This will be more likely to
+fail, because it cannot swap or do anything else which would cause
+implicit or explicit I/O to occur. Code with relaxed requirements,
+which may legitimately be pre-empted, should instead call kmalloc
+with the <b  >GFP_KERNEL</b> priority. This may cause
+paging and may cause <b  >schedule()</b> to be called,
+but has a higher chance of success.
+</p><p>In order to dynamically allocate memory that can by accessed
+via DMA, the <b  >GFP_DMA</b> priority should be used. It
+does stress the memory system, particularily if large amounts of
+memory are requested, and is quite likely to fail. Try again. It
+should be noted that <b  >GFP_DMA</b> is only likely to
+fail on system with severe limitations on DMA transfers&mdash;such as
+computers using the common ISA bus. Not all platforms are affected
+by this problem.</p><p>Memory allocated with <b  >kmalloc()</b> is freed
+with <b  >kfree()</b> (or
+<b  >kfree_s()</b>).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a78580.0x1b70f50"></a>Vmalloc</h2></div></div><p>For allocating large areas of virtually contiguous memory
+that do not have to be physically contiguous for interfacing with
+hardware, the new <b  >vmalloc()</b> function (with the
+same calling convention as conventional
+<b  >malloc()</b>) will cause less stress on the memory
+subsystem. It allocates possibly non-contiguous blocks of free
+memory, and maps them into one contiguous space in high memory. It
+is less likely to fail than kmalloc in many situations. It does not
+take a priority like kamlloc does. It cannot be called from within
+an interrupt, and it may implicitly cause pre-emption to
+occur.</p><p>Memory allocated with vmalloc is not DMA-able, even on
+systems without DMA restrictions, because DMA under Linux assumes a
+1-1 logical-physical page mapping. This simplifies memory
+management in several ways, and is not a severe restriction,
+because kmalloc provides a way to get DMA-capable memory.</p><p>Just because it is addressed virtually does not mean that
+this memory is subject to paging to disk, despite rumors to the
+contrary. The &ldquo;virtual&rdquo; in vmalloc refers only to the addressing,
+which is not a 1-1 mapping from virtual to physical address space,
+unlike the rest of the kernel. Swapping may be initiated to
+<span   class="bold"><b>provide</b></span> the memory during a call
+to <b  >vmalloc()</b>, but the vmalloced memory will not
+then be swapped out.</p><p>Memory allocated with <b  >vmalloc()</b> is freed
+with <b  >vfree()</b>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a78580.0x1b71370"></a>get_free_pages</h2></div></div><p>Now we learn what the <b  >GFP</b> above stands
+for: <b  >get_free_page</b> (well, perhaps
+<b  >__get_free_pages</b>) and simply specifies how
+exactly this function goes about attempting to find free pages of
+memory. As you may guess, the same <b  >GFP_*</b> values
+are used for these functions as well.</p><p>This is the way to request an amount of memory that is easy
+for the memory subsystem to allocate. This is the lowest-level&mdash;and
+therefore the lowest-overhead&mdash;way of dynamicly allocating memory.
+If you need a chunk of memory larger than half a page but no larger
+than a page (when deciding this, be aware that page size varies
+from architecture to architecture; it is 4Kb on the i86 and 8Kb on
+the DEC Alpha, for instance), especially if you only need it for
+the duration of the current procedure, this can be the right way to
+go. Also, if you are working on subsystem-specific memory
+management, you almost certainly want to allocate your memory this
+way.</p><p>If you want only one page, call
+<b  >get_free_page(<i><tt>priority</tt></i>)</b>,
+where <b  ><i><tt>priority</tt></i></b> is one
+of the <b  >GFP_*</b> values. Of course, the same rules
+about which <b  >GFP_*</b> value is correct apply as for
+kmalloc. If you only want one page and don't care if it has been
+cleared (set to all zero values), use
+<b  >__get_free_page(<i><tt>priority</tt></i>)</b>
+instead, since most of the overhead of allocating a page with
+<b  >get_free_page</b> goes to clearing the page.</p><p>If you need to allocate more than one consecutive page, you
+can do so, although this is more likely to fail than allocating a
+single page, and the more pages you wish to allocate, the less
+likely you are to succeed. You can only allocate a number of pages
+which is a power of two.
+<b  >__get_free_pages(<i><tt>priority</tt></i>,
+<i><tt>order</tt></i>)</b> is called with the same
+<b  ><i><tt>priority</tt></i></b> argument;
+the <b  ><i><tt>order</tt></i></b> argument
+gives the size according to the following formula:
+<b  >PAGE_SIZE</b>&lt;\!s&gt;*&lt;\!s&gt;2&lt;+&gt;<b  ><i><tt>order</tt></i></b>&lt;+&gt;
+so an <b  ><i><tt>order</tt></i></b> of 0
+gives one page, of 1 gives two pages, of 2 gives four pages, and so
+on (in current kernels, at least) up to 5, which gives 32 pages,
+which on the i86 architecture is 128Kb.
+<b  >PAGE_SIZE</b>, as you may have guessed, is the
+standard macro for the number of bytes in a page.</p><p>The <b  >__get_dma_pages()</b> function works
+exactly like <b  >__get_free_pages()</b>, except that it
+allocates pages which are capable of being used for DMA, and it
+puts more stress on the memory allocation system.</p><p>Pages allocated with <b  >get_free_page()</b> or
+<b  >__get_free_page()</b> are freed with
+<b  >free_page()</b>, and pages allocated with
+<b  >__get_free_pages()</b> and
+<b  >__get_dma_pages()</b> are freed with
+<b  >free_pages()</b>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a78580.0x1b68a70"></a>Device initialization</h2></div></div><p>Now we approach the deprecated strategies. They may be useful
+in some circumstances, mostly in situations where they are the
+&ldquo;easy way&rdquo; to get a driver working. In those cases, it is usually
+best to eventually find another way to do the same thing, as
+neither strategy is very flexible. Neither strategy is applicable
+to loadable modules.</p><p>When a device which is compiled into the kernel is
+initialized, it is passed a pointer to available memory. It is then
+required to return a pointer. If the pointer it returns is higher
+than the pointer it got, the memory in between the two pointers is
+reserved for the device. That memory will be in the first few
+megabytes of memory. The exact location will depend on how the
+kernel is booted. This is (perhaps unfortunately...) documented in
+the <span   class="emphasis"><em>Linux Kernel Hackers' Guide</em></span>.</p><p>Once allocated, that memory cannot be freed.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a78580.0x1b68c80"></a>Memory initialization</h2></div></div><p>This particular method is extremely deprecated, and is
+architecture-dependent as well. It is possible to add a function
+call within the body of <b  >mem_init()</b>, which
+resides, for the i86 platform, in the file arch/i386/mm/init.c. In
+the middle of this function, two functions for initializing SCSI
+and sound-driver memory are provided. Also, arch/i386/kernel/head.S
+provides another platform-dependent way to allocate memory. This is
+where initial memory management is set up.</p><p>If you understand these well enough to muck with them, you
+don't need my help. These are last resorts for memory allocation,
+and you need to know <span   class="emphasis"><em>exactly</em></span> what you need to
+do, and <span   class="emphasis"><em>why</em></span> the dynamic allocation strategies
+will not work for you, before considering these &ldquo;hacks&rdquo;.</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Michael K. Johnson</b></span>
+      is the Editor
+      of <i  >Linux Journal</i>, and pretends to be a Linux guru in his
+      spare time. He can be reached via email as
+      <a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../016/toc016.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

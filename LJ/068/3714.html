@@ -1,0 +1,336 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>A Web-Based Clipping Service</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Let LWP turn your web client into a midnight marauder.&#10;    "><meta name="keywords" content="WWW, Internet"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2a0b580.0x2b02ab0"></a>A Web-Based Clipping Service</h1></div><div><div class="author"><h3 class="author">Reuven M. Lerner</h3></div><div class="issuemoyr">Issue #68, December 1999</div></div><div><p>
+    Let LWP turn your web client into a midnight marauder.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a0b580.0x2b03500"></a></h2></div></div><p>In November, we saw how Perl's Library
+for Web Programming (LWP) can be used to create a simple HTTP
+client, retrieving one or more pages from the Web. This month, we
+will extend those efforts to create a program that can not only
+retrieve pages from the Web, but categorize them according to our
+preferences. In this way, we can create our own web-based clipping
+service, finding those articles that are of particular interest to
+us.
+</p><p>LWP consists of several modules which allow us to work with
+HTTP, the &ldquo;hypertext transfer protocol&rdquo;. HTTP works on a
+stateless request-response basis: a client connects to a server and
+submits a request. The server then generates a response, and closes
+the connection. (If you missed last month's column, it is available here: <a href="../067/3673.html" target="_self">Working with LWP</a>. You should read that article before continuing.)
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a0b580.0x2b036b8"></a>Downloading Files</h2></div></div><p>We need a program that will go to a particular URL and save
+the contents of that URL on disk. Furthermore, we want to follow
+any hyperlinks in that document to collect other news stories.
+However, we do not want to follow links to other sites; this not
+only reduces the chances that we will get sidetracked, but avoids
+the possibility of being led astray too much.</p><p>In other words, I would like to be able to point a program at
+a site and retrieve all of its files on to the disk. A first stab
+at such a program, download-recursively.pl, is similar to the
+simple robot program we explored last month. It uses two hashes,
+<b  >%already_retrieved</b> and
+<b  >%to_be_retrieved</b>, to store URLs. Rather than
+storing the URLs as values in the hash, we use them as keys. This
+ensures each URL will appear only once, avoiding infinite loops and
+miscounting. URLs are placed in <b  >%to_be_retrieved</b>
+when they are first encountered, then moved to
+<b  >%already_retrieved</b> after their contents are
+retrieved. <b  >$origin</b>, a scalar variable that
+contains the initial URL, has a default setting if no argument is
+provided on the command line.</p><p>Retrievals are performed with a <b  >while</b>
+loop. Each iteration of the <b  >while</b> loop retrieves
+another URL from <b  >%to_be_retrieved</b>, and uses it
+to create a new instance of HTTP::Request.</p><p>The method <b  >$response-&gt;last_modified</b>
+returns the date and time on which a document was last modified.
+Subtracting <b  >$response-&gt;last_modified</b> from the
+current time, and then comparing this result with the maximum age
+of documents we wish to see (<b  >$maximum_age</b>)
+allows us to filter out relatively old documents:</p><pre     class="programlisting">
+my $document_age = time -
+   $response-&gt;last_modified;
+    if ($document_age &gt; $maximum_age)
+    {
+        print STDOUT
+        "  Age of document: $document_age\n";
+        next;
+    }
+</pre><p>If the document is too old, we use <b  >next</b> to
+return us to the next iteration of the <b  >while</b>
+loop&mdash;and thus the next URL to be retrieved.
+</p><p>Next, we parse the contents of the HTTP response, using the
+<span   class="bold"><b>HTML::LinkExtor</b></span> module. When we
+create an instance of HTML::LinkExtor, we are actually creating a
+simple parser that can look through a page of HTML and return one
+or more pieces of information. The analysis is performed by a
+subroutine, often named callback. A reference to callback is passed
+along with the URL that will be parsed to create a new instance of
+HTML::LinkExtor.</p><pre     class="programlisting">
+my $parser = HTML::LinkExtor-&gt;new (\&amp;callback, $url);
+</pre><p>The resulting object can then parse our URL's contents by
+invoking:
+<pre     class="programlisting">
+$parser-&gt;parse($response-&gt;content);
+</pre>
+
+
+When <b  >$parser-&gt;parse</b> is invoked,
+<b  >&amp;callback</b> is invoked once for each HTML tag
+in the file. Our version of &amp;callback grabs each URL in the
+file from the href attribute of each &lt;a&gt; tag, saving it in
+<b  >%to_be_retrieved</b> unless it exists in
+<b  >%already_retrieved</b>.
+</p><p>Finally, we save the retrieved document on the local file
+system. The tricky part of saving the file to disk has to do with
+the way in which we are retrieving the URLs&mdash;we are not traversing
+a tree of URLs, but are pulling URLs out in their hash order. This
+means the URL http://foo.com/a/b/c/ might be retrieved before
+http://foo.com/a/index.html. Thus, we need to ensure that the
+directory /a/b/c exists on our local system before /a and /a/b are
+created. How can we do this?</p><p>My solution was to use Perl's built-in
+<span   class="bold"><b>split</b></span> operator, which turns a
+scalar into a list. By assigning this list of partial directories
+into an array (<b  >@output_directory</b>), we can
+sequentially build up the directory from the root (/) down to the
+final name. Along the way, we check to see if the directory exists.
+If it does not, we create the new directory with
+<span   class="bold"><b>mkdir</b></span>. If the directory does not
+exist and mkdir fails, we exit with a fatal error, indicating what
+error occurred.</p><p>Those URLs that lack a file name are given one of
+&ldquo;index.html&rdquo;. Since this is the default file name accessed on
+many web servers, it stands to reason this will probably not
+collide with any of those names.</p><p>The end result of running this program is a mirror of the
+downloaded site, stored in
+<b  >$output_directory</b>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a0b580.0x2b043c8"></a>Sorting Through the Output</h2></div></div><p>It is handy to be able to download all or part of a web site.
+However, our initial goal was to be able to sort through the
+contents of a web site for one or more phrases of interest to
+us.</p><p>Such a program is not very different from
+download-recursively.pl. Our new version, download-matching.pl,
+differs in that it stores only messages that contain one or more of
+the phrases stored in an external file, phrase-file.txt. The code
+for both of these programs can be found in the file
+<a href="../listings/068/3714.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue68/3714.tgz</a>.</p><p>There are several ways to perform such checking and matching.
+I chose to do it in a relatively simple but straightforward way,
+iterating through each phrase in the file and using Perl's built-in
+string-matching mechanism.</p><p>Since the phrases will remain constant during the entire
+program, we load them from phrase-file.txt before the
+<b  >while</b> loop begins:</p><pre     class="programlisting">
+my $phrase_file = "phrase-file.txt";
+    my @phrases;
+    open PHRASES, $phrase_file or die
+    "Cannot read $phrase_file: $! ";
+    while (&lt;PHRASES&gt;)
+    {
+        chomp;
+        push @phrases, $_;
+    }
+    close PHRASES;
+</pre><p>The above code iterates through each line of the phrase file,
+removing the trailing newline (with
+<span   class="bold"><b>chomp</b></span>) and then storing the line
+in <b  >@phrases</b>. Each phrase must be on its own line
+in the phrase file; one possible file could look like this:
+<pre     class="programlisting">
+Linux
+Reuven
+mortgage
+</pre>
+
+
+Once <b  >@phrases</b> contains all of the phrases for
+which we want to search, download-matching.pl proceeds much like
+its less discriminating predecessor. The difference comes into play
+after the callback has already been invoked, scanning through the
+file for any new links. A site's table of contents might not
+contain any of the strings in <b  >@phrases</b>, but the
+documents to which it points might.
+</p><p>After collecting new links, but before writing the file to
+disk, download-matching then iterates through the phrases in
+<b  >@phrases</b>, comparing each one with the document.
+If it finds a match, it sets <b  >$did_match</b> to 1 and
+exits from the loop:</p><pre     class="programlisting">
+foreach my $phrase (@phrases)
+    {
+        if ($content =~ m/&gt;.*[^&lt;]*\b$phrase\b/is)
+        {
+            # Did we match?
+            $did_match = 1;
+            print "        Matched $phrase\n";
+            # Exit from the foreach if we found a
+            # match
+            last;
+        }
+    }
+</pre><p>Notice how we surround <b  >$phrase</b> with
+<b  >\b</b>. This is Perl's way of denoting a separation
+between words, and ensures that our phrases do not appear in the
+middle of a word. For instance, if we were to search for &ldquo;vest&rdquo;,
+the <b  >\b</b> metacharacters ensure that
+download-matching.pl will not match the word &ldquo;investments&rdquo;.
+</p><p>If <b  >$did_match</b> is set to a non-zero value,
+at least one of the phrases was found in the document. (We use the
+<b  >/i</b> option to Perl's <b  >m//</b>
+matching operator to indicate that the search should be
+case-insensitive. If you prefer to make capital letters distinct
+from lowercase letters, remove the <b  >/i</b>.) If
+<b  >$did_match</b> is set to 0, we use
+<b  >next</b> to go to the next iteration of the
+<b  >while</b> loop, and thus to the next URL in
+<b  >%to_be_retrieved</b>.</p><p>This all presumes a Boolean &ldquo;or&rdquo; match, in which only one
+of the phrases needs to match. If we want to insist that all of our
+phrases appear in a file to get a positive result (an &ldquo;and&rdquo;
+match), we must alter our strategy somewhat. Instead of setting
+<b  >$did_match</b> to 1, we increment it each time a
+match is found. We then compare the value of
+<b  >$did_match</b> with the number of elements in
+<b  >@phrases</b>; if they are equal, we can be sure all
+of the phrases were contained in the document.</p><p>If possible, we want to avoid matching text contained within
+HTML tags. While writing this article for instance, I was surprised
+to discover just how many articles on Wired News (a technical news
+source) matched the word &ldquo;mortgage&rdquo;. In the end, I found the
+program was matching a phrase within HTML tags, rather than the
+text itself. We can avoid this problem by stripping the HTML tags
+from the file&mdash;but that would mean losing the ability to navigate
+through links when reading the downloaded files.</p><p>Instead, download-matching.pl copies the contents of the
+currently examined file into a variable
+(<b  >$content</b>) and removes the HTML tags from
+it:</p><pre     class="programlisting">
+my $content = $response-&gt;content;
+    $content =~ s|&lt;.+?&gt;||gs;
+</pre><p>Notice how we use the <b  >g</b> and
+<b  >s</b> options to the substitution operator
+(<b  >s///</b>), removing all pairs of HTML tags, even if
+they are separated by a newline character. (The
+<b  >s</b> option includes the newline character in the
+definition of <b  >.</b>, which is normally not the
+case.)
+</p><p>We avoid the ramifications of a greedy regular expression, in
+which Perl tries to match as much as possible, by putting a ? after
+the +. If we were to replace &lt;.+&gt;, rather than &lt;.+?&gt;,
+we would remove everything between the first &lt; and the final
+&gt; in the file&mdash;which would probably include the contents, as
+well as the HTML tags.</p><p>One final improvement of download-matching.pl over
+download-recursively.pl is that it can handle multiple command-line
+arguments. If <b  >@ARGV</b> contains one or more
+arguments, these are used to initially populate
+<b  >%to_be_searched</b>. If <b  >@ARGV</b> is
+empty, we assign a default URL to <b  >$ARGV[0]</b>. In
+both cases, the elements of <b  >@ARGV</b> are turned
+into keys of <b  >%to_be_retrieved</b>:</p><pre     class="programlisting">
+foreach my $url (@ARGV)
+    {
+        print "    Adding $url to the list...\n"
+        if $DEBUGGING;
+        $to_be_retrieved{$url} = 1;
+    }
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a0b580.0x2afbf40"></a>Using download-matching.pl</h2></div></div><p>Now that we have a program to retrieve documents that fit our
+criteria, how can we use it? We could run it from the command line,
+but the point of this program is to do your work for you,
+downloading documents while you sleep or watch television.</p><p>The easiest way is to use
+<span   class="bold"><b>cron</b></span>, the Linux facility that
+allows us to run programs at regular intervals. Each user has his
+or her own crontab, a table that indicates when a program should be
+run. Each command is preceded by five columns that indicate the
+time and date on which a program should be run: the minute, hour,
+day of month, month and day of the week. These columns are normally
+filled with numbers, but an asterisk can be used to indicate a wild
+card.</p><p>The following entry in a crontab indicates the program
+/bin/foo should be run every Sunday at 4:05 A.M.:</p><pre     class="programlisting">
+5 4 * * 0 /bin/foo
+</pre><p>Be sure to use a complete path name when using cron&mdash;here we
+indicated /bin/foo, rather than just &ldquo;foo&rdquo;.
+</p><p>The crontab is edited with the
+<span   class="bold"><b>crontab</b></span> program, using its
+<b  >-e</b> option. This will open the editor defined in
+the EDITOR environment variable, which is
+<span   class="bold"><b>vi</b></span> by default. (Emacs users should
+consider setting this to <b  >emacsclient</b>, which
+loads the file in an already running Emacs process.)</p><p>To download all of the files matching our phrases from Wired
+News every day at midnight, we could use the following:</p><pre     class="programlisting">
+0 0 * * 0 /usr/bin/download-matching.pl\
+<a href="http://www.wired.com/news/" target="_self">www.wired.com/news/</a>http://www.wired.com/news/
+</pre><p>This will start the process of downloading files from
+<a href="http://www.wirec.com/news" target="_self">http://www.wirec.com/news/</a>
+at midnight, placing the results in
+<b  >$output_directory</b>. We can specify multiple URLs
+as well, allowing us to retrieve news from more than one of our
+favorite news sources. When we wake up in the morning, new
+documents that interest us will be waiting for us to read, sitting
+in <b  >$output_directory</b>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a0b580.0x2afc620"></a>Conclusion</h2></div></div><p>Many organizations hire clipping services to find news that
+is of interest to them. With a bit of cleverness and heavy reliance
+on LWP, we can create our own personalized clipping service,
+downloading documents that reflect our personal interests. No
+longer must you look through a list of headlines in order to find
+relevant documents&mdash;let Perl and the Web do your work for
+you.</p><p><a href="3714s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="3714aa.jpg"></div>
+
+
+      <span   class="bold"><b>Reuven M. Lerner</b></span>
+      is an Internet and Web
+      consultant living in Haifa, Israel. His book Core Perl
+      will soon be published by Prentice-Hall. Reuven can be reached at
+      reuven@lerner.co.il. The ATF home page is at
+      <a href="http://www.lerner.co.il/atf" target="_self">http://www.lerner.co.il/atf/</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../068/toc068.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

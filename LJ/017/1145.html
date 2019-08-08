@@ -1,0 +1,302 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>System Calls</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Functions in the Linux kernel can be called by user&#10;    programs. Howerver, it takes a bit of preparation. In this&#10;    column, Michael guides you through the process step by step,&#10;    explaining why as well as what.&#10;    "><meta name="keywords" content="kernel, system"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x29cd580.0x2ac4ab0"></a>System Calls</h1></div><div><div class="author"><h3 class="author">Michael K. Johnson</h3></div><div class="issuemoyr">Issue #17, September 1995</div></div><div><p>
+    Functions in the Linux kernel can be called by user
+    programs. Howerver, it takes a bit of preparation. In this
+    column, Michael guides you through the process step by step,
+    explaining why as well as what.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x29cd580.0x2ac5450"></a></h2></div></div><p>Code in the Linux kernel can be executed
+in two basic ways. One is to be called by an interrupt, and the
+other is to be called from a user program (that's my required
+&ldquo;white lie&rdquo; for this column). User programs call code in the kernel
+through a system call, which is essentially an unusual type of
+function call.
+</p><p>Of course, when user code calls privileged kernel code, the
+kernel has to very carefully check the validity of its arguments in
+order to avoid accidentally doing harm of any sort. If the code is
+not safe for anyone but the superuser to execute, there are
+routines for checking that, too.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x29cd580.0x2ac55b0"></a>In the Kernel</h2></div></div><p>Creating a system call is more difficult than creating a
+normal C language function, but not too difficult. There is
+certainly more to it than declaring a function in a header
+file&mdash;and for system calls, the only change that is needed to a
+header file is <span   class="emphasis"><em>not</em></span> a function
+declaration.</p><p>The first thing that you need to do is either modify an
+existing file in the kernel, or create a new file to be compiled.
+If you create a new file, we will assume that you are able to add
+it to the appropriate Makefile and use the proper
+<b  >#include</b> statements for the code you are
+writing. You <span   class="emphasis"><em>will</em></span> want to make sure that
+<b  >&lt;linux/errno.h&gt;</b> is included, because
+system calls need to be able to return error codes, and those error
+codes are all defined in errno.h.</p><p>You will need to create a function called
+<b  >sys_<i><tt>name</tt></i></b>, where
+<b  ><i><tt>name</tt></i></b> is the name of
+the system call you are creating. The function must have the return
+specification <b  >asmlinkage int</b>, and it may have
+any number of arguments between 0 and 5, inclusive. The arguments
+must all be the same size as a <b  >long</b>; they may
+not be structures. (Or, at least, not structures larger than a
+<b  >long</b>. It would not be wise to make structures
+the same size as a long because integer arithmetic is done on them.
+What is a &ldquo;signed&rdquo; structure? If you don't want to think about that
+question, do not use small structures. In truth, don't use them at
+all.)</p><p>The function will return errors as
+<b  >-E<i><tt>NAME</tt></i></b>. Negative
+numbers are treated as error values on return (we will see how
+later) and positive numbers are considered normal return values.
+This means that on systems with 32-bit <b  >long</b>
+values, only 31 bits are available for passing back return values.
+On 64-bit systems like Linux/Alpha, only 63 bits are available.
+This makes it difficult to pass addresses in the high half of the
+range back to user programs.</p><p>There are two ways around this. One is to make one of the
+function's arguments be the address of a user-space variable in
+which to place the return value. The other is to find some other
+way of returning an error and making a special way of handling the
+return value. The first way is, to the best of my knowledge, always
+preferable, so I will not explain the second way.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x29cd580.0x2ac5ce8"></a>Possible Errors</h2></div></div><p>Before reading or writing any area in a user program from the
+kernel, the <b  >verify_area()</b> function must be
+called. In normal use on a 486 or Pentium, it is less important for
+kernel stability than on the 386 (although it helps detect errors
+much more cleanly and avoids having processes die in kernel mode),
+but on the 386 it is absolutely essential to system stability,
+because the 386 does not honor memory protection when it is in
+&ldquo;supervisor&rdquo; mode, which is the mode the kernel runs in. This
+means, for instance, that the CPU will happily write to read-only
+user-space memory from the kernel.</p><p>The <b  >verify_area()</b> function takes three
+variables. First is one of <b  >VERIFY_READ</b> or
+<b  >VERIFY_WRITE</b>. Second is the address in the
+<span   class="emphasis"><em>current user program</em></span> that is to be verified.
+Third is the length of the memory area you wish to read or write.
+It returns 0 if the memory area is valid, and
+<b  >-EFAULT</b> if the memory is not valid. A common
+phrase is something like this:</p><pre     class="programlisting">
+int error;
+error = verify_area(VERIFY_WRITE, buf, len);
+if (error)
+        return error;
+...
+</pre><p>Please note that <b  >verify_area</b> only verifies
+addresses in user memory space, not kernel memory space. Memory in
+kernel space is never swapped out, and is always readable and
+writable. On the i86 family, the fs segment register is used in the
+kernel to select the user-space memory of the current process.
+Other architectures do this differently. This functionality is
+abstracted out into a few useful functions, explained below.</p><p>Your work when writing your system call will be much easier
+if you do as much testing as possible before committing any
+resources to the task at hand. As a general rule, tests are done in
+this order:</p><p>Run all necessary <b  >verify_area</b>
+tests.</p><p>Do (almost) all other tests in an appropriate order,
+including normal permission testing.</p><p>Do <b  >suser()</b> or
+<b  >fsuser()</b> tests if appropriate. These should only
+be called after other tests have succeeded, because BSD-style
+root-privilege accounting may be added to the kernel at some point.
+See the comments in include/linux/kernel.h.</p><p>The <b  >suser()</b> function is used to determine
+if the process has root permissions for most activities. However,
+the <b  >fsuser()</b> function must be used for all
+filesystem-related permissions. This difference allows servers to
+assume the file permissions of a user without &ldquo;becoming&rdquo; the user,
+even briefly. This is important because if the server exchanges
+uid's such that it &ldquo;becomes&rdquo; the user for even a moment, the user
+can disturb the process in various ways, potentially breaching
+security in many ways. By simply using the fsuid and fsgid
+functions instead, the server avoids this security nightmare. For
+this to work, all kernel filesystem permissions testing must use
+the <b  >fsuser()</b> function to test for superuser
+status, and must look at <b  >current-&gt;fsuid</b> and
+<b  >current-&gt;fsgid</b> for normal permissions on
+filesystem objects. (For more details on the
+<b  >current</b> pointer, see the definition of
+<b  >task_struct</b> in include/linux/sched.h.)</p><p>A good example of a program that needs this ability is the
+nfs server. Early versions of the nfs server were not able to use
+this functionality (because it didn't yet exist), and there were
+several security holes. The most common nuisance was users noticing
+that they could kill the server.</p><p>After you check permissions and any other possible error
+conditions, you probably want to actually get something done.
+Unless you simply want to return a value that can fit in a 31-bit
+(or 63-bit for Linux/Alpha) return value, you will need to write to
+the user memory that you checked with the
+<b  >verify_area</b> function at the beginning of
+function. You can't just use the pointer to user-space memory as a
+normal pointer. Instead, you have to use a set of special functions
+to access it. And if you want to read any user-space memory in
+order to do your system call, you will need to use a similar set of
+functions to do so.</p><p>In older versions of Linux (through 1.2.x), you had to
+specify what kind of memory access you were making. There were 6
+functions for single memory access: <b  >get_fs_byte</b>,
+<b  >get_fs_word</b>, <b  >get_fs_long</b>,
+<b  >put_fs_byte</b>, <b  >put_fs_word</b>, and
+<b  >put_fs_long</b>. These names (and names with the
+<b  >fs</b> replaced with <b  >user</b>) are
+still supported in newer kernels, but starting with Linux 1.3, they
+are deprecated. The <b  >get_user</b> and
+<b  >put_user</b> functions are to be used instead. They
+are easier to read and for the most part easier to use, but because
+they depend on the type of the pointer being passed to them, they
+are not tolerant of sloppy pointer use. (This is probably a good
+thing, since Linux now runs both on little- and big-endian
+computers, and big-endian computers are not tolerant of sloppy
+pointer use either.)</p><p>The memory block access routines have stayed the same since
+the earliest versions, even though their names still contain the
+letters &ldquo;fs&rdquo;; <b  >memcpy_tofs</b> is used to copy a
+block of memory to user space, and <b  >memcpy_fromfs</b>
+is used to copy a block of user memory to memory in kernel
+space.</p><p>All of the memory access routines are defined in
+include/asm/segment.h&mdash;even on architectures without segmentation.
+On all of the non-Intel architectures, these functions are
+essentially null functions, since they do not implement
+segmentation.</p><p>Up to this point, you have simply implemented a new function
+in the kernel. Simply prepending the name with
+<b  >sys_</b> will not make it possible to call the
+function from user code.</p><p>You need to make two additions within the kernel. The first
+is in include/linux/unistd.h, right near the end. You need to look
+for the last line that starts with <b  >#define __NR</b>
+and add your own:</p><pre     class="programlisting">
+#define __NR_<span   class="emphasis"><em>name</em></span>     <span   class="emphasis"><em>###</em></span>
+</pre><p>where <b  ><i><tt>###</tt></i></b> is
+the number one greater than the previous last system call number.
+In version 1.2.9, that would be 141.</p><p>The second change will have to be made in multiple files, one
+for each architecture that Linux runs on. Each file
+arch/*/kernel/entry.S will need an additional entry in its system
+call table. The system call table is kept at the end of the file,
+and you will simply need to add an entry at the end of the table
+before the <b  >.space</b> line and change the
+<b  >.space</b> formula at the very end to reflect the
+new number of system calls.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x29cd580.0x2abd9c0"></a>Invoking Your System Call</h2></div></div><p>Now you <span   class="emphasis"><em>can</em></span> call your new function from
+user code, but how? You can't simply declare <b  >extern int
+sys_<i><tt>name</tt></i>(int arg);</b> and link.
+Instead, you have to <b  >#include &lt;unistd.h&gt;</b>
+and use the appropriate
+<b  >syscall<i><tt>X</tt></i>()</b> macro,
+where <b  ><i><tt>X</tt></i></b> is the number
+of arguments the system call takes. The
+<b  >syscall<i><tt>X</tt></i>()</b> macros are
+actually defined in include/asm/unistd.h, which gets included by
+<b  >&lt;unistd.h&gt;</b> automatically.</p><p>If your system call is declared as</p><pre     class="programlisting">
+asmlinkage int sys_<span   class="emphasis"><em>name</em></span>(void);
+</pre><p>the <b  >syscall0()</b> invocation is quite
+easy:</p><pre     class="programlisting">
+_syscall0(int, <span   class="emphasis"><em>name</em></span>)
+</pre><p>(notice the leading underscore). This gets converted by the C
+preprocessor into</p><pre     class="programlisting">
+int <span   class="emphasis"><em>name</em></span>(void)
+{
+long __res;
+__asm__ volatile ("int $0x80"
+        : "=a" (__res)
+        : "0" (__NR_<span   class="emphasis"><em>name</em></span>));
+if (__res &gt;= 0)
+        return (int) __res;
+errno = -__res;
+return -1;
+}
+</pre><p>on Linux/i86. Because it uses assembly, it will be different
+on other architectures. Fortunately, it doesn't really matter. The
+important point is that it creates a function called
+<b  ><i><tt>name</tt></i></b> which generates
+an interrupt (remember the &ldquo;white lie&rdquo; about interrupts? System
+calls are interrupts, too) which calls the system call, and then
+returns the result if the answer is positive, and returns -1 if the
+answer is negative (has the high-order bit set), setting
+<b  >errno</b> to the non-negative error number.</p><p>If your function has two arguments:</p><pre     class="programlisting">
+asmlinkage int sys_<span   class="emphasis"><em>name</em></span>(int num, struct foo *bar);
+</pre><p>you would instead use this:</p><pre     class="programlisting">
+_syscall2(int, <span   class="emphasis"><em>name</em></span>, int, num, struct foo *, bar)
+</pre><p>which would expand to:</p><pre     class="programlisting">
+int name(int num, struct foo * bar)
+{
+long __res;
+__asm__ volatile ("int $0x80"
+        : "=a" (__res)
+        : "0" (__NR_<span   class="emphasis"><em>name</em></span>),
+          "b" ((long)(num)), "c" ((long)(bar)));
+if (__res &gt;= 0)
+        return (int) __res;
+errno = -__res;
+return -1;
+}
+</pre><p>Notice the unusual way of specifying the arguments to the
+macro, where the return type and the name of the function are
+followed by separate arguments for the type and name of each of the
+system call's arguments. Figuring out how to specify system calls
+with 1, 3, 4, or 5 arguments is left as an exercise for the
+reader.</p><p>For the curious: there is one other way that system calls may
+be called on Linux/i86. iBCS2-based programs call system calls with
+an <b  >lcall 7,0</b> instruction instead of an
+<b  >int $0x80</b> instruction. The
+<b  >lcall</b> instruction takes slightly longer than the
+<b  >int</b> instruction, which is why it is the default
+system call mechanism on Linux, but both are supported. The
+<b  >lcall</b> instruction isn't exactly an interrupt,
+although it acts much like one; technically it is a &ldquo;call gate&rdquo;. So
+my &ldquo;white lie&rdquo; isn't really a lie after all.</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Michael K. Johnson</b></span>
+      is the Editor
+      of <i  >Linux Journal</i>, and pretends to be a Linux guru in his
+      spare time. He can be reached via e-mail as
+      <a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../017/toc017.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

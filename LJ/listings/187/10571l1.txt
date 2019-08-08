@@ -1,0 +1,78 @@
+Listing 1. Example VWAP application in SPADE. VWAP, or
+"volume-weighted average price",
+is a common calculation in financial trading.
+
+composite VWAP {
+param
+  expression<set<string>> $monitoredTickers :
+                            { "IBM", "GOOG", "MSFT" };
+
+type
+  TradeInfoT   = decimal64 price, decimal64 volume;
+  QuoteInfoT   = decimal64 bidprice,
+                 decimal64 askprice, decimal64 asksize;
+  TradeQuoteT  = TradeInfoT, QuoteInfoT,
+  tuple<string ticker, string dayAndTime, string ttype>;
+  TradeFilterT = TradeInfoT, tuple<timestamp ts, string ticker>;
+  QuoteFilterT = QuoteInfoT, tuple<timestamp ts, string ticker>;
+  VwapT        = string ticker, decimal64 minprice,
+                 decimal64 maxprice, decimal64 avgprice,
+                 decimal64 vwap;
+
+graph
+  stream<TradeQuoteT> TradeQuote = FileSource()  {
+    param fileName : "TradesAndQuotes.csv.gz";
+          format   : csv, compressed, nodelays;
+          columns  : irange(1,3), 5, irange(7,9), [11, 15, 16];
+  }
+
+  stream<TradeFilterT> TradeFilter = Functor(TradeQuote) {
+    param  filter      :    ttype == "Trade"
+                         && (ticker in $monitoredTickers);
+    output TradeFilter : ts = timeStringToTimestamp(dayAndTime);
+  }
+
+  stream<QuoteFilterT> QuoteFilter = Functor(TradeQuote) {
+    param filter :   ttype == "Quote"
+                  && (ticker in $monitoredTickers);
+  }
+
+  stream<VwapT, tuple<decimal64 sumvolume>>
+    PreVwap = Aggregate(TradeFilter)
+  {
+    window TradeFilter : sliding, count(4), count(1);
+    param  groupBy     : ticker;
+           perGroup    : true;
+    output PreVwap     : ticker = Any(ticker),
+                         vwap = Sum(price*volume),
+                         minprice = Min(price),
+                         maxprice = Max(price),
+                         avgprice = Avg(price),
+                         sumvolume = Sum(volume);
+  }
+
+  stream<VwapT> Vwap = Functor(PreVwap) {
+    output Vwap : vwap = vwap / sumvolume;
+  }
+
+  stream<timestamp ts, decimal64 index>
+    BargainIndex = Join(Vwap as V; QuoteFilter as Q)
+  {
+    window V           : sliding, count(1);
+           Q           : sliding, count(0);
+    param  equalityLHS : V.ticker; // can also be written
+                                   // as nested loop join:
+           equalityRHS : Q.ticker; // "condition: V.ticker==Q.ticker"
+           perGroupLHS : true;
+    output BargainIndex :
+               index = vwap > askprice*100.0
+                         ? asksize*exp(vwap-askprice*100.0)
+                         : 0.0;
+  }
+
+() = PerfSink(BargainIndex) { }
+
+pragma
+  debugLevel: trace;
+}
+

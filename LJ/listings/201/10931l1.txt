@@ -1,0 +1,131 @@
+Listing 1. Bond Script for Red Hat Users
+
+# bond bond0 eth0 eth1
+
+#!/usr/bin/perl
+
+# bond -- create a bonded interface out of one or
+# more physical interfaces
+# Created by Kyle Rankin
+#
+
+my $bond_interface = shift;
+my @interfaces = @ARGV;
+my $network_scripts_path = '/etc/sysconfig/network-scripts/';
+my $bond_mode=1;
+my $bond_miimon=100;
+my $bond_max=2;
+
+usage() unless (@ARGV);
+if($#interfaces < 1){
+   usage("ERROR: You must have at least 2 interfaces to bond!");
+}
+
+system("/etc/init.d/network stop");
+
+config_bond_master($bond_interface, $interfaces[0]);
+foreach(@interfaces){
+   config_bond_slave($bond_interface, $_);
+}
+config_modules($bond_interface, $bond_miimon, $bond_mode);
+
+system("/etc/init.d/network start") or die "Couldn't start networking: $!\n";
+
+sub usage
+{
+   $error = shift;
+   print "$error\n" if($error);
+   print "Usage: $0 bond_interface interface1 interface2 [...]\n";
+   print "\nbond_interface will use the network settings of interface1\n";
+   exit
+}
+
+sub config_bond_master
+{
+   my $bond_interface = shift;
+   my $main_interface = shift;
+   my $netconfig_ref = get_network_config($main_interface);
+
+   open CONFIG, "> $network_scripts_path/ifcfg-$bond_interface" or die "Can't open $network_scripts_path/ifcfg-$bond_interface: $!\n";
+
+   print CONFIG "DEVICE=$bond_interface\n";
+   foreach(keys %$netconfig_ref){
+      unless($_ eq "HWADDR" || $_ eq "DEVICE"){
+         print CONFIG "$_=$$netconfig_ref{$_}\n";
+      }
+   }
+   close CONFIG;
+}
+
+sub config_bond_slave
+{
+   my $bond_interface = shift;
+   my $slave_interface = shift;
+   my $netconfig_ref = get_network_config($slave_interface);
+
+   open CONFIG, "> $network_scripts_path/ifcfg-$slave_interface" or die "Can't open $network_scripts_path/ifcfg-$slave_interface: $!\n";
+   print CONFIG <<"EOC";
+DEVICE=$slave_interface
+USERCTL=no
+ONBOOT=yes
+MASTER=$bond_interface
+SLAVE=yes
+BOOTPROTO=none
+EOC
+   if($$netconfig_ref{'HWADDR'}){
+      print CONFIG "HWADDR=$$netconfig_ref{'HWADDR'}";
+   }
+}
+
+# This subroutine returns a hash with key-value pairs matching
+# the network configuration for the interface passed as an
+# argument according to the configuration file in
+# /etc/sysconfig/network-scripts/ifcfg-interface
+sub get_network_config
+{
+   my $interface = shift;
+   my %netconfig;
+   open(CONFIG, "$network_scripts_path/ifcfg-$interface") or die "Can't open $network_scripts_path/ifcfg-$interface: $!\n";
+   while(<CONFIG>)
+   {
+      chomp;
+      ($key, $value) = split '=';
+      $netconfig{uc($key)} = $value;
+   }
+   close CONFIG;
+   return \%netconfig;
+}
+
+sub config_modules
+{
+   my $bond_interface = shift;
+   my $bond_miimon = shift;
+   my $bond_mode = shift;
+   my $bond_options_configured = 0;
+   my $bond_alias_configured = 0;
+
+   if(-f "/etc/modprobe.conf"){ # for 2.6 kernels
+      $module_config = "/etc/modprobe.conf";
+   }
+   else {
+      $module_config = "/etc/modules.conf";
+   }
+   open CONFIG, "$module_config" or die "Can't open $module_config: $!\n";
+   while(<CONFIG>){
+      if(/options bonding/){ $bond_options_configured = 1; }
+      if(/alias $bond_interface bonding/){ $bond_alias_configured = 1; }
+   }
+   close CONFIG;
+
+   open CONFIG, ">> $module_config" or die "Can't open $module_config: $!\n";
+   unless($bond_alias_configured)
+   {
+      print CONFIG "alias $bond_interface bonding\n";
+   }
+   unless($bond_options_configured)
+   {
+      print CONFIG "options bonding miimon=$bond_miimon mode=$bond_mode max_bonds=$bond_max\n";
+   }
+   close CONFIG;
+}
+

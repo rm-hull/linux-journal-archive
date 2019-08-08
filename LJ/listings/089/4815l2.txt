@@ -1,0 +1,67 @@
+4815l2
+
+Listing 2. rc.iptables.dynamic
+
+#!/bin/sh
+PATH=/sbin
+export PATH
+IPT=`which` iptables
+
+# define interfaces
+# internal interface
+IINT=eth0
+# external interface (can be ppp+, eth#, ippp+, etc.)
+IEXT=eth1
+# internal network
+INTNET=192.168.0.0/24
+
+# first, turn off forwarding
+echo 0 > /proc/sys/net/ipv4/ip_forward
+
+modprobe ip_tables
+modprobe ip_nat_ftp
+modprobe ip_conntrack_ftp
+
+# flush all chains and delete user chains
+for i in filter nat mangle
+do
+$IPT -t $i -F
+$IPT -t $i -X
+done
+
+# if your ISP blocks "fragmentation needed" ICMP packets, i.e.,:
+# web browsers connect, then hand with no data received
+# small e-mail works OK, but large e-mails hang
+# ssh works OK, but scp hangs after initial handshake
+# uncomment the following:
+# $IPT -t filter -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+# create new user chain
+$IPT -t filter -N tcprules
+
+$IPT -A tcprules  -i $IEXT -m state --state ESTABLISHED,RELATED -j ACCEPT
+$IPT -A tcprules -i ! $IEXT -m state --state NEW -j ACCEPT
+$IPT -A tcprules -i $IEXT -m state --state NEW,INVALID -j LOG --log-prefix "IPT DROP "
+$IPT -A tcprules -i $IEXT -m state --state NEW,INVALID -j DROP
+
+$IPT -A INPUT -j tcprules
+$IPT -A FORWARD -j tcprules
+
+# now for masquerading
+$IPT -t nat -A POSTROUTING -o $IEXT -s $INTNET -j MASQUERADE
+
+# a few mangle rules you might or might not want to try out
+# note that ssh does its own TOS, so is not required below
+$IPT -t mangle -A PREROUTING -m multiport -p tcp --dport 80,21,22 -j TOS --set-tos 16
+$IPT -t mangle -A PREROUTING -m multiport -p tcp --sport 80,21,22 -j TOS --set-tos 16
+$IPT -t mangle -A PREROUTING -p tcp --dport ftp-data -j TOS --set-tos 8
+$IPT -t mangle -A PREROUTING -p tcp --sport ftp-data -j TOS --set-tos 8
+$IPT -t mangle -A PREROUTING -p tcp --dport 25 -j TOS --set-tos 4
+$IPT -t mangle -A PREROUTING -p tcp --dport 110 -j TOS --set-tos 2
+
+# if you have a line in your /etc/sysctl.conf like this:
+# net.ipv4.ip_forward = 1
+# uncomment the following and comment out the echo line below it
+#/sbin/sysctl -p > /dev/null
+echo 1 > /proc/sys/net/ipv4/ip_forward
+

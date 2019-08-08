@@ -1,0 +1,625 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Kbuild: the Linux Kernel Build System
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The first step to contributing to a project is to know how its&#10;build system works. Here, I cover the kernel build system and show you&#10;how to use it to add a feature to a kernel.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2a4c580.0x2b43ac0"></a>
+Kbuild: the Linux Kernel Build System
+</h1></div><div><div class="author"><h3 class="author">
+Javier
+ Martinez 
+Canillas
+</h3></div><div class="issuemoyr">Issue #222, October 2012</div></div><div><p>
+The first step to contributing to a project is to know how its
+build system works. Here, I cover the kernel build system and show you
+how to use it to add a feature to a kernel.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b442a8"></a></h2></div></div><p>
+One amazing thing about Linux is that the same code base is used for
+a different range of computing systems, from supercomputers to very
+tiny embedded devices. If you stop for a second and think about it,
+Linux is probably the only OS that has a unified code base. For example,
+Microsoft and Apple use different kernels for their desktop and mobile
+OS versions (Windows NT/Windows CE and OS X/iOS). Two of the reasons
+this is possible on Linux are that the kernel has many abstraction layers
+and levels of indirection and because its build system allows for creating
+highly customized kernel binary images.
+</p><p>
+The Linux kernel has a monolithic architecture, which means that the
+whole kernel code runs in kernel space and shares the same address
+space. Because of this architecture, you have to choose 
+the features your kernel will include at compile time. Technically, Linux is not a pure
+monolithic kernel, because it can be extended at runtime using loadable
+kernel modules. To load a module, the kernel must contain all the kernel
+symbols used in the module. If those symbols were not included in the
+kernel at compile time, the module will not be loaded due to missing
+dependencies. Modules are only a way to defer compilation (or execution)
+of a specific kernel feature. Once a kernel module is loaded, it is part
+of the monolithic kernel and shares the same address space of the code that
+was included at kernel compile time. Even when Linux supports modules,
+you still need to choose at kernel compile time most of the features
+that will be built in the kernel image and the ones that will allow you to
+load specific kernel modules once the kernel is executing.
+</p><p>
+For this reason, it is very important to be able to choose what code
+you want to compile (or not) in a Linux kernel. The approach for achieving
+this is using conditional compilation. There are tons of configuration
+options for choosing whether a specific feature will be included. This
+is translated to deciding whether a specific C file, code segment or data
+structure will be included in the kernel image and its modules.
+</p><p>
+So, an easy and efficient way to manage all these compilation options
+is needed. The infrastructure to manage this&mdash;building the kernel image
+and its modules&mdash;is known as the Kernel Build System (kbuild).
+</p><p>
+I don't explain the kbuild infrastructure in too much detail here, because
+the Linux kernel
+documentation provides a good explanation (Documentation/kbuild). Instead,
+I discuss the kbuild
+basics and show how to use it to include your own code in a Linux
+kernel tree, such as a device driver.
+</p><p>
+The Linux Kernel Build System has four main components:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Config symbols: compilation options that can be used to compile code
+conditionally in source files and to decide which objects to include in
+a kernel image or its modules.
+</p></li><li><p>
+Kconfig files: define each config symbol and its attributes, such as
+its type, description and dependencies. Programs that generate an option
+menu tree (for example, <tt  >make menuconfig</tt>) read the menu entries from these files.
+</p></li><li><p>
+.config file: stores each config symbol's selected value. You can 
+edit this file manually or use one of the many <tt  >make</tt> configuration targets, such as
+menuconfig and xconfig, that call specialized programs to build a tree-like menu and automatically update (and create) the .config file for you.
+</p></li><li><p>
+Makefiles: normal GNU makefiles that describe the relationship between
+source files and the commands needed to generate each make target, such
+as kernel images and modules.
+</p></li></ul></div><p>
+Now, let's look at each of these components in more detail.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b44a90"></a>
+Compilation Options: Configuration Symbols</h2></div></div><p>
+Configuration symbols are the ones used to decide which features will be
+included in the final Linux kernel image. Two kinds of symbols
+are used for conditional compilation: boolean and tristate. They differ only
+in the number of values that each one can take. But, this difference is
+more important than it seems. Boolean symbols (not surprisingly) can take one
+of two values: true or false. Tristate symbols, on the other hand, can
+take three different values: yes, no or module.
+</p><p>
+Not everything in the kernel can be compiled as a
+module. Many
+features are so intrusive that you have to decide at compilation
+time whether the kernel will support them. For example, you can't add
+Symmetric Multi-Processing (SMP) or kernel preemption support to a
+running kernel. So, using a boolean config symbol makes sense for those
+kinds of features. Most features that can be compiled as modules also
+can be added to a kernel at compile time. That's the reason tristate
+symbols exist&mdash;to decide whether you want to compile a feature built-in (y),
+as a module (m) or not at all (n).
+</p><p>
+There are other config symbol types besides these two symbols, such as
+strings and hex. But, because they are not used for conditional
+compilation,
+I don't cover those here. Read the Linux kernel documentation
+for a complete discussion of config symbols, types and uses.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b44ca0"></a>
+Defining Configuration Symbols: Kconfig Files</h2></div></div><p>
+Configuration symbols are defined in files known as Kconfig files. Each
+Kconfig file can describe an arbitrary number of symbols and can
+also include (source) other Kconfig files. Compilation targets that
+construct configuration menus of kernel compile options, such as
+<tt  >make
+menuconfig</tt>, read these files to build the tree-like structure. Every
+directory in the kernel has one Kconfig that includes the Kconfig files
+of its subdirectories. On top of the kernel source code directory, there is
+a Kconfig file that is the root of the options tree. The menuconfig
+(scripts/kconfig/mconf), gconfig (scripts/kconfig/gconf) and other
+compile targets invoke programs that start at this root Kconfig and
+recursively read the Kconfig files located in each subdirectory to build their
+menus. Which subdirectory to visit also is defined in each Kconfig file and
+also depends on the config symbol values chosen by the user.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b44e00"></a>
+Storing Symbol Values: .config File</h2></div></div><p>
+All config symbol values are saved in a special file called
+.config. Every time you want to change a kernel compile configuration,
+you execute a make target, such as menuconfig or xconfig. These read the
+Kconfig files to create the menus and update the config symbols' values
+using the values defined in the .config file. Additionally, these tools update the
+.config file with the new options you chose and also can generate one
+if it didn't exist before.
+</p><p>
+Because the .config file is plain text, you also can change it without
+needing any specialized tool. It is very convenient for saving and
+restoring previous kernel compilation configurations as well.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b44f60"></a>
+Compiling the Kernel: Makefiles</h2></div></div><p>
+The last component of the kbuild system is the Makefiles. These
+are used to build the kernel image and modules. Like the Kconfig
+files, each subdirectory has a Makefile that compiles only the files in its
+directory. The whole build is done recursively&mdash;a top Makefile
+descends into
+its subdirectories and executes each subdirectory's Makefile to generate the
+binary objects for the files in that directory. Then, these objects are used
+to generate the modules and the Linux kernel image.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b45068"></a>
+Putting It All Together: Adding the Coin Driver</h2></div></div><p>
+Now that you know more about kbuild system basics, let's consider a practical
+example&mdash;adding a device driver to a Linux kernel tree. The example driver is
+for a very simple character device called coin. The driver's function is
+to mimic a coin flipping and returning on each read one of two values:
+head or tail. The driver has an optional feature that exposes previous
+flip statistics using a special debugfs virtual file. Listing 1 shows
+an example interaction with the coin device.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b45170"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Coin Character Device Semantics</b></p><pre     class="programlisting">
+root@localhost:~# cat /dev/coin
+tail
+root@localhost:~# cat /dev/coin
+head
+root@sauron:/# cat /sys/kernel/debug/coin/stats
+head=6 tail=4
+</pre></div><p>
+To add a feature to a Linux kernel (such as the coin driver), you need
+to do three things:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Put the source file(s) in a place that makes sense, such as
+drivers/net/wireless for Wi-Fi devices or fs for a new filesystem.
+</p></li><li><p>
+Update the Kconfig for the subdirectory (or subdirectories) where you put the files with
+config symbols that allow you to choose to include the feature.
+</p></li><li><p>
+Update the Makefile for the subdirectory where you put the files, so the
+build system can compile your code conditionally.
+</p></li></ol></div><p>
+Because this driver is for a character device, put the coin.c source
+file in drivers/char.
+</p><p>
+The next step is to give the user the option to compile the coin
+driver. To do this, you need to add two configuration symbols to the
+drivers/char/Kconfig file: one to choose to add the driver to the kernel
+and a second to decide whether the driver statistics will be available.
+</p><p>
+Like most drivers, coin can be built in the kernel, included as a module
+or not included at all. So, the first config symbol, called
+<tt  >COIN</tt>, is of
+type tristate (y/n/m). The second symbol, <tt  >COIN_STAT</tt>, is used to decide
+whether you want to expose the statistics. Clearly this is a binary
+decision, so the symbol type is bool (y/n). Also, it doesn't make sense
+to add the coin statistics to the kernel if you choose not to include
+the coin driver itself. This behavior is very common in the kernel&mdash;for
+example, you can't add a block-based filesystem, such as ext3 or fat32, if
+you didn't enable the block layer first. Obviously, there is some kind of
+dependency between symbols, and you should model this. Fortunately, you can
+describe config symbols' relationships in Kconfig files using the &ldquo;depends
+on&rdquo; keyword. When, for example, the <tt  >make
+menuconfig</tt> target generates the
+compilation options menu tree, it hides all the options whose symbol
+dependencies are not met. This is just one of many keywords available
+for describing symbols in a Kconfig file. For a complete description of the
+Kconfig language, refer to kbuild/kconfig-language.txt in the Linux kernel
+Documentation directory.
+</p><p>
+Listing 2 shows a segment of the drivers/char/Kconfig file with the
+symbols added for the coin driver.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b45958"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. Kconfig Entries for the Coin Driver</b></p><pre     class="programlisting">
+#
+# Character device configuration
+#
+
+menu "Character devices"
+
+config COIN
+       tristate "Coin char device support"
+       help
+         Say Y here if you want to add support for the 
+         coin char device.
+
+         If unsure, say N.
+
+         To compile this driver as a module, choose M here: 
+         the module will be called coin.
+
+config COIN_STAT
+        bool "flipping statistics"
+        depends on COIN
+       help
+        Say Y here if you want to enable statistics about 
+        the coin char device.
+</pre></div><p>
+So, how can you use your recently added symbols?
+</p><p>
+As mentioned previously, <tt  >make</tt> targets that build a tree menu with all the
+compilation options use this config symbol, so you can choose what to
+compile in your kernel and its modules. For example, when you execute:
+
+<pre     class="programlisting">
+$ make menuconfig
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2b45cc8"></a></h2></div></div><p>
+the command-line utility scripts/kconfig/mconf will start and read all
+the Kconfig files to build a menu-based interface. You then use these
+programs to update the values of your <tt  >COIN</tt> and
+<tt  >COIN_STAT</tt> compilation
+options. Figure 1 shows how the menu looks when you navigate to Device
+Drivers&rarr;Character devices; see how the options for the coin driver
+can be set.
+</p><div       class="mediaobject"><a href="11333f1.large.jpg"><img src="11333f1.jpg"></a><div class="caption"><p>
+Figure 1. Menu Example
+</p></div></div><p>
+Once you are done with the compilation option configuration, exit the
+program, and if you made some changes, you will be asked to save your
+new configuration. This saves the configuration options to the .config
+file. For every symbol, a CONFIG_ prefix is appended in the .config
+file. For example, if the symbol is of type boolean and you chose it,
+in the .config file, the symbol will be saved like this:
+
+<pre     class="programlisting">
+CONFIG_COIN_STAT=y
+</pre>
+</p><p>
+On the other hand, if you didn't choose the symbol, it won't be set
+in the .config file, and you will see something like this:
+
+<pre     class="programlisting">
+# CONFIG_COIN_STAT is not set
+</pre>
+</p><p>
+Tristate symbols have the same behavior as bool types when chosen or
+not. But, remember that tristate also has the third option of compiling the
+feature as a module. For example, you can choose to compile the COIN
+driver as a module and have something like this in the .config file:
+
+<pre     class="programlisting">
+CONFIG_COIN=m
+</pre>
+</p><p>
+The following is a segment of the .config file that shows the values chosen
+for the coin driver symbols:
+
+<pre     class="programlisting">
+CONFIG_COIN=m
+CONFIG_COIN_STAT=y
+</pre>
+</p><p>
+Here you are telling kbuild that you want to compile the coin driver as a module
+and activate the flipping statistics. If you have chosen to compile
+the driver built-in and without the flipping statistics, you will have
+something like this:
+
+<pre     class="programlisting">
+CONFIG_COIN=y
+# CONFIG_COIN_STAT is not set
+</pre>
+</p><p>
+Once you have your .config file, you are ready to compile your kernel and
+its modules. When you execute a compile target to compile the kernel or
+the modules, it first executes a binary that reads all the Kconfig files
+and .config:
+
+<pre     class="programlisting">
+$ scripts/kconfig/conf Kconfig
+</pre>
+</p><p>
+This binary updates (or creates) a C header file with the
+values you chose for all the configuration symbols. This file is
+include/generated/autoconf.h, and every gcc compile instruction includes
+it, so the symbols can be used in any source file in the kernel.
+</p><p>
+The file is composed of thousands of #define macros that describe the
+state for each symbol. Let's look at the conventions for the macros.
+</p><p>
+Bool symbols with the value true and tristate symbols with the value yes are
+treated equally. For both of them, three macros are defined.
+</p><p>
+For example, the bool <tt  >CONFIG_COIN_STAT</tt> symbol with the value true and the
+tristate <tt  >CONFIG_COIN</tt> symbol with the value yes will generate the following:
+
+
+<pre     class="programlisting">
+#define __enabled_CONFIG_COIN_STAT 1
+#define __enabled_CONFIG_COIN_STAT_MODULE 0
+#define CONFIG_COIN_STAT 1
+
+#define __enabled_CONFIG_COIN 1
+#define __enabled_CONFIG_COIN_MODULE 0
+#define CONFIG_COIN 1
+</pre>
+</p><p>
+In the same way, bool symbols with the value false and tristate symbols with
+the value no have the same semantics. For both of them, two macros are defined.
+For example, the <tt  >CONFIG_COIN_STAT</tt> with the value
+false and the <tt  >CONFIG_COIN</tt>
+with the value no will generate the following group of macros:
+
+
+<pre     class="programlisting">
+#define __enabled_CONFIG_COIN_STAT 0
+#define __enabled_CONFIG_COIN_STAT_MODULE 0
+
+#define __enabled_CONFIG_COIN 0
+#define __enabled_CONFIG_COIN_MODULE 0
+</pre>
+</p><p>
+For tristate symbols with the value module, three macros are defined. For
+example, the <tt  >CONFIG_COIN</tt> with the value module will generate the following:
+
+
+<pre     class="programlisting">
+#define __enabled_CONFIG_COIN 0
+#define __enabled_CONFIG_COIN_MODULE 1
+#define CONFIG_COIN_MODULE 1
+</pre>
+</p><p>
+Curious readers probably will ask why are those
+<tt  >__enabled_option</tt> 
+macros needed? Wouldn't it be sufficient to have only the
+<tt  >CONFIG_option</tt> and
+<tt  >CONFIG_option_MODULE</tt>? And, why is
+<tt  >_MODULE</tt> declared even for symbols that
+are of type bool?
+</p><p>
+Well, the <tt  >__enabled_</tt> constants are used by three macros:
+
+
+<pre     class="programlisting">
+#define IS_ENABLED(option) \
+        (__enabled_ ## option || __enabled_ ## option ## _MODULE)
+
+#define IS_BUILTIN(option) __enabled_ ## option
+
+#define IS_MODULE(option) __enabled_ ## option ## _MODULE
+</pre>
+</p><p>
+So, the <tt  >__enabled_option</tt> and
+<tt  >__enabled_option_MODULE</tt> always are defined,
+even for bool symbols to make sure that this macro will work for any
+configuration option.
+</p><p>
+The third and last step is to update the Makefiles for the subdirectories
+where you put your source files, so kbuild can compile your driver if you
+chose it.
+</p><p>
+But, how do you instruct kbuild to compile your code conditionally?
+</p><p>
+The kernel build system has two main tasks: creating the kernel binary
+image and the kernel modules. To do that, it maintains two lists of objects:
+obj-y and obj-m, respectively. The former is a list of all the objects
+that will be built in the kernel image, and the latter is the list of
+the objects that will be compiled as modules.
+</p><p>
+The configuration symbols from .config and the macros from autoconf.h
+are used along with some GNU make syntax extensions to fill these
+lists. Kbuild recursively enters each directory and builds the
+lists adding the objects defined in each subdirectory's Makefile. For more
+information about the GNU make extensions and the objects list, read
+Documentation/kbuild/makefiles.txt.
+</p><p>
+For the coin driver, the only thing you need to do is add a line in
+drivers/char/Makefile:
+
+<pre     class="programlisting">
+obj-$(CONFIG_COIN)    += coin.o
+</pre>
+</p><p>
+This tells kbuild to create an object from the source file coin.c and
+to add it to an object list. Because <tt  >CONFIG_COIN</tt>'s value can be y or m, the
+coin.o object will be added to the obj-y or obj-m list depending on the
+symbol value. It then will be built in the kernel or as a module. If you
+didn't choose the <tt  >CONFIG_COIN</tt> option, the symbol is undefined, and
+coin.o will not be compiled at all.
+</p><p>
+Now you know how to include source files conditionally. The last part of
+the puzzle is how to compile source code segments conditionally. This
+can be done easily by using the macros defined in autoconf.h. Listing
+3 shows the complete coin character device driver.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2f3f4c0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. Coin Character Device Driver Example</b></p><pre     class="programlisting">
+
+#include &lt;linux/kernel.h&gt;
+#include &lt;linux/module.h&gt;
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/uaccess.h&gt;
+#include &lt;linux/device.h&gt;
+#include &lt;linux/random.h&gt;
+#include &lt;linux/debugfs.h&gt;
+
+#define DEVNAME "coin"
+#define LEN  20
+enum values {HEAD, TAIL};
+
+struct dentry *dir, *file;
+int file_value;
+int stats[2] = {0, 0};
+char *msg[2] = {"head\n", "tail\n"};
+
+static int major;
+static struct class *class_coin;
+static struct device *dev_coin;
+
+static ssize_t r_coin(struct file *f, char __user *b,
+                      size_t cnt, loff_t *lf)
+{
+        char *ret;
+        u32 value = random32() % 2;
+        ret = msg[value];
+        stats[value]++;
+        return simple_read_from_buffer(b, cnt,
+                                       lf, ret,
+                                       strlen(ret));
+}
+
+static struct file_operations fops = { .read = r_coin };
+
+#ifdef CONFIG_COIN_STAT
+static ssize_t r_stat(struct file *f, char __user *b,
+                         size_t cnt, loff_t *lf)
+{
+        char buf[LEN];
+        snprintf(buf, LEN, "head=%d tail=%d\n",
+                 stats[HEAD], stats[TAIL]);
+        return simple_read_from_buffer(b, cnt,
+                                       lf, buf,
+                                       strlen(buf));
+}
+
+static struct file_operations fstat = { .read = r_stat };
+#endif
+
+int init_module(void)
+{
+        void *ptr_err;
+        major = register_chrdev(0, DEVNAME, &amp;fops);
+        if (major &lt; 0)
+                return major;
+
+        class_coin = class_create(THIS_MODULE,
+                                  DEVNAME);
+        if (IS_ERR(class_coin)) {
+                ptr_err = class_coin;
+                goto err_class;
+        }
+
+        dev_coin = device_create(class_coin, NULL,
+                                 MKDEV(major, 0),
+                                 NULL, DEVNAME);
+        if (IS_ERR(dev_coin))
+                goto err_dev;
+
+#ifdef CONFIG_COIN_STAT
+        dir = debugfs_create_dir("coin", NULL);
+        file = debugfs_create_file("stats", 0644,
+                                   dir, &amp;file_value,
+                                   &amp;fstat);
+#endif
+
+        return 0;
+err_dev:
+        ptr_err = class_coin;
+        class_destroy(class_coin);
+err_class:
+        unregister_chrdev(major, DEVNAME);
+        return PTR_ERR(ptr_err);
+}
+
+void cleanup_module(void)
+{
+#ifdef CONFIG_COIN_STAT
+        debugfs_remove(file);
+        debugfs_remove(dir);
+#endif
+
+        device_destroy(class_coin, MKDEV(major, 0));
+        class_destroy(class_coin);
+        return unregister_chrdev(major, DEVNAME);
+}
+
+</pre></div><p>
+In Listing 3, you can see that the <tt  >CONFIG_COIN_STAT</tt> configuration option is used to
+register (or not) a special debugfs file that exposes the coin-flipping
+statistics to userspace.
+</p><p>
+Figure 2 summarizes the kernel build process, and the output of the
+<tt  >git diff
+--stat</tt> command shows the files you have modified to include the driver:
+
+<pre     class="programlisting">
+drivers/char/Kconfig  |   16 +++++++++
+drivers/char/Makefile |    1 +
+drivers/char/coin.c   |   89 ++++++++++++++++++++++++++++++++++++++++
+3 files changed, 106 insertions(+), 0 deletions(-)
+</pre>
+</p><div       class="mediaobject"><a href="11333f2.large.jpg"><img src="11333f2.jpg"></a><div class="caption"><p>
+Figure 2. Kernel Build Process
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2a4c580.0x2f3fa40"></a>
+Conclusion</h2></div></div><p>
+Linux, despite being a monolithic kernel, is highly modular and
+customizable. You can use the same kernel in a varied range of
+devices from high-performance clusters to desktops all the way to
+mobile phones. This makes the kernel a very big and complex piece of
+software. But, even when the kernel has millions of lines of code, its
+build system allows you to extend it with new features easily. In the past,
+to have access to an operating system's source code, you had to work
+for a big company and sign large NDA agreements. Nowadays, the source of
+probably the most modern operating system is publicly available. You
+can use it, study its internals and modify it in any creative way you
+want. The best part is that you even can share your work and get feedback
+from an active community.
+Happy hacking!
+</p></div></div>
+<div class="authorblurb"><p>
+Javier Martinez Canillas is a longtime Linux user, administrator and
+open-source advocate developer. He has an MS from the Universitat
+Aut&ograve;noma de Barcelona and works as a Linux kernel engineer.
+Besides hacking, he enjoys spending as much time as possible with his 
+wife Tami, running, reading and photography. He can be reached at
+<a href="mailto:javier@dowhile0.org">javier@dowhile0.org</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../222/toc222.html">Issue Table of Contents</a>
+    <a class="link3" href="../222/11333.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

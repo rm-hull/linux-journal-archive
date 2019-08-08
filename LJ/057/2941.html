@@ -1,0 +1,206 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Understanding a Context Switching Benchmark</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    A look at the Linux kernel scheduler.&#10;    "><meta name="keywords" content="NT, programming, kernel"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xe81580.0xf78ab0"></a>Understanding a Context Switching Benchmark</h1></div><div><div class="author"><h3 class="author">Randy Appleton</h3></div><div class="issuemoyr">Issue #57, January 1999</div></div><div><p>
+    A look at the Linux kernel scheduler.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe81580.0xf79500"></a></h2></div></div><p>One of the most important tasks of an
+operating system kernel is to manage processes and threads. A
+process is a program in execution, and a thread is just a CPU state
+stored within a process. A CPU context is either a process or a
+thread. Most processes have only one thread, but some processes,
+particularly servers, have more. Sometimes programs other than
+servers use multiple threads; Netscape Navigator is an example of
+such a program. These processes and threads represent the programs
+the user has selected to run. If managing processes and threads is
+slow, overall computer performance will also be slow.
+</p><p>Linux advocates naturally assume that Linux offers better
+performance than MS Windows. Gregory Travis (greg@littlebear.com)
+set out to test this assumption by testing the times needed to
+manage processes and threads. His benchmark was a simple program
+that timed simple operations like
+<span   class="bold"><b>fork</b></span> or
+<span   class="bold"><b>sched_yield</b></span> by generating a large
+number of processes or threads that did nothing more, individually,
+than looping in place. His results generated quite a controversy in
+the Linux newsgroups and the kernel e-mail list. All tests were
+done on a 200 MHz Pentium. (See Table 1.)</p><p><a href="2941f1.jpg" target="_self"><span   class="bold"><b>Table
+1</b></span></a></p><p>Linux can create a process twice as fast and a thread three
+times as fast as NT. Process creation takes longer than thread
+creation (12x for NT, 3x for Linux), because processes have much
+more overhead. Memory maps and file descriptor tables are just two
+of the things that must be created for a process (but not for a
+thread). Note, however, that Linux creates an entire process (the
+clone function) in about the same amount of time NT takes just to
+create a thread (1.0 ms vs. 0.9 ms).</p><p>Using this benchmark and an unmodified Linux 2.0.30 kernel,
+NT is much faster than Linux at context switching, either between
+processes (1.9x) or threads (3.2x). Since context switching occurs
+much more frequently than context creation, it would seem that
+Linux has a problem. But does it?</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe81580.0xf798c8"></a>Understanding the Problem</h2></div></div><p>Why does this simple benchmark make the Linux context
+switching code so much slower than Windows NT? To answer that, one
+must understand the Linux scheduler.</p><p>The scheduler has a list called the run queue containing all
+contexts ready to run. These contexts are not sorted in any way.
+Each context also has a goodness, which is a measure of the current
+priority of the context. Two loops are within the scheduler. The
+first loop (the searching loop) finds the context with the highest
+goodness from the ready queue and selects that context to run. The
+second loop (the recalc loop) recalculates the goodnesses if all
+contexts have used their entire time slice. This second loop runs
+only occasionally. The code in <a href="2941l1.html" target="_self">Listing
+1</a> shows the structure of the schedule function.</p><p>The search loop needs a small bit of CPU time for every
+runnable process and needs it on every context switch. The above
+benchmark shows the context switch times with 40 contexts present
+and ready to run. That corresponds to a load average of 40 for a
+single CPU system or 20 for a dual CPU system. These are very large
+load averages, much larger than what is normally considered
+healthy. Generally, there will be only a few (perhaps one to three)
+contexts to choose from. Most processes and threads, even very
+active ones, will be waiting for some I/O event to occur and are,
+therefore, not on the ready queue and not considered for
+selection.</p><p>Even heavily loaded machines will generally have most
+contexts waiting for I/O to complete; those contexts will not be on
+the run queue. Consider the site http://www.winsite.com/, a very
+heavily loaded Internet site, with about 200 copies of
+<span   class="bold"><b>httpd</b></span> running as web servers. The
+total number of processes for all purposes is about 420. The
+machine is a 333MHz Pentium II connected to three T1 lines.</p><p>Measurements of this machine indicate that 24,221,164 context
+switches occurred over a 17-hour period (400 switches per second).
+For these switches, during 4% of the time there were over 10
+contexts ready to choose from at one moment, and during only 0.1%
+of the time were there twenty or more. The longest run queue during
+the 17-hour stretch was only 36 contexts, out of the 420 possible.
+The mean run-queue length averaged only 2.5 contexts. In a sense,
+this benchmark represents a worst case for Linux, and the average
+case, even for heavily loaded machines, is much better.</p><p>The second (recalc) loop is even more important in
+understanding these benchmark results. This recalc loop runs only
+when every context on the ready queue has used up its entire time
+slice (generally 20 ticks or 0.2 seconds). The recalc loop then
+recalculates the priority of each context. Normally, this recalc
+loop runs only occasionally. Most rescheduling is done in response
+to an interrupt or because of an I/O request; therefore, most
+contexts do not use their whole time slice. However, when a process
+or thread wants to yield the CPU, it calls sched_yield, which
+treats it as if the process had used its entire time slice. In this
+way, any process that calls sched_yield has its priority lowered
+and will not be scheduled again for a substantial period of time.
+The code for sched_yield is shown in
+<a href="2941l2.html" target="_self">Listing 2</a>.</p><p>When all contexts have used their entire time slice, the
+scheduler recalculates the priority of all contexts using the
+recalc loop. Since during this benchmark all contexts do one cheap
+operation (sched_yield) and then have <b  >counter</b>
+set to zero, this recalc loop runs much more often than normal.
+Again, this benchmark seems to be a worst case for Linux.</p><p>For the web site described above, measurements show only one
+of 200 context switches required a recalculation of its
+priority&mdash;the other 199 context switches did not.</p><p>Half the problem can be solved easily; the other half would
+be more difficult.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe81580.0xf79df0"></a>The Search Loop</h2></div></div><p>There is probably no way to make the search loop run faster;
+it is well-written code. However, it could be eliminated by simply
+keeping contexts in the ready queue in sorted order; then the next
+context to run is the context at the head of the ready queue.
+Keeping the ready queue in sorted order would require code to take
+each context being added to the ready queue and place it in the
+appropriate position. The time needed to find this position would
+add complexity to the scheduler. For large load averages (implying
+many contexts on the ready queue), there might be a considerable
+time savings, but in the more normal case of small ready queues,
+there is no significant savings.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe81580.0xf79ef8"></a>The Recalc Loop</h2></div></div><p>Minimizing the time needed by the recalc loop would be easy.
+Again, it is well-written code not likely to be improved upon, but
+it need not run as often as it does. By changing sched_yield, the
+recalc loop can run much less often.</p><p>For Linux 2.0.30, sched_yield acts as if the yielding context
+has used the entire time slice. Instead, what if sched_yield acted
+as if the yielding context had used only one tick of its time
+slice? Several effects would be noticed:</p><div class="itemizedlist"><ul type="disc"><li><p>The yielding process would have its priority
+reduced by one, rather than temporarily set to zero.</p></li><li><p>The recalc loop would run much less often.
+Generally, it would run 1/20 as often (depending on process
+priority).</p></li></ul></div><p>The new sched_yield is shown in
+<a href="2941l3.html" target="_self">Listing 3</a>. Compare it to the one
+in Listing 2. Only one more line is included, yet a large increase
+in performance is shown for this benchmark.
+</p><p>Table 2 summarizes the performance after this change was
+made. Note that as the run-queue length increases, both the NT and
+the Linux scheduler take longer to context switch. Linux starts out
+being the faster context switcher, but NT does relatively better as
+run-queue length increases. For run-queue lengths of 20 or less
+(almost always the case in real life), Linux is better.</p><p><a href="2941f2.jpg" target="_self"><span   class="bold"><b>Table
+2</b></span></a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xe81580.0xf7a420"></a>Summary</h2></div></div><p>By making a two-line change to the source code, this
+benchmark can be greatly improved. However, the benchmark arguably
+does not reflect real-life usage. Nevertheless, only a two-line
+change to the kernel is required for a significant benefit to a
+small number of users. After this change, Linux outperforms Windows
+NT in all aspects of process and thread creation and in context
+switching.</p><p>All listings referred to in this article are available by
+anonymous download in the file
+<a href="../listings/057/2941.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue57/2941.tgz</a>.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="2941aa.jpg"></div>
+
+            <span   class="bold"><b>Randy Appleton</b></span>
+            (<a href="mailto:randy@euclid.nmu.edu">randy@euclid.nmu.edu</a>)
+            is a Professor of Computer Science
+            at Northern Michigan University. He's been involved in Linux since
+            the 0.99 days, and manages the largest collection of Linux
+            computers in Michigan's Upper Peninsula. His other interests
+            include foreign travel and flying small airplanes.
+          </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../057/toc057.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

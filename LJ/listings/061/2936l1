@@ -1,0 +1,83 @@
+#!/usr/local/bin/perl
+# 
+# Filename: ip-up
+#
+# Code by Lindsay Haisley, FMP Computer Serivces, fmouse@fmp.com
+# Terms of the GNU GENERAL PUBLIC LICENSE apply
+# see <http://www.gnu.org/copyleft/gpl.html>
+#
+# ip-up for use with pppd and mgetty 0.99 with Auto_PPP.  This script allows
+# the setting of proxyarp for a ppp connection on a per-user basis -
+# something which can't be done with Auto_PPP since pppd always has a real
+# and effective uid of root if invoked with the Auto_PPP facility in mgetty
+# 0.99.
+#
+# To use the script, create the file /etc/ppp/proxyarp with lines in the
+# format:
+#
+# username	+|-
+#
+# If a "+" follows the username, proxy arp will be set for a login by
+# username.  If a "-" follows the username, any proxy arp entry for a login
+# by username will be removed.  The script can thus be used to remove proxy
+# arp for specific users if proxyarp is set globally, or to add it if
+# proxyarp is not set globally.
+
+
+$ENV{'PATH'} = "/bin:/usr/bin:/sbin:/usr/sbin";
+$piddir = "/var/run";
+
+# Obtain local hardware address
+open (L, "ifconfig|grep HWaddr|");
+($foo, $hw_addr) = split(/HWaddr\ /, <L>);
+chop $hw_addr;
+
+# Obtain the terminal
+$ARGV[1] =~ /\/dev\/(.+)$/;
+$tty = $1;
+$iface = $ARGV[0];
+
+# Grab the assigned remote IP
+$ip = $ARGV[4];
+
+# Determine the user
+open (M, "who|grep $tty|");
+($who, $foo) = split (/[ \t]+/, <M>);
+
+# We now know who, now we can find out what
+
+open (PAFILE, "/etc/ppp/proxyarp");
+while (<PAFILE>) {
+	($user, $status) = split;
+	if ($status =~ /\n/) {chop $status;}
+	last if $user eq $who;
+}
+
+exit if $user ne $who; 	# Not in list - as you were
+
+if ($status eq "+") {`arp -s $ip $hw_addr pub`;}
+if ($status eq "-") { `arp -d $ip pub`; }
+
+# Now let's deal with timeouts
+# ---------------------------------------
+# Create a session file
+# Get pid
+open (PIDFILE, "${piddir}/${iface}.pid");
+$pid = <PIDFILE>;
+chomp $pid;
+close (PIDFILE);
+$time = time;
+
+# Get packet traffic stats
+open (NETSTAT, "/proc/net/dev");
+$trash = <NETSTAT>;
+$trash = <NETSTAT>;
+$time = time;
+while (<NETSTAT>) {
+	($ifname, $rpackets, $rerrs, $rdrop, $rfifo, $rframe, \
+$xpackets, $xerrs, $xdrop, $xfifo, $xcolls, $xcarrier) = split;
+	last if $ifname eq $iface.":";
+}
+open (SESSION, ">/var/run/$iface.session");
+print SESSION "$who\t$pid\t$time\t$time\t$rpackets\t$xpackets";
+close (SESSION);

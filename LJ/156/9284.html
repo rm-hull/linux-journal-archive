@@ -1,0 +1,470 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Time-Zone Processing with Asterisk, Part II</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Part II of our series on time-zone processing with Asterisk.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2117580.0x220eab0"></a>
+Time-Zone Processing with Asterisk, Part II</h1></div><div><div class="author"><h3 class="author">
+Matthew
+ 
+Gast
+</h3></div><div class="issuemoyr">Issue #156, April 2007</div></div><div><p>
+Part II of our series on time-zone processing with Asterisk.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2117580.0x220f2f0"></a></h2></div></div><p>
+Last month, I wrote about a system for handling telephone calls with
+Asterisk that automatically handled the call depending on the time of day at
+a remote location. Use of the system, however, depended on the user
+performing the critical task of setting up the remote location's time
+with a telephone call. Rather than rely on the user to initiate
+the telephone call manually, it would be easier if the call occurred automatically.
+</p><p>
+If the setup call occurs automatically, the user won't
+forget to do it. The initial SIP registration may occur at a very strange hour
+in the home location, but the SIP registration occurs because a user has
+plugged something in. Therefore, we know the user is awake and can
+take a short call. Asterisk provides a management interface that reports
+when SIP registrations occur and can be used to take action based on
+it.
+With a bit of additional processing, a script talking to the manager
+can initiate calls only when the SIP registration is &ldquo;new&rdquo;.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2117580.0x220f4a8"></a>
+Introduction to the Asterisk Manager</h2></div></div><p>
+The Asterisk Manager reports events processed by Asterisk and accepts
+commands over the interface. The form of the interface is a text-based
+protocol that separates event reports and commands into clusters of lines
+with a key: value format. For example, the registration of extension
+300 using the SIP protocol looks like this:</p><pre     class="programlisting">
+Event: PeerStatus
+PeerStatus: Registered
+Peer: SIP/300
+</pre><p>
+Before gaining access to the Asterisk manager, clients must
+authenticate against the list of administrative users stored in
+/etc/asterisk/manager.conf. Once logged in, a client can issue commands
+or query the value of variables with a set of lines that starts with a
+first line of Action:, followed by a command. Responses to commands
+typically start with Response: Success.
+</p><p>
+Because the protocol is text-based, it can be scripted in a language
+like Expect. A component is also available for the Perl Object
+Environment (POE), a framework that builds event-driven programs in Perl.
+The freely available component provides the base-level response parsing
+that would need to be written in Expect, so it is a much more extensible
+foundation for programs controlling the Asterisk manager.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2117580.0x220f6b8"></a>
+The Program Core and Inline States</h2></div></div><p>
+The main code for the program is simple. POE sets up a system where
+state handlers are called in response to program states. A state can be
+defined by the programmer or by an external event. The typical flow
+through the program is to notice a SIP registration, check to see
+whether it has an active time-zone registration and if not, to initiate a
+configuration call.
+</p><p>
+To execute code in response to an event, the POE framework uses a hash
+called CallBacks. Every entry in CallBacks defines a state based on
+the event received from the manager. When an event matches a callback,
+the handler defined for the state is triggered. To set up a trigger
+with the CallBacks clause, identify every line in the event and set up
+a hash so that the left-hand side of each line of the event is the key
+value for a line of the hash. As an example, consider the callback
+definition for the SIP registration event earlier:</p><pre     class="programlisting">
+Event: PeerStatus      register =&gt; { 'Event' =&gt; 'PeerStatus',
+PeerStatus: Registered               'PeerStatus' =&gt; 'Registered', }
+Peer: SIP/300
+</pre><p>
+To link the callback to a handler, the inline_states hash has a list of
+states and references to the corresponding code to call. Although it is
+possible to inline event-handler code, for readability I have separated
+the code out into external procedures. Code called in response to a
+CallBack cannot be passed arguments:</p><pre     class="programlisting">
+
+123456789*123456789*123456789*123456789*123456789*12
+inline_states =&gt; {
+     register =&gt; \&amp;register_state_handler,
+   },
+
+</pre><p>
+Based on the flow of the program, three events are of interest.
+First, SIP registration events are used to start the entire process.
+SIP registrations typically occur hourly, so it is important to
+initiate the call only when a registration is the &ldquo;first&rdquo; registration.
+To prevent duplicate telephone calls from being initiated, the program
+will request data from both the Asterisk internal database AstDB as well
+as the SIP peer information. The second and third events will handle
+responses to commands and database queries, respectively. A fourth
+event will handle initiating the telephone call after receiving data
+back from the queries. The code I am currently using also has a state
+defined for unregister events, though it is a stub for an event that I
+am not currently using.
+</p><p>
+The core of the program is only 35 lines, most of which defines the
+program event states and shows what code will be used in response to
+those states. Note that the state of call is defined by the program
+and not by a callback, so the call state can be entered only by the
+program itself and not in response to an event from the manager. (A
+full listing of the program is available on the <span   class="emphasis"><em>Linux
+Journal</em></span> FTP site; see Resources.)</p><pre     class="programlisting">
+
+POE::Component::Client::Asterisk::Manager-&gt;new(
+   Alias           =&gt; 'monitor',
+   RemoteHost      =&gt; 'localhost',
+   RemotePort      =&gt; 5038,
+   Username        =&gt; 'autotzcaller',
+   Password        =&gt; 'secretpassword',
+   CallBacks  =&gt; {
+        input    =&gt; ':all',
+        response =&gt; {
+                'Response' =&gt; 'Success',
+        },
+        dbresponse =&gt; {
+                'Event' =&gt; 'DBGetResponse',
+        },
+        register =&gt; {
+                'Event' =&gt; 'PeerStatus',
+                'PeerStatus' =&gt; 'Registered',
+        },
+        unregister =&gt; {
+                'Event' =&gt; 'PeerStatus',
+                'PeerStatus' =&gt; 'Unregistered',
+        },
+   },
+   inline_states =&gt; {
+        input      =&gt; \&amp;input_state_handler,
+        response   =&gt; \&amp;response_state_handler,
+        dbresponse =&gt; \&amp;db_response_state_handler,
+        register   =&gt; \&amp;register_state_handler,
+        call       =&gt; \&amp;call_state_handler,
+        unregister =&gt; \&amp;unregister_state_handler,
+   },
+);
+
+POE::Kernel-&gt;run();
+exit(0);
+
+</pre><p>
+Two of the state handlers are only stubs. The input state handler
+prints out whatever it gets if a debug flag is set, and it is there
+for development purposes. It catches any unrecognized events that
+come from the manager, and it can be useful when testing that callbacks are
+catching the important events. The unregister state handler currently
+doesn't do anything, but it is there as a hook to expand if I choose in
+the future to take any action based on that.
+</p><p>
+With the core of the program in place, let's look at each of the states
+in the order they will be called through a typical program execution flow.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2117580.0x220fb88"></a>
+Registration Event Handling</h2></div></div><p>
+The register state handler is called whenever a SIP registration event
+is received from a new extension. Its main purpose is to get the data
+required for setting up the configuration telephone call when a new
+extension pops up. Whether a call is made depends on the state
+of the extension as far as time-zone processing, so this routine requests
+information to determine whether the extension is registered, its IP address
+and other components. To get the extension, we have to take the channel
+name, which is prefaced with the technology and a slash (for example SIP/)
+and strip the leading part away.
+</p><p>
+One wrinkle of the event handler is that POE handlers run to completion.
+There is no way to interrupt a handler when it is running. The
+sub-procedure getTZChannelVars will request information on the time-zone
+offset and IP address, but that information will not become available
+until the registration handler completes and the responses return via
+the manager. At the end of the procedure, the registration handler
+uses the delay_set POE method to queue up the call state for a delay
+in the future so that the requests will have returned their information
+by that point. The delay is set by a global variable in the program.
+I have found that one second is more than adequate for a single-user
+PBX with only one outstanding extension requiring setup, but the delay
+is set to three seconds for safety.
+</p><p>
+Communication between state handlers is a bit different from that in
+a procedure-driven program. POE state handlers pass references to
+the POE kernel, which is used in scheduling, as well as the POE heap,
+which is needed to issue commands to the Asterisk Manager. POE defines
+constants so the heap and kernel are easily accessible to event handlers
+as $_[HEAP] and $_[KERNEL]. Any other information available is
+located at $_[ARG0], which is a constant defined in such a way that it
+is the first argument.
+</p><p>
+Any lines in the event that defines the state will be passed as the hash
+$_[ARG0] and are accessible by asking for the hash key that appears on
+the left-hand side of the desired line. In the registration response, it
+is possible to get at the peer extension by referring to
+<tt  >$_[ARG0]-&gt;{Peer}</tt>,
+which returns <tt  >SIP/300</tt>:</p><pre     class="programlisting">
+Event: PeerStatus
+PeerStatus: Registered
+Peer: SIP/300
+</pre><p>
+On SIP registration, the program needs to identify the extension, request
+information about it and then set up further processing of the extension
+data after a delay. When an event is called through the delay_set method,
+it is possible to pass an extension to the state handler, such as the
+extension number used here:</p><pre     class="programlisting">
+sub register_state_handler {
+  my $kernel = $_[KERNEL];
+  # Split peer extension off from technology
+  my $peer = $_[ARG0]-&gt;{Peer};
+  debug_print("\tExtension is $peer; ");
+  my @exten_parts = split('/',$peer);
+  my $ext = @exten_parts[1];
+  debug_print("extension number is $ext\n");
+
+  getTZChannelVars($_[HEAP], $ext);
+
+  debug_print("Queuing call event for ");
+  debug_print("$REG_CALL_DELAY seconds\n");
+  $kernel-&gt;delay_set("call", $REG_CALL_DELAY, $ext);
+
+} # register_state_handler
+</pre><p>
+As part of the extension registration process, we collect variables about
+the state of the channel in the getTZChannelVars procedure. The POE heap,
+which is passed as the first argument, can be used to issue commands to
+the manager. For example, the put argument to the server can be used
+to issue commands. To get the SIP peer data, which includes the current
+IP address of the peer, the command looks like this:
+</p><pre     class="programlisting">
+$heap-&gt;{server}-&gt;put({'Action' =&gt; 'SIPShowPeer',
+                      'Peer' =&gt; $ext });
+</pre><p>
+To get a database variable, the action in the put command is a DBGet.
+The time-zone data is stored as keys in the tz family, so it is necessary
+to specify both the family and assemble the correct key name, which is
+of the form 300-TIMESKEW or similar:</p><pre     class="programlisting">
+$heap-&gt;{server}-&gt;put({'Action' =&gt; 'DBGet',
+                      'Family' =&gt; 'tz',
+                      'Key' =&gt; $ext . '-TIMESKEW'});
+</pre><p>
+Four database requests and the SIP peer data are requested by
+getTZChannelVars. Because this function is called by an event handler,
+it also is not interruptible. Therefore, it sends four database
+query events to the manager, but it does not process responses directly.
+(Complete code for the five requests within the full procedure is
+available on the <span   class="emphasis"><em>Linux Journal</em></span> FTP site.)
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2117580.0x2210160"></a>
+Command and Database Responses</h2></div></div><p>
+In the gap between issuing requests and the time the call state is
+scheduled, responses flow in from the SIP data request and the
+database queries. From the SIP data request, we need to pick out the
+peer IP address, which appears on a line in the manager response
+reading <tt  >Address-IP: 192.168.1.5</tt>. Conveniently, the POE module
+parses out the lines in the response, so all we need to do is look for the
+Address-IP line by getting the value of the Address-IP hash element in
+one of the arguments passed to the handler. The POE heap is accessible
+across events, so adding the value of the SIP peer IP address to the
+heap makes it accessible to other event handlers:</p><pre     class="programlisting">
+sub response_state_handler {
+  my $peer_ip = $_[ARG0]-&gt;{'Address-IP'};
+  if (defined($peer_ip)) {
+    debug_print("SIP context found; Peer IP address"
+    debug_print("is $peer_ip\n");
+    $_[HEAP]-&gt;{'SIP-Peer-IP'}=$peer_ip;
+  }
+} # response_state_handler
+</pre><p>
+After the SIP data response comes back, the four database queries should
+return responses. Responses to the queries look like this:</p><pre     class="programlisting">
+DBGetResponse: Success
+Family: tz
+Key: 300-TIMESKEW
+Val: -8
+</pre><p>
+The callback handler is triggered whenever there is a <tt  >DBGetResponse:
+Success</tt> event from the manager, with an argument of a hash that has each
+of the lines in the packet. Our interest is in the key and value lines,
+which can be retrieved from the arguments passed to the state handler.
+As with the previous handler, responses are stored in the POE task heap
+to make it available to other handlers:</p><pre     class="programlisting">
+sub db_response_state_handler {
+  my $family = $_[ARG0]-&gt;{'Family'};
+  my $key = $_[ARG0]-&gt;{'Key'};
+  my $value = $_[ARG0]-&gt;{'Val'};
+
+  if (defined($family)) {
+     debug_print("Key $key in DB family $family");
+     debug_print("has value = $value\n");
+     # Store in heap
+     $_[HEAP]-&gt;{$key} = $value;
+  }
+} # db_response_state_handler
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2117580.0x22104d0"></a>
+Making the Call</h2></div></div><p>
+Every registration event triggers a &ldquo;call&rdquo; event to happen after
+a delay. The delay is used to collect information used to determine
+whether to initiate a call. The setup telephone call should
+be triggered only if the time-zone setup has expired or the SIP device has
+changed its IP address and the record is no longer valid.
+</p><p>
+Because the call state handler is placed in the queue for execution by
+the registration handler, it does have one argument, the extension number
+of the call in question. The extension can be retrieved as $_[ARG0].
+All the data we have added to the heap by processing the database
+responses and SIP data request is also readily available:</p><pre     class="programlisting">
+sub call_state_handler {
+
+  # Get extension out of arguments to function
+  my $exten = $_[ARG0];
+
+  my $hp = $_[HEAP];
+  # Variables we use to determine if the call is required
+  my $skew = $hp-&gt;{$exten.'-TIMESKEW'};
+  my $skew_addr = $hp-&gt;{$exten.'-TIMESKEW_ADDR'};
+  my $skew_start = $hp-&gt;{$exten.'-TIMESKEW_START'};
+  my $skew_end = $hp-&gt;{$exten.'-TIMESKEW_END'};
+  my $sip_peer_ip = $hp-&gt;{'SIP-Peer-IP'};
+  my $now = time();
+</pre><p>
+To determine whether the call is required, the handler compares the current
+time with the expiration of the time-zone offset record and the IP
+address of the SIP device against the IP address stored in the time-zone offset record. If the IP addresses match and the offset has not
+expired, no call is required. Otherwise, a call is needed and made with
+the makeTZSetupCall function:</p><pre     class="programlisting">
+
+ if ($now &gt; $skew_end) {
+   debug_print("Make call - offset has expired.\n");
+   makeTZSetupCall($_[HEAP], $exten);
+ } elsif (!($skew_addr eq $sip_peer_ip)) {
+   debug_print("Make call - SIP IP addr changed\n");
+   makeTZSetupCall($_[HEAP], $exten);
+ } else {
+   debug_print("No call -- record OK &amp; same IP\n");
+ }
+
+</pre><p>
+As a final step, the handler needs to remove the variables placed on
+the heap. The heap is used only to pass variables between state handlers,
+and the variables are not needed once that function is complete. Each of
+the variables can be undefined with the undef function:</p><pre     class="programlisting">
+  # Need to clean up heap
+  undef $_[HEAP]-&gt;{$exten.'-TIMESKEW'};
+  undef $_[HEAP]-&gt;{$exten.'-TIMESKEW_ADDR'};
+  undef $_[HEAP]-&gt;{$exten.'-TIMESKEW_START'};
+  undef $_[HEAP]-&gt;{$exten.'-TIMESKEW_END'};
+  undef $_[HEAP]-&gt;{'SIP-Peer-IP'};
+
+} # call_state_handler
+</pre><p>
+Making the setup call uses the Asterisk Manager's Originate command, but
+it is protected by one final check. I've defined a set of extensions
+as the remote channel list. Only extensions on the remote channel
+list will have time-zone setup calls made to them. Initially, the list
+consists of my softphone and an analog telephone adapter, but I may need
+to add more in the future. Before originating the call, I ensure that the
+number is on a remote channel list, which is defined in the global array
+REMOTE_CHANNEL_LIST. The Originate command can take several arguments
+as well. The extension, priority and context must refer to where the
+setup menu is defined. In my case, these values are extension *89 (for
+*-T-Z), priority 1 and the context from-internal. I also can supply
+the caller-ID text of &ldquo;Time Zone Setup&rdquo; to the phone I am
+calling:</p><pre     class="programlisting">
+sub makeTZSetupCall {
+  my $heap = $_[0];
+  my $exten = $_[1];
+  my $callOK = 0;
+
+  # Check that extension to call is a remote channel
+  foreach $number (@REMOTE_CHANNEL_LIST) {
+    if ($number == $exten) {
+      $callOK = 1;
+    }
+  }
+
+  if ($callOK) {
+    $heap-&gt;{server}-&gt;put({
+                        'Action' =&gt; 'Originate',
+                        'Channel' =&gt; 'SIP/'.$exten,
+                        'Context' =&gt; $TZ_CONTEXT,
+                        'Exten' =&gt; $TZ_EXTEN,
+                        'Priority' =&gt; $TZ_PRIORITY,
+                        'Callerid' =&gt; $CALLERID,
+                        });
+  }
+
+} # makeTZSetupCall
+</pre><p>
+If the Originate command is triggered, the newly registered telephone
+rings, and I go through the voice menu described in last month's article.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2117580.0x22109a0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Full Source Listing of Perl Script: <a href="../listings/156/9284.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue156/9284.tgz</a>
+</p><p>
+Information on the Asterisk Manager API:
+<a href="http://www.voip-info.org/wiki-Asterisk+manager+API" target="_self">www.voip-info.org/wiki-Asterisk+manager+API</a>
+</p><p>
+Perl POE Framework:
+<a href="http://poe.perl.org" target="_self">poe.perl.org</a>
+</p><p>
+Perl Asterisk Manager Component:
+<a href="http://search.cpan.org/~xantus/POE-Component-Client-Asterisk-Manager-0.06/Manager.pm" target="_self">search.cpan.org/~xantus/POE-Component-Client-Asterisk-Manager-0.06/Manager.pm</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Matthew Gast is the author of the leading technical book on wireless
+LANs, <span   class="emphasis"><em>802.11 Wireless Networks: The Definitive
+Guide</em></span> (O'Reilly Media). He can be reached at
+<a href="mailto:matthew.gast@gmail.com">matthew.gast@gmail.com</a>, but only when he is close to
+sea level.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../156/toc156.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

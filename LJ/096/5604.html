@@ -1,0 +1,477 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Hot Plug</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="keywords" content="hot, plug, device, driver, kernel, PCMCIA, USB, PCI"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x22b8580.0x23afab0"></a>Hot Plug</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #96, April 2002</div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b04a8"></a></h2></div></div><p>Hot-pluggable devices have been created
+to solve a number of user needs. On laptop computers, PCMCIA
+devices were designed to allow the user to swap cards while the
+computer was still running. This allowed people to change network
+adaptors, memory cards and even disk drives without shutting down
+the machine.</p><p>The success of this led to the creation of the USB and
+IEEE1394 (FireWire) buses. These designs allow for peripherals to
+be attached and removed at any point. They also were created to try
+to move systems away from the ISA bus to a full Plug-and-Play-type
+system.</p><p>From the operating system's point of view, there are many
+problems with hot plugging devices. In the past, the operating
+system only had to search for the various devices connected to it
+on power-up, and once seen, the device would never go away. From
+the view of the device driver, it never expects to have the
+hardware that it is trying to control disappear. But with
+hot-pluggable devices, all of this changes.</p><p>Now the operating system has to have a mechanism that
+constantly detects if a new device appears. This usually is done by
+a bus-specific manager. This manager handles the scanning for new
+devices and recognizes this disappearance. It must be able to
+create system resources for the new device and pass control off to
+a specific driver. The device driver for a hot-pluggable device has
+to be able to recover gracefully when the hardware is removed and
+be able to bind itself to new hardware at any moment. Not only does
+the kernel need to know when devices are removed or added, but the
+user also should be notified when this happens. Other kinds of
+kernel events, such as the creation of network devices or the
+insertion of a laptop into a docking station, also would be useful
+for the user to know about.</p><p>This article describes the new framework in the Linux kernel
+for supporting USB and other hot-pluggable devices. It covers how
+the past implementation of PCMCIA loaded its drivers and the
+problems of that system. It presents the current method of loading
+USB and PCI drivers, and how this same framework can handle other
+kinds of user configuration issues easily.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b0710"></a>The Past</h2></div></div><p>Linux has had support for PCMCIA since 1995. In order for the
+PCMCIA core to be able to load drivers when a new device was
+inserted, it had a user-space program called cardmgr. The cardmgr
+program would receive notification from the kernel's PCMCIA core
+when a device had been inserted or removed and use that information
+to load or unload the proper driver for that card. It used a
+configuration file located at /etc/pcmcia/config to determine which
+driver should be used for which card. This configuration file
+needed to be kept up to date with which driver supported which
+card, or ranges of cards, and has grown to be over 1,500 lines
+long. Whenever a driver author added support for a new device, they
+had to modify two different files to enable the device to work
+properly.</p><p>As the USB core code became mature, the group realized that
+it also needed something like the PCMCIA system to be able to load
+and unload drivers dynamically when devices were inserted and
+removed. The group also noted that since USB and PCMCIA both needed
+this system, and that other kernel hot-plug subsystems also would
+use such a system, a generic hot-plug core would be useful. David
+Brownell posted an initial patch to the kernel
+(<a href="http://marc.theaimsgroup.com/?l=linux-usb-devel&amp;m=96334011602320" target="_self">marc.theaimsgroup.com/?l=linux-usb-devel&amp;m=96334011602320</a>),
+enabling it to call out to a user-space program called
+/sbin/hotplug. This patch eventually was accepted, and other
+subsystems were modified to take advantage of it.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b08c8"></a>Let the Computer Do It Itself</h2></div></div><p>All USB and PCI devices contain an identifier that describes
+either what kind of functions they support (like a USB audio or USB
+mass storage device), or if they do not support a class
+specification, they contain a unique vendor and product identifier.
+PCMCIA devices also contain these same kind of identifiers.</p><p>These identifiers are known by the PCI and USB kernel
+drivers, as they need to know which kind of devices they work
+properly for. The USB and PCI kernel drivers register with the
+kernel a list of the different types of devices that they support.
+This list is used to determine which driver will control which
+devices.</p><p>The kernel knows when and what kind of devices are inserted
+or removed from the system through the device bus core code (USB,
+FireWire, PCI, etc.). It can send this information to the
+user.</p><p>Taking these three pieces together (devices tell the computer
+what they are, drivers know what devices they support and the
+kernel knows what is going on) provides us with a solution to let
+the computer automatically load the proper driver whenever a new
+device is inserted.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b0ad8"></a>/sbin/hotplug</h2></div></div><p>The kernel hot-plug core provides a method for the kernel to
+notify user space that something has happened. The CONFIG_HOTPLUG
+configuration item needs to be selected for this code to be
+enabled. The notification happens when the kernel calls the
+executable listed in the global variable hotplug_path. When the
+kernel starts, hotplug_path is set to /sbin/hotplug, but the user
+can modify the value at /proc/sys/kernel/hotplug to change this.
+The kernel function call_usermodehelper() executes
+/sbin/hotplug.</p><p>As of kernel 2.4.14, the /sbin/hotplug method is being used
+by the PCI, USB, IEEE1394 and Network core subsystems. As time goes
+on, more subsystems will be converted to use it. Patches are
+available for the PnP-BIOS (notification when a laptop is inserted
+and removed from a docking station), Hot-Plug CPU, SCSI and IDE
+kernel subsystems. These are expected to be merged into the main
+kernel over time.</p><p>When /sbin/hotplug is called, different environment variables
+are set, depending on what action has just occurred.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b0c90"></a>PCI</h2></div></div><p>PCI devices call /sbin/hotplug with the following
+arguments:</p><pre     class="programlisting">
+argv [0] = hotplug_path
+argv [1] = "pci"
+argv [2] = 0
+</pre><p>and the system environment is set to the following:
+<pre     class="programlisting">
+HOME=/
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+PCI_CLASS=class_code
+PCI_ID=vendor:device
+PCI_SUBSYS_ID=subsystem_vendor:subsystem_device
+PCI_SLOT_NAME=slot_name
+ACTION=action
+</pre>
+
+
+The action setting is &ldquo;add&rdquo; or &ldquo;remove&rdquo; depending on whether
+the device is being inserted or removed from the system. The
+class_code, vendor, subsystem_vendor, subsystem_device and
+slot_name environment settings represent the numerical values for
+the PCI device's information.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b0ea0"></a>USB</h2></div></div><p>USB devices call /sbin/hotplug with the following
+arguments:</p><pre     class="programlisting">
+argv [0] = hotplug_path
+argv [1] = "usb"
+argv [2] = 0
+</pre><p>and the system environment is set to the following:
+<pre     class="programlisting">
+HOME=/
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+ACTION=action
+PRODUCT=idVendor/idProduct/bcdDevice
+TYPE=device_class/device_subclass/device_protocol
+</pre>
+
+
+The action setting is &ldquo;add&rdquo; or &ldquo;remove&rdquo; depending on whether
+the device is being inserted or removed from the system, and
+idVendor, idProduct, bcdDevice, device_class, device_subclass and
+device_protocol are filled in with the information from the USB
+device's descriptors.
+</p><p>If the USB device's deviceClass is 0 then the environment
+variable INTERFACE is set to:</p><pre     class="programlisting">
+INTERFACE=class/subclass/protocol
+</pre><p>This is because USB has a much more complex model for device
+configuration than PCI does.
+</p><p>If the USB subsystem is compiled with the usbdevfs filesystem
+enabled, the following environment variables also are set:</p><pre     class="programlisting">
+DEVFS=/proc/bus/usb
+DEVICE=/proc/bus/usb/bus_number/device_number
+</pre><p>where bus_number and device_number are set to the bus number
+and device number that this specific USB device is assigned.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b12c0"></a>Network</h2></div></div><p>The network core code calls /sbin/hotplug whenever a network
+device is registered or unregistered with the network subsystem,
+and /sbin/hotplug is called with the following arguments when
+called from the network core:</p><pre     class="programlisting">
+argv [0] = hotplug_path
+argv [1] = "net"
+argv [2] = 0
+</pre><p>and the system environment is set to the following:
+<pre     class="programlisting">
+HOME=/
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+INTERFACE=interface
+ACTION=action
+</pre>
+
+
+The action setting is &ldquo;register&rdquo; or &ldquo;unregister&rdquo; depending on
+what happened in the network core, and interface is the name of the
+interface that just had the action applied to itself.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b14d0"></a>CPU</h2></div></div><p>The Hot-Plug CPU patch (available at
+<a href="http://sourceforge.net/projects/lhcs" target="_self">sourceforge.net/projects/lhcs</a>)
+calls /sbin/hotplug after a CPU is removed or added to the system,
+and /sbin/hotplug is called with the following arguments:</p><pre     class="programlisting">
+argv [0] = hotplug_path
+argv [1] = "cpu"
+argv [2] = 0
+</pre><p>and the system environment is set to the following:
+<pre     class="programlisting">
+HOME=/
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+CPU=cpu_number
+ACTION=action
+</pre>
+
+
+The action setting is &ldquo;add&rdquo; or &ldquo;remove&rdquo; depending on what
+happened to the CPU, and cpu_number is the number of the CPU that
+just had the action applied to itself.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b1738"></a>Examples</h2></div></div><p>The /sbin/hotplug script can be a very simple script if you
+only want it to control a small number of devices. For example, if
+you have a USB mouse and wish to load and unload the kernel driver
+whenever the mouse is inserted or removed, the following script,
+located at /sbin/hotplug, would be sufficient:</p><pre     class="programlisting">
+#!/bin/sh
+if [ "$1" = "usb" ]; then
+    if [ "$INTERFACE" = "3/1/2" ]; then
+        if [ "$ACTION" = "add" ]; then
+            modprobe usbmouse
+        else
+            rmmod usbmouse
+        fi
+    fi
+fi
+</pre><p>Or if you want to run ColdSync
+(<a href="http://www.ooblick.com/software/coldsync" target="_self">www.ooblick.com/software/coldsync</a>)
+automatically when you connect your USB HandSpring Visor to the
+computer, the following script located at /sbin/hotplug would work
+well:
+<pre     class="programlisting">
+#!/bin/sh
+USER=gregkh
+if [ "$1" = "usb" ]; then
+    if [ "$PRODUCT" = "82d/100/0" ]; then
+        if [ "$ACTION" = "add" ]; then
+            modprobe visor
+            su $USER - -c "/usr/bin/coldsync"
+        else
+            rmmod visor
+        fi
+    fi
+fi
+</pre>
+
+
+If you want to make sure that your network devices always come up
+connected to the proper Ethernet card, the following /sbin/hotplug
+script, contributed by Sukadev Bhattiprolu, can do this:
+<pre     class="programlisting">
+#!/bin/sh
+if [ "$1" = "network" ]; then
+    if [ "$ACTION" = "register" ]; then
+        nameif -r $INTERFACE -c /etc/mactab
+    fi
+fi
+</pre>
+
+
+Listing 1 shows a more complex example that can handle
+automatically loading and unloading modules for three different USB
+devices.
+</p><p><a href="5604l1.html" target="_self">Listing 1. Script to Load and Unload
+Modules Automatically for Three Different USB
+Devices</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x23b1aa8"></a>Need for Automation</h2></div></div><p>The previous small example shows the limitations of being
+forced to enter in all of the different device IDs manually,
+product IDs and such in order to keep a /sbin/hotplug script up to
+date with all of the different devices that the kernel knows about.
+Instead, it would be better for the kernel itself to specify the
+different types of devices that it supports in such a way that any
+user-space tools could read them. Thus was born a macro called
+MODULE_DEVICE_TABLE() that is used by all USB and PCI drivers. This
+macro describes which devices each specific driver can support. At
+compilation time, the build process extracts this information out
+of the driver and builds a table. The table is called
+modules.pcimap and modules.usbmap for all PCI and USB devices,
+respectively, and exists in the directory
+/lib/modules/<span   class="emphasis"><em>kernel_version</em></span>/.</p><p>For example, the following code snippet from
+drivers/net/eepro100.c:</p><pre     class="programlisting">
+static struct pci_device_id eepro100_pci_tbl[]
+__devinitdata = {
+    { PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82557,
+      PCI_ANY_ID, PCI_ANY_ID, },
+    { PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82562ET,
+      PCI_ANY_ID, PCI_ANY_ID, },
+        { PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL
+          _82559ER, PCI_ANY_ID, PCI_ANY_ID,
+},
+        { PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL
+          _ID1029, PCI_ANY_ID, PCI_ANY_ID,
+},
+        { PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL
+          _ID1030, PCI_ANY_ID, PCI_ANY_ID,
+},
+        { PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL
+          _82801BA_7, PCI_ANY_ID, PCI_ANY_ID,
+},
+        { 0,}
+    };
+    MODULE_DEVICE_TABLE(pci, eepro100_pci_tbl);
+</pre><p>causes these lines to be added to the modules.pcimap file:
+<pre     class="programlisting">
+eepro100 0x00008086 0x00001229 0xffffffff 0xffffffff
+0x00000000 0x00000000 0x00000000
+eepro100 0x00008086 0x00001031 0xffffffff 0xffffffff
+0x00000000 0x00000000 0x00000000
+eepro100 0x00008086 0x00001209 0xffffffff 0xffffffff
+0x00000000 0x00000000 0x00000000
+eepro100 0x00008086 0x00001029 0xffffffff 0xffffffff
+0x00000000 0x00000000 0x00000000
+eepro100 0x00008086 0x00001030 0xffffffff 0xffffffff
+0x00000000 0x00000000 0x00000000
+eepro100 0x00008086 0x00002449 0xffffffff 0xffffffff
+0x00000000 0x00000000 0x00000000
+</pre>
+
+
+As the example shows, a PCI device can be specified by any of the
+same parameters that are passed to the /sbin/hotplug program.
+</p><p>A USB device can specify that it can accept only specific
+devices such as this example from drivers/usb/mdc800.c:</p><pre     class="programlisting">
+static struct usb_device_id
+  mdc800_table [] = {
+   { USB_DEVICE(MDC800_VENDOR_ID, MDC800_PRODUCT_ID) },
+   { } /* Terminating entry */
+};
+MODULE_DEVICE_TABLE(usb, mdc800_table);
+</pre><p>which causes the following line to be added to the
+modules.usbmap file:
+<pre     class="programlisting">
+mdc800 0x0003 0x055f 0xa800 0x0000 0x0000 0x00 0x00
+0x00 0x00 0x00 0x00 0x00000000
+</pre>
+
+
+Or it can specify that it accepts any device that matches a
+specific USB class code, as in this example from
+drivers/usb/printer.c:
+<pre     class="programlisting">
+static struct usb_device_id usblp_ids [] = {
+  { USB_INTERFACE_INFO(USB_CLASS_PRINTER, 1, 1) },
+  { USB_INTERFACE_INFO(USB_CLASS_PRINTER, 1, 2) },
+  { USB_INTERFACE_INFO(USB_CLASS_PRINTER, 1, 3) },
+  { }    /* Terminating entry */
+};
+MODULE_DEVICE_TABLE(usb, usblp_ids);
+</pre>
+
+
+which causes the following lines to be added to the modules.usbmap
+file:
+<pre     class="programlisting">
+printer 0x0380 0x0000 0x0000 0x0000 0x0000 0x00 0x00
+0x00 0x07 0x01 0x01 0x00000000
+printer 0x0380 0x0000 0x0000 0x0000 0x0000 0x00 0x00
+0x00 0x07 0x01 0x02 0x00000000
+printer 0x0380 0x0000 0x0000 0x0000 0x0000 0x00 0x00
+0x00 0x07 0x01 0x03 0x00000000
+</pre>
+
+
+Again these USB examples show that the information in the
+modules.usbmap file matches the information provided to
+/sbin/hotplug by the kernel, enabling /sbin/hotplug to determine
+which driver to load without relying on a hand-generated table, as
+PCMCIA does.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x27aa1c8"></a>Preprocessor Abuse</h2></div></div><p>The macro MODULE_DEVICE_TABLE automatically creates two
+variables. For the example: MODULE_DEVICE_TABLE (usb, usblp_ids);
+the variables __module_usb_device_size and
+__module_usb_device_table are created and placed into the read-only
+data section and the initialized data section of the module,
+respectively. The variable __module_usb_device_size contains the
+value of the size of the struct usb_id structure, and
+__module_usb_device_table points to the usblp_ids structure. The
+usblp_ids variable is an array of usb_id structures with a
+terminating NULL structure at the end of the list.</p><p>When the depmod program is run, as part of the kernel
+installation process, it goes through every module looking for the
+symbol __module_usb_device_size to be present in the compiled
+module. If it finds it, it copies the data pointed to by the
+__module_usb_device_table symbol into a structure, extracts all of
+the information and writes it out to the modules.usbmap file, which
+is located in the module root directory. It does the same thing
+while looking for the __module_pci_device_size in creating the
+modules.pcimap file.</p><p>With the kernel module information exported to the files
+modules.usbmap and modules.pcimap, our version of /sbin/hotplug can
+look like Listing 2 [available at
+<a href="../listings/096/5604.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue96/5604.tgz</a>].
+This example only tests for a match of the USB product ID and
+vendor IDs. The Linux-Hotplug Project has created a set of scripts
+that covers all of the different subsystems that can call
+/sbin/hotplug. This enables drivers to be loaded automatically when
+new devices are inserted into the systems. It also starts up
+network services when network devices are seen. These scripts are
+released under the GPL and are available at
+<a href="http://linux-hotplug.sourceforge.net" target="_self">linux-hotplug.sourceforge.net</a>.
+Almost all major Linux distributions are currently shipping this
+package, so it is probably already on your machine.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x27aa430"></a>The Future</h2></div></div><p>The current /sbin/hotplug subsystem needs to be incorporated
+into other kernel systems, as they develop hot-plug capability.
+SCSI, IDE and other systems all have hot-plug patches available for
+kernel support but need to have script support, kernel macro
+support and modutils depmod support added in order to provide the
+user with a consistent experience.</p><p>As the kernel boots, and discovers new devices, it tries to
+spawn /sbin/hotplug, but since user space has not been initialized
+yet, it cannot run. This means that any USB or PCI devices that are
+needed at boot time need to be compiled into the kernel or exist in
+an initrd RAM disk image as a module. Sometime during the 2.5
+development process, the initrd RAM disk image will be converted to
+contain an entire small user-space tree. This will allow
+/sbin/hotplug to be run during the boot process and load modules
+dynamically. Some links describing this disk image idea are:
+<a href="http://lwn.net/2001/0712/kernel.php3" target="_self">lwn.net/2001/0712/kernel.php3</a>  --
+<a href="http://marc.theaimsgroup.com/?l=acpi4linux&amp;m=99705696732868" target="_self">marc.theaimsgroup.com/?l=acpi4linux&amp;m=99705696732868</a>  --
+<a href="http://marc.theaimsgroup.com/?l=linux-kernel&amp;m=99436439232254" target="_self">marc.theaimsgroup.com/?l=linux-kernel&amp;m=99436439232254</a>
+and
+<a href="http://marc.theaimsgroup.com/?l=linux-kernel&amp;m=99436253707952" target="_self">marc.theaimsgroup.com/?l=linux-kernel&amp;m=99436253707952</a>.</p><p>Because of the small space requirements of this RAM disk
+image, the dietHotplug program has been written. It is an
+implementation of the Linux-Hotplug bash scripts in C and does not
+require modules.*map files when the program runs. The executable
+size of the entire dietHotplug program is one-fifth of the size of
+the original modules.*map files themselves. The small size is due
+to the use of dietLibc (found at
+<a href="http://www.fefe.de/dietlibc" target="_self">www.fefe.de/dietlibc</a>)
+and other space-saving techniques.
+<span   class="bold"><b>dietHotplug</b></span> will undergo more
+development as the 2.5 kernel requirements are more fully known.
+<span   class="bold"><b>dietHotplug</b></span> can be downloaded from
+the Linux-Hotplug site.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22b8580.0x27aa850"></a>Acknowledgements</h2></div></div><p>I would like to thank David Brownell who wrote the original
+/sbin/hotplug kernel patch and most of the Linux Hotplug scripts.
+Without his persistence, Linux would not have this user-friendly
+feature. I also would like to acknowledge the entire Linux USB
+development team, who have provided a solid kernel subsystem in a
+relatively short amount of time.</p><p>Keith Owens wrote the supporting code in the depmod utility
+and has endured constant changes to the format of the
+MODULE_DEVICE_TABLE() USB structure.</p><p>The other developers on the linux-hotplug-devel mailing list
+who have helped with their patches and feedback on the hot-plug
+scripts also deserve recognition, along with the wonderful Linux
+distribution-specific support that Debian, Red Hat and Mandrake
+have provided.</p><p>This article was based upon a paper and presentation that I
+gave at the 2001 Ottawa Linux Symposium.</p></div></div>
+<div class="authorblurb"><p><span   class="bold"><b>Greg
+      Kroah-Hartman</b></span> is currently the Linux USB and PCI Hotplug
+      kernel maintainer. He works for IBM, doing various LInux
+      kernel-related things and can be reached at
+      <a href="mailto:greg@kroah.com">greg@kroah.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../096/toc096.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,352 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Thread-Specific Data and Signal Handling in Multi-Threaded Applications</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Here are the answers to questions about signal handling and taking care&#10;    of global data when writing multi-threaded programs.&#10;    "><meta name="keywords" content="multithreading, hardware, system, admin, standards, data"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1126580.0x121dab0"></a>Thread-Specific Data and Signal Handling in Multi-Threaded Applications</h1></div><div><div class="author"><h3 class="author">Martin McCarthy</h3></div><div class="issuemoyr">Issue #36, April 1997</div></div><div><p>
+    Here are the answers to questions about signal handling and taking care
+    of global data when writing multi-threaded programs.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1126580.0x121e4a8"></a></h2></div></div><p>Perhaps the two most common questions I'm
+asked about multi-threaded programming (after &ldquo;what is
+multi-threaded programming?&rdquo; and &ldquo;why would you want to do it?&rdquo;)
+concern how to handle signals, and how to handle cases where two
+concurrent threads use a common function that makes use of global
+data, and yet the two threads need thread-specific data from that
+function. By definition, global data includes static local
+variables which are in truth a kind of global variable. In this
+article I'll explain how these questions can be dealt with in C
+programs using one of the POSIX (or almost POSIX) multi-threading
+packages available for Linux. I live in hope of the day when the
+most common question I'm asked about multi-threaded programming is,
+&ldquo;Can we give you lots of money to write this simple multi-threaded
+application, please?&rdquo; Hey&mdash;I can dream, can't I?
+</p><p>All the examples in this article make use of POSIX compliant
+functionality. To the best of my knowledge at the time I write
+this, there are no fully POSIX-compliant multi-threading libraries
+available for Linux. Which of the available libraries is best is
+something of a subjective issue. I use Xavier Leroy's LinuxThreads
+package, and the code fragments and examples were tested using
+version 0.5 of this library. This package can be obtained from
+http://pauillac.inria.fr/~xleroy/linuxthreads. Christopher
+Provenzano has a good user-level library, although the signal
+handling doesn't yet match the spec, and there were still a number
+of serious bugs the last time I used it. (These bugs, I believe,
+are being worked on.) Other library implementations are also
+available. Information on these and other packages can be found in
+the comp.programming.threads newsgroup and (to give a less than
+exhaustive list):</p><div class="itemizedlist"><ul type="disc"><li><p>http://www.mit.edu:8001/people/proven/pthreads.html</p></li><li><p>http://www.aa.net/~mtp/PCthreads.html</p></li><li><p>ftp://ftp.cs.fsu.edu/pub/PART/PTHREADS</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1126580.0x121e870"></a>Thread-specific data</h2></div></div><p>As I implied above, I use the term &ldquo;global data&rdquo; for any
+data which persists beyond normal scoping rules, such as static
+local variables. Given a piece of code like:</p><pre     class="programlisting">
+void foo(void)
+{
+        static int i = 1;
+        printf( "%d\n", i );
+        i = 2;
+}
+</pre><p>the first call to this function will print the value 1, and
+all subsequent calls will print the value 2, because the variable
+<b  >i</b> and its value persist from one invocation of
+the function to the next, rather than disappearing in a puff of
+smoke as a &ldquo;normal&rdquo; local variable would. This, at least as far
+as POSIX threads are concerned, is global data.
+</p><p>It is commonly said (I've said it myself) that using global
+data is a bad practice. Whether or not this is true, it is only a
+rule of thumb. Certainly there are situations where using global
+data can avoid creating artificial circumstances. The previous
+article (<i  >Linux Journal</i> Issue 34) explained how
+threads can share global data with careful use of mutual exclusion
+(<b  >mutex</b>) functions to prevent one thread from
+accessing an item of global data while another thread is changing
+its value. In this article I will look at a different type of
+problem, using a real example from a recent project of mine.</p><p>Consider the case of a virtual reality system where a client
+makes several network socket connections to a server. Different
+types and priorities of data go down different sockets. High
+priority data, such as information about objects immediately in the
+field of view of the client, is sent down one socket. Lower
+priority data such as texture information, background sounds, or
+information about objects which are out of the current field of
+view, is sent down another socket to be processed whenever the
+client has available time. The server could create a collection of
+new threads every time a new client connects to the server,
+designating one thread for each of the sockets to be used to talk
+to each of the clients. Every one of these threads could use the
+same function to send a lump of data (not a technical term) to the
+client. The data to be sent details of the client it is to be sent
+to, the priority and type of data to be sent could all be held in
+global variables, and yet each thread will make use of different
+values. So how do we do it?</p><p>As a trivial example, suppose the only global data which our
+lump-sending function needs to use is an integer that indicates the
+priority of the data. In a non-threaded version, we might have a
+global integer called <b  >priority</b> used as in
+<a href="2121l1.html" target="_self">Listing 1</a>.</p><p>In the multi-threaded version we don't have a global integer,
+instead we have a global key to the integer. It is through the key
+that the data can be accessed by means of a number of
+functions:</p><div class="orderedlist"><ol type="1"><li><p><b  >pthread_key_create()</b> to prepare
+the key for use</p></li><li><p><b  >pthread_setspecific()</b> to set a
+value to thread-specific data</p></li><li><p><b  >pthread_getspecific()</b> to
+retrieve the current value</p></li></ol></div><p><b  >pthread_key_create()</b> is called once,
+generally before any of the threads which are going to use the key
+have been created. <b  >pthread_getspecific()</b> and
+<b  >pthread_setspecific()</b> never return an error if
+the key that is used as an argument has not been created. The
+result of using them on a key which has not been created is
+undefined. Something will happen, but it could vary from system to
+system, and it can't be caught simply by using good error handling.
+This is an excellent source of bugs for the unwary. So our
+multi-threaded version might look like
+<a href="2121l2.html" target="_self">Listing 2</a>.</p><p>There are a few things to note here:</p><div class="orderedlist"><ol type="1"><li><p>The implementation of POSIX threads can limit the
+number of keys a process may use. The standard states that this
+number must be at least 128. The number available in any
+implementation can be found by looking at the macro
+<b  >PTHREAD_KEYS_MAX</b>. According to this macro,
+LinuxThreads currently allows 128 keys.</p></li><li><p>The function
+<b  >pthread_key_delete()</b> can be used to dispose of
+keys that are no longer needed. Keys, like all &ldquo;normal&rdquo; data
+items, vanish when the process exits, so why bother deleting them?
+Think of key handling as being similar to file handling. An
+unsophisticated program need not close any files that it has
+opened, as they will be automatically closed when the program
+exits. But since there is a limit to the number of files a program
+can have open at one time, the best policy is to close files not
+currently being used so that the limit is not exceeded. This policy
+also works well for key handling, as you may be limited in the
+number of thread-specific data keys a process may have.</p></li><li><p><b  >pthread_getspecific()</b> and
+<b  >pthread_setspecific()</b> access thread-specific
+data as <b  >void*</b> pointers. This ability can be used
+directly (as in Listing 2), if the data item to be accessed can be
+cast as type <b  >void*</b>, e.g., an
+<b  >int</b> in most, but not necessarily all,
+implementations. However, if you want your code to be portable or
+if you need to access larger data objects, then each thread must
+allocate sufficient memory for the data object, and store the
+pointer to the object in the thread-specific data rather than
+storing the data itself.</p></li><li><p>If you allocate some memory (using the standard
+function <b  >malloc()</b>, for instance) for your
+thread-specific data, and the thread exits at some point, what
+happens to the allocated memory? Nothing happens, so it leaks, and
+this is bad. This is the situation where the extra parameter in the
+<b  >pthread_key_create()</b> function comes into use.
+This parameter allows you to specify a function to call when a
+thread exits, and you use that function to free up any memory that
+has been allocated. To prevent a waste of CPU time, this destructor
+function is called only in the case where a thread has made use of
+that particular key. There's little point in tidying up for a
+thread that has nothing to be tidied. When a thread exits because
+it called one of the functions <b  >exit()</b>,
+<b  >_exit()</b> or <b  >abort()</b>, the
+destructor function is not called. Also, note that
+<b  >pthread_key_delete()</b> does not cause any
+destructors to be called, that using a key that has been deleted
+doesn't have a defined behavior, and that
+<b  >pthread_getspecific()</b> and
+<b  >pthread_setspecific()</b> don't return any error
+indications. Tidy up your keys carefully. One day you'll be glad
+you did. So a better version of our code is
+<a href="2121l3.html" target="_self">Listing 3</a>.</p></li></ol></div><p>Some of this code might look a little strange at first sight.
+Using <b  >pthread_getspecific()</b> to store a thread
+specific value? The idea is to get the memory location this thread
+is to use, and then the thread specific value is stored
+there.</p><p>Even if global data is anathema to you, you might still have
+good use for thread-specific data. In particular, you might need to
+write a multi-threaded version of some existing library code that
+is also going to be used in a non-threaded program. A good simple
+example is making a version of the standard C libraries fit for use
+by multi-threaded programs. That friend of all C programmers,
+<b  >errno</b>, is a global variable that is commonly set
+by library functions to indicate what went wrong during a function
+call. If two threads call functions which both set errno to
+different values, at least one of the threads is going to get the
+wrong information. This is solved by having thread-specific data
+areas for <b  >errno</b>, rather than one global variable
+used by all threads.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1126580.0x12165a0"></a>Signal Handling</h2></div></div><p>Many people find signal handling in C to be a bit tricky at
+the best of times. Multi-threaded applications need a little extra
+care when it comes to signal handling, but once you've written two
+programs, you'll wonder what all the fuss was about&mdash;trust me. And
+if you start to panic, remember&mdash;deep, slow breaths.</p><p>A quick re-cap of what signals are. Signals are the system's
+way of informing a process about various events. There are two
+types of signals, synchronous and asynchronous.</p><p>Synchronous signals are a result of a program action. Two
+examples are:</p><div class="orderedlist"><ol type="1"><li><p><b  >SIGFPE</b>, floating-point
+exception, is returned when the program tries to do some illegal
+mathematical operation such as dividing by zero.</p></li><li><p><b  >SIGSEGV</b>, segmentation violation,
+is returned when the program tries to access an area of memory
+outside the area it can legally access.</p></li></ol></div><p>Asynchronous signals are independent of the program. For
+example, the signal sent when the user gives the
+<b  >kill</b> command.</p><p>In non-threaded applications there are three usual ways of
+handling signals:</p><div class="orderedlist"><ol type="1"><li><p>Pretend they don't exist, perhaps the most common
+policy, and quite adequate for lots of simple programs&mdash;at least
+until you want your program to be reliable and useful.</p></li><li><p>Use <b  >signal()</b> to set up a signal
+handler&mdash;nice and simple, but not very robust.</p></li><li><p>Use the POSIX signal handling functions such as
+<b  >sigaction()</b> and <b  >sigprocmask()</b>
+to set up a signal handler or to ignore certain signals&mdash;the
+&ldquo;proper&rdquo; method.</p></li></ol></div><p>If you choose the first option, then signals will have some
+default behavior. Typically, this default behavior will cause the
+program to exit or cause the program to ignore the signal,
+depending on what the signal is. The latter two options allow you
+to change the default behavior for each signal type&mdash;ignore the
+signal, cause the program to exit or invoke a signal-handling
+function to allow your program to perform some special processing.
+Avoid the use of the old-style <b  >signal()</b>
+function. Whether you're writing threaded or non-threaded
+applications, the extra complications of the POSIX-style functions
+are worth the effort. Note that the behavior of
+<b  >sigprocmask()</b>, which sets a signal mask for a
+process, is undefined in a multi-threaded program. There is a new
+function, <b  >pthread_sigmask()</b>, that is used in
+much the same way as <b  >sigprocmask()</b>, but it sets
+the signal mask only for the current thread. Also, a new thread
+inherits the signal mask of the thread that created it; so a signal
+mask can effectively be set for an entire process by calling
+<b  >pthread_sigmask()</b> before any threads are
+created.</p><p>In a multi-threaded application, there is always the question
+of which thread the signal will actually be delivered to. Or does
+it get delivered to all the threads?</p><p>To answer the last question first, no. If one signal is
+generated, one signal is delivered, so any single signal will only
+be delivered to a single thread.</p><p>So which thread will get the signal? If it is a synchronous
+signal, the signal is delivered to the thread that generated it.
+Synchronous signals are commonly managed by having an appropriate
+signal handler set up in each thread to handle any that aren't
+masked. If it is an asynchronous signal, it could go to any of the
+threads that haven't masked out that signal using
+<b  >sigprocmask()</b>. This makes life even more
+complicated. For instance, suppose your signal handler must access
+a global variable. This is normally handled quite happily by using
+<b  >mutex</b>, as follows:</p><pre     class="programlisting">
+void signal_handler( int sig )
+{
+        ...
+        pthread_mutex_lock( &amp;mutex1 );
+        ...
+        pthread_mutex_unlock( &amp;mutex1 );
+        ...
+}
+</pre><p>Looks fine at first sight. However, what if the thread that
+was interrupted by the signal had just itself locked
+<b  >mutex1</b>? The <b  >signal_handler()</b>
+function will block, and will wait for the mutex to be unlocked.
+And the thread that is currently holding the mutex will not
+restart, and so will not be able to release the mutex until the
+signal handler exits. A nice deadly embrace.
+</p><p>So a common way of handling asynchronous signals in a
+multi-threaded program is to mask signals in all the threads, and
+then create a separate thread (or threads) whose sole purpose is to
+catch signals and handle them. The signal-handler thread catches
+signals by calling the function <b  >sigwait()</b> with
+details of the signals it wishes to wait for. To give a simple
+example of how this might be done, take a look at
+<a href="2121l4.html" target="_self">Listing 4</a>.</p><p>As mentioned earlier, a thread inherits its signal mask from
+the thread which creates it. The <b  >main()</b> function
+sets the signal mask to block all signals, so all threads created
+after this point will have all signals blocked, including the
+signal-handling thread. Strange as it may seem at first sight, this
+is exactly what we want. The signal-handling thread expects signal
+information to be provided by the <b  >sigwait()</b>
+function, not directly by the operating system.
+<b  >sigwait()</b> will unmask the set of signals that
+are given to it, and then will block until one of those signals
+occurs.</p><p>Also, you might think that this program will deadlock, if a
+signal is raised while the main thread holds the mutex
+<b  >sig_mutex</b>. After all, the signal handler tries
+to grab that same mutex, and it will block until that mutex comes
+free. However, the main thread is ignoring signals, so there is
+nothing to prevent another thread from gaining control while the
+signal handling thread is blocked. In this case,
+<b  >sig_handler()</b> hasn't caught a signal in the
+usual, non-threaded sense. Instead it has asked the operating
+system to tell it when a signal has been raised. The operating
+system has performed this function, and so the signal handling
+thread becomes just another running thread.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1126580.0x12176d0"></a>Differences in Signal Handling between POSIX
+Threads and LinuxThreads</h2></div></div><p>Listing 4 shows how to deal with signals in a multi-threading
+environment that handles threads in a POSIX compliant way.</p><p>Personally, I like the kernel-level package &ldquo;LinuxThreads&rdquo;
+that makes use of Linux 2.0's <b  >clone()</b> system
+call to create new threads. At some point in the future, the
+<b  >clone()</b> call may implement the
+<b  >CLONE_PID</b> flag which would allow all the threads
+to share a process ID. Until then each thread created using
+&ldquo;LinuxThreads&rdquo; (or any other packages which chooses to use
+<b  >clone()</b> to create threads) will have its own
+unique process ID. As such, there is no concept of sending a signal
+to &ldquo;the process.&rdquo; If one thread calls
+<b  >sigwait()</b> and all other threads block signals,
+only those signals which are specifically sent to the
+<b  >sigwait()</b>-ing thread will be processed.
+Depending on your application, this could mean that you have no
+choice other than to include an asynchronous signal handler in each
+of the threads.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1126580.0x1217a40"></a>Summary</h2></div></div><p>Thread specific data is easy to use&mdash;far easier than many
+people's first experiences may suggest. In a way, this ease of use
+is a disadvantage, since very often there are more elegant
+solutions to a problem. But in times of need, thread specific data
+is your friend.</p><p>On the other hand, signal handling in anger can be a little
+hairy. Anyone who thinks otherwise has overlooked something&mdash;either
+that or they're far too clever for their own good. Make life easier
+for yourself by consigning all the handling of asynchronous signals
+to one thread that sits on <b  >sigwait()</b>.</p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Martin McCarthy</b></span>
+      discovered multi-threaded
+      programming while writing the server for a high-speed, multi-user,
+      distributed, virtual-reality system. Of course, he only took that
+      job so that he could squeeze as many buzzwords into his job
+      description as possible. He can be reached at
+      marty@ehabitat.demon.co.uk.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../036/toc036.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

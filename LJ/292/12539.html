@@ -1,0 +1,563 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"/>
+<link href="https://fonts.googleapis.com/css?family=Lateef" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+<title>Bare-Bones Monitoring with Monit and RRDtool</title>
+<link href="../../css/archive.css" type="text/css" rel="stylesheet"/>
+<script type="text/javascript" src="../../js/archive.js"></script>
+<script type="text/javascript" src="../../js/highlight.js"></script>
+</head>
+
+<body class="from_sigil">
+  
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+
+  <div class="tophrdiv">
+  </div>
+
+  
+  <div id="top_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+<h1 class="title">Bare-Bones Monitoring with Monit and RRDtool</h1>
+
+<h2 class="sigil_not_in_toc">How to provide robust monitoring to low-end systems. By Andy Carlson</h2>
+
+<p>
+When running a critical system, it's necessary to know what resources 
+the system is consuming, to be alerted when resource utilization reaches a
+specific level and to trend long-term performance. Zabbix and Nagios are
+two large-scale solutions that monitor, alert and trend system performance,
+and they each provide a rich user interface. Due to the requirements of those
+solutions, however, dedicated hardware/VM resources typically are required to host
+the monitoring solution. For smaller server implementations, options
+exist for providing basic monitoring, alerting and trending functionality.
+This article shows how to accomplish basic and custom monitoring and
+alerting using Monit. It also covers how to monitor long-term trending of system performance
+with RRDtool.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Initial Monit Configuration</h3>
+
+<p>
+On many popular Linux distros, you can install Monit from the associated
+software repository. Once installed, you can handle all the configuration
+with the monitrc configuration file. That file generally is located within
+the /etc directory structure, but the exact location varies based
+on your distribution. 
+</p>
+
+<p>
+The config file has two sections:
+Global and Services. The Global section allows for custom configuration
+of the Monit application. The Monit service contains a web-based front
+end that is fully configurable through the config file. Although the section
+is commented out by default, you can uncomment items selectively for
+granular customization. The web configuration block looks like this:
+
+</p>
+<pre><code>
+set httpd port 2812 and
+    use address localhost
+    allow localhost
+    allow admin:monit
+</code>
+</pre>
+<p></p>
+
+<p>
+The first line sets the port number where you can access Monit 
+via web browser. The second line sets the hostname (the HTTP
+host header) that's used to access Monit. The third line sets the
+host from which the Monit application can be accessed. Note that you also
+can do this using a local firewall access restriction if a
+firewall is currently in place. The fourth line allows the configuration
+of a user name/password pair for use when accessing Monit. There's
+also a section that allows SSL options for encrypted connections to Monit.
+Although enabling SSL is recommended when passing authentication data, you
+also could reverse-proxy Monit through an existing
+web server, such as nginx or Apache, provided SSL is already configured
+on the web server. For more information on reverse-proxying Monit
+through Apache, see the Resources section at the end of this article.
+</p>
+
+<p>
+The next items you need to enable deal with configuring 
+email alerts. To set up the email server through which email will be
+relayed to the recipient, add or enable the following line:
+
+</p>
+<pre><code>
+set mailserver mailserver.company.com
+</code>
+</pre>
+<p></p>
+
+<p>
+Note that if there's a local SMTP server running, the server name of
+<code>mailserver.company.com</code> in this example may be replaced with
+<code>localhost</code>.
+</p>
+
+<p>
+The next block to enable sets the contents of the email
+alert messages that will be sent and will look similar to this:
+
+</p>
+<pre><code>
+set mail-format {
+  from:    Monit &lt;monit@$HOST&gt;
+  subject: Monit alert --  $EVENT $SERVICE
+  message: $EVENT Service $SERVICE
+                Date:        $DATE
+                Action:      $ACTION
+                Host:        $HOST
+                Description: $DESCRIPTION
+
+                Your faithful employee,
+                Monit
+}
+</code>
+</pre>
+<p></p>
+
+<p>
+Within this block, different predefined variables are used to provide
+alert-specific information (denoted by the $ sign). You can modify text
+within the from, subject or message fields, and you also can add additional data 
+to the message field as desired. 
+</p>
+
+<p>
+To finish the alerting
+functionality, you can configure an email address that will receive all
+email alerts from Monit by adding the following
+line:
+
+</p>
+<pre><code>
+set alert user@domain.com
+</code>
+</pre>
+<p></p>
+
+<p>
+At this point, the specified email address will receive all alerts
+generated by Monit. However, so far, no alerts are configured.
+To begin configuring alerts, let's first look at the Services section
+mentioned earlier. That section provides some basic monitoring
+functionality for the local machine, including CPU, memory, swap,
+filesystem and basic network monitoring. Each of those configuration
+items provides for the definition of thresholds. After the thresholds are
+met, actions can be taken, including sending an alert. As an example,
+the out-of-the-box alert for CPU/memory/swap monitoring looks like
+this:
+
+</p>
+<pre><code>
+check system $HOST
+   if loadavg (1min) &gt; 4 then alert
+   if loadavg (5min) &gt; 2 then alert
+   if cpu usage &gt; 95% for 10 cycles then alert
+   if memory usage &gt; 75% then alert
+   if swap usage &gt; 25% then alert
+</code>
+</pre>
+<p></p>
+
+<p>
+Again, note the use of variables to define the host to be monitored.
+While all of the triggers defined here result in an alert, 
+other actions also can be taken. For more information on these settings,
+consult the Monit documentation (see Resources).
+</p>
+
+<h3 class="sigil_not_in_toc">
+Custom Configuration of Monit</h3>
+
+<p>
+Once initial configuration is complete, you can define custom
+alerts. It's best to define the custom alerts outside the
+monitrc file. You do this by defining an include directory in
+the monitrc file as follows:
+
+</p>
+<pre><code>
+include /opt/monit-custom/*
+</code>
+</pre>
+<p></p>
+
+<p>
+This line includes all configuration files located in the
+/opt/monit-custom folder. 
+</p>
+
+<p>
+Next, let's look at
+two types of monitoring: host checks and program checks. Host checks allow for the
+monitoring of TCP-based services running on remote hosts. Although you can
+do basic
+TCP port connection testing for simpler services, Monit also
+provides the ability to do HTTP-based content checks to a specific URL.
+Consider the following example:
+
+</p>
+<pre><code>
+check host linuxjournal-website with address www.linuxjournal.com
+    if failed
+        port 443 protocol https
+        with request / with content = "Become a Patron"
+    then alert
+</code>
+</pre>
+<p></p>
+
+<p>
+The first line of the host check defines the identifier within Monit for
+this host (<code>linuxjournal-website</code>) and the address with which the host
+will be accessed (<code>www.linuxjournal.com</code>). In this example, the trigger
+within the host definition contains multiple conditions: it must be
+accessed via port 443 using the https protocol, and when accessed at
+the root URL, the text "Become a Patron" shows up in the response body.
+This check could be reconfigured to use port 80 and the http protocol.
+</p>
+
+<p>
+Along with host monitoring, Monit allows the definition of script-based
+monitors, which is called a program check. Once a script is configured
+within Monit, the script will be executed periodically, and based on the
+script's exit code, action may be taken. 
+</p>
+
+<p>
+Here's an example of a script that alerts when an SSL certificate expiration
+date is within a specified number of days:
+
+</p>
+<pre><code>
+#!/bin/bash
+
+domainexpiredate() {
+    openssl x509 -text -in &lt;(echo -n | \
+    openssl s_client -connect $1:$2 2&gt;/dev/null | \
+    sed -n '/-*BEGIN/,/-*END/p') 2&gt;/dev/null | sed -n 's/ 
+ ↪*Not After : *//p'
+}
+
+daysleft() {
+    echo "((($(date -d "$(domainexpiredate $1 $2)" +%s)-$(date 
+ ↪+%s))/24)/60)/60" | bc
+}
+
+defaultport() {
+    if [ -z "$1" ]; then
+        echo "443"
+    else
+        echo "$1"
+    fi
+}
+
+[[ $(daysleft $2 $(defaultport $3)) -le $1 ]] &amp;&amp; exit 1 || 
+ ↪exit 0
+</code>
+</pre>
+<p></p>
+
+<p>
+This script is executed with two arguments: minimum number of days
+until expiration and the hostname of the server, with an optional third
+parameter for port number. Here's an example execution of the script:
+
+</p>
+<pre><code>
+$ checkcertexpire.sh 31 www.linuxjournal.com
+$ echo $?
+0
+</code>
+</pre>
+<p></p>
+
+<p>
+When the script is executed with the two required arguments, there is
+no console output. After the execution, if the return code is echoed
+(identified as <code>$?</code>), the value is 0, which indicates that the domain does
+not expire within 31 days. Configuring this item within Monit 
+requires the following:
+
+</p>
+<pre><code>
+check program linuxjournal-ssl with path 
+ ↪"/etc/monit/scripts/checkcertexpire.sh 31 www.linuxjournal.com"
+    if status != 0 then alert
+</code>
+</pre>
+<p></p>
+
+<p>
+In the same way as the host check, the program check has an identifier
+within Monit (<code>linuxjournal-ssl</code>, in this case). In the first line of the
+program check, along with the identifier, is the script to be executed
+along with the command-line arguments. Note that the trigger indicates
+that if the exit code is not 0, an alert should be sent.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Collecting Data with RRDtool</h3>
+
+<p>
+RRDtool is a very robust tool that lets you collect data over a
+long period of time. Named after its database format
+(round-robin database), RRDtool saves time-based data to its database
+and then lets you retrieve and graph the data. RRDtool can graph any data that
+you can present through a command to a shell script. 
+</p>
+
+<p>
+Before capturing data, you must initialize the database.
+For this example, let's create a database to capture the five-minute
+load average. Here's the command to initialize this specific database:
+
+</p>
+<pre><code>
+rrdtool create loadavg_db.rrd --step 60 
+ ↪DS:loadavg:GAUGE:120:0:10000 RRA:MAX:0.5:1:1500
+</code>
+</pre>
+<p></p>
+
+<p>
+The first two arguments indicate that a database named
+<code>loadavg_db.rrd</code>
+is being created. The <code>--step</code> argument defines the expected time gap
+between data samplings. In this case, 60 seconds are expected 
+between samplings. 
+</p>
+
+<p>
+Let's look at two more arguments 
+separately. The first of the two arguments begins with
+<code>DS</code> and defines a data set named <code>loadavg</code>. Note that the
+options for this data set are separated by colons. The <code>GAUGE</code> keyword
+says that when the data is read, it will be written to the database as is
+(unaltered). The <code>120</code> is the timeout in seconds to wait for data to be
+written to the database. If the data isn't written to the database within
+that window, zeros will be written to the database to indicate an error
+in the data feed. The <code>0</code> and <code>10000</code> are the minimum and maximum values
+that can be written to the database. The argument beginning with
+<code>RRA</code>
+defines the round-robin archive value. This defines how many values can
+be stored in the database and how long they'll be stored. The
+<code>MAX</code>
+indicates that the variable contains one value and shouldn't be modified
+in any way. The <code>0.5</code> indicates the initial resolution value. This is a
+standard value and shouldn't be changed. The <code>1</code> identifies how many
+steps should be averaged when storing a final value. In this case, there is
+one step value per value stored in the database. The final argument,
+<code>1440</code>, is how many steps will be stored in the database. Since
+the step
+length is 60 seconds, this configuration will provide 25 hours of data
+to be stored in the database.
+</p>
+
+<p>
+Now that the data is initialized, you can capture and store it in the
+database. To maintain accurate periodic data collection, it's best
+to create a crontab entry and have the data be collected at a desired
+interval. For this example, you would have the cron job run every minute.
+To collect data and put it in the database, use the following command: 
+
+</p>
+<pre><code>
+rrdtool update loadavg_db.rrd --template loadavg N:$(cat 
+ ↪/proc/loadavg | sed 's/^\([0-9\.]\+\) .*$/\1/g')
+</code>
+</pre>
+<p></p>
+
+<p>
+To perform the data collection, the <code>update</code> argument along with the
+database name was used. The <code>--template</code> argument allows you to specify the
+variable name to populate with data. This is the same <code>loadavg</code> variable
+that was defined when the database was initialized. The <code>N</code> argument
+defines the data to be put into the <code>loadavg</code> variable. In this
+case, the
+result of the command substitution will be put into the database, which
+will be the five-minute load average. This command could be placed in the
+crontab for minute-by-minute execution. The crotab entry would look
+like this:
+
+</p>
+<pre><code>
+* * * * * /path/to/rrdtool-script.sh
+</code>
+</pre>
+<p></p>
+
+<p>
+Since all of the time fields contain asterisks, the specified script will
+run every minute. Once the database has been populated, you can render a
+graph with the following command:
+
+</p>
+<pre><code>
+rrdtool graph loadavg_graph-$(date +"%m-%d-%Y").png \
+-w 785 -h 120 -a PNG \
+--slope-mode \
+--start -86400 --end now \
+--font DEFAULT:7: \
+--title "5-minute load average" \
+--watermark "`date`" \
+--vertical-label "load average" \
+--lower-limit 0 \
+--right-axis 1:0 \
+--x-grid MINUTE:10:HOUR:1:MINUTE:120:0:%R \
+--alt-y-grid --rigid \
+DEF:loadaverage=loadavg_db.rrd:loadavg:MAX \
+LINE1:loadaverage#0000FF:"load" \
+GPRINT:loadaverage:LAST:"Cur\: %5.2lf" \
+GPRINT:loadaverage:AVERAGE:"Avg\: %5.2lf" \
+GPRINT:loadaverage:MAX:"Max\: %5.2lf" \
+GPRINT:loadaverage:MIN:"Min\: %5.2lf\t\t\t"
+</code>
+</pre>
+<p></p>
+
+<p>
+The first line calls the RRDtool graph function along with the filename
+of the image to create. In this instance, the image filename will contain
+the current date. All of the arguments beginning with <code>--</code> set
+up the look and feel of the graph, including labels, axis configuration,
+image format and the time frame from which to pull the data. For detailed
+information on these arguments, see the RRDtool documentation.
+</p>
+
+<p>
+The line beginning with <code>DEF:loadaverage</code> defines a
+graph variable named <code>loadaverage</code>, which will have the values from the
+<code>loadavg</code> variable you created in the database. The line beginning with
+<code>LINE</code> specifies the color of the graph line and the label to use in
+the legend. The <code>GPRINT</code> lines indicate various statistic details to be
+printed at the bottom of the graph. In this case, the last recorded value
+and the average, minimum and maximum values during the time frame will
+be displayed. Note that the <code>%5.2lf</code> specifies the value to be printed as
+a floating-point number with up to five digits to the left of the decimal
+point and two digits to the right. 
+</p>
+
+<p>
+For ease of capturing daily graphs,
+you also could add this command to the crontab to run daily with the
+following entry:
+
+</p>
+<pre><code>
+0 0 * * * /path/to/rrdtool-graph.sh
+</code>
+</pre>
+<p></p>
+
+<p>
+This will run the graph script every day at midnight. The images may now
+be placed in a folder that is accessible via a browser for easy viewing.
+</p>
+
+<p>
+Although many monitoring solutions exist that provide robust graphical
+UIs, these solutions provide basic monitoring and trending functionality
+while using a minimum of system resources and providing a basic framework
+for disseminating the data collected. 
+</p>
+
+<h3 class="sigil_not_in_toc">Resources</h3>
+
+<ul><li>
+<a href="https://mmonit.com/monit/documentation/monit.html">Monit
+Documentation</a></li>
+
+<li>
+<a href="http://git.andydoestech.com/git/scripts/.git/tree/config/monit.conf">Monit
+Apache Integration</a></li>
+
+<li>
+<a href="https://oss.oetiker.ch/rrdtool/doc/rrdgraph.en.html">RRDtool Graph
+Function Reference</a></li>
+</ul>
+
+<h3 class="sigil_not_in_toc">About the Author</h3>
+
+<p>
+Andy Carlson has worked in IT for the past 15 years doing networking and
+server administration along with occasional coding. He is thankful to have
+chosen a career that he loves, grows in and learns from. He currently resides
+in Cincinnati, Ohio, with his wife, three daughters and his son. His family
+is
+currently in the process of adopting two children internationally. He enjoys
+playing the guitar, coding, and spending time with family and friends.
+</p>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../292/toc292.html">Issue Table of Contents</a>
+    <a class="link3" href="../292/12539.html">Article</a>
+  </div>
+  <div class="bottomhrdiv"></div>
+
+  <div id="bottom_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+</body>
+</html>

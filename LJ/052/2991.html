@@ -1,0 +1,481 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Speeding up Database Access with mod_perl</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Continuing the discussion of mod_perl, Mr. Lerner tells us&#10;    about the DBI specification and the Apache::DBI module.&#10;    "><meta name="keywords" content="mod_perl, Apache, WWW"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1fd4580.0x20cbab0"></a>Speeding up Database Access with mod_perl</h1></div><div><div class="author"><h3 class="author">Reuven M. Lerner</h3></div><div class="issuemoyr">Issue #52, August 1998</div></div><div><p>
+    Continuing the discussion of mod_perl, Mr. Lerner tells us
+    about the DBI specification and the Apache::DBI module.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fd4580.0x20cc500"></a></h2></div></div><p>Last month, we started to look at
+<span   class="bold"><b>mod_perl</b></span>, a module for the Apache
+web server that puts a copy of Perl inside of our HTTP server. Not
+only does mod_perl save us the overhead of forking a new process
+and invoking Perl each time a CGI program is run, but it caches
+programs once they are compiled, reducing start-up time even
+further.
+</p><p>As with everything else in life, there are trade-offs for
+using mod_perl. CGI programs can be written in any language and can
+be run by any web server on any platform. By contrast, mod_perl
+only works with Apache (which runs under most UNIX versions and is
+about to be released for Win32), and requires that programs be
+written in Perl. If you are interested in maximum portability, you
+might consider sticking with CGI. But if you are like me and spend
+most of your time working with Apache and Perl anyway, you might
+seriously consider moving toward mod_perl.</p><p>However, this is not the end of the story. Even if mod_perl
+were infinitely faster than CGI's fork-and-execute method, a major
+bottleneck would still remain: opening a connection to a database
+server.</p><p>If your web application talks to a relational database
+server, it has to open a connection before it can send a query.
+That initial dialogue between your program and the database server
+can take quite a while, both because of the initial TCP connection
+that must be established and because database servers were not
+designed for single-query connections. Many servers expect you to
+connect once, send a number of requests, receive a number of
+responses and disconnect when done. Web applications, by contrast,
+tend to open a connection for each query, which can unnecessarily
+slow your programs.</p><p>Luckily for us, the folks who wrote mod_perl created a module
+designed to solve this problem.
+<span   class="bold"><b>Apache::DBI</b></span>, as it is called,
+takes advantage of mod_perl's variable persistence (i.e., the fact
+that variable values are kept from one invocation of a program to
+another) to keep database connections open. Each invocation of a
+program using Apache::DBI has only to send a query to the database
+and act on the returned response.</p><p>This month, we look at the DBI specification in general, and
+the Apache::DBI module in particular. We also take a quick look at
+the <span   class="bold"><b>Benchmark</b></span> and
+<span   class="bold"><b>LWP</b></span> modules, which can help
+profile code in general, and which will allow us to see just how
+much faster mod_perl and Apache::DBI can make our programs.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fd4580.0x20cc920"></a>Configuration</h2></div></div><p>To get mod_perl working with Apache, you will need to compile
+and install the latest versions of both programs. (Full
+instructions are available in last month's &ldquo;At the Forge&rdquo;.) To
+take advantage of all of Apache::DBI's features, you will need to
+compile mod_perl with more than the default options. These options
+can be specified by adding <b  >OPTIONNAME=1</b> on the
+same line as the initial invocation of Makefile.PL, the first stage
+of the compilation and installation process.</p><p>I found it easiest (if a bit wasteful) to compile using the
+<b  >EVERYTHING</b> flag, which turns on all of the
+mod_perl options, even those that are unnecessary for Apache::DBI.
+To do this, type the following in the initial mod_perl
+directory:</p><pre     class="programlisting">
+perl Makefile.PL EVERYTHING=1
+</pre><p>The rest of the mod_perl and Apache configuration continues
+as described last month. See the INSTALL document that comes with
+mod_perl to learn how to turn on only those features you need,
+rather than using <b  >EVERYTHING=1</b>.
+</p><p>Apache::DBI works automatically with programs that use
+mod_perl. In other words, any program that uses Apache::Registry
+(more or less the mod_perl equivalent of CGI) automatically gets
+the benefits of Apache::DBI, assuming that the latter is specified
+in the configuration file (described below). You can configure a
+directory to use Apache::Registry in much the same way as you can
+configure it to use CGI, with directives in the srm.conf file such
+as:</p><pre     class="programlisting">
+# Deal with mod_perl
+&lt;Location /perl-bin&gt;
+SetHandler perl-script
+PerlHandler Apache::Registry
+Options ExecCGI
+&lt;/Location&gt;
+</pre><p>You can then instruct mod_perl to load Apache::DBI in all
+directories using Apache::Registry by inserting the following
+directive into srm.conf:
+<pre     class="programlisting">
+PerlModule Apache::DBI
+</pre>
+
+
+Now you will need to restart your server, most likely while logged
+in as root, by typing:
+<pre     class="programlisting">
+# killall -v -1 httpd
+</pre>
+
+
+The server is now ready to talk to the database using mod_perl.
+Before we can take advantage of Apache::DBI, though, we will need
+to investigate DBI a bit more carefully.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fd4580.0x20ccdf0"></a>What is DBI?</h2></div></div><p>There are dozens (perhaps hundreds) of databases on the
+market, some of which run under Linux. One product which I have
+used, both in my own consulting work and in the pages of this
+column, is MySQL, a &ldquo;mostly free&rdquo; database (in the author's
+words) distributed by TcX DataKonsult AB. The &ldquo;Resources&rdquo; sidebar
+contains information on where you can download the source and
+binaries for MySQL.</p><p>The CGI programs we wrote in our previous encounters with
+MySQL used the <span   class="bold"><b>Mysql</b></span> module for
+Perl, which gives us access to all of MySQL's features. Mysql.pm
+continues to work just fine for most applications.</p><p>However, if you are interested in keeping up with the latest
+standards and trends within the Perl community, you should switch
+(as I have) to DBI, the generic database interface for Perl
+programs. DBI allows you to use the same code on any number of
+databases. That is, you can write a program that talks to MySQL,
+Sybase, Oracle or any other database product&mdash;and you will have to
+change only one word in order to port the program to another
+database product. This makes Perl a very powerful and portable
+database-access language.</p><p>DBI is divided into two parts: the generic
+<span   class="bold"><b>DBI</b></span> module engine, which can be
+downloaded from CPAN, the Comprehensive Perl Archive Network, and a
+DBD (database driver) for the particular brand of database you wish
+to access. There is only one DBI module, but there is a different
+DBD for each database you might wish to access. (See &ldquo;Resources&rdquo;
+for information on where you can obtain DBI and DBDs.) If you plan
+to use more than one database server, you will have to install more
+than one DBD. You can install as many DBDs as you want; they are
+installed in parallel, and thus do not conflict.</p><p>If you are using MySQL, then you will have to download the
+driver for Msql, the database on whose interface the MySQL API was
+modeled. Before it compiles and installs the necessary modules, the
+<span   class="bold"><b>Msql-modules</b></span> package asks whether
+you want to install DBDs for Msql, MySQL or both.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fd4580.0x20cd160"></a>Using DBI</h2></div></div><p>Once you have installed DBI and the appropriate DBD, you will
+be able to do just about everything you would normally expect from
+a database. The syntax is a bit different from the syntax we have
+seen in previous installments of &ldquo;At the Forge&rdquo;, but is
+conceptually quite similar. It should not take you very long to
+start using DBI, once you have seen some examples.</p><p>Connections to the database are kept in a database handle,
+normally stored in a variable called <b  >$dbh</b>. The
+database handle not only gives you a compact, object-oriented way
+to access database methods, but also means that you can connect to
+multiple databases at the same time, giving each connection its own
+database handle. (This might be useful when moving information from
+Sybase to Oracle, for example.)</p><p>The basic syntax is fairly straightforward:</p><pre     class="programlisting">
+$dbh = DBI-&gt;connect($data_source, $username,
+        $password);
+</pre><p>As you can see, the <span   class="bold"><b>connect</b></span>
+method takes three arguments. The first,
+<b  >$data_source</b>, defines the database you wish to
+access, as well as the name of the computer on which the server
+sits and the access port on that computer. The second two arguments
+are theoretically optional, but most configurations will (and
+should) require them.
+</p><p>For example, most test programs on my home computer use the
+following syntax:</p><pre     class="programlisting">
+$dbh = DBI-&gt;connect("DBI:mysql:test:localhost");
+</pre><p>Because I use the unprotected &ldquo;test&rdquo; database, no user name
+or password is necessary. A production site on which user names and
+passwords are required would use syntax like the following:
+<pre     class="programlisting">
+$dbh = DBI-&gt;connect("DBI:mysql:classifieds:dbserver",
+        "classy" "51haf3");
+</pre>
+
+
+In the above line of code, we are again connecting with the MySQL
+DBD. But this time, we are connecting to the database named
+<b  >classifieds</b> on a machine named
+<b  >dbserver</b>, with the username
+<b  >classy</b> and password <b  >51haf3</b>.
+Remember that user names and passwords on database systems are
+unrelated to user names and passwords on UNIX systems. For security
+purposes, you should use different passwords (and perhaps even
+different user names) with your databases than are actually in use
+on your system.
+</p><p>If the connection succeeds, <b  >$dbh</b> can be
+used as an entry point into the database. If the connection fails,
+<b  >$dbh</b> remains undefined. This allows us to use
+the following error-checking code:</p><pre     class="programlisting">
+&amp;log_and_die($DBI::errstr) unless $dbh;
+</pre><p>The <span   class="bold"><b>&amp;log_and_die</b></span> routine
+is one of my old favorites (and probably familiar to long-time
+readers of this column), printing an error message on the screen
+and then exiting gracefully. Complete listings including the
+subroutine &amp;log_and_die are available at
+ftp://ftp.linuxjournal.com/pub/lj/listings/issue52/2991.tgz.
+</p><p>Now that we are connected to the database server, we can feed
+it one or more queries in SQL, Structured Query Language.</p><p>If we want to insert a value into a table in the database, we
+can simply say something like:</p><pre     class="programlisting">
+$sql = "INSERT INTO test_insert (contents) VALUES
+(\"$random\") ";
+</pre><p>Putting the SQL query into a scalar variable before using it
+is not required, but helps if and when you need to debug the code.
+(This way, you can easily add a &ldquo;print&rdquo; statement in the middle
+of your program.)
+</p><p>With the query all set, we tell the database to perform the
+requested action using the <span   class="bold"><b>do</b></span>
+method. This returns a variable which I call
+<b  >$successful_insert</b>; much like
+<b  >$dbh</b>, <b  >$successful_insert</b> is
+defined only if the query was successful:</p><pre     class="programlisting">
+$successful_insert = $dbh-&gt;do($sql);
+print "&lt;P&gt;Success!&lt;/P&gt;\n" if $successful_insert;
+</pre><p>Finally, we disconnect from the database. This is not
+completely necessary, since Perl will close connections when we are
+no longer using them. Nevertheless, it is always a good programming
+practice to clean up:
+<pre     class="programlisting">
+$dbh-&gt;disconnect;
+</pre>
+
+
+The above syntax is good for any SQL query from which we do not
+expect a result, namely <b  >INSERT</b>,
+<b  >DELETE</b> and <b  >UPDATE</b>. (For more
+information about SQL, see Resources for some book
+recommendations.)
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fd4580.0x20c4758"></a>Retrieving Rows with SELECT</h2></div></div><p>If we want to retrieve matching rows from the database, we
+need to modify the syntax just a bit. After all, we expect to not
+only receive a report on whether the database was able to perform
+our requested action, but also see the results.</p><p>Assuming we are connected to the database, we set
+<b  >$sql</b> to our SQL query:</p><pre     class="programlisting">
+$sql = "SELECT id,contents FROM test_insert";
+</pre><p>We then use the <span   class="bold"><b>prepare</b></span>
+method to send our query, as follows:
+<pre     class="programlisting">
+$sth = $dbh-&gt;prepare($sql);
+</pre>
+
+
+The <b  >$dbh-&gt;prepare</b> result is known as a
+&ldquo;statement handle&rdquo;, which is traditionally named
+<b  >$sth</b>. Just as <b  >$dbh</b> allows us
+to perform operations on the database to which we have connected,
+<b  >$sth</b> allows us to perform operations on the
+statement we have just sent. And just as <b  >$dbh</b> is
+undefined in the case of an error, so too is
+<b  >$sth</b>:
+<pre     class="programlisting">
+&amp;log_and_die($sth-&gt;errstr) unless $sth;
+</pre>
+
+
+Assuming that <b  >$sth</b> was sent to the database
+successfully, we tell the database to execute our query, checking
+for problems with the return code:
+<pre     class="programlisting">
+$sth-&gt;execute || &amp;log_and_die($sth-&gt;err);
+</pre>
+
+
+Now comes the fun part, namely iterating through each of the rows
+returned to us. We can find out how many rows were returned as a
+result of our query by checking the value of
+<b  >$sth-&gt;rows</b>. We can then retrieve each of the
+returned rows, one by one (with one column value per row), using
+<b  >$sth-&gt;fetchrow</b>. When there are no more rows
+to retrieve, <b  >$sth-&gt;fetchrow</b> returns false,
+which means that we can use it within a &ldquo;while&rdquo; loop. Indeed,
+this is a fairly standard idiom in the DBI world:
+<pre     class="programlisting">
+# Loop through returned rows
+while (@row = $sth-&gt;fetchrow)
+{
+# Grab the columns from the row
+$id = $row[0];
+$contents = $row[1];
+# Print the ID and the contents
+print "&lt;P&gt;$id:\"$contents\"&lt;/P&gt;\n";
+}
+</pre>
+
+
+When we are finished with this statement, we use the
+<span   class="bold"><b>finish</b></span> method associated with the
+statement, which is analogous to the
+<span   class="bold"><b>disconnect</b></span> method for the database
+handle:
+<pre     class="programlisting">
+$sth-&gt;finish;
+</pre>
+
+
+Now that we have reviewed all of this in theory, let's put it into
+practice. First, we will create a small table in the &ldquo;test&rdquo;
+database in MySQL, by running the
+<span   class="bold"><b>mysql</b></span> client program:
+<pre     class="programlisting">
+mysql test
+</pre>
+
+
+Once we see the <b  >mysql&gt;</b> prompt, we can create
+our small test table:
+<pre     class="programlisting">
+CREATE TABLE test_insert
+ (id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY
+        KEY, contents VARCHAR(50) NOT NULL,
+        UNIQUE (contents));
+</pre>
+
+
+The above defines our table, <b  >test_insert</b>, to
+have two columns. The first column, <b  >id</b>, is
+defined to contain an unsigned integer. The integer, whose presence
+is mandatory (<b  >NOT NULL</b>), is automatically
+incremented every time we insert a row into the table and can be
+used as a unique index into the table. The second column,
+<b  >contents</b>, is a variable-length character string
+whose presence is mandatory (<b  >NOT NULL</b>) and which
+cannot be repeated in another record (<b  >UNIQUE</b>).
+</p><p>The CGI program in <a href="2991l1.html" target="_self">Listing 1</a>
+demonstrates all of the above, first inserting a number of rows
+into the table and then retrieving them. Most DBI programs are as
+simple as this one, although many either store or retrieve
+information, rather than do both.</p><p>One of the problems with a standard like DBI is that the
+interface follows the least common denominator. That is, there are
+differences between database packages in addition to their
+administration and speed; just about every package includes a
+number of non-standard SQL commands and features in order to
+differentiate itself from the competition. If you are interested in
+using such features, you might have to use the
+<span   class="bold"><b>func</b></span> DBI method, which enables
+proprietary database extensions. Of course, doing so means that
+your program is no longer portable to other databases, which might
+be a concern if you switch to another vendor.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fd4580.0x20c54c0"></a>Moving the Program to Apache::DBI</h2></div></div><p>We have now compiled Apache to use mod_perl, configured a
+perl-bin directory for serving mod_perl programs and configured
+Apache to insert the Apache::DBI module for all programs within the
+perl-bin directory. We are all set to take our sample DBI program
+and use it with mod_perl.</p><p>How must we modify the program in order to get it to work
+with mod_perl? Actually, we needn't make any modifications at all,
+if we have configured our copy of Apache as described above. All we
+need to do is copy our program into perl-bin, set the appropriate
+permissions and give it a whirl. Here's what I wrote on my
+computer, for example:</p><pre     class="programlisting">
+~httpd/cgi-bin% cp dbi-demo.pl ../perl-bin/
+~httpd/cgi-bin% chmod ug+x ../perl-bin/dbi-demo.pl
+</pre><p>I changed the URL in an open browser window such that it
+pointed to perl-bin rather than cgi-bin, and&mdash;voil&agrave;--it all
+just worked.</p><p>When I first started to use mod_perl and Apache::DBI, I
+wasn't sure how much faster programs would run. The execution
+certainly seemed faster, but I wasn't sure how much of an
+improvement I was seeing. I decided to use Perl's Benchmark module,
+comparing the execution speed of two different programs. I would
+try to insert 100 random text strings into a database, first using
+a CGI program and then using an Apache::DBI version of the same
+program (which, as we now know, simply means a version of the
+program placed in the perl-bin directory).</p><p>Benchmarking is a tricky and subtle business, and there are
+undoubtedly factors which I neglected when calculating these
+results. Even so, they seem to bear witness to the amazing
+performance difference between CGI and mod_perl. I'm sure if I were
+to spend a great deal more time working on my Apache and/or MySQL
+configuration, I could get even better performance out of my lowly
+75 MHz Pentium running Red Hat 4.2. However, the relative numbers
+should speak for themselves.</p><p>First, let's examine the test I performed. I used the same
+test_insert table in MySQL as we saw before. I then wrote a CGI
+program, similar to the one we saw before, which connects to the
+database and inserts a random value into the
+<b  >contents</b> column. The resulting program is shown
+in <a href="2991l2.html" target="_self">Listing 2.</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fd4580.0x20c5888"></a>How Fast is it?</h2></div></div><p>Now that we have our test program, how can we actually test
+it? I wrote a short Perl program using Benchmark.pm, in
+<a href="2991l3.html" target="_self">Listing 3.</a> The
+<span   class="bold"><b>timethese</b></span> function is imported by
+Benchmark.pm, which we bring in at the beginning of the program. We
+also bring in <b  >LWP::Simple</b>, part of the &ldquo;Library
+for WWW access in Perl&rdquo; that makes it a snap to write a small web
+client. How simple? Well, the following one-liner returns the HTML
+contents at http://www.linuxjournal.com/:</p><pre     class="programlisting">
+perl -e 'use LWP::Simple;
+print get "http://www.linuxjournal.com";'
+</pre><p>Perl does not format the output for you. That's the
+difference between a web browser and a web client; the former is
+meant to retrieve information for humans, while the latter is meant
+to retrieve information for programs. In this particular case, we
+just want to simulate 100 retrievals of each of our programs via
+the web. Any timing differences will thus be due to the program on
+the server side&mdash;which, since they are identical, means that the
+differences will be due to mod_perl and Apache::DBI.
+</p><p>How much faster is the Apache::DBI version than its CGI
+counterpart? Here are the results I got running time-db.pl:</p><pre     class="programlisting">
+[1086] ~% ./time-db.pl
+Benchmark: timing 100 iterations ...
+Apache::DBI: 24 secs (1.77 usr 0.67 sys = 2.44 cpu)
+Plain CGI: 394 secs (1.10 usr 0.61 sys = 1.71 cpu)
+</pre><p>That's quite a difference. When I first ran this benchmark, I
+was convinced that the plain CGI program had somehow gotten stuck.
+Alas, that was not the case; the overhead associated with CGI was
+simply too great.
+</p><p>Here is a second run of the same benchmark, just for
+comparison.</p><pre     class="programlisting">
+[1099] ~% ./time-db.pl
+Benchmark: timing 100 iterations ...
+Apache::DBI: 28 secs (1.89 usr 0.61 sys = 2.50 cpu)
+Plain CGI: 355 secs (1.15 usr 0.62 sys = 1.77 cpu)
+</pre><p>Yes, it looks like CGI is indeed much slower. By the way, you
+can see that Apache::DBI used more CPU time than plain CGI&mdash;which
+means that the time was spent forking the new Perl process, rather
+than performing our program's computations.
+</p><p>What if we take out the Apache::DBI directive in srm.conf and
+restart the server? That would give us an indication of how much
+overhead was being used opening the database connection. As you can
+see, things do indeed slow down&mdash;although admittedly not by a huge
+amount:</p><pre     class="programlisting">
+[1104] ~% ./time-db.pl
+Benchmark: timing 100 iterations ...
+Apache::DBI: 34 secs (1.97 usr 0.63 sys = 2.60 cpu)
+Plain CGI: 460 secs (1.19 usr 0.60 sys = 1.79 cpu)
+</pre><p>The moral, then, seems to be that moving from CGI to mod_perl
+gives a huge performance boost, and that moving from DBI to
+Apache::DBI gives a moderate performance boost. The more database
+accesses your web applications do, the more useful these
+technologies will probably be in your work. Perl has always been
+known as a useful language, but rarely as one that can help you
+write fast software. Now, with mod_perl and Apache::DBI, you can
+write web applications quickly, and watch them run quickly as well.
+</p><p><a href="2991s1.html" target="_self">Resources</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="2991aa.jpg"></div>
+
+      <span   class="bold"><b>Reuven M. Lerner</b></span>
+      is an Internet and Web
+      consultant living in Haifa, Israel, who has been using the Web
+      since early 1993. In his spare time, he cooks, reads and volunteers
+      with educational projects in his community. You can reach him at
+      reuven@netvision.net.il.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../052/toc052.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,472 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Let's Automate Let's Encrypt
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;No more reasons to handle certificates manually&mdash;make your&#10;server do your work.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1dd6580.0x1ecdac0"></a>
+Let's Automate Let's Encrypt
+</h1></div><div><div class="author"><h3 class="author">
+Andrei
+ 
+Lukovenko
+</h3></div><div class="issuemoyr">Issue #266, June 2016</div></div><div><p>
+No more reasons to handle certificates manually&mdash;make your
+server do your work.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd6580.0x1ece1f8"></a></h2></div></div><p>
+HTTPS is a small island of security in this insecure world, and in this day
+and age, there is absolutely no reason not to have it on every Web site you
+host. Up until last year, there was just a single last excuse: purchasing
+certificates was kind of pricey. That probably was not a big deal for
+enterprises; however, if you routinely host a dozen Web sites, each
+with multiple subdomains, and have to pay for each certificate
+out of your own dear pocket&mdash;well, that quickly could become a burden.
+</p><p>
+Now you have no more excuses. Enter Let's Encrypt (<a href="https://letsencrypt.org" target="_self">https://letsencrypt.org</a>), a free Certificate Authority
+that officially left Beta status in April 2016.
+</p><p>
+Aside from being totally free, there is another special thing about Let's
+Encrypt certificates: they don't last long. Currently all certificates
+issued by Let's Encrypt are valid for only 90 days, and you should expect
+that someday this term will become even shorter (<a href="https://letsencrypt.org/2015/11/09/why-90-days.html" target="_self">https://letsencrypt.org/2015/11/09/why-90-days.html</a>). Although this short
+lifespan definitely creates a much higher level of security, many people
+consider it as an inconvenience, and I've seen people going back from
+using Let's Encrypt to buying certificates from commercial certificate
+authorities for this very reason.
+</p><p>
+Of course, if you are running multiple Web sites, having to renew
+several certificates manually every three months quickly could become
+annoying to say the least. Some
+day you even may forget (and you will regret that forgetfulness). Let's leave
+routines to computers, right?
+</p><p>
+If you are using Apache under a Debian-based distribution, Let's Encrypt
+already has you covered with the libaugeas0 package, and it is
+capable of both issuing and renewing certificates. If, like me, you
+prefer nginx and want to have zero-downtime automatic certificate updates
+with industrial-grade encryption, keep reading. I'm going to show you how to get
+there.
+</p><p>
+First things first&mdash;some assumptions and requirements:
+</p><div class="orderedlist"><ol type="1"><li><p>
+You are running the nginx (<a href="https://www.nginx.com" target="_self">https://www.nginx.com</a>) Web server/load balancer, and you are going
+to use it for TLS termination (that's a fancy, but technically correct way
+of saying &ldquo;nginx will handle all this HTTPS stuff&rdquo;).
+</p></li><li><p>
+nginx serves several Web sites, and you want HTTPS on all of them, and
+you are not going to pay a single dime.
+</p></li><li><p>
+You also want to get the highest grade on the industry standard for SSL
+tests&mdash;SSL Lab's SSL server test (<a href="https://www.ssllabs.com/ssltest" target="_self">https://www.ssllabs.com/ssltest</a>).
+</p></li><li><p>
+You do not enjoy the idea of running some not-so-well-sandboxed
+third-party code on your server, and you would rather have this code in a
+Docker container.
+</p></li><li><p>
+Naturally, you are lazy (or experienced) enough, so you want to write
+some scripts that will re-issue all certificates way before they expire.
+</p></li><li><p>
+I tested this code on Debian Jessie running nginx 1.6.2 and Docker
+1.9.1; it also should work on all other flavors. If you do not have
+docker-engine installed, follow the instructions here: <a href="https://docs.docker.com/engine/installation" target="_self">https://docs.docker.com/engine/installation</a>.
+</p></li></ol></div><p>
+Now, check whether your nginx supports TLS:
+
+<pre     class="programlisting">
+sudo nginx -V
+</pre>
+</p><p>
+Usually it is supported by default and should yield the following:
+
+<pre     class="programlisting">
+TLS SNI support enabled
+</pre>
+</p><p>
+You also need a place to store certificates:
+
+<pre     class="programlisting">
+sudo mkdir -m 755 /etc/letsencrypt
+</pre>
+</p><p>
+Don't sweat the permissions for this directory; the certificates themselves
+will not be publicly accessible. Now you need to make a small change in
+your nginx configuration. Create a new file /etc/nginx/letsencrypt.inc with
+the following contents:
+
+<pre     class="programlisting">
+location ^~ /.well-known/acme-challenge/ {
+    root /tmp/letsencrypt/www;
+    break;
+}
+</pre>
+</p><p>
+Then find your &ldquo;server&rdquo; section in the nginx configuration, and add the
+following line to each Web site you host:
+
+<pre     class="programlisting">
+include /etc/nginx/letsencrypt.inc;
+</pre>
+</p><p>
+So the final result will look like this:
+
+<pre     class="programlisting">
+server {
+    listen 80;
+    server_name example.com www.example.com;
+    ...
+        include /etc/nginx/letsencrypt.inc;
+        ...
+}
+</pre>
+</p><p>
+After saving both files, ask nginx to reload the configuration:
+
+<pre     class="programlisting">
+
+sudo /usr/sbin/nginx -t &amp;&amp; sudo service nginx reload
+
+</pre>
+</p><p>
+Notice that you are only reloading the nginx configuration&mdash;and nginx 
+knows very well how to do it without dropping connections.
+</p><p>
+Now, let's go get some certificates! Needless to say, all domain names
+for which you are going to issue certificates should resolve to your server
+IP address; otherwise, it would be possible to issue certificates for
+somebody else's domain and use those certificates for man-in-the-middle
+attacks.
+</p><p>
+The following will pull and start a new Docker image with the official Let's Encrypt
+client:
+
+<pre     class="programlisting">
+mkdir -p /tmp/letsencrypt/www
+
+# make sure you have the latest version of this image,
+# and not some pre-beta - those used to be notoriously buggy
+docker pull quay.io/letsencrypt/letsencrypt:latest
+
+docker run --rm -it --name letsencrypt \
+-v /etc/letsencrypt:/etc/letsencrypt \                                                                                                                   
+-v /tmp/letsencrypt/www:/var/www \
+    quay.io/letsencrypt/letsencrypt:latest \
+    auth --authenticator webroot \
+    --webroot-path /var/www \
+    --domain=example.com --domain=www.example.com \
+    --email=admin@example.com
+</pre>
+</p><p>
+As you can see, you share two data volumes between the host and the
+container:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+/etc/letsencrypt for storing Let's Encrypt configuration, all
+certificates and chains.
+</p></li><li><p>
+/tmp/letsencrypt/www for communication between your server with Let's
+Encrypt servers. 
+</p></li></ul></div><p>
+The webroot plugin that runs inside the container will
+create a temporary challenge file for each of your domains, then Let's
+Encrypt validation servers will send an HTTP request to ensure that you are
+really controlling this domain and this server. These files are temporary
+and needed only during issuing or renewing a certificate.
+</p><p>
+You will need to agree on TOS by pressing a button, and after several
+seconds, your certificate is ready. If you have several subdomains, as in
+this example, you can enumerate all of them, which will result in one
+shared certificate issued for all of these subdomains. However, if you have
+several domains, it would be much more convenient to have a separate
+certificate for each of them&mdash;just repeat this last <tt  >docker
+run ...</tt>
+command for each domain you have (and thank me later if someday you 
+decide to move one of your domains to a different server).
+</p><p>
+As you can see, the procedure for obtaining certificates is painless and
+safe. Almost all the heavy work is done for you behind the scenes, and if
+you've ever had to deal with certificates using some other traditional certification
+authority, you will know exactly what I mean. Whatever runs inside the
+container can access only two directories on the server, and only while it
+runs. 
+</p><p>
+After you get all the certificates, it's safe to remove the temporary
+directory:
+
+<pre     class="programlisting">
+rm -rf /tmp/letsencrypt
+</pre>
+</p><p>
+Let's go back to the nginx configuration. Getting an A+ grade from SSLLabs
+requires some additional effort. Create a new Ephemeral Diffie-Hellman prime (if this
+is the first time you've see this term, see <a href="https://wiki.openssl.org/index.php/Diffie_Hellman" target="_self">https://wiki.openssl.org/index.php/Diffie_Hellman</a> for more
+information):
+
+<pre     class="programlisting">
+sudo openssl dhparam -out /etc/pki/tls/private/dhparam.pem 4096
+</pre>
+</p><p>
+Caution: if you absolutely need to support ancient versions of
+client software, for example, Java 6 clients, you need to skip this step and
+comment the <tt  >ssl_dhparam</tt> line in the following step. These old
+clients do not support Diffie-Hellman parameters longer than 1024 bytes, so
+you need to make a choice between supporting those clients and security.
+</p><p>
+Now, have a hot beverage; it will take some time to generate. Add these
+lines to the &ldquo;http&rdquo; section of /etc/nginx/nginx.conf:
+
+<pre     class="programlisting">
+http {
+        ...
+        ssl_dhparam /etc/pki/tls/private/dhparam.pem;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 60m;
+        ...
+}
+</pre>
+</p><p>
+Create a new file /etc/nginx/ssl_options.inc:
+
+<pre     class="programlisting">
+ssl on;
+ssl_prefer_server_ciphers on;
+ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+    ssl_ciphers "ECDH+AESGCM DH+AESGCM ECDH+AES256 DH+AES256
+     &#8618;ECDH+AES128 DH+AES ECDH+3DES DH+3DES RSA+AESGCM 
+     &#8618;RSA+AES RSA+3DES !aNULL !MD5 !DSS";
+# Enable HSTS (HTTP Strict Transport Security) for half a year
+add_header Strict-Transport-Security 
+ &#8618;"max-age=15768000;includeSubDomains";
+</pre>
+</p><p>
+And create a new &ldquo;server&rdquo; section:
+
+
+<pre     class="programlisting">
+server {
+    listen 443;
+    server_name example.com www.example.com;
+
+    include /etc/nginx/letsencrypt.inc;
+include /etc/nginx/ssl_options.inc;
+
+ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+
+        # enable OCSP stapling to speed up first connect
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    ssl_trusted_certificate 
+     &#8618;/etc/letsencrypt/live/example.com/chain.pem;
+
+...
+}
+</pre>
+</p><p>
+Warning: the Strict-Transport-Security header will tell each visitor
+that you promise always to use HTTPS in the future. It's a one-way street,
+and once you set it, there is no way back&mdash;your visitor's browser will
+remember your promise and insist on having HTTPS. Also note: for more information
+on OCSP stapling, see <a href="https://en.wikipedia.org/wiki/OCSP_stapling" target="_self">https://en.wikipedia.org/wiki/OCSP_stapling</a>.
+</p><p>
+After making all of these changes, reload the nginx configuration again:
+
+<pre     class="programlisting">
+
+sudo /usr/sbin/nginx -t &amp;&amp; sudo service nginx reload
+
+</pre>
+</p><p>
+At this point, your Web site should have HTTPS up and running. Try to open
+https://www.example.com/ in a browser and enjoy the green lock sign in the address
+line. To verify the quality of encryption, go to <a href="https://www.ssllabs.com/ssltest" target="_self">https://www.ssllabs.com/ssltest</a>, and submit your hostname
+for a check (usually it takes several minutes). 
+</p><p>
+So, now that you have HTTPS, how about disabling HTTP? Go back to the HTTP
+&ldquo;server&rdquo;
+section and make the following improvement:
+
+<pre     class="programlisting">
+server {
+    listen 80;
+    server_name example.com www.example.com;
+        include /etc/nginx/letsencrypt.inc;
+        ...
+if ($scheme = "http") {
+        rewrite ^/(.*)$ https://$host/$1 permanent;
+}
+        ...
+}
+</pre>
+</p><p>
+This will redirect all traffic from HTTP to HTTPS, automatically bringing
+all clients to the secure version of your Web site. Reload the nginx configuration
+to activate the changes. 
+</p><p>
+Now it's time to automate certificate renewals. Let's Encrypt's current
+policy allows you to request five certificate renewals for a domain within
+seven
+days. That means it wouldn't be wise (and wouldn't make much sense either)
+to try to renew certificates every day. On the other hand, leaving it for the
+last moment before expiration also is quite dangerous. Luckily, there is an
+easy way to renew these certificates only when they have less than 30 days
+before expiration. To me, 30 days sounds just right. That means my
+certificates will be reissued every 60 days on average, and if something
+fails afterward, I will have a whole month to fix
+whatever is broken.
+</p><p>
+Create a script for renewal (I placed it in/root/update_keys.sh) with these
+contents:
+
+
+<pre     class="programlisting">
+#!/bin/bash
+
+mkdir -p /tmp/letsencrypt/www
+
+ADMIN_EMAIL=admin@example.com
+HOSTNAME=$(hostname)
+
+OUTPUT="$((docker run --rm -i --name letsencrypt \
+    -v /etc/letsencrypt:/etc/letsencrypt \
+    -v /tmp/letsencrypt/www:/var/www \
+    quay.io/letsencrypt/letsencrypt:latest renew) 2&gt;&amp;1)"
+
+if [[ $? -eq 0 ]]; then
+    echo "${OUTPUT}" | grep -q "No renewals were attempted"
+    if [[ $? -eq 0 ]]; then
+        # all certificates have more than 30 days left - 
+        # nothing to do
+        exit 0
+    fi
+    echo "${OUTPUT}" | tr -Cd '[:print:]\n' \
+        | mail -s "${HOSTNAME}: Let's Encrypt keys renewal -
+         &#8618;success" "${ADMIN_EMAIL}"
+    else
+        echo "${OUTPUT}" | tr -Cd '[:print:]\n' \
+            | mail -s "${HOSTNAME}: Let's Encrypt keys renewal -
+             &#8618;failed, exit code $?!" "${ADMIN_EMAIL}"
+        exit 1
+    fi
+
+    # test config, reload if successful
+    /usr/sbin/nginx -t &amp;&gt; /dev/null 
+    if [[ $? -ne 0 ]]; then
+        echo 'please fix configfile problem' \
+            | mail -s "${HOSTNAME}: nginx unable to reload"
+             &#8618;"${ADMIN_EMAIL}"
+        logger "nginx has errors - not reloaded"
+    else
+        service nginx reload
+        logger "nginx reloaded"
+    fi
+
+    rm -rf /tmp/letsencrypt
+</pre>
+</p><p>
+Remember to assign proper access rights:
+
+<pre     class="programlisting">
+sudo chmod u+x /root/update_keys.sh
+</pre>
+</p><p>
+And create a crontab entry:
+
+<pre     class="programlisting">
+sudo crontab -e
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd6580.0x22c84f0"></a></h2></div></div><p>
+with a line like this:
+
+<pre     class="programlisting">
+17 2 * * * /root/update_keys.sh
+</pre>
+</p><p>
+That will trigger execution of this update script at 2:17 every day. The update
+script will check whether your certificates have more than 30 days left, and if
+they don't, it will attempt to renew all expiring certificates. Are you
+wondering why I used 2:17 am? Well, there is a simple explanation for that:
+almost everybody else did not. Most people, when creating cron jobs,
+use some simple value like 1:00 am, 2:00 am, 3:30 am, 4:15 pm and so on, and that
+is a really, really bad choice if your cron job is supposed to talk to an
+external service, because that means the service will experience maximum
+loads every once in a while. It is bad for the service, and it is not good for
+you; the chance of getting a timeout is significantly higher if you send a
+request during these peak loads.
+</p><p>
+So, for this job, please, please do not use an even value, and do not
+use my value; use some random value instead, and everything will be
+fine.
+</p><p>
+As you can see, Let's Encrypt managed to make the full automation of
+certificate maintenance possible. If you are using it right, it just
+works&mdash;and it's free. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1dd6580.0x22c8758"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Andrei Lukovenko is a longtime Linux user, command-line fanboy, automation
+aficionado.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../266/toc266.html">Issue Table of Contents</a>
+    <a class="link3" href="../266/12020.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

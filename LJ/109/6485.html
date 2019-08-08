@@ -1,0 +1,365 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Writing Stackable Filesystems</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Now you can add a feature to your favorite filesystem&#10;    without rewriting it.&#10;    "><meta name="keywords" content="filesystem, C, stackable, filesystem, kernel, Wrapfs"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x12f1580.0x13e8ab0"></a>Writing Stackable Filesystems</h1></div><div><div class="author"><h3 class="author">Erez Zadok</h3></div><div class="issuemoyr">Issue #109, May 2003</div></div><div><p>
+    Now you can add a feature to your favorite filesystem
+    without rewriting it.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13e96b8"></a></h2></div></div><p>Writing filesystems, or any kernel code,
+is hard. The kernel is a complex environment to master, and small
+mistakes can cause severe data corruption. Filesystems, however,
+offer a clean data access mechanism that is transparent to user
+applications, which is why developers always desire to add new
+features to filesystems. In this article, we provide a quick
+introduction so you can add new functionality to existing
+filesystems without having to become a kernel or filesystems
+expert.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13e97c0"></a>So You Want to Be a Filesystem
+Developer?</h2></div></div><p>Although Linux supports many filesystems, they are pretty
+similar: disk-based filesystems, network-based filesystems, etc.
+Making a filesystem stable and efficient takes years of effort, and
+once it's stable and working, you don't want to break it by
+throwing in new features. Besides, maintainers of filesystems
+rarely accept feature-enhancement patches to their stable
+filesystems. So, it is no surprise that the most popular
+filesystems currently in use have not fundamentally changed in
+years.</p><p>Suppose you want to write a simple encryption filesystem that
+uses a single fixed cipher key to encrypt file data. Getting
+portable C code for various ciphers is easy. Next, you have to tie
+the calls to encrypt and decrypt data buffers into the filesystem.
+Conceptually the problem is simple: encrypt any data that comes
+from the write system call before it is written to disk, and
+decrypt any data that comes from the disk before it is passed back
+to the user process that called the read system call.</p><p>Your first inclination might be to copy the 5,000+ lines of
+source code for ext2, study it and then add your cipher calls to
+it. You should resist the urge to copy a whole other filesystem as
+a starting point. Although it's only 5,000+ lines of code, kernel
+code is at least an order of magnitude more complex to develop than
+user-level code. If you actually end up putting the calls to your
+cipher in the right place in this new filesystem, you'll find you
+spent most of your time studying it, only to add a small number of
+lines in some places. Even so, now you've got yourself a single
+encrypting ext2 filesystem. What if you want an encrypting NFS
+filesystem or any one of the plethora of other Linux
+filesystems?</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13e9978"></a>Incremental Filesystem Development</h2></div></div><p>Linux, like most OSes, separates its filesystem code into two
+components: native filesystems (ext2, NFS, etc.) and a
+general-purpose layer called the virtual filesystem (VFS). The VFS
+is a layer that sits between system call entry points and native
+filesystems. The VFS provides a uniform access mechanism to
+filesystems without needing to know the details of those
+filesystems. When filesystems are initialized in the kernel, they
+install a set of function pointers (methods in OO-speak) for the
+VFS to use. The VFS, in turn, calls these pointer functions
+generically, without knowing which specific filesystem the pointers
+represent. For example, an unlink system call gets translated into
+a service routine sys_unlink, which invokes the vfs_unlink VFS
+function, which invokes a filesystem-specific method by using its
+installed function pointer: ext2_unlink for ext2, nfs_unlink for
+NFS or the appropriate function for other filesystems. Throughout
+this article, we refer to the specific filesystem method using
+-&gt;, as in -&gt;unlink().</p><p>To solve this problem of how to develop our encryption
+filesystem quickly, we employ the following adage: &ldquo;Any problem in
+computer science can be solved by adding another level of
+indirection.&rdquo; Luckily, the Linux VFS allows another filesystem to
+be inserted right between the VFS and another filesystem. Figure 1
+shows such a stackable encryption filesystem called Cryptfs.
+Cryptfs is called stackable because it stacks on top of another
+filesystem (ext2). Here, the VFS calls Cryptfs' -&gt;write() method
+(cryptfs_write); Cryptfs encrypts the user data it receives and
+passes it down by calling the -&gt;write() method below
+(ext2_write).</p><div       class="mediaobject"><img src="6485f1.jpg"><div class="caption"><p>
+Figure 1. An Example Stackable Encryption Filesystem
+</p></div></div><p>In general, stackable filesystems can stand alone and be
+mounted on top of any other existing filesystem mountpoint; this
+means you only have to develop your (stackable) filesystem once,
+and it will work with any other native (low-level) filesystem such
+as ext2, NFS, etc. Moreover, as of Linux 2.4.20, stackable
+filesystems even can be exported safely (via nfs-utils-1.0 or
+newer) to remote NFS clients.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13e9ce8"></a>How a Stackable Filesystem Works</h2></div></div><p>The basic function of a stackable filesystem is to pass an
+operation and its arguments to the lower-level filesystem. The
+following distilled code snippet shows how a stackable null-mode
+pass-through filesystem called Wrapfs handles the -&gt;unlink()
+operation:</p><pre     class="programlisting">
+int wrapfs_unlink(struct inode *dir,
+                  struct dentry *dentry)
+{
+  int err = 0;
+  struct inode *lower_dir;
+  struct dentry *lower_dentry;
+  lower_dir = get_lower_inode(dir);
+  lower_dentry = get_lower_dentry(dentry);
+  /* pre-call code can go here */
+  err = lower_dir-&gt;i_op-&gt;unlink(lower_dir,
+                                lower_dentry);
+  /* post-call code can go here */
+  return err;
+}
+</pre><p>When the VFS needs to unlink a file in a Wrapfs filesystem,
+it calls wrapfs_unlink, passing it the inode of the directory in
+which the file to remove resides (dir) and the name of the entry to
+remove (encapsulated in dentry).
+</p><p>Every filesystem keeps a set of objects that belong to it,
+including inodes, directory entries and open files. When using
+stacking, multiple objects represent the same file&mdash;only at
+different layers. For example, our Cryptfs in Figure 1 may have to
+keep a directory entry (dentry) object with the clear-text version
+of the filename, while ext2 will keep another dentry with the
+ciphertext (encrypted) version of the same name. To be truly
+transparent to the VFS and other filesystems, stackable filesystems
+keep multiple objects at each level.</p><p>This is why the first few actions that wrapfs_unlink takes
+are to locate, from the arguments it gets, the inode and dentry
+that correspond to the same objects, only at the filesystem mounted
+below. These get_lower_* functions essentially follow pointers that
+previously were stored in the private fields of Wrapfs' objects
+when those objects were created. Once the lower objects are
+located, the main magic of stacking takes place. We call the
+lower-level filesystem's own -&gt;unlink() method, through the
+lower-level directory inode, and pass it the two lower
+objects.</p><p>Wrapfs is a full-fledged stackable null-layer (or loopback)
+filesystem that simply passes all operations and objects
+(unmodified) between the VFS and the lower filesystem. Wrapfs
+itself, however, is not easy to write for one main reason; it has
+to treat the lower filesystem as if it were the VFS, while
+appearing to the real Linux VFS as a lower-level filesystem. This
+dual role requires careful handling of locks, reference counts,
+allocated memory and so on. Luckily, someone already wrote and
+maintains Wrapfs. Therefore, Wrapfs serves as an excellent template
+for you to modify and add new functionality.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13e9fa8"></a>Getting Started</h2></div></div><p>Now that you understand how stacking works, what next? First,
+we have to explore the places where we can insert our code into
+Wrapfs. Referring back to the wrapfs_unlink code shown previously,
+there are three such places that correspond to before, instead of
+or after the call to the lower-level -&gt;unlink() method.</p><p>1) Pre-call: you can insert code before the call to the lower
+-&gt;unlink(). For example, you could check if the user is trying
+to delete an important file and prevent that from happening:</p><pre     class="programlisting">
+if (strcmp(dentry-&gt;d_name.name,
+           "vmlinuz") == 0)
+return -EACCES;
+</pre><p>2) Call: you could replace the entire call itself. For
+example, instead of removing the file, you could rename it, as part
+of a simple undo filesystem (we've all had our share of unintended
+<b  >rm -f</b> commands).
+</p><p>3) Post-call: here we could perform actions after the main
+operation returned from the lower filesystem. For example, suppose
+a malicious user tries to delete /etc/passwd, but the normal UNIX
+permission checks prevent it. An administrator might want to log
+such an action (using syslogd) as follows:</p><pre     class="programlisting">
+if (err == -EACCES &amp;&amp;
+    strcmp(dentry-&gt;d_name.name,
+           "passwd") == 0)
+  printk("uid %d tried to delete passwd",
+         current-&gt;fsuid);
+</pre><p>where current is a global variable that always points to the
+currently executing task (process), and -&gt;fsuid is the effective
+UID of that process, for use by filesystems.
+</p><p>These examples and those that follow have been simplified
+somewhat to save space and to convey their essence. For example,
+the d_name.name component is not null terminated, so memcmp will
+have to be used with the proper length; or, to check that the file
+referred to by the dentry is indeed the real /etc/passwd, the code
+has to check that the filesystem is the root filesystem or compare
+against the absolute pathname, using d_path(). For the complete
+examples, tested under 2.4.20, see the FiST home page
+(<a href="http://www.cs.sunysb.edu/~ezk/research/fist" target="_self">www.cs.sunysb.edu/~ezk/research/fist</a>).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13ea3c8"></a>Example: Who Watches the Snoopers</h2></div></div><p>UNIX tries to protect files from access by unauthorized
+users. When a user tries to open a file to which they do not have
+access, UNIX promptly returns a permission-denied error. Some users
+like to snoop around the files of others, sometimes looking for
+files mistakenly left unprotected or trying to guess names of files
+that might exist in a searchable-only directory. Unfortunately,
+even when those snooping users are unsuccessful, the victims of
+such snooping often are unaware it took place.</p><p>One of the most common filesystem operations is
+-&gt;lookup(), which occurs whenever a system call uses a file's
+name. The kernel must translate that (string) name to an actual VFS
+object, such as an inode, dentry or file. To detect snooping users,
+we place the following code in snoopfs_lookup or
+snoopfs_permission, right after it calls -&gt;lookup() on the lower
+filesystem:</p><pre     class="programlisting">
+if ((err == -EACCES ||
+     err == -ENOENT) &amp;&amp;
+    dir-&gt;i_uid != current-&gt;fsuid &amp;&amp;
+    current-&gt;fsuid != 0)
+  printk("snoop uid=%d pid=%d file=%s",
+         current-&gt;fsuid, current-&gt;pid,
+         dentry-&gt;d_name.name);
+</pre><p>Here, we check the return code (err) from the call to the
+lower -&gt;lookup(). If the status is EACCES (permission denied) or
+ENOENT (no such file or directory) and if the directory's owner
+(dir-&gt;i_uid) is different from that of the user running the
+current task (current-&gt;fsuid) and the current user is not the
+superuser (because root users can do anything), then it prints a
+descriptive message identifying the snooping user. This message
+typically is logged by syslogd.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13ea5d8"></a>Example: Encryption Fit for a Caesar</h2></div></div><p>Wrapper technologies are particularly suitable for
+security-related applications where wrapping, or monitoring, is
+often useful. Not surprisingly, the most popular applications
+developed from FiST are cryptographic filesystems. In this example,
+we demonstrate a simple encryption filesystem that uses the rot13
+cipher.</p><p>In this filesystem, we want to encrypt all file data using a
+function (presumably already written) called rot13 that takes an
+input buffer, output buffer and their lengths. However, unlike the
+previous examples, there is no single method where you can place
+the rot13() function to encrypt the file's data. In fact,
+manipulating file data in any filesystem is rather complex because
+it involves multiple methods, as well as two forms of accessing
+file's data, the read and write system calls, which can work at any
+file offset, and mmap, which works on whole pages. To make life
+easier for stackable filesystem developers, Wrapfs consolidates all
+of these methods into two simple calls: one to encode file data and
+one to decode file data, both working on whole page-aligned data
+pages (for example, 4KB on IA-32 systems). Using the Wrapfs
+template, the only code you have to write to produce a rot13-based
+encryption filesystem looks like the following:</p><pre     class="programlisting">
+int
+encode_block(void *in, void *out, int len)
+{
+  rot13(in, out, len);
+  return len;
+}
+int
+decode_block(void *in, void *out, int len)
+{
+  rot13(in, out, len);
+  return len;
+}
+</pre><p>Wrapfs already contains all the complex code that handles
+mixed reads, writes and memory-mapped operations. Wrapfs makes
+calls to encode_block to encrypt a data page and to decode_block to
+decrypt a data page (they are identical in this example).
+</p><p>Of course, rot13 is hardly a practical cipher, but given this
+simple example, you can build much stronger cryptographic
+filesystems. Following this, we recently have built a powerful
+cryptographic filesystem called NCryptfs (a successor to Cryptfs).
+NCryptfs supports multiple ciphers; multiple keys per user, process
+or group; multiple authentication schemes; key timeouts and
+revocation; delegated privileges; and more&mdash;all with a negligible
+performance overhead.</p><p>Wrapfs also supports manipulating filenames using two
+additional routines to encode and decode filenames. One thing to
+watch out for when encrypting filenames is that filenames must
+remain valid after encryption. In other words, they cannot contain
+nulls or &ldquo;/&rdquo; characters. A common solution is to uuencode the
+file's name after encryption.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13ea898"></a>Example: Extending New Functionality to User
+Applications</h2></div></div><p>In the wrapfs_unlink example, we suggested that instead of
+deleting a file, you could rename it, thus saving a single backup
+of deleted files. Suppose we call this filesystem unrmfs, in which
+deleted files are instead renamed from their original name
+<span   class="emphasis"><em>F</em></span> to <span   class="emphasis"><em>F</em></span>.unrm. It might be
+annoying if all of these .unrm files started appearing in your
+directory, especially if you're expecting nothing there. Moreover,
+this kind of functionality also could be used to fool attackers who
+try to delete log files that may be used to track their actions. To
+achieve this, however, the .unrm files must not be visible or
+accessible to users by default.</p><p>To hide certain files in a filesystem, you have to do two
+things. First, prevent the file from showing up in -&gt;readdir().
+This is done by writing code in wrapfs_filldir that checks each
+filename passed to -&gt;filldir() and returning NULL for those
+files you do not want listed. Second, prevent users from directly
+looking up the file by its name; this is done by checking for .unrm
+files in the beginning of wrapfs_lookup.</p><p>Of course, hiding those files from all users isn't very
+useful. Legitimate users must be able to access those files under
+certain conditions. A simple approach might be to check the UID of
+the calling process and to hide the .unrm files only from certain
+users. A better approach would be to use the mother of all system
+calls, ioctl. In Wrapfs, you can define as many new ioctls as you
+like, and then write small user-level programs to use those ioctls.
+This is, for example, the mechanism we use in encryption
+filesystems for a user-level tool to pass a user's cipher key to
+the kernel.</p><p>For our unrmfs, you could write a restore ioctl that takes a
+file's name, <span   class="emphasis"><em>F</em></span>, checks whether the file
+<span   class="emphasis"><em>F</em></span>.unrm exists and then renames
+<span   class="emphasis"><em>F</em></span>.unrm back to <span   class="emphasis"><em>F</em></span>,
+effectively unhiding it from unrmfs. The following example shows a
+sketch of this code:</p><pre     class="programlisting">
+/* len: length of source file */
+newname = kmalloc(len+6, GFP_KERNEL);
+strncpy_from_user(newname, ioctl_arg, len);
+strcat(newname, ".unrm");
+lower_dir = get_lower_inode(dir);
+src = lookup_one_len(lower_dir, newname);
+if (IS_ERR(src))
+  return PTR_ERR(src);
+dst = lookup_one_len(lower_dir, name);
+vfs_rename(lower_dir, src, lower_dir, dst);
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12f1580.0x13e15a0"></a>Conclusion</h2></div></div><p>Filesystem development need not be difficult. Using stackable
+filesystems, you can create new, useful and efficient filesystems
+quickly&mdash;all without changing kernels or existing filesystems. The
+examples in this article hopefully demonstrate the power of
+stacking, from which you gradually can build more complex
+filesystems. You can get the FiST software, documentation and many
+more examples from
+<a href="http://www.cs.sunysb.edu/~ezk/research/fist" target="_self">www.cs.sunysb.edu/~ezk/research/fist</a>.
+Happy stacking.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="6485aa.jpg"></div>
+
+       email: <a href="mailto:ezk@cs.sunysb.edu">ezk@cs.sunysb.edu</a>
+       </p><p><span   class="bold"><b>Erez
+      Zadok</b></span>
+      (<a href="mailto:ezk@cs.stonybrook.edu">ezk@cs.stonybrook.edu</a>)
+      is on the Computer Science faculty at Stony Brook University, the
+      author of Linux NFS and Automounter Administration (Sybex, 2001),
+      the creator and maintainer of the FiST stackable templates system
+      and the primary maintainer of the Am-utils (aka, Amd) automounter.
+      Erez conducts operating systems research with a focus on
+      filesystems, security and networking.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../109/toc109.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,259 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Hack and /
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;This month, Kyle covers one of his favorite topics&mdash;no, it's not&#10;mutt&mdash;it's DNS.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1b2f580.0x1c26ac0"></a>
+Hack and /
+</h1></div><div><h3 class="subtitle"><i>
+Localhost DNS Cache
+</i></h3></div><div><div class="author"><h3 class="author">Kyle Rankin</h3></div><div class="issuemoyr">Issue #247, November 2014</div></div><div><p>
+This month, Kyle covers one of his favorite topics&mdash;no, it's not
+mutt&mdash;it's DNS.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2f580.0x1c273b0"></a></h2></div></div><p>
+Is it weird to say that DNS is my favorite protocol? Because DNS
+<span   class="emphasis"><em>is</em></span> my
+favorite protocol. There's something about the simplicity of UDP packets
+combined with the power of a service that the entire Internet relies on
+that grabs my interest. Through the years, I've been impressed with just how
+few resources you need to run a modest DNS infrastructure for an internal
+network. 
+</p><p>
+Recently, as one of my environments started to grow, I noticed
+that even though the DNS servers were keeping up with the load, the query
+logs were full of queries for the same hosts over and over within seconds
+of each other. You see, often a default Linux installation does not come
+with any sort of local DNS caching. That means that every time a hostname
+needs to be resolved to an IP, the external DNS server is hit no matter
+what TTL you set for that record. 
+</p><p>
+This article explains how simple it is
+to set up a lightweight local DNS cache that does nothing more than
+forward
+DNS requests to your normal resolvers and honor the TTL of the records it
+gets back.
+</p><p>
+There are a number of different ways to implement DNS caching. In the past,
+I've used systems like nscd that intercept DNS queries before they would go
+to name servers in /etc/resolv.conf and see if they already are present in
+the cache. Although it works, I always found nscd more difficult to
+troubleshoot than DNS when something went wrong. What I really wanted was
+just a local DNS server that honored TTL but would forward all requests to
+my real name servers. That way, I would get the speed and load benefits of a local
+cache, while also being able to troubleshoot any errors with standard DNS
+tools.
+</p><p>
+The solution I found was dnsmasq. Normally I am not a big advocate for
+dnsmasq, because it's often touted as an easy-to-configure full DNS and
+DHCP server solution, and I prefer going with standalone services for that.
+Dnsmasq often will be configured to read /etc/resolv.conf for a list of
+upstream name servers to forward to and use /etc/hosts for zone
+configuration. I wanted something completely different. I had full-featured
+DNS servers already in place, and if I liked relying on /etc/hosts instead
+of DNS for hostname resolution, I'd hop in my DeLorean and go back to the
+early 1980s. Instead, the bulk of my dnsmasq configuration will be focused
+on disabling a lot of the default features.
+</p><p>
+The first step is to install dnsmasq. This software is widely available for
+most distributions, so just use your standard package manager to install the
+dnsmasq package. In my case, I'm installing this on Debian, so there are a
+few Debianisms to deal with that you might not have to consider if you use
+a different distribution. First is the fact that there are some rather
+important settings placed in /etc/default/dnsmasq. The file is fully
+commented, so I won't paste it here. Instead, I list two variables I made
+sure to set:
+
+<pre     class="programlisting">
+ENABLED=1
+IGNORE_RESOLVCONF=yes
+</pre>
+</p><p>
+The first variable makes sure the service starts, and the second will tell
+dnsmasq to ignore any input from the resolvconf service (if it's installed)
+when determining what name servers to use. I will be specifying those
+manually anyway.
+</p><p>
+The next step is to configure dnsmasq itself. The default configuration
+file can be found at /etc/dnsmasq.conf, and you can edit it directly if you
+want, but in my case, Debian automatically sets up an /etc/dnsmasq.d
+directory and will load the configuration from any file you find in there.
+As a heavy user of configuration management systems, I prefer the
+servicename.d configuration model, as it makes it easy to push different
+configurations for different uses. If your distribution doesn't set up this
+directory for you, you can just edit /etc/dnsmasq.conf directly or look
+into adding an option like this to dnsmasq.conf:
+
+<pre     class="programlisting">
+conf-dir=/etc/dnsmasq.d
+</pre>
+</p><p>
+In my case, I created a new file called /etc/dnsmasq.d/dnscache.conf with
+the following settings:
+
+<pre     class="programlisting">
+no-hosts
+no-resolv
+listen-address=127.0.0.1
+bind-interfaces
+server=/dev.example.com/10.0.0.5
+server=/10.in-addr.arpa/10.0.0.5
+server=/dev.example.com/10.0.0.6
+server=/10.in-addr.arpa/10.0.0.6
+server=/dev.example.com/10.0.0.7
+server=/10.in-addr.arpa/10.0.0.7
+</pre>
+</p><p>
+Let's go over each setting. The first, no-hosts, tells dnsmasq to ignore
+/etc/hosts and not use it as a source of DNS records. You want dnsmasq to
+use your upstream name servers only. The no-resolv setting tells dnsmasq not
+to use /etc/resolv.conf for the list of name servers to use. This is
+important, as later on, you will add dnsmasq's own IP to the top of
+/etc/resolv.conf, and you don't want it to end up in some loop. The next two
+settings, listen-address and bind-interfaces ensure that dnsmasq binds
+to and listens on only the localhost interface (127.0.0.1). You don't want to
+risk outsiders using your service as an open DNS relay.
+</p><p>
+The server configuration lines are where you add the upstream name servers
+you want dnsmasq to use. In my case, I added three different upstream name
+servers in my preferred order. The syntax for this line is
+<tt  >server=/domain_to_use/nameserver_ip</tt>. So in the above example, it would use
+those name servers for dev.example.com resolution. In my case, I also wanted
+dnsmasq to use those name servers for IP-to-name resolution (PTR records),
+so since all the internal IPs are in the 10.x.x.x network, I added
+10.in-addr.arpa as the domain.
+</p><p>
+Once this configuration file is in place, restart dnsmasq so the settings
+take effect. Then you can use <tt  >dig</tt> pointed to localhost to test whether
+dnsmasq works:
+
+
+<pre     class="programlisting">
+
+$ dig ns1.dev.example.com @localhost
+
+; &lt;&lt;&gt;&gt; DiG 9.8.4-rpz2+rl005.12-P1 &lt;&lt;&gt;&gt; ns1.dev.example.com @localhost
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 4208
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+
+;; QUESTION SECTION:
+;ns1.dev.example.com.                   IN      A
+
+;; ANSWER SECTION:
+ns1.dev.example.com.    265     IN      A       10.0.0.5
+
+;; Query time: 0 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1)
+;; WHEN: Thu Sep 18 00:59:18 2014
+;; MSG SIZE  rcvd: 56
+
+</pre>
+</p><p>
+Here, I tested ns1.dev.example.com and saw that it correctly
+resolved to 10.0.0.5. If you inspect the <tt  >dig</tt> output, you can see near the
+bottom of the output that <tt  >SERVER:
+127.0.0.1#53(127.0.0.1)</tt> confirms that I
+was indeed talking to 127.0.0.1 to get my answer. If you run this command
+again shortly afterward, you should notice that the TTL setting in the
+output (in the above example it was set to 265) will decrement. Dnsmasq is
+caching the response, and once the TTL gets to 0, dnsmasq will query a
+remote name server again.
+</p><p>
+After you have validated that dnsmasq functions, the final step is to edit
+/etc/resolv.conf and make sure that you have nameserver 127.0.0.1 listed
+above all other nameserver lines. Note that you can leave all of the
+existing name servers in place. In fact, that provides a means of safety in
+case dnsmasq ever were to crash. If you use DHCP to get an IP or otherwise
+have these values set from a different file (such as is the case when
+resolvconf is installed), you'll need to track down what files to modify
+instead; otherwise, the next time you get a DHCP lease, it will overwrite
+this with your new settings.
+</p><p>
+I deployed this simple change to around 100 servers in a particular
+environment, and it was amazing to see the dramatic drop in DNS traffic,
+load and log entries on my internal name servers. What's more, with this
+in place, the environment is even more tolerant in the case there ever were a
+real problem with downstream DNS servers&mdash;existing cached entries 
+still would resolve for the host until TTL expired. So if you find your internal
+name servers are getting hammered with traffic, an internal DNS cache is
+something you definitely should consider.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b2f580.0x1c27eb0"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Kyle Rankin is a Sr. Systems Administrator in the San Francisco Bay Area
+and
+the
+author of a number of books, including <span   class="emphasis"><em>The Official Ubuntu Server
+Book</em></span>,
+<span   class="emphasis"><em>Knoppix Hacks</em></span> and <span   class="emphasis"><em>Ubuntu Hacks</em></span>.
+He is currently the president of the North
+Bay Linux Users' Group.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../247/toc247.html">Issue Table of Contents</a>
+    <a class="link3" href="../247/11767.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

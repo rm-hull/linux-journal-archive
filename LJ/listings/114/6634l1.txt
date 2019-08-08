@@ -1,0 +1,951 @@
+/* ************************************************************************* 
+* NAME: videosample.c
+*
+* DESCRIPTION:
+*
+* code to make an opengl window, put a poly in it, and change the
+* texture on it to try to simulate video. this doesn't use the
+* glut library. (adapted from man glxintro)
+*
+* this code uses luminance textures to do greyscale
+*
+* PROCESS:
+*
+* Linux compile:
+* debugging:
+* cc -g -o videosample  -I/usr/X11R6/include -I. videosample.c \
+     -lGL -lX11 -lGLU -L/usr/X11R6/lib
+*
+* full optimizations:
+* cc -O3 -ffast-math -mpentiumpro -o videosample  \
+      -I/usr/X11R6/include -I. videosample.c  \
+      -lGL -lX11 -lGLU -L/usr/X11R6/lib
+*
+* if you're using the nVidia graphics graphics cards and drivers then
+*
+* setenv  __GL_SYNC_TO_VBLANK  1
+*
+* will enable the "sync to vertical retrace" feature. (glXSwapBuffers
+* will swap in time for the monitor to do its vertical refresh.)
+*
+* to run:
+*
+* ./videosample
+*
+* GLOBALS:
+*
+* attributeListSgl, attributeListDbl
+*
+* REFERENCES:
+*
+* LIMITATIONS:
+*
+*
+*
+* REVISION HISTORY:
+*
+*   STR                Description                          Author
+*
+*  8-Jun-02         initial coding                           gpk
+*  9-Jun-02         switch to luminance texture, fix         gpk
+*             coordinate mapping to handle video updates
+*             whose dimensions are not powers of two.
+*
+* TARGET: ANSI C, OpenGL 1.2 or higher
+*
+*
+*
+* ************************************************************************* */
+
+
+
+#include <stdio.h>
+#include <stdlib.h> /* malloc  */
+#include <unistd.h> /* gettimeofday  */
+#include <sys/time.h>  /* gettimeofday  */
+#include <GL/gl.h>
+#include <GL/glu.h>
+#include <X11/Xlib.h>
+#include <GL/glx.h>
+
+
+/* TEX_WIDTH - width of the initial texture in the window  */
+/* must be a power of two; preferably the smallest one     */
+/* greater than of equal to SUBTEX_WIDTH                   */
+
+#define TEX_WIDTH 1024
+
+/* TEX_HEIGHT - height of the initial texture in the window  */
+/* must be a power of two; preferably the smallest one       */
+/* greater than of equal to SUBTEX_HEIGHT                    */
+
+#define TEX_HEIGHT 512
+
+
+/* SUBTEX_WIDTH, SUBTEX_HEIGHT - the size of the texel array     */
+/* we get for the video on each update. need not be powers of    */
+/* two, but must be less than or equal to TEX_WIDTH, TEX_HEIGHT  */
+
+#define SUBTEX_WIDTH 640
+#define SUBTEX_HEIGHT 480
+
+
+/* WIN_WIDTH, WIN_HEIGHT - size of the window created to display  */
+/* the video. need not be powers of two, but must be less than    */
+/* or equal to TEX_WIDTH, TEX_HEIGHT                              */
+
+#define WIN_WIDTH SUBTEX_WIDTH
+#define WIN_HEIGHT SUBTEX_HEIGHT
+
+
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+
+void check_error( char *label );
+
+/* Texture_data_t - a structure for texture or subtexture data  */
+
+typedef struct texture_data_s {
+  GLubyte * image; /* pointer to malloc-ed array of texels  */
+  int texture_width;  /* in pixels  */
+  int texture_height; /* in pixels  */
+  int ncomponents;    /* 1 for luminance, 4 for RGBA  */
+} Texture_data_t;
+
+
+
+
+/*
+    static int attributeListSgl[] 
+
+        attribute list that glXChooseVisual uses to select a single buffered
+	opengl window. (used as fallback in case double buffered is not
+	available.)
+	
+        range of values: any of the declared type
+
+        accessors: main
+                     
+        modifiers: none
+                     
+    */
+
+static int attributeListSgl[] = {
+  GLX_RGBA,
+  GLX_RED_SIZE,   1,		/*get the deepest buffer  with 1 red bit*/
+  GLX_GREEN_SIZE, 1,
+  GLX_BLUE_SIZE,  1,
+  None };
+
+
+/*
+    static int attributeListDbl[] 
+
+        attribute list that glXChooseVisual uses to select a double buffered
+	opengl window. 
+	
+        range of values: any of the declared type
+
+        accessors: main
+                     
+        modifiers: none
+                     
+    */
+
+static int attributeListDbl[] = {
+  GLX_RGBA,
+  GLX_DOUBLEBUFFER,		/*In case Single buffering is not supported*/
+  GLX_RED_SIZE,   1,
+  GLX_GREEN_SIZE, 1,
+  GLX_BLUE_SIZE,  1,
+  None };
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  WaitForNotify
+
+
+   USAGE: 
+
+   static Bool some_static_Bool;
+   Display *d;
+    XEvent *e;
+    char *arg;
+
+  some_static_Bool =  WaitForNotify(d, e, arg);
+
+   returns: Bool
+
+   DESCRIPTION:
+                 
+   I don't really know what this does (taken from man glxintro)
+   
+   REFERENCES:
+
+   LIMITATIONS:
+
+   GLOBAL VARIABLES:
+
+      accessed: none
+
+      modified: none
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+      9-Jun-02               initial coding                           gpk
+
+ ************************************************************************* */
+
+static Bool WaitForNotify(Display *d, XEvent *e, char *arg) {
+  return (e->type == MapNotify) && (e->xmap.window == (Window)arg);
+}
+
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  main
+
+
+   USAGE: 
+
+   ./videotex4
+   
+   returns: int
+
+   DESCRIPTION:
+                 this displays a series of test patterns in an attempt
+		 to simulate video using a textured polygon and
+		 glTexSubImage2D to get the pixels onto the screen.
+		 
+		 this is taken mostly from man glxintro
+   REFERENCES:
+
+   LIMITATIONS:
+
+   GLOBAL VARIABLES:
+
+      accessed: attributeListSgl, attributeListDbl
+
+      modified: none
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+      9-Jun-02               initial coding                           gpk
+
+ ************************************************************************* */
+
+int main(int argc, char **argv) {
+  Display *dpy;
+  XVisualInfo *vi;
+  Colormap cmap;
+  XSetWindowAttributes swa;
+  Window win;
+  GLXContext cx;
+  XEvent event;
+  int swap_flag = GL_FALSE;
+
+  /* prototypes  */
+  void do_textured_poly(Display *dpy, Window win, int swap_flag);
+  /* end prototypes */
+  
+  /* get a connection */
+  
+  dpy = XOpenDisplay(0); 
+
+  /* get an appropriate visual: double buffered if we have it, */
+  /* single buffered if not and set swap_flag if we do get     */
+  /* double buffered.                                          */
+  
+  vi = glXChooseVisual(dpy, DefaultScreen(dpy), attributeListDbl); 
+  if (vi == NULL)
+    {
+      vi = glXChooseVisual(dpy, DefaultScreen(dpy), attributeListSgl);
+      swap_flag = GL_FALSE;
+    }
+  else
+    {
+    swap_flag = GL_TRUE;
+    }
+ 
+  /* create a GLX context */
+  cx = glXCreateContext(dpy, vi, 0, GL_TRUE);
+ 
+  /* create a color map */
+  cmap = XCreateColormap(dpy, RootWindow(dpy, vi->screen),
+			 vi->visual, AllocNone);
+ 
+  /* create a window */
+  swa.colormap = cmap;
+  swa.border_pixel = 0;
+  swa.event_mask = StructureNotifyMask;
+  /* XSetWMColormapWindows needed? -gpk  2-Apr-01  */
+  win = XCreateWindow(dpy, RootWindow(dpy, vi->screen), 0, 0, WIN_WIDTH,
+		      WIN_HEIGHT,
+		      0, vi->depth, InputOutput, vi->visual,
+		      CWBorderPixel|CWColormap|CWEventMask, &swa);
+  XMapWindow(dpy, win);
+  XIfEvent(dpy, &event, WaitForNotify, (char*)win);
+ 
+  /* connect the context to the window */
+  glXMakeCurrent(dpy, win, cx);
+ 
+  /* clear the buffer */
+  glClearColor(0,0,0,1);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glFlush();
+  if (swap_flag) glXSwapBuffers(dpy,win);
+
+  /* draw the wideo  */
+  do_textured_poly(dpy,win, swap_flag);
+   
+  /* wait a while so the use can look at the final frame */
+  sleep(10);
+
+  return(1);
+}                                                                              
+
+
+
+/* N_TEXTURES - the number of video frames (subtextures) to  */
+/* generate in the array of textures that are displayed as   */
+/* successive images.                                        */
+
+#define N_TEXTURES 32
+
+/* ITERATIONS - the number of frames to display. larger numbers  */
+/* here mean it runs longer but we get more accurate frame rate  */
+/* information.                                                  */
+
+#define ITERATIONS (100 * N_TEXTURES)
+
+
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  do_textured_poly
+
+
+   USAGE: 
+
+    
+   Display *dpy;
+    Window win;
+    int swap_flag ;
+
+   do_textured_poly(dpy, win, swap_flag);
+
+   returns: void
+
+   DESCRIPTION:
+                 
+
+   REFERENCES:
+
+   LIMITATIONS:
+
+   GLOBAL VARIABLES:
+
+      accessed: none
+
+      modified: none
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+      9-Jun-02               initial coding                           gpk
+
+ ************************************************************************* */
+
+void do_textured_poly(Display *dpy, Window win, int swap_flag )
+{
+
+  Texture_data_t syntexture; /* bacground texture  */
+  Texture_data_t texarray[N_TEXTURES]; /* array of video frame textures  */
+  struct timeval starttime, endtime; /* start and end times of drawing  */
+  long int usec_running; /* how long it took to run  */
+  double usec_frame, frame_rate; /* frame rate  */
+  int i, texture_number;
+  GLsizei width, height; /* sizes of subtextures from texarray  */
+
+  /* prototypes  */
+  int load_texture(char *filename, Texture_data_t *texturep);
+  void draw_textured_poly(Texture_data_t texture, Display *dpy,
+			  Window win, int swap_flag);
+  void draw_symbology_crosshairs(Display *dpy, Window win,
+				 GLfloat center_x, GLfloat center_y,
+				 GLfloat height, GLfloat width);
+  void draw_textured_poly_dl(Texture_data_t texture, Display *dpy,
+			  Window win, int swap_flag);
+  int synthesize_texture(Texture_data_t * texture);
+  void make_texture_array(Texture_data_t texarray[], int nelements);
+  void synthesize_luminance_texture(Texture_data_t * texture);
+  /* end prototypes  */
+
+  /* give me an initial texture that covers the entire and   */
+  /* rounds up to the nearest power of two (TEX_WIDTH x TEX_HEIGHT) */
+  /* note that this will probably be larger than the window.  */
+  
+  synthesize_luminance_texture(&syntexture);
+
+  /* make an array of textures for use as video frames. stored in  */
+  /* texarray[0..N_TEXTURES -1]                                    */
+  
+  make_texture_array(texarray, N_TEXTURES); 
+
+  
+  width = texarray[0].texture_width;
+  height = texarray[0].texture_height;
+
+  /* make my test pattern in syntexture the texture for the window  */
+  /* it's an 8bit per pixel luminance texture (grey scale)          */
+ 
+  
+  glTexImage2D(GL_TEXTURE_2D , 0, GL_LUMINANCE, syntexture.texture_width,
+	       syntexture.texture_height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE,
+	       syntexture.image);
+  
+  check_error("after glTexImage2D");
+
+  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+  
+
+  /* check the clock before we draw ITERATIONS frames from texarray  */
+  
+  gettimeofday(&starttime, NULL);
+  
+  for (i = 0; i < ITERATIONS; i++)
+    {
+      /* draw  the syntexture texture in the window, then modify  */
+      /* it by substituting in the texture from                   */
+      /* texarray[texture_number] and do it again, drawing the    */
+      /* new image.                                               */
+
+      draw_textured_poly(syntexture, dpy, win, swap_flag); 
+
+      draw_symbology_crosshairs(dpy, win, 0.0, 0.0, 0.3, 0.3);
+      
+      texture_number = i%N_TEXTURES;
+
+      /* substitute in the texture from texarray[texture_number] */
+      /* for the redraw                                          */
+      
+      check_error("before subtexture");
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width,
+		      height, GL_LUMINANCE, GL_UNSIGNED_BYTE,
+		      texarray[texture_number].image);
+      
+      check_error("after subtexture");
+    }
+
+  /* we're done: check the clock  */
+  gettimeofday(&endtime, NULL);
+
+  /* compute the number of microseconds between starttime and   */
+  /* endtime, then use that to compute the frame rate.          */
+  
+  usec_running =  (endtime.tv_sec * 1000000 + endtime.tv_usec) -
+    (starttime.tv_sec * 1000000 + starttime.tv_usec);
+
+  usec_frame = (double)usec_running /(double)ITERATIONS;
+  frame_rate = 1000000.0/usec_frame;
+
+  fprintf(stderr, "%ld microseconds run, average %f frames/sec\n",
+	  usec_running, frame_rate);
+  
+
+}
+
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  draw_symbology_crosshairs
+
+
+   USAGE: 
+
+    
+   Display *dpy;
+   Window win;
+   
+   GLfloat center_x;
+   GLfloat center_y;
+   
+   GLfloat height;
+   GLfloat width;
+   
+   draw_symbology_crosshairs(dpy, win, center_x, center_y, height, width);
+
+   returns: void
+
+   DESCRIPTION:
+                 draw red crosshairs centered on the given center_x, center_y
+		 and having the given height and width
+
+   REFERENCES:
+
+   LIMITATIONS:
+
+   GLOBAL VARIABLES:
+
+      accessed: 
+
+      modified: 
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+       9-Jun-02               initial coding                           gpk
+
+
+ ************************************************************************* */
+
+void draw_symbology_crosshairs(Display *dpy, Window win,
+			       GLfloat center_x, GLfloat center_y,
+			       GLfloat height, GLfloat width)
+{
+  GLfloat p0[3];
+  GLfloat p1[3];
+  GLfloat p2[3];
+  GLfloat p3[3];
+
+  p0[0] = center_x; 
+  p0[1] = center_y + height;
+  p0[2] = 0;
+  
+  p1[0] = center_x;
+  p1[1] = center_y - height;
+  p1[2] = 0;
+ 
+  p2[0] = center_x - width;
+  p2[1] = center_y;
+  p2[2] = 0;
+  
+  p3[0] = center_x + width;
+  p3[1] = center_y;
+  p3[2] = 0;
+  
+  check_error("before crosshairs symbology");
+  
+  glPushMatrix();
+  {
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    check_error("setting color mask");
+    /* glDisable(GL_DEPTH_TEST); */
+    
+    glBegin(GL_LINES); 
+    {
+      glColor3f(1.0, 0.0, 0.0);
+      
+      glVertex3fv(p0);
+      glVertex3fv(p1);
+      
+      glVertex3fv(p2);
+      glVertex3fv(p3);
+      
+    }
+    glEnd();
+    
+  }
+  glPopMatrix();
+  glFlush();
+  glXSwapBuffers(dpy,win);
+
+  check_error("after crosshairs symbology");
+}
+
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  draw_textured_poly
+
+
+   USAGE: 
+
+    
+   Texture_data_t texture;
+   Display *dpy;
+   
+   Window win;
+   int swap_flag;
+
+   draw_textured_poly(texture, dpy, win, swap_flag);
+
+   returns: void
+
+   DESCRIPTION:
+                 draw a polygon in the window with a texture on it.
+
+   REFERENCES:
+
+   LIMITATIONS:
+
+   the texture argument is not used in this function. we really should move
+   the glTexSubImage2D call down here.
+   
+
+   GLOBAL VARIABLES:
+
+      accessed: none
+
+      modified: none
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+     10-Jun-02               initial coding                           gpk
+
+ ************************************************************************* */
+
+void draw_textured_poly(Texture_data_t texture, Display *dpy,
+			  Window win, int swap_flag)
+{
+
+  static GLfloat v0[3] = {-1.00, -1.00, 0.0}; /* vertices of  */
+  static GLfloat v1[3] = { 1.00, -1.00, 0.0}; /* polygon  */
+  static GLfloat v2[3] = { 1.00, 1.00, 0.0};
+  static GLfloat v3[3] = {-1.00, 1.00, 0.0};
+
+  static GLfloat t0[2] = { 0.0, 0.0}; /* texture coordinates  */
+  static GLfloat t1[2] = {(float)WIN_WIDTH / (float)TEX_WIDTH, 0.0 };
+  static GLfloat t2[2] = {(float)WIN_WIDTH / (float)TEX_WIDTH,
+			  (float)WIN_HEIGHT / (float)TEX_HEIGHT};
+  static GLfloat t3[2] = { 0.0, (float)WIN_HEIGHT / (float)TEX_HEIGHT};
+
+  
+  glColor4f(1.0, 1.0, 1.0, 1.0);
+  
+    {
+      
+      glPushMatrix();
+      {
+	glEnable(GL_TEXTURE_2D);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glBegin(GL_QUADS);
+	{	  
+	  glTexCoord2fv(t0); glVertex3fv(v0);
+	  glTexCoord2fv(t1); glVertex3fv(v1);
+	  glTexCoord2fv(t2); glVertex3fv(v2);
+	  glTexCoord2fv(t3); glVertex3fv(v3);
+	  
+	}
+	glEnd();
+	glDisable(GL_TEXTURE_2D);
+      }
+      glPopMatrix();
+      
+    }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  check_error
+
+
+   USAGE: 
+
+    
+    char *label ;
+
+   check_error(label);
+
+   returns: void
+
+   DESCRIPTION:
+                 print out any accumulated opengl errors
+
+   REFERENCES:
+
+   LIMITATIONS:
+
+   GLOBAL VARIABLES:
+
+      accessed: none
+
+      modified: none
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+      1-Jun-02               initial coding                           gpk
+
+ ************************************************************************* */
+
+void check_error( char *label )
+{
+        GLenum error;
+        while ( (error = glGetError()) != GL_NO_ERROR )
+                printf( "%s: %s\n", label, gluErrorString(error) );
+}
+
+
+
+
+
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  make_texture_array
+
+
+   USAGE: 
+
+    
+   Texture_data_t texarray[nelements];
+   int nelements;
+
+   make_texture_array(texarray, nelements);
+
+  
+   returns: void
+
+   DESCRIPTION:
+
+   generate a series of textures filled in texarray[0..nelements -1]
+   having SUBTEX_WIDTHxSUBTEX_HEIGHT size such that they can blend together
+   when shown in series.
+
+   modifies texarray and allocates memory from the heap.
+
+   this generates a series of luminance textures such that
+   texarray[N] looks like  this:
+
+		   | < ------- SUBTEX_WIDTH ------------------>|
+		   
+                   ------------------------------------------   ---
+		   |                   |                    |    ^
+		   |                   |                    |
+		   |                   | med grey           |
+		   |                   |  (0x7f)            |
+		   |                   |                    |
+		   |                   |                    |
+		   |                   |                    |              
+		   |                   |                    | SUBTEX_HEIGHT
+	---	   |----------------------------------------|
+		   |                   |                    |
+		   |                   |                    |
+ N * SUBTEX_HEIGHT | variable grey     |                    |
+  --------------   |  (256 * N)/       |                    |
+    nelements	   |    nelements      |                    |
+		   |                   |                    |
+		   |                   |                    |
+		   |                   |                    |	v	   
+        ---        ------------------------------------------  ---
+
+	           |< N * SUBTEX_WIDTH>|
+		       ------------
+		        nelements
+
+
+		   
+   REFERENCES:
+
+   LIMITATIONS:
+
+   These are intended as texel arrays for glTexSubImage2D (ie replacements
+   for parts of a larger texture), so SUBTEX_WIDTH, SUBTEX_HEIGHT are not
+   necessarily powers of two. A textures dimensions must be powers of
+   two if you're going to use it for any other texture operation.
+   
+   GLOBAL VARIABLES:
+
+      accessed: none
+
+      modified: none
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+      1-Jun-02               initial coding                           gpk
+
+ ************************************************************************* */
+
+void make_texture_array(Texture_data_t texarray[], int nelements)
+{
+  int texture_number;
+  unsigned int texture_size, width, height, ncomponents;
+  GLsizei row, column;
+  GLubyte * image;
+  int greylevel;
+  
+  width = SUBTEX_WIDTH;
+  height = SUBTEX_HEIGHT;
+  ncomponents = 1;
+  
+  texture_size = width * height * ncomponents *
+    sizeof(GLubyte); /* GL_UNSIGNED_BYTE format */
+  
+
+  for (texture_number = 0; texture_number < nelements; texture_number++)
+    {
+
+      printf("texture_number %d\n", texture_number);
+      
+      texarray[texture_number].texture_width = width;
+      texarray[texture_number].texture_height = height;
+      texarray[texture_number].ncomponents = ncomponents;
+      texarray[texture_number].image = malloc(texture_size);
+
+      greylevel = (256 * texture_number) / nelements;
+      
+      image = texarray[texture_number].image;
+      
+      /* make all pixels in rows from 0..texture_number  */
+      /* and columns 0..texture_number white.              */
+
+      for (row = 0; row < texture_number * height / nelements; row++)
+	{
+	  for (column = 0; column < texture_number * width/ nelements;
+	       column++)
+	    {
+	      image[(row * width +column)] = greylevel; 
+
+	    }
+	    
+	}
+      for (row = texture_number * height / nelements; row < height; row++)
+	{
+      	  for (column =  texture_number * width/ nelements;
+	       column < width; column++)
+	    {
+	      image[(row * width +column)] = 0x7f; /* grey  */
+	    }
+	}
+	       
+      
+    }
+}
+ 
+
+
+
+
+/* ************************************************************************* 
+
+
+   NAME:  synthesize_luminance_texture
+
+
+   USAGE: 
+
+    
+   Texture_data_t * texture;
+
+   synthesize_luminance_texture(texture);
+
+   returns: void
+
+   DESCRIPTION:
+                 build a simple luminance texture to act as the background
+		 texture for the video frames.
+
+   REFERENCES:
+
+   LIMITATIONS:
+
+   as noted in their #define statements, TEX_WIDTH & TEX_HEIGHT must be
+   powers of two.
+
+   GLOBAL VARIABLES:
+
+      accessed: none
+
+      modified: none
+
+   FUNCTIONS CALLED:
+
+   REVISION HISTORY:
+
+        STR                  Description of Revision                 Author
+
+      8-Jun-02               initial coding                           gpk
+
+ ************************************************************************* */
+
+void synthesize_luminance_texture(Texture_data_t * texture)
+{
+  GLubyte * p;
+  unsigned int image_size;
+  
+  texture->texture_width = TEX_WIDTH;
+  texture->texture_height = TEX_HEIGHT;
+  texture->ncomponents = 1;
+
+  image_size = texture->texture_width * texture->texture_height *
+    texture->ncomponents * sizeof(GLubyte); /* GL_UNSIGNED_BYTE format */
+  
+  texture->image = malloc(image_size);
+  p = texture->image;
+  while (p < texture->image + image_size)
+    {
+      p[0] = 0x00; /* dark  */
+      p[1] = 0x00; /* dark  */
+      p[2] = 0xff; /* light */
+      p[3] = 0xff; /* light */
+      p += 4;
+    }
+}
+			  
+

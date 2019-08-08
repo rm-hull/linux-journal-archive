@@ -1,0 +1,544 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Fixing Broken Protocols with NF_QUEUE
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Broken protocols can be fixed on the fly with Netfilter's ability&#10;to direct packets to userspace programs.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x165c580.0x1753ac0"></a>
+Fixing Broken Protocols with NF_QUEUE
+</h1></div><div><div class="author"><h3 class="author">
+Paul
+ 
+Amaranth
+</h3></div><div class="issuemoyr">Issue #212, December 2011</div></div><div><p>
+Broken protocols can be fixed on the fly with Netfilter's ability
+to direct packets to userspace programs.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1754250"></a></h2></div></div><p>
+Recently, one of my clients was experiencing problems with remote
+print servers. These print servers were on an internally NATted
+network connected to a central records system located across the
+state through the Internet. The print servers would not stay
+connected, dropping the connection after a few minutes. 
+Investigation finally tracked this problem down to the keep-alive
+protocol used between the central system and the remote print servers. 
+The keep-alive protocol employed a UDP packet with the source and
+destination IP addresses contained within the data. Normally, this
+would just mirror the addresses in the UDP header and would seem to be
+redundant. In this case, the server ignored the UDP header addresses
+and used only the internal addresses. When the packets went through
+NAT translation, the internal addresses were sent through unchanged, and
+the central server was attempting to reply to a nonroutable
+10.xxx.xxx.xxx address.
+</p><p>
+Working with my client, we identified the problem and located
+documentation that specifically stated the protocol would not work with
+print servers behind NAT. For a number of reasons, my client was
+unable to move the print servers to a non-NATted environment, which
+left the problem of fixing the protocol.
+</p><p>
+Because all the keep-alive packets already were passing through the Linux
+firewall, that seemed to be the logical place to fix them. The NF_QUEUE
+facility in netfilter turned out to be the perfect solution.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1754408"></a>
+Netfilter and NF_QUEUE</h2></div></div><p>
+Netfilter is part of the packet filtering framework within the Linux
+2.4.x and 2.6.x kernels. As stated on the netfilter home page:
+&ldquo;Netfilter provides a set of hooks inside the Linux kernel that allows
+kernel modules to register callback functions with the network stack. 
+A registered callback function is then called back for every packet that
+traverses the respective hook within the network stack.&rdquo;
+</p><p>
+The NF_QUEUE facility extends this ability to userspace, allowing
+packets to be directed using iptables rules to a userspace
+program.
+The program then can look at the packet and take action based on the
+packet content. The program might decide to accept or reject the
+packet, for example, allowing the firewall to filter packets based on
+content. The program also might decide to modify the packet and return
+it to netfilter for further processing. It is this latter ability that
+allows broken protocols to be fixed on the fly.
+</p><p>
+The QUEUE facility initially was introduced into the 2.3 kernel and
+allowed for a single queue. This was changed to NF_QUEUE in the 2.6.14
+and later kernels to allow for multiple queues with a 16-bit queue
+identifier, so it is possible to have up to 65,535 queues. If the
+queue number is left off the iptables rule, it will default to queue 0 and
+the behavior is equivalent to the older QUEUE behavior.
+</p><p>
+An important point to remember is this is a queue. The kernel queues up
+packets for processing in userspace, and there is finite space to
+buffer the packets. If it takes too long to process the packet, the
+queue will fill up and packets will be lost.
+</p><p>
+Although my situation and this example use IPv4, the NFQUEUE facility
+is also available in the IPv6 netfilter code and the ip6tables
+command. The details of mangling the packet change to reflect the
+protocol and headers that are involved, and there are slight differences
+in the ip6tables chain traversal, but the overall process
+remains substantially the same.
+</p><p>
+Because the packet processing takes place in userspace, you are not
+limited to writing the program in C. You can use any language you want,
+as long as there is a binding to the NF_QUEUE facility. At the time of this
+writing,
+in addition to C and C++, you can use Perl and Python to write your
+packet handler (see Resources).
+</p><p>
+In my case, I chose to write my routines in C. Because the firewall in
+question also serves as a gigabit router between two internal networks,
+supports a VPN gateway as well as handling almost a thousand iptables
+rules, I was interested in keeping overhead low. C was the natural
+choice.
+</p><p>
+Before using NF_QUEUE, it must be enabled in the kernel. If your kernel
+supports the config.gz option, you can use the following:
+
+<pre     class="programlisting">
+gzcat /proc/config.gz|grep -E "NETLINK|NFQUEUE"  
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1754828"></a></h2></div></div><p>
+and see if the configuration options listed below are set. If you do not
+have gzcat, it's just a hard link to gzip; many distributions seem to leave
+that out. 
+</p><p>
+If NF_QUEUE is not configured, you'll have to configure and rebuild the
+kernel. The configuration parameters that you will need to set are the
+following:
+
+<pre     class="programlisting">
+CONFIG_NETFILTER_NETLINK=y
+CONFIG_NETFILTER_NETLINK_QUEUE=y
+CONFIG_NETFILTER_NETLINK_LOG=y
+CONFIG_NETFILTER_XT_TARGET_NFQUEUE=y
+</pre>
+</p><p>
+Use your favorite kernel configuration tool, rebuild, install and reboot.
+</p><p>
+If not present, you also need to build and install libnfnetlink and
+libnetfilter_queue (see Resources).
+</p><p>
+Listing 1 shows the standard boilerplate code for an NF_QUEUE packet
+handler. Steps 1&ndash;3 are basic setup. Step 4 creates a
+specified queue and binds the program to it. The queue identifier must
+match the queue number used in the iptables rules. This call also
+registers the callback function, which is where the packet actually
+is processed. Step 5 tells NF_QUEUE how much data is to be sent to the
+userspace program. The choice is none, all or just the packet metadata
+(information from NF_QUEUE, but no packet data).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1754ae8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. NF_QUEUE Boilerplate Code in C</b></p><pre     class="programlisting">
+
+struct nfnl_handle *nh;
+struct nfq_handle *h;
+int ec, fd, rv;
+char buf[1500];
+
+// 1) Open library handle. For space reasons, the
+//    error checking is not shown.
+
+h = nfq_open();
+
+// 2) Unbind existing nf_queue handler for AF_INET.
+//    Ignore return code for 2.6.23 kernel.
+//    See Resources for link.
+
+ec = nfq_unbind_pf(h, AF_INET);
+
+// 3) Bind the queue connection handle.
+
+ec =  nfq_bind_pf(h, AF_INET);
+
+// 4) Create queue, bind to queue 0 since that is
+//    what the default QUEUE target in iptables
+//    expects, specify callback function.
+
+qh = nfq_create_queue(h, 0, &amp;nfqueue_cb, NULL);
+
+// 5) Set the amount of data to be copied to
+// userspace for each packet sent to the queue.
+
+nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff);
+
+// Get the netlink handle associated with the queue
+// connection handle.
+
+nh = nfq_nfnlh(h);
+
+// Get a file descriptor for the netlink handle.
+
+fd = nfnl_fd(nh);
+
+// Packet loop.
+
+while ((rv = recv(fd, buf, sizeof(buf), 0)) &amp;&amp;
+        rv &gt;= 0) {
+  nfq_handle_packet(h, buf, rv);
+  }
+
+</pre></div><p>
+This is pretty standard, except that under 2.6.23 kernels, step 2 will
+return an error, which may be safely ignored. The packet is not
+actually read using the recv() function; it is accessed by a callback
+function invoked by the nfq_handle_packet() function. In addition to
+the packet data, this allows access to additional NF_QUEUE metadata
+and permits re-injection of the packet as well as ACCEPT and DROP
+decisions to be made. The return code from the recv() call may be used
+to determine if the queue has filled and packets are being dropped.
+</p><p>
+Before the program exits, it should close gracefully by unbinding the
+queue with a call to nfq_destroy_queue(), followed by a call to
+nfq_close(). In my implementation, I elected to include a signal
+handler that closed any log files and unbound the queue on receipt of a
+SIGINT or SIGHUP signal.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1754da8"></a>
+Packet Mangling</h2></div></div><p>
+The callback function is where the real action is. Here you have
+access to the entire packet, including headers and NF_QUEUE
+metadata.
+Listing 2 shows a simple callback routine that prints the source and
+destination IP addresses and dumps the packet contents in hex.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1754f08"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. Sample Callback Function That Will Dump a Packet in Hex</b></p><pre     class="programlisting">
+
+// Sample NF_QUEUE callback function.
+static int nfqueue_cb(struct nfq_q_handle *qh,
+                      struct nfgenmsg *nfmsg,
+                      struct nfq_data *nfa,
+                      void *data) {
+
+    struct nfqnl_msg_packet_hdr *ph;
+    int id = 0;
+    int size = 0;
+    int i;
+    unsigned char *full_packet;
+    unsigned char * c;
+    struct in_addr ipa;
+    char src_ip_str[20];
+    char dst_ip_str[20];
+
+ph = nfq_get_msg_packet_hdr(nfa);
+
+if (ph) {
+
+  // Print out metatdata.
+  id = ntohl(ph-&gt;packet_id);
+  fprintf(stdout,
+        "hw_protocol = 0x%04x hook = %u id = %u\n",
+         ntohs(ph-&gt;hw_protocol), ph-&gt;hook, id);
+
+  // Retrieve packet payload.
+  size = nfq_get_payload(nfa, &amp;full_packet);
+
+  // Get IP addresses in char form.
+  ip = (struct iphdr *) full_packet;
+  ipa.s_addr=ip-&gt;saddr
+  strcpy (src_ip_str, inet_ntoa(ipa));
+  ipa.s_addr=ip-&gt;daddr;
+  strcpy (dst_ip_str, inet_ntoa(ipa));
+
+  fprintf(stdout,
+         "Source IP: %s   Destination IP: %s\n",
+          src_ip_str, dst_ip_str);
+
+  // Print out packet in hex.
+  c = (unsigned char *)payload;
+  for (i=0; i&lt;size; ++i,++c) {
+    fprintf (stdout, "%02x", (unsigned int)*c);
+  }
+  fprintf (stdout, "\n");
+
+  // Done with packet, accept it.
+  nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+  }
+}
+
+</pre></div><p>
+When you have finished processing the packet, the routine must return 
+a verdict using the nfq_set_verdict() function. This can be NF_ACCEPT
+or NF_DROP (other verdicts are possible, but these two cover 99% of the
+cases). If the packet is unchanged, a zero value length parameter
+and null pointer can be returned. If the packet has changed, these
+parameters should point to the new packet. In any case, a call to
+nfq_set_verdict() must be made for every packet retrieved so the kernel
+can remove the packet and associated information from its internal data
+structures.
+</p><p>
+With access to the packet, combined with an understanding of the
+protocol, you can mangle the packet to fix almost any conceivable
+problem. In my case, I used a small lookup table to translate the
+internal IP addresses to an external address on packets being sent to
+the central system and the external IP address to the internal address
+on packets being returned to the print server.
+</p><p>
+A very important point with packet mangling is that any change to the
+packet contents will, almost certainly, change the packet checksum.
+The IP header checksum will be unchanged unless you modify the source
+or destination IP addresses. However, any change to the packet
+contents will change the checksum for UDP or TCP packets. When the
+kernel NATs the packet, it does not recompute the checksums. Instead,
+it optimizes the process by modifying only the current checksums with
+the difference between the old and new addresses. If the kernel does
+not use NAT, the checksum is not even inspected. This means the
+checksums must be correct when returning the packet to the kernel. 
+Actually, with UDP packets, you can cheat by using a 0 checksum. The
+UDP protocol specification states the checksum is optional, and a 0
+value indicates that you have not calculated it. That is not a
+recommended practice, particularly when traversing external networks,
+but you can get away with it. With TCP packets, this is not an option;
+the TCP header must contain a correct checksum. Any packet with an
+incorrect checksum will be dropped by the next network device it hits.
+</p><p>
+There are a number of ways to determine if your checksum is correct. 
+The easiest is to look at the packet using a sniffer like Wireshark
+(Figure 1). Unlike tcpdump, which will print only the packet contents,
+Wireshark will verify the packet checksums and even tell you what they
+should be if not correct.
+</p><div       class="mediaobject"><a href="10939f1.large.jpg"><img src="10939f1.jpg"></a><div class="caption"><p>
+Figure 1. Not only does Wireshark tell you the checksum is wrong, it also tells
+you
+what it should be.
+</p></div></div><p>
+The UDP checksum is fairly easy to calculate, although it does involve
+constructing a pseudo-header containing the source IP, destination IP,
+UDP data length and the UDP protocol number. I was in a hurry and
+grabbed two different routines off the Net and found that both 
+calculated incorrect checksums on a 64-bit platform. I finally had to
+rewrite one of the routines to generate correct checksums (see
+Resources for a download link). During development, you can use the 
+checksum calculator URL in Resources to paste in a hex dump of your
+packet to verify your results.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x17554e0"></a>
+NF_QUEUE Hooks</h2></div></div><p>
+When NF_QUEUE activates a callback, along with the requested data is a
+parameter containing the hook that invoked it. The possible values of
+the hook are defined in netfilter_ipv4.h as:
+
+<pre     class="programlisting">
+NF_IP_PRE_ROUTING       0
+NF_IP_LOCAL_IN          1
+NF_IP_FORWARD           2
+NF_IP_LOCAL_OUT         3
+NF_IP_POST_ROUTING      4
+</pre>
+</p><p>
+The value of the hook tells you which iptables chain was employed to
+direct the packet to the callback. You can use different iptables
+commands with different chains to change the behavior of your program by
+checking the value of the hook parameter. You might direct packets from
+your internal Net to the PREROUTING chain and packets from the external
+Net to the POSTROUTING chain, for example.
+</p><p>
+Understanding how iptables behave is essential in picking the right
+hook. The URL for faqs.org listed in Resources has one of the
+clearest explanations I have found. Figure 2, adapted from this
+reference, illustrates the packet path through iptables. The top label
+in the ovals is the table name while the lower label identifies the
+chain.
+</p><div       class="mediaobject"><a href="10939f2.large.jpg"><img src="10939f2.jpg"></a><div class="caption"><p>
+Figure 2. Packet flow through iptables tables and chains.
+Table names are in lowercase, chain names in uppercase.
+</p></div></div><p>
+In this case of mangling packets transiting the firewall, the LOCAL_IN
+and LOCAL_OUT hooks will not be used (they apply only to packets
+originating from or destined to the local host). That leaves three choices:
+PRE_ROUTING, FORWARD or POST_ROUTING (note that older kernels had
+more limited choices for the mangle table).
+</p><p>
+In this case where the IP header and actual source and destination
+addresses are not changed, any of the three choices would work. This might
+not be the case if you modify the source or destination addresses, which
+might affect subsequent routing decisions. If the destination address
+were changed to the local system, for example, you would be limited to
+the PREROUTING chain. If you want to modify the packet after all
+filtering has been done and intercept any locally generated packets as
+well, you would use the POSTROUTING chain. The FORWARD chain is
+useful for packets transiting the system.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1755958"></a>
+iptables</h2></div></div><p>
+At this point, you have a kernel with NF_QUEUE enabled, the nfqueue and
+nfnetlink libraries are installed, you have a packet sniffer ready to go,
+and your program is compiled and ready to test. How do you connect it
+to iptables?
+</p><p>
+The iptables target QUEUE will send any matching packets to a program
+that has registered itself for that queue, which defaults to Queue 0. An
+optional <tt  >--queue-num</tt> parameter may be used to specify a nondefault
+queue. It is also possible to use a <tt  >--queue-balance</tt> parameter with
+recent kernels that specifies a range of queues. This allows multiple
+instances of a userspace program on multicore architectures to improve
+throughput. If no program has registered itself for the queue, the
+QUEUE target is equivalent to DROP.
+</p><p>
+iptables has four built-in tables: filter, nat, mangle and raw. Each
+table supports different chains (Figure 2). The filter table, which is
+the default for the iptables command, is useful if your program is
+making an accept or deny decision on the packet, thus allowing firewall
+filtering based on content. The nat table is used for address
+translation, and the raw table, a recent addition, is used only for
+setting marks on packets that should not be handled by the conntrack
+system. The table to use when altering packets is, as the name
+implies, the mangle table. Listing 3 illustrates a few iptables commands
+that will set up NF_QUEUE forwarding for UDP packets destined for port 1331.
+In practice, this can become more complicated if you limit the source and
+destination addresses using additional iptables commands or include other
+selection criteria.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1755bc0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. iptables Commands to Route UDP Packets on Port 1331 to
+NFQUEUE</b></p><pre     class="programlisting">
+// Set up a new chain in the mangle table.
+ iptables -t mangle -N PktMangle
+// In the mangle FORWARD chain, route UDP packets
+// to the new chain.
+ iptables -t mangle -A FORWARD -p udp -m udp \
+    --dport 1331 -j PktMangle
+// Log the packet and invoke the queue facility.
+ iptables -t mangle -A PktMangle -j LOG \
+    --log-level info  --log-prefix "PktMangle rule"
+ iptables -t mangle -A PktMangle -j QUEUE
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1a60b90"></a>
+Testing</h2></div></div><p>
+The NF_QUEUE application must run as root, at least when setting up the
+queue. Otherwise, you will get a -1 return from the unbind or bind calls.
+</p><p>
+In my case, the print server generated a ready supply of keep-alive
+packets, so I had no need of a packet generator. In the general case,
+you will need some way of generating test packets to verify that your
+system is operating correctly. A plethora of packet
+generators are available. One example is PackETH, which is a GUI-based
+packet generator that is quite easy to use, although still a little
+unfinished.
+</p><p>
+Another necessary requirement is the ability to capture packets both
+before and after processing to verify the output packet is
+correct.
+This can be easily done using tcpdump or Wireshark to view packets on
+the input and output interfaces of the test system. Wireshark may be
+used directly if you have X libraries available on the test system. In
+my case, since I was running the packets through a production system, I
+used tcpdump and then viewed the packet dump files offline with
+Wireshark.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1a60da0"></a>
+Conclusions</h2></div></div><p>
+The project turned out to be very successful. Fixing the keep-alive
+packets as they traversed the firewall resolved the problem without
+requiring any configuration changes on either endpoint. It was a
+completely transparent solution and my client was very happy with the
+result.
+</p><p>
+After being in place for a while, a crisis ensued when the remote system
+IP was changed. The printers stopped, because the remote IP was
+hard-configured into the print servers, and local personnel were unavailable to
+reconfigure them. With the addition of a DNAT firewall rule and a tweak
+to the protocol d&aelig;mon to fix the server address within the packet (all
+done remotely), the printers came back on-line in time to run payroll.
+</p><p>
+TCP protocols also can be fixed using this approach. Because TCP is a
+connection-oriented protocol rather than a datagram, the program will
+need to keep some state information as it processes the data stream. 
+This is a little more complicated than a UDP protocol, but not
+unreasonable in practice.
+</p><p>
+I've posted a small sample NF_QUEUE packet sniffer on my Web site
+containing complete build and execution directions. It's fairly basic,
+but it allows you to get a hex dump of UDP or TCP streams determined by
+iptables rules and can serve as a basic framework if you're building
+an NF_QUEUE handler.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x165c580.0x1a60fb0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Netfilter Hacking HOWTO: <a href="http://netfilter.org/documentation/HOWTO/netfilter-hacking-HOWTO.html" target="_self">netfilter.org/documentation/HOWTO/netfilter-hacking-HOWTO.html</a>
+</p><p>
+Netfilter Error Return in 2.6.23 Kernels: <a href="http://www.spinics.net/lists/netfilter/msg42063.html" target="_self">www.spinics.net/lists/netfilter/msg42063.html</a>
+</p><p>
+libnfnetlink: <a href="http://www.netfilter.org/projects/libnfnetlink/index.html" target="_self">www.netfilter.org/projects/libnfnetlink/index.html</a>
+</p><p>
+libnetfilter_queue: <a href="http://www.netfilter.org/projects/libnetfilter_queue/index.html" target="_self">www.netfilter.org/projects/libnetfilter_queue/index.html</a>
+</p><p>
+libnetfilter_queue man Page: <a href="http://code.google.com/p/nattt/wiki/libnetfilter_queue" target="_self">code.google.com/p/nattt/wiki/libnetfilter_queue</a>
+</p><p>
+NF_QUEUE Language Bindings: <a href="http://www.nufw.org/projects/nfqueue-bindings/wiki" target="_self">www.nufw.org/projects/nfqueue-bindings/wiki</a>
+</p><p>
+Correct UDP Checksum Routine: <a href="http://www.auroragrp.com/downloads" target="_self">www.auroragrp.com/downloads</a>
+</p><p>
+Sample nfq_sniff Application to Dump Packets: <a href="http://www.auroragrp.com/downloads" target="_self">www.auroragrp.com/downloads</a>
+</p><p>
+tcpdump: <a href="http://www.tcpdump.org" target="_self">www.tcpdump.org</a>
+</p><p>
+Wireshark: <a href="http://www.wireshark.org" target="_self">www.wireshark.org</a>
+</p><p>
+PackETH: <a href="http://packeth.sourceforge.net" target="_self">packeth.sourceforge.net</a>
+</p><p>
+On-line Checksum Generator: <a href="http://moat.nlanr.net/Software/HEC/hexhec.html" target="_self">moat.nlanr.net/Software/HEC/hexhec.html</a>
+</p><p>
+iptables Packet Flow: <a href="http://www.faqs.org/docs/iptables/traversingoftables.html" target="_self">www.faqs.org/docs/iptables/traversingoftables.html</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Paul Amaranth (<a href="mailto:paul@auroragrp.com">paul@auroragrp.com</a>) is a Principal Consultant at Aurora
+Group, Inc., where he builds secure systems (including Linux firewalls),
+does software development and handles the odd bit of system
+administration. He's been involved with computers much longer than he
+cares to remember.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../212/toc212.html">Issue Table of Contents</a>
+    <a class="link3" href="../212/10939.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

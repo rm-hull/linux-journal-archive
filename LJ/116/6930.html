@@ -1,0 +1,421 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel Korner</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;In this article, Robert offers a refresher on kernel memory allocation&#10;and how it has changed for the 2.6 kernel.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1fab580.0x20a2ab0"></a>Kernel Korner</h1></div><div><h3 class="subtitle"><i>
+Allocating Memory in the Kernel</i></h3></div><div><div class="author"><h3 class="author">Robert Love</h3></div><div class="issuemoyr">Issue #116, December 2003</div></div><div><p>
+In this article, Robert offers a refresher on kernel memory allocation
+and how it has changed for the 2.6 kernel.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x20a32f0"></a></h2></div></div><p>
+Unfortunately for kernel developers, allocating memory in the kernel is
+not as simple as allocating memory in user space. A number of factors
+contribute to the complication, among them:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The kernel is limited to about 1GB of virtual and physical memory.
+</p></li><li><p>
+The kernel's memory is not pageable.
+</p></li><li><p>
+The kernel usually wants physically contiguous memory.
+</p></li><li><p>
+Often, the kernel must allocate the memory without sleeping.
+</p></li><li><p>
+Mistakes in the kernel have a much higher price than they do elsewhere.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x20a37c0"></a></h2></div></div><p>
+Although easy access to an abundance of memory certainly is not a luxury
+to the kernel, a little understanding of the issues can go a long way
+toward making the process relatively painless.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x20a38c8"></a>
+A General-Purpose Allocator</h2></div></div><p>
+The general interface for allocating memory inside of the kernel is
+kmalloc():
+
+
+<pre     class="programlisting">
+
+#include &lt;linux/slab.h&gt;
+
+void * kmalloc(size_t size, int flags);
+
+
+</pre>
+</p><p>
+It should look familiar&mdash;it is pretty much the same as user space's
+malloc(), after all&mdash;except that it takes a second argument,
+<tt  >flags</tt>. Let's ignore flags for a second
+and see what we recognize. First off, <tt  >size</tt> is
+the same here as in malloc()'s&mdash;it specifies the size in bytes of the
+allocation. Upon successful return, kmalloc() returns a pointer
+to <i>size</i> bytes of memory. The alignment of the allocated memory
+is suitable for storage of and access to any type of object. As with
+malloc(), kmalloc() can fail, and you must
+check its return value against NULL. Let's look at an example:
+
+<pre     class="programlisting">
+struct falcon *p;
+
+p = kmalloc(sizeof (struct falcon), GFP_KERNEL);
+if (!p)
+  /* the allocation failed - handle appropriately */
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x20a3be0"></a>
+Flags</h2></div></div><p>
+The flags field controls the behavior of memory allocation.
+We can divide flags into three groups: action modifiers, zone
+modifiers and types. Action modifiers tell the kernel how to
+allocate memory. They specify, for example, whether the kernel can
+sleep (that is, whether the call to kmalloc() can block)
+in order to satisfy the allocation. Zone modifiers, on the other hand,
+tell the kernel from where the request should be satisfied. For example,
+some requests may need to be satisfied from memory that hardware can
+access through direct memory access (DMA). Finally, type flags specify a type of allocation.
+They group together relevant action and zone modifiers into a
+single mnemonic. In general, instead of specifying multiple action and
+zone modifiers, you specify a single type flag.
+</p><p>
+Table 1 is a listing of the action modifiers, and Table 2
+is a listing of the zone modifiers. Many different flags can be used;
+allocating memory in the kernel is nontrivial. It is possible to control
+many aspects of memory allocation in the kernel.
+Your code should use the type flags and not the individual action
+and zone modifiers. The two most common flags are GFP_ATOMIC
+and GFP_KERNEL. Nearly all of your kernel memory allocations
+should specify one of these two flags.
+
+</p><div class="table"><a name="N0x1fab580.0x20a3d98"></a><p class="title"><b>
+Table 1. Action Modifiers</b></p><table     summary="&#10;Table 1. Action Modifiers6930t1.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>Flag</th><th>Description</th></tr></thead><tbody><tr><td>__GFP_COLD</td><td>The kernel should use cache cold pages.</td></tr><tr><td>__GFP_FS</td><td>The kernel can start filesystem I/O.</td></tr><tr><td>__GFP_HIGH</td><td>The kernel can access emergency pools.</td></tr><tr><td>__GFP_IO</td><td>The kernel can start disk I/O.</td></tr><tr><td>__GFP_NOFAIL</td><td>The kernel can repeat the allocation.</td></tr><tr><td>__GFP_NORETRY</td><td>The kernel does not retry if the allocation fails.</td></tr><tr><td>__GFP_NOWARN</td><td>The kernel does not print failure warnings.</td></tr><tr><td>__GFP_REPEAT</td><td>The kernel repeats the allocation if it fails.</td></tr><tr><td>__GFP_WAIT</td><td>The kernel can sleep.</td></tr></tbody></table></div><div class="table"><a name="N0x1fab580.0x20a49f8"></a><p class="title"><b>Table 2. Zone Modifiers</b></p><table     summary="Table 2. Zone Modifiers6930t2.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>Flag</th><th>Description</th></tr></thead><tbody><tr><td>__GFP_DMA</td><td>Allocate only DMA-capable memory.</td></tr><tr><td>No flag</td><td>Allocate from wherever available.</td></tr></tbody></table></div><p>
+The GFP_ATOMIC flag instructs the memory allocator never to
+block. Use this flag in situations where it cannot
+sleep&mdash;where it must remain atomic&mdash;such as interrupt handlers, bottom halves
+and process context code that is holding a lock. Because the kernel
+cannot block the allocation and try to free up sufficient memory to
+satisfy the request, an allocation specifying GFP_ATOMIC has
+a lesser chance of succeeding than one that does not. Nonetheless, if
+your current context is incapable of sleeping, it is your only choice.
+Using GFP_ATOMIC is simple:
+
+
+<pre     class="programlisting">
+struct wolf *p;
+
+p = kmalloc(sizeof (struct wolf), GFP_ATOMIC);
+if (!p)
+    /* error */
+</pre>
+</p><p>
+Conversely, the GFP_KERNEL flag specifies a normal kernel
+allocation. Use this flag in code executing in process context
+without any locks. A call to kmalloc() with this flag can
+sleep; thus, you must use this flag only when it is safe to do so.
+The kernel utilizes the ability to sleep in order to free memory, if needed.
+Therefore, allocations that specify this flag have a greater chance
+of succeeding. If insufficient memory is available, for example, the
+kernel can block the requesting code and swap some inactive pages to disk,
+shrink the in-memory caches, write out buffers and so on.
+</p><p>
+Sometimes, as when writing an ISA device driver, you need to ensure
+that the memory allocated is capable of undergoing DMA.
+For ISA devices, this is memory in the first 16MB of physical
+memory. To ensure that the kernel allocates from this specific memory, use the
+GFP_DMA flag. Generally, you would use this flag in conjunction
+with either GFP_ATOMIC or GFP_KERNEL; you can combine
+flags with a binary OR operation. For example, to instruct the kernel
+to allocate DMA-capable memory and to sleep if needed, do:
+
+<pre     class="programlisting">
+char *buf;
+
+/* we want DMA-capable memory,
+ * and we can sleep if needed */
+buf = kmalloc(BUF_LEN, GFP_DMA | GFP_KERNEL);
+if (!buf)
+    /* error */
+</pre>
+
+</p><p>
+Table 3 is a listing of the type flags, and Table 4 shows to
+which type flag each action and zone modifier equates.
+The header &lt;linux/gfp.h&gt; defines all of the flags.
+</p><div class="table"><a name="N0x1fab580.0x209b9c0"></a><p class="title"><b>
+Table 3. Types</b></p><table     summary="&#10;Table 3. Types6930t3.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>Flag</th><th>Description</th></tr></thead><tbody><tr><td>GFP_ATOMIC</td><td>The allocation is high-priority and does not sleep. This is the flag
+to use in interrupt handlers, bottom halves and other situations where you
+cannot sleep.</td></tr><tr><td>GFP_DMA</td><td>This is an allocation of DMA-capable memory. Device drivers that
+need DMA-capable memory use this flag.</td></tr><tr><td>GFP_KERNEL</td><td>This is a normal allocation and might block. This is the flag to use
+in process context code when it is safe to sleep.</td></tr><tr><td>GFP_NOFS</td><td>This allocation might block and might initiate disk I/O, but it does
+not initiate a filesystem operation. This is the flag to use in filesystem
+code when you cannot start another filesystem operation.</td></tr><tr><td>GFP_NOIO</td><td>This allocation might block, but it does not initiate block I/O. This
+is the flag to use in block layer code when you cannot start more block
+I/O.</td></tr><tr><td>GFP_USER</td><td>This is a normal allocation and might block. This flag is used to
+allocate memory for user-space processes.</td></tr></tbody></table></div><div class="table"><a name="N0x1fab580.0x209c308"></a><p class="title"><b>
+Table 4. Composition of the Type Flags</b></p><table     summary="&#10;Table 4. Composition of the Type Flags6930t4.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>Flag</th><th>Value</th></tr></thead><tbody><tr><td>GFP_ATOMIC</td><td>__GFP_HIGH</td></tr><tr><td>GFP_NOIO</td><td>__GFP_WAIT</td></tr><tr><td>GFP_NOFS</td><td>(__GFP_WAIT | __GFP_IO)</td></tr><tr><td>GFP_KERNEL</td><td>(__GFP_WAIT | __GFP_IO | __GFP_FS)</td></tr><tr><td>GFP_USER</td><td>(__GFP_WAIT | __GFP_IO | __GFP_FS)</td></tr><tr><td>GFP_DMA</td><td>__GFP_DMA</td></tr></tbody></table></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x209cc50"></a>
+Returning Memory</h2></div></div><p>
+When you are finished accessing the memory allocated via
+kmalloc(), you must return it to the kernel. This job is
+done using kfree(), which is the counterpart to user space's
+free() library call. The prototype for kfree() is:
+
+<pre     class="programlisting">
+
+#include &lt;linux/slab.h&gt;
+
+void kfree(const void *objp);
+
+</pre>
+</p><p>
+kfree()'s usage is identical to the user-space variant. Assume p is a
+pointer to a block of memory obtained via kmalloc(). The
+following command, then, would free that block and return the memory to the kernel:
+
+<pre     class="programlisting">
+kfree(p);
+</pre>
+</p><p>
+As with free() in user space, calling kfree() on a
+block of memory that already has been freed or on a pointer that is
+not an address returned from kmalloc() is a bug, and it can result
+in memory corruption. Always balance allocations and frees to ensure
+that kfree() is called exactly once on the correct pointer.
+Calling kfree() on NULL is checked
+for explicitly and is safe, although it is not necessarily a sensible idea.
+</p><p>
+Let's look at the full allocation and freeing cycle:
+
+<pre     class="programlisting">
+struct sausage *s;
+
+s = kmalloc(sizeof (struct sausage), GFP_KERNEL);
+if (!s)
+    return -ENOMEM;
+/* ... */
+
+kfree(s);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x209cf68"></a>
+Allocating from Virtual Memory</h2></div></div><p>
+The kmalloc() function returns
+physically and therefore virtually contiguous
+memory. This is a contrast to user space's
+malloc() function, which returns virtually but
+not necessarily physically contiguous memory.
+Physically contiguous memory has two primary
+benefits. First, many hardware devices cannot
+address virtual memory. Therefore, in order for
+them to be able to access a block of memory, the
+block must exist as a physically contiguous chunk
+of memory. Second, a physically contiguous block
+of memory can use a single large page mapping.
+This minimizes the translation lookaside buffer
+(TLB) overhead of addressing the memory, as only a
+single TLB entry is required.
+</p><p>
+Allocating physically contiguous memory has one downside: it is often
+hard to find physically contiguous blocks of memory, especially for
+large allocations. Allocating memory that is only virtually contiguous
+has a much larger chance of success. If you do not need
+physically contiguous memory, use vmalloc():
+
+<pre     class="programlisting">
+
+#include &lt;linux/vmalloc.h&gt;
+
+void * vmalloc(unsigned long size);
+
+</pre>
+
+</p><p>
+You then return memory obtained with vmalloc() to the system by using
+vfree():
+
+<pre     class="programlisting">
+
+#include &lt;linux/vmalloc.h&gt;
+
+void vfree(void *addr);
+
+</pre>
+</p><p>
+Here again, vfree()'s usage is identical to user space's malloc() and free()
+functions:
+
+<pre     class="programlisting">
+struct black_bear *p;
+
+p = vmalloc(sizeof (struct black_bear));
+if (!p)
+    /* error */
+
+/* ... */
+
+vfree(p);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x209d2d8"></a></h2></div></div><p>
+In this particular case, vmalloc() might sleep.
+</p><p>
+Many allocations in the kernel can use vmalloc(), because
+few allocations need to appear contiguous to hardware
+devices.
+If you are allocating memory that only software accesses, such as data
+associated with a user process, there is no need for the memory to be
+physically contiguous. Nonetheless, few allocations in the kernel
+use vmalloc(). Most choose to use kmalloc(), even if it's
+not needed, partly for historical and partly for performance
+reasons. Because the TLB overhead for physically contiguous pages
+is reduced greatly, the performance gains often are well appreciated.
+Despite this, if you need to allocate tens of megabytes of memory in
+the kernel, vmalloc() is your best option.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x209d490"></a>
+A Small Fixed-Size Stack</h2></div></div><p>
+Unlike user-space processes, code executing in the kernel has neither
+a large nor a dynamically growing stack. Instead, each process in the
+kernel has a small fixed-size stack. The exact size of the stack is
+architecture-dependent. Most architectures allocate two pages for the
+stack, so the stack is 8KB on 32-bit machines.
+</p><p>
+Because of the small stack, allocations that are large, automatic and on-the-stack
+are discouraged. Indeed, you never should see anything such as this in
+kernel code:
+
+<pre     class="programlisting">
+#define BUF_LEN	2048
+
+void rabbit_function(void)
+{
+    char buf[BUF_LEN];
+    /* ...  */
+}
+</pre>
+</p><p>
+Instead, the following is preferred:
+
+<pre     class="programlisting">
+#define BUF_LEN	2048
+
+void rabbit_function(void)
+{
+    char *buf;
+
+    buf = kmalloc(BUF_LEN, GFP_KERNEL);
+    if (!buf)
+        /* error! */
+
+/* ... */
+}
+</pre>
+</p><p>
+You also seldom see the equivalent of this stack in
+user space, because there is rarely a reason
+to perform a dynamic memory allocation when you
+know the allocation size at the time you write the code.
+In the kernel, however, you should use dynamic
+memory any time the allocation size is larger than a
+handful of bytes or so. This helps prevent stack
+overflow, which ruins everyone's day.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x209d750"></a>
+Conclusion</h2></div></div><p>
+With a little understanding, getting a hold of memory in the kernel is
+demystified and not too much more difficult to do than it is in user space. A few simple
+rules of thumb can go a long way:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Decide whether you can sleep (that is, whether the call to
+kmalloc() can block). If you are in an interrupt handler,
+in a bottom half, or if you hold a lock, you cannot. If you are in
+process context and do not hold a lock, you probably can.
+</p></li><li><p>
+If you can sleep, specify GFP_KERNEL.
+</p></li><li><p>
+If you cannot sleep, specify GFP_ATOMIC.
+</p></li><li><p>
+If you need DMA-capable memory (for example, for an ISA or broken
+PCI device), specify GFP_DMA.
+</p></li><li><p>
+Always check for and handle a NULL return
+value from kmalloc().
+</p></li><li><p>
+Do not leak memory; make sure you call kfree()
+somewhere.
+</p></li><li><p>
+Ensure that you do not race and call kfree()
+multiple times and that you never access a block of memory after
+you free it.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1fab580.0x23b1320"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources
+</b></p><p>
+For more information, check out these files in your kernel source tree.
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+include/linux/gfp.h: home of the allocation flags.
+</p></li><li><p>
+include/linux/slab.h: definitions of kmalloc(), et al.
+</p></li><li><p>
+mm/page_alloc.c: page allocation functions.
+</p></li><li><p>
+mm/slab.c: implementation of kmalloc(), et al.
+</p></li></ul></div></div></div></div>
+<div class="authorblurb"><p>
+Robert Love (<a href="mailto:rml@tech9.net">rml@tech9.net</a>) is a kernel hacker at
+MontaVista Software and a student at the University of Florida.
+He is the author of <span   class="emphasis"><em>Linux Kernel Development</em></span>.
+Robert enjoys fine wine and lives in Gainesville, Florida.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../116/toc116.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

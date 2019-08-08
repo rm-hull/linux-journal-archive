@@ -1,0 +1,608 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Zato&mdash;Agile ESB, SOA, REST and Cloud Integrations in Python
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Learn how to integrate applications with an elegant and agile platform&#10;that is quick to adapt to ever-faster business changes. This how-to&#10;introduces the methodology and includes an integration example of a&#10;treasury.gov's financial API with two external apps.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x124c580.0x1343ac0"></a>
+Zato&mdash;Agile ESB, SOA, REST and Cloud Integrations in Python
+</h1></div><div><div class="author"><h3 class="author">
+Dariusz
+ 
+Suchojad
+</h3></div><div class="issuemoyr">Issue #235, November 2013</div></div><div><p>
+Learn how to integrate applications with an elegant and agile platform
+that is quick to adapt to ever-faster business changes. This how-to
+introduces the methodology and includes an integration example of a
+treasury.gov's financial API with two external apps.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x13441f8"></a></h2></div></div><p>
+Zato is a Python-based platform for integrating applications
+and exposing back-end services to front-end clients
+(<a href="https://zato.io/docs/index.html" target="_self">https://zato.io/docs/index.html</a>). It's an ESB (Enterprise
+Service Bus) and an application server focused on data integrations. The
+platform doesn't enforce any limits on architectural style for designing
+systems and can be used for SOA (Service Oriented Architecture), REST
+(Representational State Transfer) and for building systems of systems
+running in-house or in the cloud.
+</p><p>
+At its current version of 1.1 (at the time of this writing), Zato supports HTTP, JSON, SOAP, SQL, AMQP,
+JMS WebSphere MQ, ZeroMQ, Redis NoSQL and FTP. It includes a browser-based
+GUI, CLI, API, security, statistics, job scheduler, HAProxy-based load
+balancer and hot-deployment. Each piece is extensively documented from
+the viewpoint of several audiences: architects, admins and programmers.
+</p><p>
+Zato servers are built on top of gevent and gunicorn frameworks
+that are responsible for handling incoming traffic using asynchronous
+notification libraries, such as libevent or libev, but all of that is hidden
+from programmers' views so they can focus on their job only.
+</p><p>
+Servers always are part of a cluster and run identical copies of
+services deployed. There is no limit on how many servers a single
+cluster can contain.
+</p><p>
+Each cluster keeps its configuration in Redis and an SQL database. The
+former is used for statistics or data that is frequently updated and
+mostly read-only. The latter is where the more static configuration
+shared between servers is kept.
+</p><p>
+Users access Zato through its Web-based GUI
+(<a href="https://zato.io/docs/web-admin/intro.html" target="_self">https://zato.io/docs/web-admin/intro.html</a>),
+the command line (<a href="https://zato.io/docs/admin/cli/index.html" target="_self">https://zato.io/docs/admin/cli/index.html</a>) or API
+(<a href="https://zato.io/docs/public-api/intro.html" target="_self">https://zato.io/docs/public-api/intro.html</a>).
+</p><p>
+Zato promotes loose coupling, reusability of components and
+hot-deployment. The high-level goal is to make it trivial to access
+or expose any sort of information. Common integration techniques and
+needs should be, at most, a couple clicks away, removing the need
+to reimplement the same steps constantly, slightly differently in each
+integration effort.
+</p><p>
+Everything in Zato is about minimizing the interference of components
+on each other, and server-side objects you create can be updated easily,
+reconfigured on fly or reused in other contexts without influencing
+any other.
+</p><p>
+This article guides you through the process of exposing complex XML
+data to three clients using JSON, a simpler form of XML and SOAP, all 
+from a single code base in an elegant and Pythonic way that doesn't
+require you to think about the particularities of any format or transport.
+</p><p>
+To speed up the process of retrieving information by clients, back-end
+data will be cached in Redis and updated periodically by a job-scheduled
+service.
+</p><p>
+The data provider used will be US Department of the Treasury's real
+long-term interest rates
+(<a href="http://www.treasury.gov/resource-center/data-chart-center/interest-rates/Pages/TextView.aspx?data=reallongtermrate" target="_self">www.treasury.gov/resource-center/data-chart-center/interest-rates/Pages/TextView.aspx?data=reallongtermrate</a>). Clients
+will be generic HTTP-based ones invoked through curl, although in
+practice, any HTTP client would do.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1344930"></a>
+The Process and IRA Services</h2></div></div><p>
+The goal is to make it easy and efficient for external client
+applications to access long-term US rates information. To that end,
+you'll make use of several features of Zato:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Scheduler will be employed to invoke a service to download the XML
+offered by treasury.gov and parse interesting data out of it.
+</p></li><li><p>
+Redis will be used as a cache to store the results of parsing the XML.
+</p></li><li><p>
+Zato's SimpleIO (SIO, <a href="https://zato.io/docs/progguide/sio.html" target="_self">https://zato.io/docs/progguide/sio.html</a>) will allow you to expose the same set
+of information to more than one client, each using a different message
+format, without any code changes or server restarts.
+</p></li></ul></div><p>
+Zato encourages the division of each business process into
+a set of IRA services (<a href="https://zato.io/docs/intro/esb-soa.html" target="_self">https://zato.io/docs/intro/esb-soa.html</a>)&mdash;that is, each service exposed to users should be:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<span   class="emphasis"><em>Interesting</em></span>: services should provide a real value that makes
+potential users pause for a moment and, at least, contemplate using the
+service in their own applications for their own benefit.
+</p></li><li><p>
+<span   class="emphasis"><em>Reusable</em></span>: making services modular will allow you to make use of them
+in circumstances yet unforeseen&mdash;to build new, and possibly unexpected,
+solutions on top of lower-level ones.
+</p></li><li><p>
+<span   class="emphasis"><em>Atomic</em></span>: a service should have a well defined
+goal, indivisible
+from the viewpoint of a service's users, and preferably no functionality
+should overlap between services.
+</p></li></ul></div><p>
+The IRA approach closely follows the UNIX philosophy of &ldquo;do one thing
+and do it well&rdquo; as well as the KISS principle that is well known and followed
+in many areas of engineering.
+</p><p>
+When you design an IRA service, it is almost exactly like defining APIs
+between the components of a standalone application. The difference is
+that services connect several applications running in a distributed
+environment. Once you take that into account, the mental process is
+identical.
+</p><p>
+Anyone who already has created an interesting interface of any sort in
+a single-noded application written in any programming language will feel
+right like home when dealing with IRA services.
+</p><p>
+From Zato's viewpoint, there is no difference in whether a service
+corresponds to an S in SOA or an R in REST; however, throughout this
+article, I'm using the the former approach.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1345328"></a>
+Laying Out the Services</h2></div></div><p>
+The first thing you need is to diagram the integration process, pull out the
+services that will be implemented and document their purpose. If you need
+a hand with it, Zato offers its own API's documentation
+as an example of how a
+service should be documented (see <a href="https://zato.io/docs/progguide/documenting.html" target="_self">https://zato.io/docs/progguide/documenting.html</a> and <a href="https://zato.io/docs/public-api/intro.html" target="_self">https://zato.io/docs/public-api/intro.html</a>):
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Zato's scheduler is configured to invoke a service (update-cache)
+refreshing the cache once in an hour.
+</p></li><li><p>
+update-cache, by default, fetches the XML for the current month, but
+it can be configured to grab data for any date. This allows for reuse
+of the service in other contexts.
+</p></li><li><p>
+Client applications use either JSON or simple XML to request
+long-term rates (get-rate), and responses are produced based on data
+cached in Redis, making them super-fast. A single SIO Zato service can
+produce responses in JSON, XML or SOAP. Indeed, the same service can be
+exposed independently in completely different channels, such as HTTP or AMQP,
+each using different security definitions and not interrupting the
+message flow of other channels.
+</p></li></ul></div><div       class="mediaobject"><img src="11550f1.jpg"><div class="caption"><p>
+Figure 1. Overall Business Process
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1345900"></a>
+Implementation</h2></div></div><p>
+The full code for both services is available as a gist
+on GitHub, and only the most interesting parts are discussed
+(<a href="https://gist.github.com/dsuch/6440366" target="_self">https://gist.github.com/dsuch/6440366</a>).
+</p><p><span   class="bold"><b>
+linuxjournal.update-cache</b></span>
+</p><p>
+Steps the service performs are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Connect to treasury.gov.
+</p></li><li><p>
+Download the big XML.
+</p></li><li><p>
+Find interesting elements containing the business data.
+</p></li><li><p>
+Store it all in Redis cache.
+</p></li></ul></div><p>
+Key fragments of the service are presented below.
+</p><p>
+When using Zato services, you are never required to hard-code network
+addresses. A service shields such information and uses human-defined
+names, such as &ldquo;treasury.gov&rdquo;; during runtime, these resolve into a set of
+concrete connection parameters. This works for HTTP and any other protocol
+supported by Zato. You also can update a connection definition on the
+fly without touching the code of the service and without any restarts:
+
+
+<pre     class="programlisting">
+ 1 # Fetch connection by its name
+ 2 out = self.outgoing.plain_http.get('treasury.gov')
+ 3
+ 4 # Build a query string the backend data source expects
+ 5 query_string = {
+ 6  '$filter':'month(QUOTE_DATE) eq {} and year(QUOTE_DATE) eq
+{}'.format(month, year)
+ 7 }
+ 8
+ 9 # Invoke the backend with query string, fetch 
+   # the response as a UTF-8 string
+10 # and turn it into an XML object
+11 response = out.conn.get(self.cid, query_string)
+</pre>
+</p><p>
+lxml (<a href="http://lxml.de" target="_self">lxml.de</a>) is a very good Python library for XML processing and
+is used in the example to issue XPath queries against the complex
+document (<a href="http://data.treasury.gov/feed.svc/DailyTreasuryRealLongTermRateAverageData?$filter=month%28QUOTE_DATE%29%20eq%208%20and%20year%28QUOTE_DATE%29%20eq%202013" target="_self">data.treasury.gov/feed.svc/DailyTreasuryRealLongTermRateAverageData?$filter=month%28QUOTE_DATE%29%20eq%208%20and%20year%28QUOTE_DATE%29%20eq%202013</a>)
+returned:
+
+
+<pre     class="programlisting">
+1 xml = etree.fromstring(response)
+2
+3 # Look up all XML elements needed (date and rate) using XPath
+4 elements = xml.xpath('//m:properties/d:*/text()', 
+  &#8618;namespaces=NAMESPACES)
+</pre>
+</p><p>
+For each element returned by the back-end service, you create an entry
+in the Redis cache in the format specified by
+<tt  >REDIS_KEY_PATTERN</tt>&mdash;for instance,
+<tt  >linuxjournal:rates:2013:09:03</tt> with a value of 1.22:
+
+
+<pre     class="programlisting">
+ 1 for date, rate in elements:
+ 2
+ 3   # Create a date object out of string
+ 4   date = parse(date)
+ 5
+ 6   # Build a key for Redis and store the data under it
+ 7   key = REDIS_KEY_PATTERN.format(
+ 8       date.year, str(date.month).zfill(2), 
+         &#8618;str(date.day).zfill(2))
+ 9   self.kvdb.conn.set(key, rate)
+10
+12   # Leave a trace of our activity
+13   self.logger.info('Key %s set to %s', key, rate)
+</pre>
+</p><p><span   class="bold"><b>
+linuxjournal.get-rate</b></span>
+</p><p>
+Now that a service for updating the cache is ready, the one to return the
+data is so simple yet powerful that it can be reproduced in its entirety:
+
+
+<pre     class="programlisting">
+ 1 class GetRate(Service):
+ 2 """ Returns the real long-term rate for a given date
+ 3 (defaults to today if no date is given).
+ 4 """
+ 5 class SimpleIO:
+ 6     input_optional = ('year', 'month', 'day')
+ 7     output_optional = ('rate',)
+ 8
+ 9 def handle(self):
+10     # Get date needed either from input or current day
+11     year, month, day = get_date(self.request.input)
+12
+13     # Build the key the data is cached under
+14     key = REDIS_KEY_PATTERN.format(year, month, day)
+15
+16     # Assign the result from cache directly to response
+17     self.response.payload.rate = self.kvdb.conn.get(key)
+</pre>
+</p><p>
+A couple points to note:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+SimpleIO 
+was used&mdash;this is a declarative syntax
+for expressing simple documents
+that can be serialized to JSON or XML in the current Zato version, with
+more to come in future releases.
+</p></li><li><p>
+Nowhere in the service did you have to mention JSON, XML or even HTTP
+at all. It's all working on a high
+level of Python objects without specifying any output format or
+transport method.
+</p></li></ul></div><p>
+This is the Zato way. It promotes reusability, which is valuable because
+a generic and interesting service, such as returning interest rates,
+is bound to be desirable in situations that cannot be predicted.
+</p><p>
+As an author of a service, you are not forced into committing to
+a particular format. Those are configuration details that can be
+taken care of through a variety of means, including a GUI that Zato
+provides. A single service can be exposed simultaneously through
+multiple access channels each using a different data format, security
+definition or rate limit independently of any other.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x173eac8"></a>
+Installing Services</h2></div></div><p>
+There are several ways to install a service:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Hot-deployment from the command line.
+</p></li><li><p>
+Hot-deployment from the browser.
+</p></li><li><p>
+Adding it to services-sources.txt&mdash;you can specify a path to a
+single module, to a Python package or a Python-dotted name by which to
+import it. 
+</p></li></ul></div><p>
+Let's hot-deploy what you have so far from the command line, assuming a Zato
+server is installed in /opt/zato/server1. You can do this using the
+<tt  >cp</tt> command:
+
+<pre     class="programlisting">
+$ cp linuxjournal.py /opt/zato/server1/pickup-dir
+$
+</pre>
+</p><p>
+Now in the server log:
+
+
+<pre     class="programlisting">
+INFO - zato.hot-deploy.create:22 - Creating tar archive
+INFO - zato.hot-deploy.create:22 - Uploaded package id:[21],
+ &#8618;payload_name:[linuxjournal.py]
+</pre>
+</p><p>
+Here's what just happened:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The server to be deployed was stored in an SQL database, and each server from a cluster was notified of the deployment of new code.
+</p></li><li><p>
+Each server made a backup of currently deployed services and stored
+it in the filesystem (by default, there's a circular log of the last 100
+backups kept).
+</p></li><li><p>
+Each server imported the service and made it available for use.
+</p></li></ul></div><p>
+All those changes were introduced throughout the whole cluster with no
+restarts and no reconfiguration.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x173f360"></a>
+Using the GUI to Configure the Resources Needed</h2></div></div><p>
+Zato's Web admin is a GUI that can be used to 
+create server objects that services need quickly, check runtime statistics or
+gather information needed for debugging purposes.
+</p><p>
+The Web admin is merely a client
+(<a href="https://zato.io/docs/progguide/clients/python.html" target="_self">https://zato.io/docs/progguide/clients/python.html</a>) of
+Zato's own API,
+so everything it does also can be achieved from the command line
+or by user-created clients making API calls.
+</p><p>
+On top of that, server-side objects can be managed &ldquo;en masse&rdquo;
+(<a href="https://zato.io/docs/admin/guide/enmasse.html" target="_self">https://zato.io/docs/admin/guide/enmasse.html</a>) using a
+JSON-based configuration that can be kept in a config repository for
+versioning and diffing. This allows for interesting workflows, such as
+creating a base configuration on a development environment and exporting
+it to test environments where the new configuration can be merged into
+an existing one, and later on, all that can be exported to production.
+</p><p>
+Figures 2&ndash;6 show the following configs:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Scheduler's job to invoke the service updating the cache.
+</p></li><li><p>
+Outgoing HTTP connection definitions for connecting to treasury.gov.
+</p></li><li><p>
+HTTP channels for each client&mdash;there is no requirement that each client
+be given a separate channel but doing so allows one to assign different
+security definitions to each channel without interfering with any other.
+</p></li></ul></div><div       class="mediaobject"><a href="11550f2.large.jpg"><img src="11550f2.jpg"></a><div class="caption"><p>
+Figure 2. Scheduler Job Creation Form
+</p></div></div><div       class="mediaobject"><a href="11550f3.large.jpg"><img src="11550f3.jpg"></a><div class="caption"><p>
+Figure 3. Outgoing HTTP Connection Creation Form
+</p></div></div><div       class="mediaobject"><a href="11550f4.large.jpg"><img src="11550f4.jpg"></a><div class="caption"><p>
+Figure 4. JSON Channel Creation Form 
+</p></div></div><div       class="mediaobject"><a href="11550f5.large.jpg"><img src="11550f5.jpg"></a><div class="caption"><p>
+Figure 5. Plain XML Channel Creation Form
+</p></div></div><div       class="mediaobject"><a href="11550f6.large.jpg"><img src="11550f6.jpg"></a><div class="caption"><p>
+Figure 6. SOAP Channel Creation Form
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1740178"></a>
+Testing It</h2></div></div><p>
+update-cache will be invoked by the scheduler, but Zato's CLI offers
+the means to invoke any service from the command line, even if it's not mounted
+on any channel, like this:
+
+
+<pre     class="programlisting">
+$ zato service invoke /opt/zato/server1 linuxjournal.update-cache
+ &#8618;--payload '{}'
+(None)
+$
+</pre>
+</p><p>
+There was no output, because the service doesn't produce any. However,
+when you check the logs you notice:
+
+<pre     class="programlisting">
+INFO - Key linuxjournal:rates:2013:09:03 set to 1.22
+</pre>
+</p><p>
+Now you can invoke get-rate from the command line using curl with JSON, XML
+and SOAP. The very same service exposed through three independent channels
+will produce output in three formats, as shown below (output slightly reformatted
+for clarity).
+</p><p>
+Output 1:
+
+<pre     class="programlisting">
+$ curl localhost:17010/client1/get-rate -d 
+ &#8618;'{"year":"2013","month":"09","day":"03"}' 
+ &#8618;{"response": {"rate": "1.22"}}
+$
+</pre>
+</p><p>
+Output 2:
+
+
+<pre     class="programlisting">
+
+$ curl localhost:17010/client2/get-rate -d '
+  &lt;request&gt;&lt;year&gt;2013&lt;/year&gt;&lt;month&gt;09&lt;/month&gt;&lt;day&gt;03&lt;/day&gt;&lt;/request&gt;'
+&lt;response&gt;
+ &lt;zato_env&gt;
+  &lt;cid&gt;K295602460207582970321705053471448424629&lt;/cid&gt;
+  &lt;result&gt;ZATO_OK&lt;/result&gt;
+ &lt;/zato_env&gt;
+ &lt;item&gt;
+  &lt;rate&gt;1.22&lt;/rate&gt;
+ &lt;/item&gt;
+&lt;/response&gt;
+$
+
+</pre>
+</p><p>
+Output 3:
+
+
+<pre     class="programlisting">
+$ curl localhost:17010/client3/get-rate \
+    -H "SOAPAction:get-rates" -d '
+  &lt;soapenv:Envelope xmlns:soapenv=
+&#8618;"http://schemas.xmlsoap.org/soap/envelope/"
+      &gt;
+    &lt;soapenv:Body&gt;
+      &lt;z:request&gt;
+        &lt;z:year&gt;2013&lt;/z:year&gt;
+        &lt;z:month&gt;09&lt;/z:month&gt;
+        &lt;z:day&gt;03&lt;/z:day&gt;
+      &lt;/z:request&gt;
+    &lt;/soapenv:Body&gt;
+  &lt;/soapenv:Envelope&gt;'
+&lt;?xml version='1.0' encoding='UTF-8'?&gt;
+ &lt;soap:Envelope 
+  &#8618;
+   &#8618;xmlns="https://zato.io/ns/20130518"&gt;
+  &lt;soap:Body&gt;
+   &lt;response&gt;
+    &lt;zato_env&gt;
+     &lt;cid&gt;K175546649891418529601921746996004574051&lt;/cid&gt;
+    &lt;result&gt;ZATO_OK&lt;/result&gt;
+   &lt;/zato_env&gt;
+   &lt;item&gt;
+    &lt;rate&gt;1.22&lt;/rate&gt;
+   &lt;/item&gt;
+  &lt;/response&gt;
+ &lt;/soap:Body&gt;
+&lt;/soap:Envelope&gt;
+$
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1651008"></a>
+IRA Is the Key</h2></div></div><p>
+IRA (Interesting, Reusable, Atomic) is the key you should always keep in mind
+when designing services that are to be successful.
+</p><p>
+Both the services presented in the article meet the following criteria:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<span   class="emphasis"><em>I</em></span>: focus on providing data interesting to multiple parties.
+</p></li><li><p>
+<span   class="emphasis"><em>R</em></span>: can take part in many processes and be accessed through more than one
+method.
+</p></li><li><p>
+<span   class="emphasis"><em>A</em></span>: focus on one job only and do it well.
+</p></li></ul></div><p>
+In this vein, Zato makes it easy for you to expose services over many
+channels and to incorporate them into higher-level integration scenarios,
+thereby increasing their overall attractiveness (I in IRA) to potential
+client applications.
+</p><p>
+It may be helpful to think of a few ways not to design services:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<span   class="bold"><b>Anti-I</b></span>: update-cache could be turned into
+two smaller services. One
+would fetch data and
+store it in an SQL database; the other would grab it from SQL and put
+it into Redis.
+Even if such a design could be defended by some rationale, neither of
+the pair of services would be interesting for external applications.
+A third service wrapping these two should be created and exposed
+to client apps, in the case of it being necessary for other systems
+to update the cache. In other words, let's keep the implementation
+details inside without exposing them to the whole world.
+</p></li><li><p>
+<span   class="bold"><b>Anti-R</b></span>: hard-coding nontrivial parameters is almost always a poor
+idea. The result being that a service cannot be driven by external
+systems invoking it with a set of arguments.
+For instance, creating a service that is limited to a specific year
+only ensures its limited use outside the original project.
+</p></li><li><p>
+<span   class="bold"><b>Anti-A</b></span>: returning a list of previous queries in response to a request
+may be a
+need of one particular client application, but contrary to the needs
+of another. In cases when a composite service becomes necessary,
+it should not be obliged upon each and every client.
+</p></li></ul></div><p>
+Designing IRA services is like designing a good programming interface
+that will be released as an open-source library and used in places that
+can't be predicted initially.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1651950"></a>
+Born Out of Practical Experience</h2></div></div><p>
+Zato it not only about IRA but also about codifying common admin and
+programming tasks that are of a practical nature:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Each config file is versioned automatically
+(<a href="https://zato.io/docs/admin/guide/install-config/overview.html#config-files-are-versioned" target="_self">https://zato.io/docs/admin/guide/install-config/overview.html#config-files-are-versioned</a>)
+and kept in a local bzr repository (<a href="http://bazaar-vcs.org" target="_self">bazaar-vcs.org</a>), so it's always possible
+to revert to a safe state. This is completely transparent and needs
+no configuration nor management.
+</p></li><li><p>
+A frequent requirement before integration projects are started,
+particularly
+if certain services already are available on the platform, is to provide
+usage examples in the form of message requests and responses. Zato
+lets you specify that one-in-<span   class="emphasis"><em>n</em></span> invocations of a service be stored
+for a later use, precisely so that such requirements can be 
+fulfilled by admins quickly.
+</p></li></ul></div><p>
+Two popular questions asked regarding production are:
+1) What are my slowest services? and
+2) Which services are most commonly used?
+To answer these, Zato provides statistics
+(<a href="https://zato.io/docs/stats/guide.html" target="_self">https://zato.io/docs/stats/guide.html</a>)
+that can be accessed via Web admin, CLI or API. Data can be compared over
+arbitrary periods or exported to CSV as well.
+</p><div       class="mediaobject"><a href="11550f7.large.jpg"><img src="11550f7.jpg"></a><div class="caption"><p>
+Figure 7. Sample Statistics
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1651f80"></a>
+Summary</h2></div></div><p>
+Despite being a relatively new project, Zato is already a lightweight
+yet complete solution that can be used in many integration and back-end
+scenarios. Regardless of the project's underlying integration principles,
+such as SOA or REST, the platform can be used to deliver scalable
+architectures that are easy to use, maintain and extend.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x124c580.0x1652088"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Dariusz Suchojad is a systems architect specializing in
+SOA/ESB/EAI/BPM/SSO with 12 years of experience completing projects for enterprise customers in
+telecommunications and banking. Dissatisfied with existing
+solutions used for systems integrations, a couple years ago, he quit his
+job and now focuses solely on developing Zato&mdash;a Python-based platform
+for integrating applications and back-end systems.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../235/toc235.html">Issue Table of Contents</a>
+    <a class="link3" href="../235/11550.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

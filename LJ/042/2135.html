@@ -1,0 +1,308 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel-Level Exception Handling</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    An in-depth look at how the kernel is now confirming the validity of&#10;    memory access addresses&mdash;not for the beginner. The information in&#10;    this article applies to kernel versions 2.1.08 to 2.1.36. With version&#10;    2.1.37, a few of the kernel internals changed. The exception handling&#10;    did&#10;    not change, but the compiled code would be slightly different from the&#10;    included&#10;    examples.&#10;    "><meta name="keywords" content="kernel, exception, error, memory"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1c10580.0x1d07ab0"></a>Kernel-Level Exception Handling</h1></div><div><div class="author"><h3 class="author">Joerg Pommnitz</h3></div><div class="issuemoyr">Issue #42, October 1997</div></div><div><p>
+    An in-depth look at how the kernel is now confirming the validity of
+    memory access addresses&mdash;not for the beginner. The information in
+    this article applies to kernel versions 2.1.08 to 2.1.36. With version
+    2.1.37, a few of the kernel internals changed. The exception handling
+    did
+    not change, but the compiled code would be slightly different from the
+    included
+    examples.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c10580.0x1d083a0"></a></h2></div></div><p>A Linux system consists of the kernel and
+an assorted collection of user applications. The user applications
+communicate with the kernel through system calls. System calls are
+entry points into the Linux kernel which allow the application to
+use services provided by the kernel. These services are often
+executed on input data provided by the user application. These
+input data can, on occasion, constitute a problem.
+</p><p>Linux is a multiuser operating system; i.e., it supports
+multiple concurrent users. It doesn't know anything about these
+users or the programs they use. An erroneous or malicious
+application might pass an invalid argument to a system call. If the
+kernel then tries to use the invalid argument, unpredictable
+behavior can occur. For that reason, the kernel must be
+&ldquo;paranoid&rdquo; about the arguments of system calls and must carefully
+check each argument to ensure that it neither endangers system
+stability nor harms other users. This is easy for some classes of
+arguments; file descriptors must be open,
+<span   class="bold"><b>ioctl</b></span> commands must be allowed for
+the specified device, etc.</p><p>One class of arguments contains pointers to the location of
+input data in the address space of the application or to a buffer
+that is going to receive the data of the system call. As an
+example, the system call <span   class="bold"><b>write</b></span>
+comes to mind. One of its arguments is a pointer to a location in
+the application which address space that contains the data to be
+written. The kernel must confirm that the address is truly a part
+of the address space of the process and does not overlap the
+address range reserved for the kernel. In the case of a system call
+which writes data into the user address space (for example,
+<span   class="bold"><b>read</b></span>), the kernel additionally has
+to check that the destination address is actually writable.</p><p>In kernel versions up to 2.1.2, each user memory access had
+to be guarded by a call to the function
+<b  >verify_area</b>. This function checks that an
+address range is valid for a certain operation (read or write). The
+<b  >verify_area</b> approach has four problems:</p><div class="orderedlist"><ol type="1"><li><p>It is slow, because the kernel has to look up the
+virtual memory area covering the address range in question. Virtual
+memory areas (VMA) are the data structures that the kernel uses to
+keep track of the memory mapped into each process. Searching for a
+certain VMA is a time-consuming process, even with an efficient
+algorithm. (Linux uses Adelson-Velskii-Landis trees to optimize VMA
+retrieval.)</p></li><li><p>It is normally not required, because most programs
+provide valid pointers to the kernel. Despite this, the kernel has
+to spend precious time for each user memory access to guard against
+the rare, &ldquo;buggy&rdquo; application.</p></li><li><p>It is error prone. A programmer can easily forget
+the <b  >verify_area</b> call before a user memory
+access, since the address verification and the actual user memory
+access are separate functions.</p></li><li><p>It is not always reliable, because in new,
+multi-threaded applications the memory mapping can change between a
+<b  >verify_area</b> operation and the actual user memory
+access.</p></li></ol></div><p>In particular, point 4 required that a new solution be found
+for verifying addresses. With the advent of real multi-threaded
+programs for Linux, it was no longer just a cosmetic
+problem.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c10580.0x1d08b88"></a>Requirements for a Better Solution</h2></div></div><p>A new solution for the problem of address verification had to
+meet the following criteria:</p><div class="orderedlist"><ol type="1"><li><p>Run as quickly as possible for the normal case of
+valid addresses.</p></li><li><p>Provide an easy-to-use programming interface for
+kernel programmers.</p></li><li><p>Be stable and correct for all cases.</p></li></ol></div><p>Instead of implementing the address test in software, points
+1 and 3 of the requirements best met by giving the virtual memory
+hardware (present in all Linux-capable hardware) the real work.
+Point 2 resulted in a merge of the access check and the actual
+memory access into a single access function.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c10580.0x1d08f50"></a>Implementation</h2></div></div><p>The implementation relies on the MMU (memory management unit)
+to do the right thing. Whenever the software tries to access an
+invalid address, the MMU delivers a page-fault exception. This is
+true not only for user applications, but also for the kernel. If
+the kernel tries to perform an invalid memory access, a special
+handler intercepts the resulting exception and fixes the access.
+Because the handler is only invoked for problematic cases, the
+normal memory access has almost zero added overhead. Some
+experimental implementations of the new user memory access scheme
+have been done by Linus in kernel versions 2.1.2 to 2.1.6. They
+proved that this scheme works in the real world, but has a rather
+clumsy API inside the kernel. For Linux 2.1.7 Richard Henderson
+implemented the current, much-improved version introduced in this
+article. It is now available for most of the architectures
+supported by Linux. I use the x86 implementation as an example; the
+code for the other supported architectures is very similar.</p><p>In this new version, only the macros and functions in the
+machine-specific header file uacess.h are allowed to access the
+user address space. There are functions and macros to handle
+zero-terminated strings, to clear memory areas, and to copy single
+values to and from the kernel. One of the macros is
+<b  >get_user</b>, which is called with two arguments:
+<span   class="emphasis"><em>val</em></span> and <span   class="emphasis"><em>addr</em></span>. It copies a
+single data value from the user space address
+<span   class="emphasis"><em>addr</em></span> to the variable <span   class="emphasis"><em>val</em></span>.
+On success, it returns the value 0, on failure -EFAULT (&ldquo;bad
+address&rdquo;). Its source code in the file uacess.h is somewhat hard
+to understand and even harder to explain.</p><p>Instead, I will track down a usage example from the function
+<b  >rs_ioctl</b> in drivers/char/serial.c. The line of
+source code in the kernel is:</p><pre     class="programlisting">
+error = get_user(arg, (unsigned int *) arg);
+</pre><p><a href="2135l1.html" target="_self"><span   class="bold"><b>Listing 1. C
+Compiler Output</b></span></a></p><p>Looks innocent, doesn't it? Well, Listing 1 shows what the C
+compiler makes of this code. Let's do a line-by-line walk-through,
+beginning with the register assignments. On output, register ECX
+contains the value read from the user address space, and register
+EDX contains the error code of the access operation. Register EBX
+holds the address of the value to be read. Line 01 initializes the
+error code with <b  >-EFAULT</b>. In line 02, the
+resultant value is set to 0.</p><p>In lines 03 to 07, the kernel does the checking which ensures
+that the address in register EBX does not overlap with kernel
+memory. First, it checks if the access is from inside the kernel.
+This situation can occur when the kernel itself invokes a system
+call (for example, in the NFS client implementation). In this case,
+access is always granted. If the access is from outside the kernel,
+it checks that the given address range does not overlap the range
+reserved for the kernel.</p><p>In Linux, the kernel address space is mapped into the address
+space of every process. The kernel memory starts at address
+0xC0000000. If a user program were allowed to pass a pointer to an
+address in kernel memory as an argument to a system call, the
+access by the kernel would not cause a page-fault exception. This
+in turn would allow the user program to overwrite kernel data. In
+our example (integer access = 4 bytes), the highest possible
+address a user process is allowed to access is 0xC0000000 - 4 =
+0xBFFFFFFFC = -1073741828. Every address larger than this touches
+kernel memory and is therefore invalid. If memory addresses are
+invalid, execution continues at label .L2395 in line 21.</p><p>Now that the preliminaries are over, we prepare to access the
+data pointed to by EBX. Assuming that the access will be
+successful, we set register EDX to 0 (line 09). In line 10 the
+actual access takes place. Note that the address of the instruction
+that might fault is tagged with the local label 1. The following
+code in the lines 13 to 15 unconditionally set the error code to
+<b  >--EFAULT</b>, the resultant value to 0, and jumps
+back to local label 2 in line 16. This looks like an infinite
+loop&mdash;it isn't.</p><p>Another important decision that Linus made at the beginning
+of the 2.1 development cycle was to completely abandon the a.out
+executable file format for kernel development in favor of the more
+modern ELF. Normally, ELF is only associated with easily shared
+library support for user applications. However, that's only one of
+its nice features. Another one is that ELF binaries (both object
+files and executables) can have an arbitrary number of named
+sections.</p><p>The <b  >.section&nbsp;.fixup,&nbsp;"ax"</b>
+command in line 12 instructs the assembler to place the following
+code in the ELF section named <b  >.fixup</b>. In line
+16, we switch back to the previous code section; normally this is
+<b  >.text</b>. This means that the assembler moves the
+code from lines 13 to 15 in the generated object file out of the
+normal execution path. Lines 17 to 20 accomplish a similar task by
+instructing the assembler to place two long values into the ELF
+section called <b  >__ex_table</b>. These two values are
+initialized to the address of the instruction that might fault
+(label 1 backward, 1b) and the address of the fixup code (label 3
+backward, 3b).</p><p>With the help of the command
+<span   class="bold"><b>objdump</b></span>, which is one of the GNU
+utilities, we can examine the internal structure of the linked
+kernel. See <a href="2135l2.html" target="_self">Listing 2. Internal Kernel
+Structure</a>.</p><p><a href="2135l3.html" target="_self"><span   class="bold"><b>Listing 3.
+Code Left in Normal Execution Path</b></span></a></p><p>As expected, there are two sections named
+<b  >.fixup</b> and <b  >__ex_table.</b>
+<span   class="bold"><b>objdump</b></span> also shows us the code
+which remains in the normal path of execution. Looking at Listing
+3, we can see that the whole user memory access is reduced to just
+12 machine instructions. The code originally bracketed with the
+<b  >.section</b> directives is now in the section
+<b  >.fixup</b>:</p><pre     class="programlisting">
+c01a16bf &lt;.fixup+17b3&gt; movl   $0xfffffff2,%edx
+c01a16c4 &lt;.fixup+17b8&gt; xorl   %ecx,%ecx
+c01a16c6 &lt;.fixup+17ba&gt; jmp    c018fafd &lt;rs_ioctl+359&gt;
+</pre><p>The ELF section <b  >__ex_table</b> contains pairs
+of addresses bracketed by &lt;&gt;: the faulting instruction
+address and the matching fixup code address. In our example, we
+expect the pair &lt;c018fafb,c01a16bf&gt;. Using the command:
+<pre     class="programlisting">
+objdump --section=__ex_table --full-contents\
+        vmlinux
+</pre>
+
+
+and a small program to swap bytes from internal representation to a
+human-readable form gives us this output:
+<pre     class="programlisting">
+c018f292 c01a1699 c018f51d c01a16a5
+c018f5a5 c01a16ad c018fad0 c01a16b5
+c018fafb c01a16bf c018fc5b c01a16cb
+c018fd02 c01a16d5 c018fd72 c01a16e1
+c018ff5a c01a16e9 c018ff7b c01a16f3
+</pre>
+
+
+Now we have all the pieces we need to assemble the final picture.
+When the kernel accesses an invalid address in user space, the MMU
+generates a page-fault exception. This exception is handled by the
+page-fault handler <b  >do_page_fault</b> in the C file
+arch/i386/mm/fault.c. <b  >do_page_fault</b> first
+obtains the unaccessible address from the CPU control register CR2.
+It then looks for a VMA in the current process mappings that
+contains the invalid address. If such a VMA exists, the address is
+within the virtual address space of the current process. The fault
+probably occurred, because the page was not swapped in or was write
+protected. In this case, the Linux memory manager takes appropriate
+action. However, we are more interested in the case in which the
+address is not valid&mdash;there is no VMA that contains the address. In
+this case, the kernel jumps to the <b  >bad_area</b>
+label.
+</p><p>At this point, the kernel calls the function
+<b  >search_exception_table</b> to look for an address at
+which the execution can safely continue (fixup). Since every
+faulting instruction has an associated fixup handler, this function
+uses the value in <b  >regs-&gt;eip</b> as a search
+key.</p><p>Loadable kernel modules in Linux complicate matters. After
+insertion at runtime, they are effectively part of the running
+kernel and can access user memory just as any other part of the
+kernel. For that reason, they have to be integrated into the
+exception-handling process. Kernel modules must provide their own
+exception tables. On insertion, the exception table of a module
+gets registered with the kernel. Then
+<b  >search_exception_table</b> can look through all of
+the registered tables, performing a binary search for the faulting
+instruction.</p><p>To access the start and the end of an exception table, we use
+a feature of the linker which resolves a symbol name consisting of
+the name of a section prepended with <b  >__start__</b>
+or <b  >__stop__</b> to the start or end address of the
+section in question. This feature allows us to access the exception
+table from C code. If <b  >search_exception_table</b>
+finds the address of the faulting instruction, it returns the
+address of the matching fixup code.
+<b  >do_page_fault</b> then sets its own return address
+to the fixup code and returns. In this way, the exception handler
+gets executed. The exception handler sets the value we tried to get
+to 0 and the return value of the <b  >get_user</b> macro
+to <b  >-EFAULT</b>. Then it jumps back to the address
+immediately after the failed user memory access. It is the task of
+the surrounding code to report the failure back to the user
+application.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1c10580.0x21025e8"></a>Summary</h2></div></div><p>The new user access scheme implemented in the 2.1 development
+kernels of Linux provides an efficient and easy-to-use way to copy
+data from and to the kernel address space. The added overhead for
+the average, error-free case is close to zero. Because access and
+test for accessibility are atomic, the original problem with
+multi-threaded applications is resolved. This solution meets all
+four of our requirements.</p><div       class="mediaobject"><a href="2135f1.large.jpg"><img src="2135f1.jpg"></a><div class="caption"><p>
+Figure 1. Execution Flow Chart
+</p></div></div></div></div>
+<div class="authorblurb"><p>The name J&ouml;erg Pommnitz can be found
+      throughout the Linux kernel code. He recently changed jobs and
+      moved without giving us his direction.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../042/toc042.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

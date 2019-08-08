@@ -1,0 +1,698 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Puppet and Nagios: a Roadmap to Advanced Configuration
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Going above and beyond the widely known approaches to&#10;managing Nagios with Puppet.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xdd0580.0xec7ac0"></a>
+Puppet and Nagios: a Roadmap to Advanced Configuration
+</h1></div><div><div class="author"><h3 class="author">
+Adam
+ 
+Kosmin
+</h3></div><div class="issuemoyr">Issue #216, April 2012</div></div><div><p>
+Going above and beyond the widely known approaches to
+managing Nagios with Puppet.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec81f8"></a></h2></div></div><p>
+Puppet has provided baked-in Nagios support for a long time now. When
+combined with Exported Resources, Puppet is well suited to manage an
+intelligent Nagios configuration where nodes are automatically
+inventoried and monitored. The excellent <span   class="emphasis"><em>Pro Puppet</em></span>, written by James
+Turnbull, provides a fairly complete rundown of the installation and
+configuration steps needed in order to progress in this direction, so I
+won't repeat the information here. Instead, this article highlights
+some less-than-optimal default behavior of the Nagios types and details
+my solution that results in a cleaner filesystem and improved
+performance.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec8408"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Not All Resources Should Be Exported!</b></p><p>
+This took me an embarrassingly long time to figure out. Just like
+resources that are defined in a manifest, Exported Resources must be
+unique. For example, suppose we have nodes foo and bar, which we'd like
+to categorize into a Nagios hostgroup named &ldquo;PMF&rdquo;. At first glance,
+adding the following code to foo's manifest might seem like the way to
+go:
+
+<pre     class="programlisting">
+@@nagios_hostgroup { "PMF":
+  ensure =&gt; present,
+  hostgroup_members +&gt; [ $::hostname ]
+}
+</pre>
+</p><p>
+In theory, the resource will be exported to the database when the first
+node compiles its manifest, but the next node's compilation will complain
+with a duplicate resource error. For this reason, we will avoid
+exporting resources created by this particular type. Instead, we will manage
+our hostgroup memberships via the hostgroup parameter of the
+nagios_host type.
+</p></div><p>
+Had it not been for Pieter Barrezeele's blog (<a href="http://pieter.barrezeele.be/2009/05/11/puppet-and-nagios" target="_self">pieter.barrezeele.be/2009/05/11/puppet-and-nagios</a>), I may have ended up
+settling for Puppet's fairly inefficient approach to storing
+resources managed via its Nagios types. By default, these bits are
+maintained in hard-coded file paths according to type used. For example, all
+resources based on the nagios_service type are collected and stored in
+/etc/nagios/nagios_service.cfg and so on. For performance reasons, I
+want each collected resource to be stored in its own file path based on
+the following naming convention:
+
+<pre     class="programlisting">
+
+&lt;base_directory&gt;/&lt;type&gt;_&lt;title&gt;_&lt;hostname&gt;.cfg
+
+</pre>
+</p><p>
+Furthermore, I want my filenames to be composed of all lowercase
+letters and spaces replaced with underscores. For starters, let's add
+the bare minimum snippets of code into our manifests in order to export
+and collect resources using the nagios_host type (Listings 1 and 2).
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec88d8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 1. modules/nagios/manifests/init.pp</b></p><pre     class="programlisting">
+
+# This class will be used by the nagios server
+class nagios {
+
+  service { nagios:
+    ensure =&gt; running,
+    enable =&gt; true,
+  }
+
+  # Be sure to include this directory in your nagios.cfg 
+  # with the cfg_dir directive
+
+  file { resource-d:
+    path =&gt; '/etc/nagios/resource.d',
+    ensure =&gt; directory,
+    owner =&gt; 'nagios',
+  }
+
+  # Collect the nagios_host resources
+  Nagios_host &lt;&lt;||&gt;&gt; {
+    require =&gt; File[resource-d],
+    notify =&gt; Service[nagios],
+  }
+}
+
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec8ae8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. /modules/nagios/manifests/export.pp</b></p><pre     class="programlisting">
+# All agents (including the nagios server) will use this
+class nagios::export {
+
+  @@nagios_host { $::hostname:
+    address =&gt; $::ipaddress,
+    check_command =&gt; 'check_host_alive!3000.0,80%!5000.0,100%!10',
+    target =&gt; "/etc/nagios/resource.d/host_${::hostname}.cfg",
+  }
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec8cf8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Note:</b></p><p>
+Due to the inherent space limitations of published articles, all code
+will be kept as minimal as possible while conforming to the structure of
+Puppet Modules. However, no attempt will be made to reproduce a complete
+module capable of managing a Nagios instance. Instead, I focus on
+the concepts that have been defined in this article's introduction.
+Please see <a href="http://docs.puppetlabs.com" target="_self">docs.puppetlabs.com</a> if you need an introduction to Puppet
+modules.
+</p></div><p>
+Let's examine the good and the not-so-good aspects of what we've defined
+up to this point. On the positive side, all agents will export a
+nagios_host resource. The Nagios server, upon compiling its manifest,
+will collect each resource, store it in a unique file, and refresh the
+Nagios service. At first glance, it may seem like our work is done.
+Unfortunately, our solution is littered with the following issues and
+shortcomings:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Nagios will not be able to read the newly created .cfg files since
+the Puppet Agent will create them while running as the root user.
+</p></li><li><p>
+There is too much &ldquo;coordination&rdquo; needed with the target parameter of the
+nagios_host type. We should not have to work so hard in order to ensure
+our target points to the correct file and is void of unpleasant things
+like spaces and/or mixed case.
+</p></li><li><p>
+The address parameter is hard-coded with the value of the ipaddress
+fact. Although this may be acceptable in some environments, we 
+really should allow for greater flexibility.
+</p></li><li><p>
+No ability exists to leverage Nagios hostgroups.
+</p></li><li><p>
+Puppet will be unable to purge our exported resources, because we are
+not using the default behavior of the target parameter.
+</p></li></ol></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec93d8"></a>
+Refactoring the Code</h2></div></div><p>
+In order to solve these issues, let's write a new definition to
+act as a wrapper for all of the Nagios types we plan to use. Before we
+begin, let's make sure we understand the most important problem&mdash;the issue of file ownership and permissions for the newly generated .cfg
+files. Because these files are created via the target parameter of each
+associated Nagios type, they'll be written to disk by the user Puppet
+runs as. This means they will be owned by the root user/group, and Nagios
+will not have permission to read them (because I know you are not
+running Nagios as root, correct?). Although some people have chosen to work
+around this problem by chowning the files via Puppet's exec type, we're
+going to do something far cleaner in order to maintain Puppet's greatest
+attribute, abstraction.
+</p><p>
+After plenty of failed &ldquo;bright ideas&rdquo; and confusion on my end, it became
+clear that it would be quite simple to control the ownership and
+permissions of each newly created .cfg file if each was managed as a
+file resource. We can fold the creation of these file resources into our
+wrapper definition and export them just as we do with the Nagios types.
+Each file resource then can be defined easily with appropriate
+properties as well as requiring their corresponding Nagios type. When
+our Nagios server collects these resources, it first will create the
+file from the collected Nagios type before managing the file's
+attributes. Let's examine the new and refactored code.
+</p><p><span   class="bold"><b>
+The nagios::params class:</b></span>
+</p><p>
+First, let's define a few variables in a central location. Doing so
+will aid us in our quest to be &ldquo;lazy&rdquo; and not have to match values
+in various areas of our manifests (Listing 3).
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec97a0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. modules/nagios/manifests/params.pp</b></p><pre     class="programlisting">
+class nagios::params {
+
+  $resource_dir = '/etc/nagios/resource.d'
+  $user = 'nagios'
+
+  case $::operatingsystem {
+
+    debian: {
+      $service = 'nagios3'
+    }
+    solaris: {
+      $service = 'cswnagios'
+    }
+    default: {
+      fail("This module is not supported on $::operatingsystem")
+    }
+  }
+}
+</pre></div><p><span   class="bold"><b>
+The nagios::resource definition and friends:</b></span>
+</p><p>
+Our custom resource definition will serve as a wrapper for all Nagios
+types. Due to space considerations, the included code covers only the
+nagios_host and nagios_hostgroup types. Of course, this definition can
+and should be extended to support every Nagios type we intend to use.
+Each supported type is represented in its own appropriately named
+definition 1 level under the nagios::resource namespace. Also included
+is a nagios::resource::file definition that is responsible for creating
+the previously mentioned .cfg file (Listings 4&ndash;7).
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0xec9b10"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. modules/nagios/manifests/resource.pp</b></p><pre     class="programlisting">
+define nagios::resource(
+  $export,
+  $type,
+  $host_use = 'generic-host',
+  $ensure = 'present',
+  $owner = 'nagios',
+  $address = '',
+  $hostgroups = '',
+  $check_command = ''
+) {
+
+  include nagios::params
+
+  # figure out where to write the file
+  # replace spaces with an underscore and convert 
+  # everything to lowercase
+  $target = inline_template("${nagios::params::resource_dir}
+&#8618;/${type}_&lt;%=name.gsub(/\\s+/, '_').downcase %&gt;.cfg")
+
+  case $export {
+    true, false: {}
+    default: { fail("The export parameter must be 
+&#8618;set to true or false.") }
+  }
+
+  case $type {
+    host: {
+      nagios::resource::host { $name:
+        ensure =&gt; $ensure,
+        use =&gt; $host_use,
+        check_command =&gt; $check_command,
+        address =&gt; $address,
+        hostgroups =&gt; $hostgroups,
+        target =&gt; $target,
+        export =&gt; $export,
+      }
+    }
+    hostgroup: {
+      nagios::resource::hostgroup { $name:
+        ensure =&gt; $ensure,
+        target =&gt; $target,
+        export =&gt; $export,
+      }
+    }
+    default: {
+      fail("Unknown type passed to this define: $type")
+    }
+  }
+
+  # create or export the file resource needed to support 
+  # the nagios type above
+  nagios::resource::file { $target:
+    ensure =&gt; $ensure,
+    export =&gt; $export,
+    resource_tag =&gt; "nagios_${type}",
+    requires =&gt; "Nagios_${type}[${name}]",
+  }
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c1f70"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 5. modules/nagios/manifests/resource/file.pp</b></p><pre     class="programlisting">
+define nagios::resource::file(
+  $resource_tag,
+  $requires,
+  $export = true,
+  $ensure = 'present',
+) {
+
+  include nagios::params
+
+  if $export {
+
+    @@file { $name:
+      ensure =&gt; $ensure,
+      tag =&gt; $resource_tag,
+      owner =&gt; $nagios::params::user,
+      require =&gt; $requires,
+    }
+  } else {
+
+    file { $name:
+      ensure =&gt; $ensure,
+      tag =&gt; $resource_tag,
+      owner =&gt; $nagios::params::user,
+      require =&gt; $requires,
+    }
+  }
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c2180"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 6. modules/nagios/manifests/resource/host.pp</b></p><pre     class="programlisting">
+define nagios::resource::host(
+  $address,
+  $hostgroups,
+  $export,
+  $target,
+  $check_command,
+  $use,
+  $ensure = 'present'
+) {
+
+  include nagios::params
+
+  if $export {
+
+    @@nagios_host { $name:
+      ensure =&gt; $ensure,
+      address =&gt; $address,
+      check_command =&gt; $check_command,
+      use =&gt; $use,
+      target =&gt; $target,
+      hostgroups =&gt; $hostgroups ? {
+        '' =&gt; undef,
+        default =&gt; $hostgroups,
+      },
+    }
+  } else {
+
+    nagios_host { $name:
+      ensure =&gt; $ensure,
+      address =&gt; $address,
+      check_command =&gt; $check_command,
+      use =&gt; $use,
+      target =&gt; $target,
+      require =&gt; File[$nagios::params::resource_dir],
+      hostgroups =&gt; $hostgroups ? {
+        '' =&gt; undef,
+        default =&gt; $hostgroups,
+      },
+    }
+  }
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c2390"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 7. modules/nagios/manifests/resource/hostgroup.pp</b></p><pre     class="programlisting">
+define nagios::resource::hostgroup(
+  $target,
+  $ensure = 'present',
+  $hostgroup_alias = '',
+  $export = false
+) {
+
+  include nagios::params
+
+  if $export {
+    fail("It is not appropriate to export the Nagios_hostgroup 
+&#8618;type since it will result in duplicate resources.")
+  } else {
+    nagios_hostgroup { $name:
+      ensure =&gt; $ensure,
+      target =&gt; $target,
+      require =&gt; File[$nagios::params::resource_dir],
+    }
+  }
+}
+</pre></div><p>
+Listing 8 shows our refactored nagios::export class that is meant to be used by
+all nodes. Notice how we no longer leverage the nagios_host type
+directly. Instead, we call upon our newly created nagios::resource
+definition. Both the address and hostgroups parameters will use sane
+defaults unless they are overridden with node scoped variables. Also,
+notice how the target parameter is no longer required, as our
+nagios::resource definition performs the heavy lifting for us.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c26a8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 8. modules/nagios/manifests/export.pp</b></p><pre     class="programlisting">
+# All agents (including the nagios server) will use this
+class nagios::export {
+
+  nagios::resource { $::hostname:
+    type =&gt; 'host',
+    address =&gt; inline_template("&lt;%= has_variable?('my_nagios_interface') ?
+&#8618;eval('ipaddress_' + my_nagios_interface) : ipaddress %&gt;"),
+    hostgroups =&gt; inline_template("&lt;%= has_variable?('my_nagios_hostgroups') ?
+&#8618;$my_nagios_hostgroups : 'Other' %&gt;"),
+    check_command =&gt; 'check_host_alive!3000.0,80%!5000.0,100%!10',
+    export =&gt; true,
+  }
+}
+</pre></div><p>
+As you can see, the nagios::export class is ready to be extended with
+any kind of resource supported by our nagios::resource definition.
+Whenever we want all clients to export a particular resource, we just
+add it here so long as the following requirements are met:
+</p><div class="orderedlist"><ol type="1"><li><p>
+The resource name must be unique.
+</p></li><li><p>
+The type parameter must be set.
+</p></li><li><p>
+The export parameter must be set to a value of true.
+</p></li></ol></div><p>
+Now that all of our agents are exporting a nagios_host resource, we can
+focus on the collection side of things.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c2bd0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Tip: Short-and-Sweet Nagios Service Descriptions</b></p><div       class="mediaobject"><img src="11234f1.jpg"><div class="caption"><p>
+Efficient Service Names in Nagios
+</p></div></div><p>
+When you get around to extending nagios::resource with support for the
+nagios_service type, you may want to consider using an inline ERB template
+to handle the service_description parameter. The following code removes
+the last word (which should be the hostname) from the description
+displayed in Nagios:
+
+<pre     class="programlisting">
+service_description =&gt; inline_template("&lt;%= name.gsub(/\\w+$/,
+&#8618;'').chomp(' ') %&gt;"),
+</pre>
+</p><p>
+Now, a resource defined with a unique title, such as &ldquo;Puppet Agent
+$::hostname&rdquo;, is displayed as &ldquo;Puppet Agent&rdquo; in Nagios.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c30f8"></a>
+Expire, Collect and Purge Exported Resources</h2></div></div><p>
+Up until this point, the job of our Nagios server simply has been to 
+collect exported resources. In the real world, the nodes it monitors are
+retired for one reason or another quite routinely. When a node is
+retired, I want to be sure the relevant Nagios objects are removed and
+the corresponding database records are deleted. According to Puppet's
+documentation, these resources can be purged from the collector
+only when default target locations are leveraged (<a href="http://docs.puppetlabs.com/references/stable/type.html#nagioshost" target="_self">docs.puppetlabs.com/references/stable/type.html#nagioshost</a>). Even so, I wasn't happy to
+see orphaned database records left behind and decided to address this
+issue with a few Puppet functions and some basic class ordering. Before
+we dive in, some work flow and terminology must be understood:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Expire: a Nagios resource is &ldquo;expired&rdquo; by setting the value of its
+&ldquo;ensure&rdquo; parameter to &ldquo;absent&rdquo;.
+</p></li><li><p>
+Collect: the resource is removed from the collector due to the value
+of its &ldquo;ensure&rdquo; parameter.
+</p></li><li><p>
+Purge: all database records associated with the expired host are
+deleted.
+</p></li></ul></div><p>
+Ordering is obviously a big deal here. In order to ensure proper
+execution of each task, we will break out each unit of work into its
+own class and use a mix of &ldquo;include&rdquo; and &ldquo;require&rdquo; functions. Using Puppet
+terminology, we now can express this &ldquo;expire, collect, then purge&rdquo; work
+flow as follows:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The nagios class requires the nagios::expire_resources class.
+</p></li><li><p>
+The nagios class includes the nagios::purge_resources class.
+</p></li><li><p>
+The nagios::purge_resources class requires the nagios::collect_resources
+class.
+</p></li></ul></div><p>
+Now, let's look at a few custom functions, expire_exported and purge_exported.
+These functions (written for PostgreSQL) perform the database operations that are required in
+order to expire hosts and their resources. They both operate on a node-scoped variable named $my_nagios_purge_hosts, which should contain an
+array of hostnames. If used, this variable should be placed somewhere in
+your Nagios server's node definition. For example:
+
+<pre     class="programlisting">
+node corona {
+  $my_nagios_purge_hosts = [ 'foo', 'bar', 'baz' ]
+  include nagios
+}
+</pre>
+</p><p>
+With this node-scoped variable defined, your (affectionately named)
+Nagios server will reconfigure itself after dropping all resources for
+the three hosts mentioned above (Listings 9 and 10).
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c3ba0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 9. nagios/lib/puppet/parser/functions/expire_exported.rb</b></p><pre     class="programlisting">
+Puppet::Parser::Functions::newfunction(
+  :expire_exported,
+  :doc =&gt; "Sets a host's resources to ensure =&gt; 
+&#8618;absent as part of a purge work-flow.") do |args|
+
+  require 'rubygems'
+  require 'pg'
+  require 'puppet'
+
+  raise Puppet::ParseError, "Missing hostname." if args.empty?
+  hosts = args.flatten
+
+  begin
+    conn = PGconn.open(:dbname =&gt; 'puppet', :user =&gt; 'postgres')
+
+    hosts.each do |host|
+      Puppet.notice("Expiring resources for host: #{host}")
+      conn.exec("SELECT id FROM hosts WHERE name = 
+&#8618;\'#{host}\'") do |host_id|
+        raise "Too many hosts" if host_id.ntuples &gt; 1
+        conn.exec("SELECT id FROM param_names WHERE name = 
+&#8618;'ensure'") do |param_id|
+
+          conn.exec("SELECT id FROM resources WHERE host_id =
+&#8618;#{host_id.values.flatten[0].to_i}") do |results|
+
+            resource_ids = []
+            results.each do |row|
+              resource_ids &lt;&lt; Hash[*row.to_a.flatten]
+            end
+
+            resource_ids.each do |resource|
+              conn.exec("UPDATE param_values SET VALUE = 
+&#8618;'absent' WHERE resource_id = #{resource['id']} AND 
+&#8618;param_name_id = #{param_id.values}")
+            end
+          end
+        end
+      end
+    end
+  rescue =&gt; e
+    Puppet.notice(e.message)
+  ensure
+    conn.close
+  end
+end
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c3db0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 10. nagios/lib/puppet/parser/functions/purge_exported.rb</b></p><pre     class="programlisting">
+# This function will be used by the exported 
+# resources collector (the nagios box)
+Puppet::Parser::Functions::newfunction(:purge_exported, 
+&#8618;:doc =&gt; "delete expired resources.") do |args|
+
+  require 'rubygems'
+  require 'pg'
+  require 'puppet'
+
+  raise Puppet::ParseError, "Missing hostname." if args.empty?
+  hosts = args.flatten
+
+  begin
+    conn = PGconn.open(:dbname =&gt; 'puppet', :user =&gt; 'postgres')
+
+    hosts.each do |host|
+
+      Puppet.notice("Purging expired resources for host: #{host}")
+      conn.exec("SELECT id FROM hosts WHERE name = 
+&#8618;\'#{host}\'") do |host_id|
+
+        raise "Too many hosts" if host_id.ntuples &gt; 1
+        conn.exec("SELECT id FROM resources WHERE host_id =
+&#8618;#{host_id.values.flatten[0].to_i}") do |results|
+
+          resource_ids = []
+          results.each do |row|
+            resource_ids &lt;&lt; Hash[*row.to_a.flatten]
+          end
+
+          resource_ids.each do |resource|
+            conn.exec("DELETE FROM param_values WHERE 
+&#8618;resource_id = #{resource['id']}")
+            conn.exec("DELETE FROM resources WHERE id = 
+&#8618;#{resource['id']}")
+          end
+        end
+
+        conn.exec("DELETE FROM hosts WHERE id = 
+&#8618;#{host_id.values}")
+      end
+    end
+  rescue =&gt; e
+    Puppet.notice(e.message)
+  ensure
+    conn.close
+  end
+end
+</pre></div><p>
+And, now for the refactored nagios class and related code (Listings 11&ndash;14).
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x12c4070"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 11. modules/nagios/manifests/init.pp</b></p><pre     class="programlisting">
+# This class will be used by the nagios server
+class nagios {
+
+  include nagios::params
+  require nagios::expire_resources
+  include nagios::purge_resources
+
+  service { $nagios::params::service:
+    ensure =&gt; running,
+    enable =&gt; true,
+  }
+
+  # nagios.cfg needs this specified via the cfg_dir directive
+  file { $nagios::params::resource_dir:
+    ensure =&gt; directory,
+    owner =&gt; $nagios::params::user,
+  }
+
+  # Local Nagios resources
+  nagios::resource { [ 'Nagios Servers', 'Puppet Servers', 'Other' ]:
+    type =&gt; hostgroup,
+    export =&gt; false;
+  }
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x11d4b90"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 12. modules/nagios/manifests/expire_resources.pp</b></p><pre     class="programlisting">
+class nagios::expire_resources {
+
+  if $my_nagios_purge_hosts {
+    expire_exported($my_nagios_purge_hosts)
+  }
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x11d4da0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 13. modules/nagios/manifests/purge_resources.pp</b></p><pre     class="programlisting">
+class nagios::purge_resources {
+
+  require nagios::collect_resources
+
+  if $my_nagios_purge_hosts {
+    purge_exported($my_nagios_purge_hosts)
+  }
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xdd0580.0x11d4fb0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 14. modules/nagios/manifests/collect_resources.pp</b></p><pre     class="programlisting">
+
+class nagios::collect_resources {
+
+  include nagios::params
+
+  Nagios_host &lt;&lt;||&gt;&gt; {
+    require =&gt; $nagios::params::resource_dir,
+    notify =&gt; Service[$nagios::params::service],
+  }
+
+  File &lt;&lt;| tag == nagios_host |&gt;&gt; {
+    notify =&gt; Service[$nagios::params::service],
+  }
+}
+
+</pre></div><p>
+The basic building blocks are now in place. Extend nagios::resources,
+plug the classes in to your nagios module and kick back. If a node goes
+MIA and needs to be purged, toss it into your $my_nagios_purge_hosts
+array and be done with it. Until next time, may your Nagios dashboards be
+green and your alerts be few.
+</p></div></div>
+<div class="authorblurb"><p>
+Adam Kosmin is a longtime Free Software advocate with 15+ years of
+professional systems engineering experience. He is currently employed by
+Reliant Security, Inc., where he leverages Puppet extensively. Adam was
+one of the featured speakers at PuppetConf 2011 where he spoke about his
+approach to managing thousands of nodes across isolated customer
+environments via a central source tree.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../216/toc216.html">Issue Table of Contents</a>
+    <a class="link3" href="../216/11234.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

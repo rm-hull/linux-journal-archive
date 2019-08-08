@@ -1,0 +1,248 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <sys/param.h>
+#include <sys/types.h>
+
+#define CMD_LINE_LEN 1024
+
+/*
+ * rscript: Run those pesky execute-only scripts. Although you're
+ * allowed to execute them, you can't read them to pass to an
+ * interpreter -- hence can't *really* execute them.  This program,
+ * running with euid of root, opens the troublesome script, drops
+ * its privileges, and runs the interpreter specified by the script.
+ *
+ * This script's activities depend on the ability of the interpreter
+ * to accept input from stdin while allowing positional parameters.  For
+ * example: "sh -s foo bar" runs a shell to stdin, while interpreting
+ * "foo" and "bar" as positional parameters $1 and $2.
+ *
+ * Unfortunately, the syntax for achieving this behavior varies with
+ * the choice of interpreter, so we must retain some knowledge of how
+ * to do it for the interpreters we're most likely to encounter, and
+ * bomb out on the interpreters we don't recognize.
+ *
+ * Additional restriction: this only works with scripts that don't
+ * expect anything from stdin, since stdin is already engaged.
+ *
+ * Usage: $0 scriptname [ ...args... ]
+ *
+ * By Nathan Meyers, nmeyers@teleport.com
+ * $Date: 1997/07/12 17:15:22 $
+ */
+
+/* Define the interpreters we recognize and their relevant arguments */
+typedef struct interp_option_s
+{
+    const char *basename;
+    const char *option;
+}
+interp_option;
+
+interp_option interpreters[] = {
+    { "sh", "-s" },
+    { "ksh", "-s" },
+    { "bash", "-s" },
+    { "csh", "-s" },
+    { "tcsh", "-s" },
+    { "perl", "-" },
+    { "tcsh", "--" },
+    { "wish", "--" }
+};
+
+int main(int argc, const char *argv[])
+{
+    char script_path[MAXPATHLEN + 1];
+    char cmd_line[CMD_LINE_LEN + 1];
+    const char *path;
+    const char *default_path = "/bin:/usr/bin";
+    FILE *script_fd;
+    int i;
+    char *cmd, *arg1;
+    const char *basename, *option = 0;
+    char const **arg_vector;
+
+    /* Any script specified? */
+    if (argc < 2)
+    {
+    	/* No :-( */
+    	fprintf(stderr, "Usage: %s scriptname [ ...args... ]\n", argv[0]);
+    	exit(1);
+    }
+
+    /* User specified a path? */
+    if (strchr(argv[1], '/'))
+    {
+    	/* Yes.  Have we the right to look at and run it? Answer to this
+	   question necessarily based on the real userid, not euid */
+	if (access(argv[1], X_OK | F_OK) == -1)
+	{
+    	    /* Tough luck */
+    	    perror(argv[1]);
+    	    exit(1);
+	}
+	path = argv[1];
+    }
+    else
+    {
+    	/* No. Step through the search path. */
+    	int cmd_len = strlen(argv[1]);
+    	if (!(path = getenv("PATH"))) path = default_path;
+    	while (*path)
+    	{
+    	    /* Figure out where current path component ends */
+    	    int path_len;
+    	    const char *path_end = strchr(path, ':');
+    	    if (!path_end) path_end = path + strlen(path);
+    	    path_len = path_end - path;
+    	    /* Does path len + command len fit in MAXPATHLEN? */
+    	    if (cmd_len + path_len < MAXPATHLEN - 1)
+    	    {
+    	    	/* Yes... check for the executable. Start by assembling
+    	    	   the name */
+    	    	strncpy(script_path, path, path_len);
+    	    	script_path[path_len] = '/';
+    	    	strcpy(script_path + path_len + 1, argv[1]);
+
+		/* Have we the right to look at and run it? Answer to
+		   this question necessarily based on the real userid,
+		   not euid */
+		if (!access(script_path, X_OK | F_OK))
+		    break;	/* Yes!  We found our script */
+    	    }
+    	    /* Point at the next path component */
+    	    path = path_end + (*path_end ? 1 : 0);
+    	}
+    	/* Did we find something we could run? */
+    	if (!*path)
+	{
+	    /* No... report the last access failure. */
+	    perror(argv[1]);
+	    exit(1);
+	}
+	/* Yes... record path to executable script. */
+	path = script_path;
+    }
+
+    /* We've established that we're allowed to execute the script.
+       Now open it. */
+    if (!(script_fd = fopen(path, "r")))
+    {
+    	/* Couldn't open it. Probably not really setuid root :-(. */
+    	perror(path);
+    	exit(1);
+    }
+
+    /* File's open... party's over.  Drop our privileges.  We could
+       get clever and check the setuid and setgid bits on the script
+       and change our own ids appropriately.  But out of respect for
+       those who consider setuid/setgid scripts to be security holes,
+       we won't.  We'll just become ourselves. */
+    setreuid(getuid(), getuid());
+
+    /* Read the first line from the script */
+    if (!fgets(cmd_line, CMD_LINE_LEN + 1, script_fd))
+    {
+    	/* Failure.  Shouldn't happen, but it did. */
+    	perror(path);
+    	exit(1);
+    }
+
+    /* We're done reading the script.  Set the file pointer, which
+       stdio offset by some multiple of buffer size, back to 0. */
+    if (lseek(fileno(script_fd), 0, SEEK_SET) == -1)
+    {
+    	perror(path);
+    	exit(1);
+    }
+
+    /* Set our stdin to the script */
+    dup2(fileno(script_fd), fileno(stdin));
+    fclose(script_fd);
+
+    /* Now we need to parse the interpreter name from the script.  Lots
+       of divergent practices on how to do this.  Some shells allow as
+       little as 32 bytes for the command + argument[s]; most shells allow
+       at most one argument.  We'll compromise: allow a long command line,
+       but only one argument. */
+
+    /* First, verify that it's a script */
+    if (strncmp(cmd_line, "#!", 2))
+    {
+    	fprintf(stderr, "%s: Not a script\n", path);
+    	exit(1);
+    }
+
+    /* Find the start of the command */
+    for (cmd = cmd_line + 2; *cmd && isspace(*cmd); cmd++);
+    if (!*cmd)
+    {
+    	fprintf(stderr, "%s: No interpreter name found\n", path);
+    	exit(1);
+    }
+
+    /* Find the end of the command */
+    for (arg1 = cmd; *arg1 && !isspace(*arg1); arg1++);
+    /* End of cmd_line string? */
+    if (*arg1)
+    {
+	/* No... Terminate the cmd name and search for the first arg.
+	   Otherwise (if we didn't enter this clause) we've found
+	   null-terminated cmd name and we're done.  Start by
+	   terminating cmd name and finding beginning of $1 parm. */
+        for (*(arg1++) = 0; *arg1 && isspace(*arg1); arg1++);
+        /* Found? */
+        if (*arg1)
+        {
+            /* Yes.  Null-terminate it. */
+            char *arg1_end;
+            for (arg1_end = arg1;
+		 *arg1_end && !isspace(*arg1_end);
+            	 arg1_end++);
+            *arg1_end = 0;
+        }
+        else arg1 = 0;
+    }
+    else arg1 = 0;
+
+    /* We've got interpreter path and possible first argument.  Time to
+       look for an interpreter we recognize. */
+    basename = strrchr(cmd, '/');
+    basename = basename ? basename + 1 : cmd;
+    for (i = 0; i < sizeof(interpreters)/sizeof(interp_option); i++)
+    {
+    	if (!strcmp(interpreters[i].basename, basename))
+    	{
+    	    option = interpreters[i].option;
+    	    break;
+    	}
+    }
+    if (!option)
+    {
+    	fprintf(stderr, "%s: Unrecognized interpreter\n", cmd);
+    	exit(1);
+    }
+
+    /* Ready to roll!  Put together a command line */
+    arg_vector = (char const **)malloc(sizeof(char *) * (argc + 2));
+    i = 0;
+    arg_vector[i++] = path;
+    if (arg1) arg_vector[i++] = arg1;
+    /* Add option to read from stdin, which replaces the usual occurrence
+       of the script path in #! script execution. */
+    arg_vector[i++] = option;
+    /* Append command-line arguments */
+    for (argc -= 2, argv += 2; argc; argc--) arg_vector[i++] = *argv++;
+    /* Null-terminate */
+    arg_vector[i] = 0;
+
+    /* It's showtime! */
+    execv(cmd, (char *const *)arg_vector);
+
+    /* We're here only if exec failed */
+    perror(cmd);
+    exit(1);
+}

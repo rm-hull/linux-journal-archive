@@ -1,0 +1,128 @@
+/* Find internal rate of return */
+
+#include <stdio.h>
+#include <math.h>
+#include <stdlib.h>
+
+typedef enum { FALSE, TRUE } BOOLEAN;
+typedef enum { OK, NO_CONVERGE } ITERATOR;
+
+typedef struct {
+  double dollars; /* + income, - expense */
+  double time;    /* 0 present, + future, -- past, all in years */
+} MONEY;
+
+const unsigned Iters_max = 20;
+const double   Epsilon   = 1.0e-6;
+
+static ITERATOR irr(MONEY *pos_p, MONEY *neg_p, double *u_p, 
+                    unsigned *iterations_p);
+
+int main(int argc, char **argv)
+{
+  char buf[81];
+  int rv = EXIT_FAILURE;
+  unsigned iterations, neg_ct = 0, pos_ct = 0;
+  double u = 0.0, dollars, time;
+  FILE *fin_p;
+  MONEY *pos_p, *neg_p, *pos_r, *neg_r;
+
+  for(;;) { /* one pass "loop" */
+    if(argc != 2) {
+      (void)puts("Usage: irr <data file>");
+      break;
+    }
+    if((fin_p = fopen(argv[1], "r")) == NULL) {
+      (void)printf("Cannot open data file\ "%s\"\n", argv[1]);
+      break;
+    }
+    while(fgets(buf, sizeof buf, fin_p)) {
+      (void)sscanf(buf, "%lf, &dollars");
+      if(dollars == 0.0) {
+        (void)puts("Cannot have dollar amount = $0.00 !...");
+        exit(rv);
+      }
+      dollars > 0.0 ? pos_ct++ : neg_ct++;
+    }
+    if(pos_ct == 0 || neg_ct == 0) {
+      (void)puts("\nCannot calculate irr. Need income AND expenditures!...");
+      break;
+    }
+    if((pos_p = (MONEY *)malloc((pos_ct + 1) * sizeof(MONEY))) == NULL) {
+      (void)puts("Cannot malloc pos_p!...");
+      break;
+    }
+    if((neg_p = (MONEY *)malloc((neg_ct + 1) * sizeof(MONEY))) == NULL) {
+      (void)puts("Cannot malloc neg_p!...");
+      break;
+    }
+    rewind(fin_p);
+    (void)puts(" Income($)     Time (yr)");
+    (void)puts(" =========     =========");
+    pos_r = pos_p;
+    neg_r = neg_p;
+    while(fgets(buf, sizeof buf, fin_p)) {
+      (void)sscanf(buf, "%lf %lf", &dollars, &time);
+      (void)printf("%10.2f       %5.2f\n", dollars, time);
+      if(dollars > 0.0) {
+        pos_r->dollars = dollars;
+        pos_r->time    = time;
+        pos_r++;
+      } else {
+        neg_r->dollars = -dollars; /* Store as positive number */
+        neg_r->time    = time;
+        neg_r++;
+      }
+    }
+    pos_p[pos_ct].dollars = neg_p[neg_ct].dollars = 0.0; /* sentinels */
+    switch(irr(pos_p, neg_p, &u, &iterations)) {
+    case OK:
+      (void)printf(
+  "\nIRR = %.4f%% (discrete) = %.4f%% (continuous) after %u iteration%s.\n",
+                   100.0 * (exp(-u) - 1.0), -100 * u,
+                   iterations, iterations == 1 ? "" : "s");
+      rv = EXIT_SUCCESS;
+      break;
+    default:
+    case NO_CONVERGE:
+      (void)printf("irr() does not converge in %u iterations\n", Iters_max);
+      break;
+    }
+    break;
+  }
+  return rv;
+}
+
+static ITERATOR irr(MONEY *pos_p, MONEY *neg_p, double *u_p,
+                    unsigned *iterations_p)
+{
+  unsigned iters;
+  ITERATOR rv;
+  double u = *u_p, pos, d_pos, neg, d_neg, delta, tmp;
+  MONEY *m_r;
+
+  for(iters = Iters_max; iters > 0; iters"") {
+    for(m_r = pos_p, pos = d_pos = 0.0; m_r->dollars != 0.0; m_r++) {
+      pos += (tmp = m_r->dollars * exp(u * m_r->time));
+      d_pos += tmp * m_r->time;
+    }
+    for(m_r = neg_p, neg = d_neg = 0.0; m_r->dollars != 0.0; m_r++) {
+      neg += (tmp = m_r->dollars * exp(u * m_r->time));
+      d_neg += tmp * m_r->time;
+    }
+    delta = log(neg / pos) / (d_neg / neg - d_pos / pos);
+    if(fabs(delta) < Epsilon) {
+      break;
+    }
+    u -= delta;
+  }
+  if(iters == 0) {
+    rv = NO_CONVERGE;
+  } else {
+    rv = OK;
+    *u_p = u;
+    *iterations_p = Iters_max - iters + 1;
+  }
+  return rv;
+}
+

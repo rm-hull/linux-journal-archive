@@ -1,0 +1,170 @@
+#!/usr/bin/perl -w
+
+use strict;
+use diagnostics;
+
+use LWP::RobotUA;
+use HTML::LinkExtor;
+use URI::URL;
+
+# Are we debugging?
+my $DEBUGGING = 1;
+
+# Start with the first argument, or my home page by default
+my $origin = $ARGV[0] || "http://www.lerner.co.il/";
+
+# What is the base URL?
+my $base;
+
+# Into which directory should output go?
+my $output_directory = "/tmp/atf";
+
+# How old can a file be, in seconds?  (Two days is our initial stab)
+my $maximum_age = 60 * 60 * 24 * 2; 
+
+# Remove the umask
+umask 000;
+
+# Create two hashes, one for URLs we have seen and
+# another for those we haven't
+my %already_retrieved = ();
+my %to_be_retrieved = ($origin => 1);
+
+# Create a new user agent
+my $ua = new LWP::RobotUA "ATF/1.0",
+'reuven@lerner.co.il';
+
+# If we are debugging, remove the delay between retrievals
+$ua->delay(0) if $DEBUGGING;
+
+# ------------------------------------------------------------
+# Main loop: Retrieve sites while some remain
+
+while (my $url = (keys %to_be_retrieved)[0])
+{
+    # Create a new HTTP request
+    my $request = new HTTP::Request('GET', $url);
+
+    # Move this URL from %to_be_retrieved to %already_retrieved
+    delete $to_be_retrieved{$url};
+    $already_retrieved{$url} = 1;
+
+    # Indicate what we are retrieving
+    print "Retrieving $url...";
+
+    # Hand $request to $ua, and get an HTTP
+    # response back in return
+    my $response = $ua->request($request);
+
+    # Complete printout
+    print ".\n";
+
+    # If there was a problem, send a report to STDERR and 
+    # go to the next URL
+    if (!$response->is_success)
+    {
+	print STDERR qq{Error retrieving "$url":}, 
+	    $response->status_line , "\n";
+
+	next;
+    }
+
+    # Ignore documents that are too old
+    my $document_age = time - $response->last_modified;
+
+    if ($document_age > $maximum_age)
+    {
+     	print "\tAge of document: $document_age\n" if $DEBUGGING;
+     	next;
+    }
+
+    # Get the base URL, which is used in the callback
+    $base = $response->base;
+
+    # Create an instance of HTML::LinkExtor,
+    # making links relative to $url
+    my $parser = HTML::LinkExtor->new(\&callback, $url);
+
+    # Parse the output
+    $parser->parse($response->content);
+
+    # ------------------------------------------------------------
+    # Once the callback has run, write the content to disk
+
+    # Get the output filename from the URL
+    my $output_filename = $output_directory . $base->path;
+
+    $output_filename .= "index.html" 
+	if (substr($output_filename, -1) eq "/");
+
+    # Print the filename
+    print "\tFilename = $output_filename\n" if $DEBUGGING;
+
+    # Make sure that the directory exists, by splitting it up
+    # and checking that each individual component exists
+    my @output_directory = split /\//, $output_filename;
+    pop @output_directory;
+    my $output_directory = "";
+
+    while (@output_directory)
+    {
+	my $new_component = shift @output_directory;
+	next unless $new_component;
+
+	# Get the next component of the directory
+	$output_directory = "$output_directory/$new_component";
+
+	# If the directory doesn't exist, then create it
+	-d $output_directory or mkdir $output_directory, 0755
+	    or die "Cannot mkdir $output_directory: $! ";
+    }
+
+    print "\tDirectory = $output_directory\n" if $DEBUGGING;
+
+    # Now write the file
+    open FILE, ">$output_filename" 
+	or die "Cannot write to \"$output_filename\": $! ";
+
+    print "\tWriting $output_filename..." if $DEBUGGING;
+    print FILE $response->content;
+    print ".\n";
+
+    close FILE;
+}
+
+# ------------------------------------------------------------
+# Define our callback, which is passed scalar and a hash
+sub callback
+{
+    # Get the tag and its associated attributes
+    my ($tag, %attributes) = @_;
+
+    # We only care about anchor tags
+    return unless ($tag eq "a");
+
+    # Iterate through the attributes
+    foreach my $name (sort keys %attributes)
+    {
+	# If this is a link, then put the URL in the queue
+	if ($name eq "href")
+	{
+	    # Get the URL for this anchor
+	    my $url = $attributes{$name};
+
+	    # Only accept URLs with HTTP from the same host
+	    if ($url =~ m|^http://([-\w.]+)|i)
+	    {
+		# Get the hostname in the new URL
+		my $host = $1;
+
+		# Only add the new URL if it is on our requested host
+		return unless ($host eq $base->host);
+
+		# Indicate that we should retrieve this URL in the future,
+		# unless we have already retrieved it
+		$to_be_retrieved{$url} = 1
+		    unless $already_retrieved{$url};
+	    }
+	}
+    }
+}

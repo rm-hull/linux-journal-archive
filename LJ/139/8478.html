@@ -1,0 +1,622 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Kernel Korner
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Applications that&#10;watch thousands of files for changes, or that need to know&#10;when a storage device gets disconnected, need a clean,&#10;fast solution to the file change notification problem. Here it&#10;is.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xb07580.0xbfeab0"></a>
+Kernel Korner
+</h1></div><div><h3 class="subtitle"><i>
+Intro to inotify</i></h3></div><div><div class="author"><h3 class="author">
+Robert
+ 
+Love
+</h3></div><div class="issuemoyr">Issue #139, November 2005</div></div><div><p>
+Applications that
+watch thousands of files for changes, or that need to know
+when a storage device gets disconnected, need a clean,
+fast solution to the file change notification problem. Here it
+is.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbff348"></a></h2></div></div><p>
+John McCutchan and I had been working on inotify for about a year when
+it was finally merged into Linus' kernel tree and released with kernel
+version 2.6.13. Although a long struggle, the effort culminated in
+success and was ultimately worth every rewrite, bug and debate.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbff450"></a>
+What Is inotify?</h2></div></div><p>
+inotify is a file change notification system&mdash;a kernel feature that
+allows applications to request the monitoring of a set of files against
+a list of events. When the event occurs, the application is notified. To
+be useful, such a feature must be simple to use, lightweight with little
+overhead and flexible. It should be easy to add new watches and painless
+to receive notification of events.
+</p><p>
+To be sure, inotify is not the first of its
+kind. Every modern operating system provides some sort
+of file notification system; many network and desktop
+applications require such functionality&mdash;Linux too.
+For years, Linux has offered dnotify. The
+problem was, dnotify was not very good. In fact,
+it stank.
+</p><p>
+dnotify, which ostensibly stands for directory notify, was never
+considered easy to use. Sporting a cumbersome interface and several
+painful features that made life arduous, dnotify
+failed to meet the demands of the modern desktop, where asynchronous
+notification of events and a free flow of information rapidly are becoming
+the norm. dnotify has, in particular, several problems:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+dnotify can watch only directories.
+</p></li><li><p>
+dnotify requires maintaining an open file descriptor to
+the directory that the user wants to watch. First, this open file
+descriptor pins the directory, disallowing the device on which it resides
+from being
+unmounted. Second, watching a large number of directories requires too
+many open file descriptors.
+</p></li><li><p>
+dnotify's interface to user space is
+signals. Yes, seriously, signals!
+</p></li><li><p>
+dnotify ignores the issue of hard links.
+</p></li></ul></div><p>
+The goal, therefore, was twofold: design a first-class file notification
+system and ensure that all of the deficiencies of dnotify were addressed.
+</p><p>
+inotify is an inode-based file notification system that does not require
+a file ever be opened in order to watch it. inotify does not pin
+filesystem mounts&mdash;in fact, it has a clever event that notifies the user
+whenever a file's backing filesystem is unmounted. inotify is able to
+watch any filesystem object whatsoever, and when watching directories,
+it is able to tell the user the name of the file inside of the directory
+that changed. dnotify can report only that <span   class="emphasis"><em>something</em></span> changed,
+requiring applications to maintain an in-memory cache of stat()
+results and compare for any changes.
+</p><p>
+Finally, inotify is designed with an interface that user-space
+application developers would want to use, enjoy using and benefit from
+using. Instead of signals, inotify communicates with applications via a
+single file descriptor. This file descriptor is select-, poll-, epoll-
+and read-able. Simple and fast&mdash;the world is happy.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbffa80"></a>
+Getting Started with inotify</h2></div></div><p>
+inotify is available in kernel 2.6.13-rc3 and
+later. Because some bugs were found and subsequently
+fixed right after that release, kernel 2.6.13 or later
+is recommended. The inotify system calls, being the
+new kids on the block, might not yet be supported
+in your system's version of the C library, in which
+case the header files listed in the on-line Resources
+will provide the necessary C declarations and system
+call stubs.
+</p><p>
+If your C library supports inotify, all you should
+need is the following:
+
+<pre     class="programlisting">
+
+#include &lt;sys/inotify.h&gt;
+
+</pre>
+</p><p>
+If not, grab the two header files, stick them in the same directory as
+your source files, and use the following:
+
+<pre     class="programlisting">
+#include "inotify.h"
+#include "inotify-syscalls.h"
+</pre>
+</p><p>
+The following examples are in straight C. You can compile them the same
+as any other C application.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbffd40"></a>
+Initialize, inotify!</h2></div></div><p>
+inotify is initialized via the inotify_init() system call, which
+instantiates an inotify instance inside the kernel and returns the
+associated file descriptor:
+
+<pre     class="programlisting">
+int inotify_init (void);
+</pre>
+</p><p>
+On failure, inotify_init() returns minus one and sets
+errno as appropriate. The most common errno values are
+EMFILE and ENFILE, which signify that the per-user and
+the system-wide open file limit was reached, respectively.
+</p><p>
+Usage is simple:
+
+<pre     class="programlisting">
+
+int fd;
+
+fd = inotify_init ();
+if (fd &lt; 0)
+        perror ("inotify_init");
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbfffa8"></a>
+Watches</h2></div></div><p>
+The heart of inotify is the watch, which consists of a pathname
+specifying what to watch and an event mask specifying what to watch
+for. inotify can watch for many different events: opens, closes, reads,
+writes, creates, deletes, moves, metadata changes and unmounts. Each
+inotify instance can have thousands of watches, each watch for a different
+list of events.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xc000b0"></a>
+Adding Watches</h2></div></div><p>
+Watches are added with the inotify_add_watch()
+system call:
+
+<pre     class="programlisting">
+int inotify_add_watch (int fd, const char *path, __u32 mask);
+</pre>
+</p><p>
+A call to inotify_add_watch() adds
+a watch for the one or more events given by the
+bitmask mask on the file path to the
+inotify instance associated with the file descriptor
+fd. On success, the call returns a watch
+descriptor, which is used to identify this
+particular watch uniquely. On failure, minus one is returned
+and errno is set as appropriate.
+</p><p>
+Usage is simple:
+
+<pre     class="programlisting">
+
+int wd;
+
+wd = inotify_add_watch (fd,
+                "/home/rlove/Desktop",
+                IN_MODIFY | IN_CREATE | IN_DELETE);
+
+if (wd &lt; 0)
+        perror ("inotify_add_watch");
+
+</pre>
+</p><p>
+This example adds a watch on the directory /home/rlove/Desktop
+for any modifications, file creations or file deletions.
+</p><p>
+Table 1 shows valid events.
+</p><div class="table"><a name="N0xb07580.0xc003c8"></a><p class="title"><b>
+Table 1. Valid Events
+</b></p><table     summary="&#10;Table 1. Valid Events&#10;" border="1"><colgroup><col><col></colgroup><thead><tr><th>Event</th><th>Description</th></tr></thead><tbody><tr><td><tt  >IN_ACCESS</tt></td><td>File was read from.</td></tr><tr><td><tt  >IN_MODIFY</tt></td><td>File was written to.</td></tr><tr><td><tt  >IN_ATTRIB</tt></td><td>
+File's metadata (inode or xattr) was changed.</td></tr><tr><td><tt  >IN_CLOSE_WRITE</tt></td><td>
+File was closed (and was open for
+writing).</td></tr><tr><td><tt  >IN_CLOSE_NOWRITE</tt></td><td>File was closed (and was not open for
+writing).</td></tr><tr><td><tt  >IN_OPEN</tt></td><td>
+File was opened.</td></tr><tr><td><tt  >IN_MOVED_FROM</tt></td><td>File was moved away from watch.</td></tr><tr><td><tt  >IN_MOVED_TO</tt></td><td>
+File was moved to watch.</td></tr><tr><td><tt  >IN_DELETE</tt></td><td>
+File was deleted.</td></tr><tr><td><tt  >IN_DELETE_SELF</tt></td><td>The watch itself was deleted.</td></tr></tbody></table></div><p>
+Table 2 shows the provided helper events.
+</p><div class="table"><a name="N0xb07580.0xbf7d30"></a><p class="title"><b>Table 2. Helper Events
+</b></p><table     summary="Table 2. Helper Events&#10;" border="1"><colgroup><col><col></colgroup><thead><tr><th>
+Event</th><th>Description</th></tr></thead><tbody><tr><td><tt  >IN_CLOSE</tt></td><td>IN_CLOSE_WRITE | IN_CLOSE_NOWRITE</td></tr><tr><td><tt  >IN_MOVE</tt></td><td>IN_MOVED_FROM | IN_MOVED_TO</td></tr><tr><td><tt  >IN_ALL_EVENTS</tt></td><td>Bitwise OR of all events.</td></tr></tbody></table></div><p>
+As an example, if an application wanted to know
+whenever the file safe_combination.txt was
+opened or closed, it could do the following:
+
+<pre     class="programlisting">
+
+int wd;
+
+wd = inotify_add_watch (fd,
+                "safe_combination.txt",
+                IN_OPEN | IN_CLOSE);
+
+if (wd &lt; 0)
+        perror ("inotify_add_watch");
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbf84c0"></a>
+Receiving Events</h2></div></div><p>
+With inotify initialized and watches added, your application is now
+ready to receive events. Events are queued asynchronously, in real time
+as the events happen, but they are read synchronously via the read()
+system call. The call blocks until events are ready and then returns
+all available events once any event is queued.
+</p><p>
+Events are delivered in the form of an inotify_event structure,
+which is defined as:
+
+<pre     class="programlisting">
+struct inotify_event {
+        __s32 wd;             /* watch descriptor */
+        __u32 mask;           /* watch mask */
+        __u32 cookie;         /* cookie to synchronize two events */
+        __u32 len;            /* length (including nulls) of name */
+        char name[0];        /* stub for possible name */
+};
+</pre>
+</p><p>
+The wd field is the watch descriptor originally returned by
+inotify_add_watch(). The application is responsible for mapping
+this identifier back to the filename.
+</p><p>
+The mask field is a bitmask representing the event that occurred.
+</p><p>
+The cookie field is a unique identifier linking together two
+related but separate events. It is used to link together an IN_MOVED_FROM
+and an IN_MOVED_TO event. We will look at it later.
+</p><p>
+The len field is the length of the name field or nonzero
+if this event does not have a name. The length contains any potential
+padding&mdash;that is, the result of strlen() on the name
+field may be smaller than len.
+</p><p>
+The name field contains the name of the object to which the
+event occurred, relative to wd, if applicable. For
+example, if a watch for writes in /etc triggers an event on
+the writing to /etc/vimrc, the name field will contain
+vimrc, and the wd field will link back to the /etc
+watch. Conversely, if watching the file /etc/fstab for reads, a
+triggered read event will have a len of zero and no associated
+name whatsoever, because the watch descriptor associates directly with
+the affected file.
+</p><p>
+The size of name is dynamic. If the event has no associated
+filename, no name is sent at all and no space is consumed. If the event
+does have an associated filename, the name field is dynamically
+allocated and trails the structure for len bytes. This approach
+allows the name's length to vary in size and consume no space when
+not needed.
+</p><p>
+Because the name field is dynamic, the size
+of the buffer passed to read() is unknown. If
+the size is too small, the system call returns
+zero, alerting the application. inotify, however,
+allows user space to &ldquo;slurp&rdquo; multiple events at
+once. Consequently, most applications should pass in
+a large buffer, which inotify will fill with as many
+events as possible.
+</p><p>
+It sounds complicated, but usage is simple:
+
+<pre     class="programlisting">
+
+/* size of the event structure, not counting name */
+#define EVENT_SIZE  (sizeof (struct inotify_event))
+
+/* reasonable guess as to size of 1024 events */
+#define BUF_LEN        (1024 * (EVENT_SIZE + 16)
+
+char buf[BUF_LEN];
+int len, i = 0;
+
+len = read (fd, buf, BUF_LEN);
+if (len &lt; 0) {
+        if (errno == EINTR)
+                /* need to reissue system call */
+        else
+                perror ("read");
+} else if (!len)
+        /* BUF_LEN too small? */
+
+while (i &lt; len) {
+        struct inotify_event *event;
+
+        event = (struct inotify_event *) &amp;buf[i];
+
+        printf ("wd=%d mask=%u cookie=%u len=%u\n",
+                event-&gt;wd, event-&gt;mask,
+                event-&gt;cookie, event-&gt;len);
+
+        if (event-&gt;len)
+                printf ("name=%s\n", event-&gt;name);
+
+        i += EVENT_SIZE + event-&gt;len;
+}
+
+</pre>
+</p><p>
+This approach is undertaken to allow many events to be read and processed
+in a single swoop and to deal with the dynamically sized name. Clever
+readers will immediately question whether the following code is safe with
+respect to alignment requirements:
+
+<pre     class="programlisting">
+
+while (i &lt; len) {
+        struct inotify_event *event;
+        event = (struct inotify_event *) &amp;buf[i];
+
+        /* ... */
+
+        i += EVENT_SIZE + event-&gt;len;
+}
+
+</pre>
+</p><p>
+Indeed, it is. This is
+the reason that the len field may be longer than the string's
+length. Additional null characters may follow the string, padding it out
+to a size that ensures the following structure is properly aligned.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbf8af0"></a>
+But I Don't Want to Read!</h2></div></div><p>
+Having to sit blocked on a read() system call does not sound very
+appealing, unless your application is heavily threaded&mdash;in which case,
+hey, just one more thread! Thankfully, the inotify file descriptor can be
+polled or selected on, allowing inotify to be multiplexed along
+with other I/O and optionally integrated into an application's mainloop.
+</p><p>
+Here is an example of monitoring the inotify file descriptor with
+select():
+
+<pre     class="programlisting">
+
+struct timeval time;
+fd_set rfds;
+int ret;
+
+/* timeout after five seconds */
+time.tv_sec = 5;
+time.tv_usec = 0;
+
+/* zero-out the fd_set */
+FD_ZERO (&amp;rfds);
+
+/*
+ * add the inotify fd to the fd_set -- of course,
+ * your application will probably want to add
+ * other file descriptors here, too
+ */
+FD_SET (fd, &amp;rfds);
+
+ret = select (fd + 1, &amp;rfds, NULL, NULL, &amp;time);
+if (ret &lt; 0)
+        perror ("select");
+else if (!ret)
+        /* timed out! */
+else if (FD_ISSET (fd, &amp;rfds)
+        /* inotify events are available! */
+
+</pre>
+</p><p>
+You can follow a similar approach with pselect(), poll()
+or epoll()&mdash;take your pick.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbf8d00"></a>
+Events</h2></div></div><p>
+The mask field in the inotify_event structure describes
+the event that occurred. In addition to the events listed earlier,
+Table 3 shows events that are also sent, as applicable.
+</p><div class="table"><a name="N0xb07580.0xbf8e08"></a><p class="title"><b>Table 3. Events That Cover General Changes
+</b></p><table     summary="Table 3. Events That Cover General Changes&#10;" border="1"><colgroup><col><col></colgroup><thead><tr><th>Name</th><th>Description</th></tr></thead><tbody><tr><td><tt  >IN_UNMOUNT</tt></td><td>The backing filesystem was unmounted.</td></tr><tr><td><tt  >IN_Q_OVERFLOW</tt></td><td>The inotify queue overflowed.</td></tr><tr><td><tt  >IN_IGNORED</tt></td><td>The watch was automatically removed,
+because the file was deleted or its filesystem was unmounted.</td></tr></tbody></table></div><p>
+Additionally, the bit IN_ISDIR is set telling the application
+if the event occurred against a directory. This is more than just a
+convenience&mdash;consider the case of a deleted file.
+</p><p>
+Because flags such as IN_ISDIR are present in the bitmask,
+it never should be compared to a possible event directly. Instead,
+the bits should be tested individually. For example:
+
+<pre     class="programlisting">
+
+if (event-&gt;mask &amp; IN_DELETE) {
+        if (event-&gt;mask &amp; IN_ISDIR)
+                printf ("Directory deleted!\n");
+        else
+                printf ("File deleted!\n");
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbf95f0"></a>
+Modifying Watches</h2></div></div><p>
+A watch is modified by calling inotify_add_watch() with an updated
+event mask. If the watch already exists, the mask is simply updated and
+the original watch descriptor is returned.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xbf96f8"></a>
+Removing Watches</h2></div></div><p>
+Watches are removed with the inotify_rm_watch() system call:
+
+<pre     class="programlisting">
+int inotify_rm_watch (int fd, int wd);
+</pre>
+</p><p>
+A call to inotify_rm_watch() removes the watch associated
+with the watch descriptor wd from the inotify instance associated
+with the file descriptor fd. The call returns zero on success
+and negative one on failure, in which case errno is set as
+appropriate.
+</p><p>
+Usage, as usual, is simple:
+
+<pre     class="programlisting">
+
+int ret;
+
+ret = inotify_rm_watch (fd, wd);
+if (ret)
+        perror ("inotify_rm_watch");
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xf0dbf0"></a>
+Shutting inotify Down</h2></div></div><p>
+To destroy any existing watches, pending events
+and the inotify instance itself, invoke the
+close() system call on the inotify instance's
+file descriptor. For example:
+
+<pre     class="programlisting">
+
+int ret;
+
+ret = close (fd);
+if (ret)
+        perror ("close");
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xf0dd50"></a>
+One-Shot Support</h2></div></div><p>
+If the IN_ONESHOT value is OR'ed into the event mask at watch
+addition, the watch is atomically removed during generation of the
+first event. Subsequent events will <span   class="emphasis"><em>not</em></span> be generated against the
+file until the watch is added back. This behavior is desired by some
+applications, for example, Samba, where one-shot support mimics the
+behavior of the file change notification system on Microsoft Windows.
+</p><p>
+Usage is, naturally, simple:
+
+<pre     class="programlisting">
+
+int wd;
+
+wd = inotify_add_watch (fd,
+                "/home/rlove/Desktop",
+                IN_MODIFY | IN_ONESHOT);
+
+if (wd &lt; 0)
+        perror ("inotify_add_watch");
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xf0df60"></a>
+On Unmount</h2></div></div><p>
+One of the biggest issues with dnotify (aside from the signals and
+basically everything else) is that a dnotify watch on a directory requires
+that said directory remain open. Consequently, watching a directory on,
+say, a USB keychain drive prevents the drive from unmounting. inotify
+solves this problem by not requiring that any file be open.
+</p><p>
+inotify takes this one step further, though, and sends out the
+IN_UNMOUNT event when the filesystem on which a file resides is
+unmounted. It also automatically destroys the watch and cleanup.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xf0e0c0"></a>
+Moves</h2></div></div><p>
+Move events are complicated because inotify may be watching the directory
+that the file is moved to or from, but not the other. Because of this,
+it is not always possible to alert the user of the source
+<span   class="emphasis"><em>and</em></span>
+destination of a file involved in a move. inotify is able to alert
+the application to both only if the application is watching both directories.
+</p><p>
+In that case, inotify emits an IN_MOVED_FROM from the watch
+descriptor of the source directory, and it emits an IN_MOVED_TO
+from the watch descriptor of the destination directory. If
+watching only one or the other, only the one event will be sent.
+</p><p>
+To tie together two disparate moved to/from events, inotify sets the
+cookie field in the inotify_event structure to a unique
+nonzero value. Two events with matching cookies are thus related, one
+showing the source and one showing the destination of the move.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xf0e2d0"></a>
+Obtaining the Size of the Queue</h2></div></div><p>
+The size of the pending event queue can be obtained via FIONREAD:
+
+<pre     class="programlisting">
+
+unsigned int queue_len;
+int ret;
+
+ret = ioctl (fd, FIONREAD, &amp;queue_len);
+if (ret &lt; 0)
+        perror ("ioctl");
+else
+        printf ("%u bytes pending in queue\n", queue_len);
+
+</pre>
+</p><p>
+This is useful to implement throttling: reading from the queue only when
+the number of events has grown sufficiently large.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xf0e488"></a>
+Configuring inotify</h2></div></div><p>
+inotify is configurable via procfs and sysctl.
+</p><p>
+/proc/sys/filesystem/inotify/max_queued_events is the maximum number
+of events that can be queued at once. If the queue reaches this size,
+new events are dropped, but the IN_Q_OVERFLOW event is always
+sent. With a significantly large queue, overflows are rare even if
+watching many objects. The default value is 16,384 events per queue.
+</p><p>
+/proc/sys/filesystem/inotify/max_user_instances is the maximum
+number of inotify instances that a given user can instantiate. The
+default value is 128 instances, per user.
+</p><p>
+/proc/sys/filesystem/inotify/max_user_watches is the maximum number
+of watches per instance. The default value is 8,192 watches, per instance.
+</p><p>
+These knobs exist because kernel memory is a precious resource. Although
+any user can read these files, only the system administrator can write
+to them.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb07580.0xf0e6f0"></a>
+Conclusion</h2></div></div><p>
+inotify is a simple yet powerful file change notification system with
+an intuitive user interface, excellent performance, support for many
+different events and numerous features. inotify is currently in use in
+various projects, including Beagle, an advanced desktop indexing system,
+and Gamin, a FAM replacement.
+</p><p>
+What application will use inotify next?
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../139/8534.html" target="_self">/article/8534</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Robert Love is a senior kernel hacker in Novell's Ximian Desktop
+group and the author of <span   class="emphasis"><em>Linux Kernel Development</em></span> (SAMS 2005), now in
+its second edition. He holds degrees in CS and Mathematics from the
+University of Florida. Robert lives in Cambridge, Massachusetts.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../139/toc139.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

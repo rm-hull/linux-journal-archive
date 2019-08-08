@@ -1,0 +1,383 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Extending GlusterFS with Python
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Are you a Python programmer who wishes your storage could do more for you?&#10;Here's an easy way to add functionality to a real distributed filesystem, in&#10;your favorite language.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x29bb580.0x2ab2ac0"></a>
+Extending GlusterFS with Python
+</h1></div><div><div class="author"><h3 class="author">
+Jeff
+ 
+Darcy
+</h3></div><div class="issuemoyr">Issue #223, November 2012</div></div><div><p>
+Are you a Python programmer who wishes your storage could do more for you?
+Here's an easy way to add functionality to a real distributed filesystem, in
+your favorite language.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x29bb580.0x2ab3250"></a></h2></div></div><p>
+Programming languages are usually not good neighbors. Even mixing
+languages as closely related as C and C++ often can lead to a morass of
+conflicting conventions with respect to symbol names, initialization
+orders and memory management strategies. As the distance between
+languages increases, the difficulty of integrating them increases as
+well. This is particularly true when attempting to mix compiled and
+interpreted languages. Most interpreted languages have ways to call
+functions and access symbols in compiled libraries, but these facilities
+often are far from convenient, and calling back the other way&mdash;from
+compiled code to interpreted&mdash;is less convenient still. Integration
+between interpreted languages is even less feasible&mdash;the one notable
+exception being the several languages that share the Java Virtual Machine
+(JVM). Interoperability between interpreted languages using different
+virtual machines usually is limited to message passing between separate
+processes.
+</p><p>
+In this context, Python's facilities for integrating with code written
+in other languages are like a breath of fresh air. One option is
+Jython, which exists quite comfortably within the aforementioned JVM
+ecosystem. For integration with compiled code, Python offers not one
+but two methods of integration. The first is the &ldquo;extension
+API&rdquo;, which
+allows you to write Python modules in C. (&ldquo;C&rdquo; is used here as shorthand
+for any compiled code that adheres to the initialization and calling
+conventions originally defined for C.) Using this interface, it is
+possible to create compiled modules that offer the full functionality of
+native Python modules with the full performance of compiled code. There
+even are projects like Cython that will generate most of the necessary
+&ldquo;boiler plate&rdquo; for you.
+</p><p>
+The Python ctypes module offers an even more convenient option for
+integration with compiled code, with only a very small decrease in
+functionality. Using ctypes, Python code can call functions and access
+symbols even in C libraries whose authors never thought about Python
+at all. Python programmers also can use ctypes to interpret C data
+structures (overlapping somewhat with the functionality provided by the
+struct module) and even define Python callbacks that can be passed to
+C functions. Although it is not possible to do absolutely everything with
+ctypes that you can do with the extension interface, combining the two
+approaches can lead to very powerful results.
+</p><p>
+As a case study in combining Python code with an existing compiled
+program or language, this article focuses on the implementation of
+a Python &ldquo;translator&rdquo; interface for GlusterFS. GlusterFS is a modern
+distributed filesystem based on the principle of horizontal scaling&mdash;adding capacity or performance to a system by adding more servers based on
+commodity hardware instead of having to pay an ever-increasing premium
+to make existing servers more powerful. Development is sponsored by
+Red Hat, but it's completely open source, so anyone can contribute. In
+addition to horizontal scaling, another core principle of GlusterFS
+is modularity. Most of the functionality within GlusterFS actually
+is provided by translators&mdash;so called because they translate I/O calls
+(such as read or write) coming from the user into the same or other calls
+that are passed on toward storage. These calls are passed from one
+translator to another, arranged in an arbitrarily complex hierarchy,
+until eventually the lowest-level calls are executed on servers' local
+filesystems. I call this interface TXAPI here for the sake of brevity,
+even though that's not an official term. TXAPI has been used to implement
+internal GlusterFS functionality, such as replication and caching, and
+also external functionality, such as on-disk encryption.
+</p><p>
+This article is not primarily about GlusterFS, however. Even though
+I use GlusterFS to illustrate techniques for integrating Python and
+C code and show results to illustrate the potential benefits of such
+integration, most of the techniques are equally applicable to other
+programs with a similar set of characteristics. Those characteristics
+include a C &ldquo;top level&rdquo; calling into Python instead of the other way
+around, a fundamentally multithreaded execution model, and the presence
+of a well-defined plugin interface (TXAPI) that makes extensive use of
+callbacks in both directions.
+</p><p>
+The fact that GlusterFS is primarily a C program&mdash;filesystems are, after
+all, system software&mdash;means that you can't use ctypes for everything. To
+bootstrap your integration, you need to use Python's &ldquo;embedding
+API&rdquo;, which
+is a close cousin of the previously mentioned extension API and allows
+C code to call in to the Python interpreter. You need to invoke this API
+at least once to create an interpreter and invoke an initialization
+function in a Python module. For this purpose, you use a single C-based
+&ldquo;meta translator&rdquo; that can be loaded just like translators always have
+been. This translator is called glupy from GLUster and PYthon. (The
+preferred pronunciation is &ldquo;gloopy&rdquo; even though
+&ldquo;glup-pie&rdquo; might make
+more sense given those origins.) Most of what glupy does is provide the
+generic embedding-API glue to load the actual Python translator, which is
+specified as an option. This loading is a fairly simple matter of calling
+<tt  >PyImport_Import</tt> to load the module, followed by
+<tt  >PyObject_CallObject</tt> to
+initialize it, as shown below (error handling has been left
+out for clarity):
+
+
+<pre     class="programlisting">
+priv-&gt;py_module = PyImport_Import(py_mod_name);
+Py_DECREF(py_mod_name);
+
+py_init_func = PyObject_GetAttrString(priv-&gt;py_module, "xlator");
+
+py_args = PyTuple_New(1);
+/* "this" is the C pointer to this glupy instance */
+PyTuple_SetItem(py_args,0,PyLong_FromLong((long)this));
+
+priv-&gt;py_xlator = PyObject_CallObject(py_init_func, py_args);
+Py_DECREF(py_args);
+</pre>
+</p><p>
+The user's Python init function is then responsible
+for registering TXAPI callbacks for later, in addition to its own
+domain-specific initialization. Glupy also includes a Python/ctypes module
+that encapsulates the GlusterFS types and some functions that glupy
+users can invoke (in the example, this is done using the &ldquo;dl&rdquo; handle).
+</p><p>
+At this point, you reach a fork in the road. If you're already using the
+embedding API, why not continue using it for almost everything? In
+this approach, a glupy dispatch function would use
+<tt  >Py_BuildValue</tt> to
+construct an argument list and then use
+<tt  >PyObject_CallObject</tt> to call the
+appropriate Python function/method from a table. This is pretty tedious
+code to write by hand, but much of the process could be automated. The
+bigger problem with this approach is that TXAPI involves many pointers
+to GlusterFS-specific structures, which must be passed through the
+embedding API as opaque integers. The Python code receiving such a value
+must then explicitly use <tt  >from_address</tt> to convert this into a real Python
+object. Clutter within glupy itself is not a problem, but clutter within
+glupy users' code makes this approach less appealing.
+</p><p>
+The approach actually used in glupy involves less C code and more
+Python code, with a greater emphasis on ctypes. In this approach,
+the user's Python code is presented not as Python functions but as C
+functions, using ctypes to define function types that then can be used
+as decorators. Unfortunately, details of the platform-specific foreign
+function interfaces used by ctypes to implement such a callback mean
+that there's no way to get the actual function pointer as it's seen by
+C code other than by actually passing it to a C function. Accordingly,
+you pass the Python callback object to a glupy registration function
+that can see the result of this conversion. For each type of operation,
+there are two corresponding registration functions: one for the dispatch
+function that initiates the operation and one for the callback that
+handles completion. The glupy meta-translator then stores pointers to
+the registered functions in a table for fast access later. One side
+effect of this approach is that glupy functions are strongly typed. This
+might seem rather un-Pythonic, but TXAPI itself is strongly typed, and
+the consequences of mixing types could be a hung filesystem, so this
+seems like a reasonable safety measure. Although this might all seem rather
+complicated, the net result is Python code that's relatively free of
+type-conversion clutter and requires very little initialization code. For
+instance, the following shows the init function for an example I'll be
+using that registers dispatch functions and callbacks for two types
+of operations:
+
+
+<pre     class="programlisting">
+def __init__ (self, xl):
+        dl.set_lookup_fop(xl,lookup_fop)
+        dl.set_lookup_cbk(xl,lookup_cbk)
+        dl.set_create_fop(xl,create_fop)
+        dl.set_create_cbk(xl,create_cbk)
+</pre>
+</p><p>
+The next problem to solve is multithreading. The Python
+interpreter still is essentially single-threaded, so C code that calls
+into Python must be sure to take the Global Interpreter Lock and do other
+things to keep the interpreter sane. Fortunately, current versions of
+Python make this much easier than it used to be. The first thing you
+need to do is enable multithreading by calling
+<tt  >PyEval_InitThreads</tt>
+after <tt  >Py_Initialize</tt>. What a surprising number of people seem to
+miss, even though it's fairly well documented, is that part of what
+<tt  >PyEval_InitThreads</tt> does is acquire the Global Interpreter Lock on behalf
+of the calling thread. This lock must be released explicitly at the
+end of initialization, or else any other code that tries to acquire it
+will deadlock. In this case, this acquisition is implicit in calls to
+<tt  >PyGILState_Ensure</tt>, which is the recommended way to set up interpreter
+state before calling into Python from multithreaded C code. Each
+glupy dispatch function and callback does this, with a matching call to
+<tt  >PyGILState_Release</tt> after the Python function returns.
+</p><p>
+Before moving on from what's inside glupy to what glupy code looks
+like, you need to know what this example glupy-based translator 
+actually does. The problem this example tries to solve is
+one that occurs frequently when using GlusterFS to store the code for
+PHP Web applications. Often, such applications try to load literally
+hundreds of include files every time a page is requested. Each include
+file might exist in any of several include directories along a search
+path. The example caches information about &ldquo;positive lookups&rdquo;
+(that is, those that
+succeeded) but not about &ldquo;negative lookups&rdquo; (which failed).
+</p><p>
+Although this
+behavior makes sense for many applications, the performance impact for
+many PHP applications can be severe. Without negative-lookup caching,
+you're likely to search half of those directories in vain before finding
+the one that contains each include file, every time the including page
+is requested. (This pattern does occur in other environments as well,
+including Python Web applications, but common PHP frameworks cause those
+applications to be hit the hardest.) Just as the effects are severe,
+the benefits of adding a negative-lookup cache can be significant. For
+example, a C version of such a translator decreased average include-search
+times nearly seven-fold. What could a Python version do?
+</p><p>
+Here's part of a translator based on glupy:
+
+
+<pre     class="programlisting">
+@lookup_fop_t
+def lookup_fop (frame, this, loc, xdata):
+      pargfid = uuid2str(loc.contents.pargfid)
+      print "lookup FOP: %s:%s" % (pargfid, loc.contents.name)
+      # Check the cache.
+      if cache.has_key(pargfid) and (loc.contents.name in
+      &#8618;cache[pargfid]):
+              dl.unwind_lookup(frame,0,this,-1,2,None,None,None,None)
+              return 0
+      key = dl.get_id(frame)
+      requests[key] = (pargfid, loc.contents.name[:])
+      dl.wind_lookup(frame,POINTER(xlator_t)(),loc,xdata)
+      return 0
+</pre>
+</p><p>
+This
+is the function that gets called to look up a file, which is the core
+functionality for this example. Entry to this function represents a
+transition from C to Python, while its return represents a transition
+back to C. Calls through the &ldquo;dl&rdquo; object&mdash;a handle to the C dynamic
+library that supports glupy&mdash;also suspend the Python interpreter while
+they run. The Python decorator syntax allows you to hide most of the
+function-type details, and there's also a notable lack of type-conversion
+code. Most of what's there is domain-specific code, not boiler plate
+required by the infrastructure.
+</p><p>
+In the top half of this function, you simply check the cache to see
+if you already know the requested file won't be there. If the cache
+check succeeds, the lookup fails immediately, and you &ldquo;unwind&rdquo; the
+translator stack to report that fact. As with the registration functions,
+each operation type has its own specific wind (call downward) and unwind
+(return upward) functions as well. This represents a temporary return
+from the &ldquo;Python world&rdquo; to the &ldquo;C world&rdquo;, and it's worth noting that
+these transitions between worlds might occur seamlessly many times while
+processing a single request. In particular, a common GlusterFS translator
+idiom is for a completion callback on one request to initiate the next,
+and if that request completes immediately (as done here), then you can
+have multiple requests and completions all on the stack at once.
+</p><p>
+Returning to the code, if you do not find an entry in the cache (and you
+already know it must not be in the standard positive-lookup cache or
+else you wouldn't even have been called), you pass the request on to the
+next translator using <tt  >wind_lookup</tt>. When that next translator is done, it
+returns control (through the glupy meta-translator) to
+<tt  >lookup_cbk</tt>. Here
+you retrieve your request context, conveniently stashed in a dictionary
+for you by <tt  >lookup_fop</tt>, and use it to update the cache according to
+whether the file was found.
+</p><p>
+There are a few other less relevant details of how this particular glupy
+translator works, but that really is the meat of it. With less than a
+hundred lines of Python code, including comments and empty lines, you can
+add a significant piece of functionality to a real filesystem. But,
+how well does it really work? As it turns out, it works very well; see
+Table 1. A simple test reveals that the result is slower than the
+C-based version of the same thing, but still more than four times as
+fast as the baseline. Clearly, the fact that you're caching these results
+matters more than what language you're using to do it.
+</p><div class="table"><a name="N0x29bb580.0x2ab46f0"></a><p class="title"><b>Table 1. Results of Caching Failed-Lookup Requests</b></p><table     summary="Table 1. Results of Caching Failed-Lookup Requests11359t1.qrk" border="1"><colgroup><col><col><col><col><col></colgroup><thead><tr><th>ms/lookup</th><th>minimum</th><th>average</th><th>maximum</th><th>99th percentile</th></tr></thead><tbody><tr><td>no caching</td><td>0.368</td><td>6.898</td><td>16.286</td><td>9.702</td></tr><tr><td>C version</td><td>0.379</td><td>1.036</td><td>18.503</td><td>2.180</td></tr><tr><td>glupy version</td><td>0.381</td><td>1.527</td><td>21.163</td><td>2.916</td></tr></tbody></table></div><p>
+As promising as these results are, they're more of a beginning than
+an end. Glupy is still a very young project, and much remains to
+be done. Support needs to be added for a few dozen more operation
+types and several data structures. There still are more ways that
+GlusterFS calls into translators and utility functions that translators
+themselves call. There are many ways the glupy interface could be made
+more convenient, and there are undoubtedly performance or concurrency
+issues still to be resolved. The most important thing is that the basic
+infrastructure for doing all of these things already exists, and not
+just for GlusterFS translators. If even a highly multithreaded and
+asynchronous program like this can take advantage of all that Python
+has to offer, so can just about any other program. Thanks to Python's
+extension/embedding interface and ctypes module, a &ldquo;best of both
+worlds&rdquo;
+approach to developing complex software is more achievable than most
+people think.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x29bb580.0x2dbffb0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Jython: <a href="http://www.jython.org" target="_self">www.jython.org</a>
+</p><p>
+Cython: <a href="http://www.cython.org" target="_self">www.cython.org</a>
+</p><p>
+GlusterFS: <a href="http://www.gluster.org" target="_self">www.gluster.org</a>
+</p><p>
+Glupy Source Repository: <a href="https://github.com/jdarcy/glupy" target="_self">https://github.com/jdarcy/glupy</a>
+</p><p>
+Negative-Lookup Caching Translator in C: <a href="https://github.com/jdarcy/negative-lookup" target="_self">https://github.com/jdarcy/negative-lookup</a>
+</p><p>
+Zend (PHP) Framework on Include Files:
+<a href="http://framework.zend.com/manual/1.12/en/performance.classloading.html" target="_self">framework.zend.com/manual/1.12/en/performance.classloading.html</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Jeff Darcy has been working on network and distributed storage since that
+meant DECnet and NFS version 2 in the early 1990s. Since then, he has been a
+key
+developer on the MPFS Project at EMC, product architect at Revivio and founder
+of the HekaFS Project (<a href="http://hekafs.org" target="_self">hekafs.org</a>) at Red Hat where he now serves on the
+GlusterFS architecture team.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../223/toc223.html">Issue Table of Contents</a>
+    <a class="link3" href="../223/11359.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,651 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Making Root Unprivileged
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Mitigate the damage of setuid root exploits on your system&#10;by removing root's privilege. &#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1046580.0x113dac0"></a>
+Making Root Unprivileged
+</h1></div><div><div class="author"><h3 class="author">
+Serge
+ 
+Hallyn
+</h3></div><div class="issuemoyr">Issue #184, August 2009</div></div><div><p>
+Mitigate the damage of setuid root exploits on your system
+by removing root's privilege. 
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x113e250"></a></h2></div></div><p>
+There was a time when, to use a computer, you merely turned it on and were
+greeted by a command prompt. Nowadays, most
+operating systems offer a security model with multiple users. Typically, the
+credentials you present at login determine the amount of privilege that
+programs acting upon your behalf will have. Everyday tasks can be
+accomplished using unprivileged userids, minimizing the risks due to user
+error, accidental execution of malware downloaded from the Internet and so
+on. Any
+program needing to exercise privilege must be executed using a privileged
+userid. In UNIX, that is userid 0, the root user. Unfortunately, this means
+any software needing even just a bit of privilege can lead to a
+complete system compromise should it misbehave or be attacked
+successfully.
+</p><p>
+POSIX capabilities address this problem in two ways. First, they break the
+notion of all-or-nothing privilege into a set of semantically distinct
+privileges. This can limit the amount of privilege a task may have,
+so that, for example, it only is able to create devices or trace another
+users' tasks.
+</p><p>
+Second, the notion of privilege is separated from userids. Instead,
+privilege is wielded by the files (programs) a process executes. After
+all, users sitting at the keyboard just invoke programs to run on
+their behalf. It is the programs that actually do something. And, it is
+the programs that an administrator may entrust with privilege, based
+on knowledge of what the program does, who wrote it and who installed it.
+</p><p>
+POSIX capabilities have been implemented in Linux for years, but until
+recently, Linux supported only process capabilities. Because files are
+supposed to wield privilege, the lack of file capabilities meant that
+Linux required workarounds to allow administrators and system services
+to run with privilege. The POSIX capability rules were perverted to
+emulate a privileged root user.
+</p><p>
+Although file capabilities are now supported, the privileged root user
+remains the norm. In this article, I demonstrate a lazy prototype
+of a system with an unprivileged root.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x113e5c0"></a>
+POSIX Capabilities Overview</h2></div></div><p>
+Each process has three capability sets:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The effective set (pE) contains the capabilities it can use right
+now.
+</p></li><li><p>
+The permitted set (pP) contains those that it can add back into its
+effective set.
+</p></li><li><p>
+The inheritable set (pI) is used to determine its new sets when it executes
+a new file.
+</p></li></ul></div><p>
+Files also have effective (fE), permitted (pP) and inheritable (fI) sets
+used to calculate the new capability sets of a process executing it.
+</p><p>
+At any time, a process can use cap_set_proc() to remove capabilities from
+any of the three sets.
+</p><p>
+Capabilities can be added to the effective set only if they are currently
+in its permitted set. They never can be added to the permitted set. And,
+they can be added to the inheritable set only if they are in the permitted
+set or if CAP_SETPCAP is in pE. When a process executes a new file,
+its new capability sets are calculated as follows:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+The inheritable set remains unchanged.
+</p></li><li><p>
+The new permitted set is filled with both the file permitted set (masked
+with a bounding set, but for this article, I assume that always is full) and any capabilities present in both the file and process inheritable sets.
+</p></li><li><p>
+Capabilities in the file permitted set will be available to the new
+process&mdash;an example use for this is the ping program. Ping 
+needs only the capability CAP_NET_RAW in order to craft raw network packets. It is
+typically setuid-root, so all users can run it. By
+placing CAP_NET_RAW in ping's permitted set, all users will receive
+CAP_NET_RAW while running ping.
+</p></li><li><p>
+Capabilities in the file inheritable set are available to a
+process only if they also are in the process inheritable set&mdash;an
+example of this would be to allow some users to renice other user's tasks.
+Simply arrange (as I explain a bit) for CAP_SYS_NICE to be placed in
+their pI on login, as well as in fI for /usr/bin/renice.
+Now, ordinary users can run renice without privilege,
+and the &ldquo;special&rdquo; users can run renice, but no other programs, with
+CAP_SYS_NICE.
+</p></li><li><p>
+The effective set is by default empty, or, if the legacy bit is set
+(see The File Effective Set, aka the Legacy Bit sidebar), it is set to the new permitted set.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x113ee58"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+The File Effective Set, aka the Legacy Bit</b></p><p>
+Linux has an unfortunate discrepancy between the setcap command API
+and what it actually does. Although setcap expects the user to define
+a file effective set, the kernel simply knows about a &ldquo;legacy
+bit&rdquo;.
+Practically speaking, if the file effective set is empty,
+the legacy bit is not set. If all bits in the file permitted and
+inheritable sets are in the effective set, the legacy bit is
+set. If only a subset of those bits are in the effective set,
+setcap will return an error.
+</p><p>
+The reasoning for the setcap API command is that Linux is loathe
+to change userspace APIs. The reason for using the legacy bit
+is that we want to encourage applications to begin with an empty
+effective set if they are capability-aware. Hence, the file
+effective set should be empty unless the application is not
+capability-aware. But if the application is not capability-aware,
+all capabilities available to it must be in its effective set
+from the start.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x113f118"></a>
+The Privileged Root</h2></div></div><p>
+As mentioned previously, Linux continues to emulate a privileged root
+user. This is done by perverting the capabilities behavior of exec()
+and setuid(). Briefly, if your effective userid is 0 when you execute
+a file, or if you execute a setuid root file, your permitted
+and effective sets are filled. If only your &ldquo;real&rdquo; userid is 0 (for
+instance, a root-owned process executes a setuid-nonroot file), only
+your permitted set is filled. When you change part of your userid from
+root to nonroot, your effective capability set is cleared. When you
+permanently change your userid from root to nonroot, your permitted set
+is cleared as well. And, if you switch your effective userid back to root,
+your permitted set is copied back into your effective set.
+</p><p>
+This behavior is controlled by a per-process set of securebits.
+One controls the setuid() behavior, and another controls the exec() behavior. They
+can be turned on using prctl(), and they can be locked such that neither the
+task nor its descendants can turn the bits back off.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x113f2d0"></a>
+System Preparation</h2></div></div><p>
+In order to exploit POSIX capabilities fully, both kernel and userspace
+must be set up properly. The easiest and safest way to experiment with
+such core changes is to do so in a virtual machine. Although everything
+shown here could just as well be done on your native Linux installation,
+for simplicity, I assume you are installing a minimal, stock
+Fedora system under qemu or kvm.
+</p><p>
+My first working prototype of a rootless system was done on a Gentoo
+system. Ubuntu Intrepid and SLES11 should come with file capabilities
+enabled. However, Fedora 10 wins as being the most capability-ready
+distribution to date, so I use it for this demonstration. To get
+started, download a Fedora 10 DVD from <a href="http://download.fedoraproject.org" target="_self">download.fedoraproject.org</a> (call
+the file f10.iso), then create a qemu hard disk image and boot kvm using:
+
+<pre     class="programlisting">
+# qemu-img create f10.img 6G
+# kvm -hda f10.img -cdrom f10.iso -m 512M -boot d
+</pre>
+</p><p>
+Then, proceed with the Fedora installation instructions. Make
+sure to install software development, and skip office and
+productivity tools for this image.
+</p><p>
+After rebooting, disable SELinux through the menu entries
+System&rarr;Administration&rarr;SELinux management. Change the top entry from
+Enforcing to Disabled, then reboot. Although there is no inherent reason
+why SELinux cannot be used with file capabilities, it does require some
+SELinux policy modifications.
+</p><p>
+Because you will be removing the root user's privilege, you'll want other
+users to receive ambient privileges at login. This is done using the
+pam_cap.so PAM module. To enable its use, add the line:
+
+<pre     class="programlisting">
+auth required pam_cap.so
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x113f698"></a></h2></div></div><p>
+to /etc/pam.d/system-auth. The order of these entries
+<span   class="emphasis"><em>does</em></span> matter, and
+improper order can prevent your entry from being used. I made it the second
+entry, after pam_env.so. Now, test by creating a user with some
+privilege:
+
+<pre     class="programlisting">
+# adduser -m netadmin
+# passwd netadmin
+# for f in /sbin/ifconfig /sbin/ip /sbin/route; do
+#   setcap cap_net_admin=ei $f
+# done
+</pre>
+</p><p>
+The above creates user netadmin and sets his password, then adds the
+cap_net_admin capability to the inheritable and effective sets for three
+network configuration programs. If you now type <tt  >ls
+/sbin/ifconfig</tt>,
+you'll notice the entry is marked in red. This is similar to how setuid
+binaries, such as /bin/ping, are marked, and it's a nice touch to let
+you easily tell which binaries ought to be treated with extra care
+or to detect mistaken privilege leakage.
+</p><p>
+You also must create the /etc/security/capability.conf file, which
+pam_cap.so will consult on each login. The file should contain:
+
+<pre     class="programlisting">
+cap_net_admin netadmin
+none *
+</pre>
+</p><p>
+The first line says that when user netadmin logs in, pam_cap.so should add
+the cap_net_admin capability to pI for its login shell. The second line,
+which is very important, says that everyone else (*) should receive
+no capabilities. Now, log in as user netadmin and play with the network:
+
+<pre     class="programlisting">
+hallyn@kvm# su - netadmin
+netadmin@kvm# ifconfig eth0 down
+</pre>
+</p><p>
+Success! You just downed the network as a nonroot user.
+</p><p>
+Now you're ready to make root unprivileged. As a first step,
+you will just restrict network logins over SSH. To make this as easy 
+as possible, simply start sshd through a wrapper that
+sets and locks all securebits before calling the real sshd. The source
+for the wrapper is shown in Listing 1.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x113fb10"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Wrapper to Execute a Program with Unprivileged Root</b></p><pre     class="programlisting">
+
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;sys/prctl.h&gt;
+#include &lt;sys/capability.h&gt;
+
+int main(int argc, char * argv[])
+{
+    int   i, ret;
+    char  *cmd;
+    char  **argvp;
+    cap_t cap = cap_get_proc();
+    int   v[CAP_LAST_CAP+1];
+
+    if (!cap)
+        return -1;
+
+    for (i=0; i&lt;=CAP_LAST_CAP; i++)
+        v[i] = i;
+
+    if (cap_set_flag(cap, CAP_INHERITABLE,
+                     CAP_LAST_CAP+1, v, CAP_SET))
+        return -1;
+
+    if (cap_set_proc(cap))
+        return -1;
+
+    cap_free(cap);
+
+    ret = prctl(PR_SET_SECUREBITS, 0xf);
+    if (ret) {
+        perror("prctl securebits");
+        exit(ret);
+    }
+    argvp = &amp;argv[1];
+    cmd   = argvp[0];
+    ret   = execv(cmd, argvp);
+    perror("execv");
+    return ret;
+}
+
+</pre></div><p>
+The wrapper locks itself into secure_noroot and secure_nosuidfixup
+mode using the prctl() system call. Then, it executes its first argument
+(ssh), passing the remaining arguments to the newly executed program,
+ssh. Compile capwrap, and copy it into /sbin:
+
+<pre     class="programlisting">
+# gcc -o capwrap capwrap.c -lcap
+# cp capwrap /sbin/
+</pre>
+</p><p>
+Then, edit /etc/init.d/sshd to execute capwrap. Find the start() function,
+and place /sbin/capwrap in front of the line that actually executes
+sshd. That line then becomes:
+
+<pre     class="programlisting">
+
+/sbin/capwrap $SSHD $OPTIONS &amp;&amp; success || failure
+
+</pre>
+</p><p>
+Of course, sshd will require some privilege to change userid and groupid
+among other things. Being lazy, for now, just set all
+capabilities using the command:
+
+<pre     class="programlisting">
+hallyn@kvm# setcap all=ei /usr/sbin/sshd
+</pre>
+</p><p>
+If you try restarting sshd right now, you'll be met with a silent failure.
+Instead, try this to start it by hand and see debugging output:
+
+<pre     class="programlisting">
+hallyn@kvm# /etc/init.d/sshd stop
+hallyn@kvm# /sbin/capwrap /usr/sbin/sshd -Dd
+</pre>
+</p><p>
+Among other things, you'll see:
+
+<pre     class="programlisting">
+debug1: permanently_set_uid: 74/74
+permanently_set_uid: was able to restore old [e]gid
+</pre>
+</p><p>
+sshd is complaining that it is able to restore its uid after switching
+to uid 74 (the ssh userid). This is problematic. Because you locked ssh
+into nosuid_fixup mode, switching from uid 0 to a non-0 uid does not
+clear out pE automatically. This means the process keeps CAP_SETUID and
+CAP_SETGID, so it is able to reset itsuid to 0 at any time.
+</p><p>
+The right solution is to modify the sshd source to separate the privilege
+handling from the userid handling. But, for this experiment, let's just
+stop sshd from complaining! It is wrong, but perhaps not quite as bad
+as it seems, because when sshd executes the user's login shell, pP and pE
+will be recalculated anyway.
+</p><p>
+Download opensshd_caps.patch (see Resources), and use the following
+steps to apply the above patch:
+
+
+<pre     class="programlisting">
+
+# yum install audit-libs-devel tcp_wrappers-devel libedit-devel
+# yumdownloader --source openssh
+# rpm -i openssh-*.rpm
+# cd /root/rpmbuild/
+# rpmbuild -bc SPECS/openssh*
+# cd BUILD/openssh-*/
+# patch &lt; /usr/src/opensshd_caps.patch
+# make &amp;&amp; make install
+# setcap all=ei /usr/sbin/sshd
+# /etc/init.d/sshd start
+
+</pre>
+</p><p>
+Now <tt  >ssh</tt> in as root, and use capsh to print your capability status:
+
+<pre     class="programlisting">
+root@kvm# /sbin/capsh --print
+Current: =
+Bounding set =(full set of capabilities)
+Securebits: 057/0x2f
+secure-noroot: yes (locked)
+secure-no-suid-fixup: yes (locked)
+secure-keep-caps: no (unlocked)
+uid=0
+</pre>
+</p><p>
+SSH logins are locked in secure-noroot and secure-nosuid-fixup.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x1136c38"></a>
+Setting Up Administrative Users</h2></div></div><p>
+The root userid now carries no privileges, but the system still requires
+administration. That requires privilege. So, let's define several
+partially privileged users. At login, each will receive inheritable
+capabilities sufficient to achieve some task. Working out the most
+useful combinations of capabilities to assign to select users is an
+interesting exercise, but for now let's focus on three users: netadmin,
+which can change network settings; useradmin, which can add and delete
+users, kill their processes and modify their files; and privadmin,
+which can change file capabilities and users' inheritable capabilities.
+</p><p>
+Create the users:
+
+<pre     class="programlisting">
+# adduser -m privadmin
+# passwd privadmin
+# adduser -m useradmin
+# passwd useradmin
+# chown privadmin /etc/security/capability.conf
+</pre>
+</p><p>
+The new capability.conf file follows:
+
+
+<pre     class="programlisting">
+cap_net_admin netadmin
+cap_chown,cap_dac_overide,cap_fowner,cap_kill useradmin
+cap_setfcap privadmin
+none *
+</pre>
+</p><p>
+privadmin may set file capabilities (cap_setfcap), so make him
+the owner of the capabilities.conf file, so he can set pI for
+users. useradmin can manipulate other users' files and processes. netadmin
+remains unchanged. (Note, privadmin can give himself whatever privilege he
+wants. A good audit policy and a limited tool for editing capability.conf
+would help mitigate that risk.)
+</p><p>
+You also need to set some inheritable file capabilities on system
+administration utilities to grant these users privilege. Listing
+2 shows a small list to get started. For brevity, let's just assign
+all capabilities to the inheritable set. You can apply these using the
+script in Listing 3 using <tt  >sh loopcaps.sh
+admincaplist</tt>. Finally, you'll
+need to let useradmin execute useradd using <tt  >chmod o+x
+/usr/sbin/useradd</tt>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x1137058"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. File Capabilities to Empower Partially Privileged Admins</b></p><pre     class="programlisting">
+/bin/kill:=ei
+/bin/ls:=ei
+/bin/cat:=ei
+/bin/ls:=ei
+/bin/mv:=ei
+/bin/touch:=ei
+/bin/mount:=ei
+/bin/umount:=ei
+/bin/vi:=ei
+/bin/rm:=ei
+/bin/chgrp:=ei
+/bin/find:=ei
+/bin/chmod:=ei
+/bin/chown:=ei
+/bin/mkdir:=ei
+/usr/sbin/useradd:=ei
+/usr/bin/passwd:=ei
+/usr/sbin/setcap:cap_setfcap=ei
+/bin/ping:cap_net_raw=ep
+/bin/su:=ep
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x1137268"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. Script to Apply File Capabilities</b></p><pre     class="programlisting">
+#!/bin/sh
+for l in `cat $1`; do
+    fglob=`echo $l | awk -F: '{ print $1 '}`
+    p=`echo $l | awk -F: '{ print $2 '}`
+
+    for f in `/bin/ls $flglob`; do
+        setcap $p $f
+    done
+done
+</pre></div><p>
+Now, log in as each of these users and play around.
+</p><p>
+There are still a few problems though. For instance, log in as
+useradmin and try to change someone's password:
+
+<pre     class="programlisting">
+useradmin@kvm# passwd netadmin
+passwd: Only root can specify a user name.
+</pre>
+</p><p>
+That's no good! The passwd program has noticed that you are not root and
+won't let you change another user's password. We are finding more and
+more code, written to accommodate the subtleties of different operating
+systems, which would now need to be further complicated to support our
+unprivileged-root model.
+</p><p>
+You can work around this case for now in one of two easy ways. First,
+you simply can use the root user instead of useradmin. The root user 
+still will not carry privileges unless it executes a (trusted) file with file
+capabilities. Second, you can continue to use the useradmin user name, but
+give it userid 0. Go ahead and try that. Edit /etc/passwd.conf,
+find the entry for useradmin, and change the first numeric column to
+0. Then <tt  >chown -R 0 /home/useradmin</tt>, so that he still
+can access his
+home directory. Now, you can log out and back in, and passwd will
+succeed. Actually, it ends with an error message, but you'll find that
+you did actually succeed in changing the password.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x1137688"></a>
+Locking Down init</h2></div></div><p>
+Now that you have some partially privileged administrative users, let's
+put the whole system in unprivileged-root mode. You could do this by
+patching the kernel, but in this case, let's patch init to use prctl()
+the same way that capwrap did. A patch to upstart, the Fedora init
+program, can be found in the Resources. You can apply it using steps
+similar to the openssh steps:
+
+<pre     class="programlisting">
+
+# yumdownloader --source upstart
+# rpm -i upstart*.rpm
+# cd rpmbuild
+# rpmbuild -bc SPECS/upstart.spec
+# cd BUILD/upstart*
+# patch -p1 &lt; /usr/src/upstart.patch
+# cp /sbin/init /sbin/init.orig
+# make &amp;&amp; make install
+
+</pre>
+</p><p>
+Also, in case something goes wrong, edit /boot/grub/grub.conf,
+comment out hiddenmenu, and set timeout to 10 instead of 0. Now
+if something goes wrong, you can interrupt the boot process and add
+<tt  >init=/sbin/init.orig</tt> to the end of your boot line.
+</p><p>
+The patched init enables all capabilities in its inheritable set. It also
+keeps its permitted and effective sets filled, although you should be able
+to drop many from its permitted set, keeping its effective set empty
+for most of its run. You will need to add file capabilities to many of
+the programs used during system startup. Ideally, you would modify each
+of these programs so as to avoid setting the legacy bit, but again this
+is a lazy proof of concept. Listing 4 contains a list that is
+sufficient for boot to succeed on the F10 image.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x1137948"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. Capabilities Needed to Boot Fedora with Unprivileged Root</b></p><pre     class="programlisting">
+/sbin/fsck:=ei
+/sbin/udevd:=ei
+/sbin/shutdown:=ei
+/sbin/e2fsck:=ei
+/sbin/mingetty:cap_chown,cap_dac_override,cap_sys_tty_config+ei
+/sbin/dhclient:=ei
+/sbin/reboot:=ei
+/sbin/fsck.ext3:=ei
+/sbin/hwclock:cap_sys_time=ei
+/bin/setfont:cap_sys_admin,cap_sys_resource,cap_sys_tty_config=ei
+/bin/hostname:cap_sys_admin=ei
+/bin/loadkeys:cap_sys_admin,cap_sys_resource,cap_sys_tty_config=ei
+/usr/bin/stat:cap_dac_override,cap_dac_read_search=ei
+/sbin/rsyslogd:cap_sys_admin,cap_audit_write=ei
+/bin/login:all=ei
+/sbin/MAKEDEV:=ei
+/sbin/auditd:=ei
+/sbin/auditctl:=ei
+/sbin/microcode_ctl:=ei
+/usr/bin/hal-*:=ei
+/usr/sbin/hald:=ei
+/usr/libexec/hal*:=ei
+/sbin/insmod:=ei
+/sbin/modprobe:=ei
+/sbin/rmmod:=ei
+/bin/plymouth:=ei
+/usr/bin/Xorg:=ei
+/usr/sbin/gdm-binary:=ei
+/bin/dbus-daemon:=ei
+/usr/sbin/avahi-daemon:=ei
+/usr/bin/sessreg:=ei
+/sbin/pam_console_apply:=ei
+/usr/sbin/gpm:=ei
+/lib/dbus-1/dbus-daemon-launch-helper:=ep
+/sbin/initctl:=ei
+/usr/sbin/console-kit-daemon:=ep
+/usr/sbin/NetworkManager:=ei
+/usr/libexec/gdm*:=ei
+/usr/sbin/gdm-binary:=ei
+</pre></div><p>
+You can apply these with the same script as before (Listing 3).
+</p><p>
+You'll also need to execute:
+
+<pre     class="programlisting">
+chmod go-x /usr/sbin/console-kit-daemon
+</pre>
+</p><p>
+You're giving it forced rather than inherited permissions in lieu of
+changing the (setuid-root) dbus-daemon-launch-helper code so as to fill
+its inheritable set. This means any user would receive full privilege
+when executing it, so you allow only root to execute it.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x1137cb8"></a>
+Conclusion</h2></div></div><p>
+This article demonstrates taking a stock Fedora 10 system and changing the privilege system
+from one where one userid (root's) automatically imparts privilege,
+to one where only file capabilities determine the privilege available
+to a caller. The root user turns from a privileged user to simply the
+userid that happens to own most system resources.
+</p><p>
+You can remove the privileged root user for a whole system. In this
+experiment, quite a bit of work still needs to be done to make
+that practical, say, for a whole distribution. Most important, legacy
+code makes assumptions based on userids. Setting up partially privileged
+users make system administration convenient, while making the
+privilege separation useful will be an interesting project.
+</p><p>
+In the meantime, you can exploit the per-process nature of the
+unprivileged-root mode. This article shows how to remove the privileged
+root user from any legacy software that always is intended to be
+unprivileged. You also should design new services to be capability-aware
+so that they too can run without a privileged root. Doing so can greatly
+reduce the impact of any bugs or exploits.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1046580.0x1137e70"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+opensshd_caps.patch and upstart.patch are available at <a href="../listings/184/10249.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue184/10249.tgz</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Serge Hallyn does Linux kernel and security coding with the IBM
+Linux Technology Center, mostly working with containers, application
+migration, POSIX capabilities and SELinux.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../184/toc184.html">Issue Table of Contents</a>
+    <a class="link3" href="../184/10249.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

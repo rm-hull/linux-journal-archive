@@ -1,0 +1,235 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>Portable Real-Time Applications</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h4>Listing 4. Stage 2 and 3 in C, integrator.c</h4>
+  <pre>
+#include &lt;stdio.h&gt;
+#include &lt;math.h&gt;
+#include &lt;sys/time.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;sys/ioctl.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#define SAMPLE_RATE 44100
+#define BLOCKS_PER_SECOND 50
+#if defined(LINUX)
+#include &lt;sys/soundcard.h&gt;
+int SoundFD;
+#elif  defined(IRIX)
+#include &lt;audio.h&gt;
+ALconfig Irix_AL_config;
+ALport   SoundFD;
+#elif defined(CYGWIN)
+#include &lt;windows.h&gt;
+#define NONAMELESSUNION
+#define _stdcall STDCALL
+typedef HANDLE HTASK;
+#include &lt;semaphore.h&gt;
+#include &lt;mmsystem.h&gt;
+static HWAVEOUT WaveDevice = NULL;
+static sem_t WavBufSema;
+static void CALLBACK WaveCallBack(HWAVE hWave,
+  UINT uMsg, DWORD dwInstance,
+  DWORD dwParam1, DWORD dwParam2) {
+  if (uMsg == WOM_DONE) {
+    WAVEHDR * wh = (WAVEHDR *) dwParam1;
+    HGLOBAL hg;
+    waveOutUnprepareHeader(WaveDevice, wh,
+                           sizeof(WAVEHDR));
+    hg = GlobalHandle(wh-&gt;lpData);
+    GlobalUnlock(hg); GlobalFree(hg);
+    hg = GlobalHandle(hg); GlobalUnlock(hg);
+    GlobalFree(hg);
+    sem_post (&amp; WavBufSema);
+} }
+#endif
+int InitSoundSystem(int SampleRate) {
+  int OK = -1;
+#if defined(LINUX)
+  if ((SoundFD=open("/dev/dsp", O_WRONLY)) &gt;=0) {
+    int OSS_format = AFMT_S16_LE;
+    int OSS_speed  = SampleRate;
+    ioctl(SoundFD, SNDCTL_DSP_RESET, 0);
+    if ((ioctl(SoundFD, SNDCTL_DSP_SETFMT,
+               &amp;OSS_format) != -1)  &amp;&amp;
+        (OSS_format == AFMT_S16_LE) &amp;&amp;
+        (ioctl(SoundFD, SNDCTL_DSP_SPEED,
+               &amp;OSS_speed ) != -1)  &amp;&amp;
+        (OSS_speed  == SampleRate)) {
+      OK = SoundFD;
+  } }
+#elif defined(IRIX)
+  long PV [10] = {
+    AL_LEFT_SPEAKER_GAIN,        10,
+    AL_RIGHT_SPEAKER_GAIN,       10,
+    AL_OUTPUT_RATE,
+  };
+  PV [5] = AL_RATE_44100;
+  if ((ALsetparams(AL_DEFAULT_DEVICE,PV,6)==0) &amp;&amp;
+      ((Irix_AL_config = ALnewconfig()) != NULL)){
+    ALsetchannels  (Irix_AL_config, AL_STEREO);
+    ALsetqueuesize (Irix_AL_config, SAMPLE_RATE);
+    ALsetwidth     (Irix_AL_config, AL_SAMPLE_16);
+    if (((SoundFD=ALopenport("Speaker","w",
+            Irix_AL_config)) != NULL)) OK = 0;
+  }
+#elif defined(CYGWIN)
+  WaveDevice = NULL;
+  sem_init (&amp; WavBufSema, 0, BLOCKS_PER_SECOND);
+  if (waveOutGetNumDevs() &gt; 0) {
+    WAVEFORMATEX outFormatex;
+    outFormatex.wFormatTag      = WAVE_FORMAT_PCM;
+    outFormatex.wBitsPerSample  =              16;
+    outFormatex.nChannels       =               1;
+    outFormatex.nSamplesPerSec  =     SAMPLE_RATE;
+    outFormatex.nBlockAlign   = sizeof(short int);
+    outFormatex.nAvgBytesPerSec =
+  outFormatex.nSamplesPerSec * sizeof(short int);
+    if (waveOutOpen(&amp;WaveDevice, WAVE_MAPPER,
+          &amp;outFormatex, (DWORD) WaveCallBack, 0,
+          CALLBACK_FUNCTION) == MMSYSERR_NOERROR)
+      OK = 0;
+  }
+#endif
+  return OK;
+}
+void SoundOutAndWait(short int * Sample,
+                           int HowMany) {
+  int HowManyBytes = HowMany * sizeof(short int);
+#if defined(LINUX)
+  write(SoundFD, Sample, HowManyBytes);
+#elif defined(IRIX)
+  ALwritesamps (SoundFD, Sample, HowMany);
+#elif defined(CYGWIN)
+  HGLOBAL HGheader = GlobalAlloc (GMEM_MOVEABLE |
+    GMEM_ZEROINIT, sizeof(WAVEHDR));
+  HGLOBAL HGdata   = GlobalAlloc (GMEM_MOVEABLE,
+                      HowManyBytes);
+  LPWAVEHDR WaveHeaderPtr = GlobalLock(HGheader);
+  WaveHeaderPtr-&gt;dwBufferLength =   HowManyBytes;
+  WaveHeaderPtr-&gt;lpData   =   GlobalLock(HGdata);
+  CopyMemory(WaveHeaderPtr-&gt;lpData, Sample,
+                                   HowManyBytes);
+  waveOutPrepareHeader(WaveDevice, WaveHeaderPtr,
+                                sizeof(WAVEHDR));
+  waveOutWrite        (WaveDevice, WaveHeaderPtr,
+                                sizeof(WAVEHDR));
+  sem_wait (&amp; WavBufSema);
+#endif
+}
+int main (int argc, char *argv[]) {
+  double k=0.05, B=7.5, x1=3.0, dx=4.0,
+         dt=M_PI/100.0, ddt, x0, x2;
+  int i, j = 0;
+  if (InitSoundSystem(SAMPLE_RATE) &lt; 0) exit(0);
+  ddt = dt * dt; x0 = x1 - dx*dt;
+  while (1) {
+    short int SampleBuffer[SAMPLE_RATE /
+                           BLOCKS_PER_SECOND];
+    fd_set stdin_set;
+    struct timeval timeout = { 0, 0 };
+    FD_ZERO(&amp; stdin_set); /* non-blocking read */
+    FD_SET(fileno(stdin), &amp; stdin_set);
+    if (select(fileno(stdin)+1, &amp; stdin_set,
+               NULL, NULL, &amp; timeout) &gt; 0) {
+      char line[128], Name[128];
+      float Value;
+      fgets(line, sizeof(line), stdin);
+      sscanf (line, "%s %f", Name, &amp;Value);
+      if (strcmp(Name,"k")==0) k=(double) Value;
+      if (strcmp(Name,"B")==0) B=(double) Value;
+    }
+    for (i=0; i&lt;(SAMPLE_RATE/BLOCKS_PER_SECOND);
+         i++, j++) {
+      SampleBuffer[i] = 4096 * x1;
+      x2 = (ddt*B * cos(j*dt) + (2+dt*k)*x1 -
+            x0 - ddt*x1*x1*x1) / (1 + dt * k);
+      if ((j%1000) == 0)  /* Poincare section */
+        printf("%f %f\n", x2, (x2-x1)/dt);
+      x0=x1; x1=x2;
+    }
+    SoundOutAndWait(SampleBuffer,
+      SAMPLE_RATE / BLOCKS_PER_SECOND);
+  }
+  return 0;
+}
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../066/toc066.html">Issue Table of Contents</a>
+    <a class="link3" href="../066/3577.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

@@ -1,0 +1,85 @@
+Listing 2. Simple Broadcast FM Receiver
+
+#!/usr/bin/env python
+
+# simple broadcast FM receiver
+
+from GnuRadio import *
+
+#
+# return a gr_FlowGraph
+#
+def build_graph (IF_freq):
+    input_rate = 20e6
+
+    CFIR_decimate = 125
+    RFIR_decimate = 5
+    fm_demod_gain = 2200
+
+    quad_rate = input_rate / CFIR_decimate
+    audio_rate = quad_rate / RFIR_decimate
+
+    volume = 1.0
+
+    src = GrHighSpeedADCSourceS (input_rate)
+
+    # compute FIR filter taps for channel selection
+    channel_coeffs = \
+      gr_firdes.low_pass (
+        1.0,          # gain
+        input_rate,   # sampling rate
+        250e3,        # low pass cutoff freq
+        8*100e3,      # width of trans. band
+        gr_firdes.WIN_HAMMING)
+
+    # input: short; output: complex
+    chan_filter = \
+      GrFreqXlatingFIRfilterSCF (CFIR_decimate,
+                                 channel_coeffs,
+                                 IF_freq)
+    # input: complex; output: float
+    fm_demod = \
+      GrQuadratureDemodCF (volume * fm_demod_gain)
+
+    # compute FIR filter taps for audio filter
+    width_of_transition_band = audio_rate / 32
+    audio_coeffs = \
+      gr_firdes.low_pass (
+        1.0,            # gain
+        quad_rate,      # sampling rate
+        audio_rate/2 - width_of_transition_band,
+        width_of_transition_band,
+        gr_firdes.WIN_HAMMING)
+
+    # input: float; output: short
+    audio_filter = \
+      GrFIRfilterFSF (RFIR_decimate, audio_coeffs)
+
+    final_sink = GrAudioSinkS ()
+
+    fg = gr_FlowGraph ()
+
+    fg.connect (src, chan_filter)
+    fg.connect (chan_filter, fm_demod)
+    fg.connect (fm_demod, audio_filter)
+    fg.connect (audio_filter, final_sink)
+
+    return fg
+
+if __name__ == '__main__':
+
+    # connect to RF front end
+    rf_front_end = microtune_eval_board ()
+    if not rf_front_end.board_present_p ():
+        raise IOError, 'RF front end not found'
+
+    # set gain and radio station frequency
+    rf_front_end.set_AGC (300)
+    rf_front_end.set_RF_freq (100.1e6)
+
+    IF_freq = rf_front_end.get_output_freq ()
+    fg = build_graph (IF_freq)
+    fg.start ()        # fork thread(s) and return
+    raw_input ('Press Enter to quit: ')
+    fg.stop ()
+

@@ -1,0 +1,440 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Writing a Real Driver&mdash;In User Space</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Now you can control USB hardware without&#10;touching the kernel and even make your&#10;driver run on BSD-based OSes with no code changes. Greg shows&#10;a working example for using the cross-platform USB library,&#10;libusb.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x284d580.0x2944ab0"></a>
+Writing a Real Driver&mdash;In User Space</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #122, June 2004</div></div><div><p>
+Now you can control USB hardware without
+touching the kernel and even make your
+driver run on BSD-based OSes with no code changes. Greg shows
+a working example for using the cross-platform USB library,
+libusb.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x29452f0"></a></h2></div></div><p>
+Last time we discussed how to create a simple USB driver that
+controlled a USB LED device manufactured by Delcom Engineering
+[<i  >LJ</i>, April 2004]. I would
+like to thank all of the readers who have given me feedback on the column.
+It even enabled one reader to write a driver now in the main
+kernel tree. I also would like to thank everyone who has given me
+ideas about what kinds of devices to write about in future columns, but
+please remember, let's try to cover simple devices. We don't have the
+room here to go over how to reverse engineer a streaming video camera
+that has about 12 different modes of operation.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x2945450"></a>
+usbfs Overview</h2></div></div><p>
+At the end of the last column, I said it is simple
+to talk to a USB device from user space, without needing a custom kernel
+driver. Way back during the development of the original Linux USB code,
+a few developers recognized that it would be wise to allow user programs
+to get at the raw USB data in all devices in addition to
+controlling the device. To that end, the usbfs filesystem was created.
+It originally was called usbdevfs, but many people confused
+it with the devfs filesystem and all of the nasty baggage that filesystem
+brought on, so it was renamed usbfs.
+</p><p>
+Traditionally, usbfs is mounted in the /proc/bus/usb directory on your
+machine. In that main directory exists a file called devices
+and a directory for every different USB bus connected to the
+machine. Those bus directories are named with a number that corresponds
+to the number the kernel has given that particular USB bus.
+In each bus directory is a file for every different USB device
+connected to the bus. For example, a box that has six different USB
+buses and a few USB devices connected might look like this:
+
+<pre     class="programlisting">
+$ tree /proc/bus/usb/
+/proc/bus/usb/
+|-- 001
+|   `-- 001
+|-- 002
+|   `-- 001
+|-- 003
+|   `-- 001
+|-- 004
+|   |-- 001
+|   |-- 002
+|   `-- 003
+|-- 005
+|   `-- 001
+|-- 006
+|   `-- 001
+`-- devices
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x2945608"></a></h2></div></div><p>
+If you do not have any USB host controller drivers loaded,
+the main /proc/bus/usb/ directory should be empty.
+</p><p>
+The /proc/bus/usb/devices file contains a list of all USB devices
+attached at that moment in time. It also shows how the devices are
+connected to one another and a lot of other USB-specific information
+about each device. For details on how the data in this file should be
+interpreted, see the documentation in the kernel tree
+at Documentation/usb/proc_usb_info.txt. Programs such as usbview or
+usbtree use this file to show information about USB devices.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x2945768"></a>
+usbfs Device Files</h2></div></div><p>
+The files within the /proc/bus/usb/BBB/ directories, where BBB is the
+number of the USB bus, allow programs to talk directly to the different USB
+devices. The name of the files are the same number as the
+USB number assigned to the device: 001 for the first device, 002 for
+the second and so on. Do not rely on these numbers to be unique, as
+the USB subsystem reuses the numbers when devices are removed and added.
+If device 003 is removed and another, different device is added,
+it gets the 003 number.
+</p><p>
+If you read from the device file, the raw USB descriptor is
+returned&mdash;first the USB device descriptor and then the different configuration
+descriptors. For a detailed description of what format these descriptors
+are in and what all of the data means, see the USB specification,
+which is available for download at the USB Developers Web site (<a href="http://www.usb.org/developers" target="_self">www.usb.org/developers</a>).
+</p><p>
+The device file also supports a wide range of ioctl calls that allows
+programs to send and receive USB data from the device. These ioctls
+and the structures needed for the ioctls are described in the
+kernel file include/linux/usbdevice_fs.h.
+</p><p>
+Armed with these ioctls, the structures defined in this header file and
+a copy of the USB specification, we are set to write a user-space program
+to talk to our device. But do we really want to do this? Wouldn't it
+be great if someone wrote a library on top of this interface that would
+enable us to write sane programs? Luckily, a group of developers has
+created such a library, allowing programmers to ignore the ioctl
+mess that usbfs uses. This library is called libusb.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x2945a28"></a>
+libusb</h2></div></div><p>
+libusb is a library that works on a number of
+different operating systems: Linux, the various
+BSDs and Mac OS X. It allows programs to be written
+in a portable manner and yet still control USB
+devices on vastly different operating systems.
+Using this library lets us create a program to
+control the USB LED device. libusb can be downloaded
+from <a href="http://libusb.sf.net" target="_self">libusb.sf.net</a> if it is not included in
+your Linux distribution.
+</p><p>
+The first thing any libusb program must do is initialize the library
+and have it scan all USB buses for all USB devices. This is done with
+the following three function calls:
+
+<pre     class="programlisting">
+usb_init(); usb_find_busses(); usb_find_devices();
+</pre>
+</p><p>
+After the call is complete, the program needs to find a USB device that
+matches the desired description. As all USB devices have
+unique vendor and product identification values, it usually is
+easiest to look for these values. As we remember from the kernel driver we
+created last time, the USB LED device has the following vendor and
+product values:
+
+<pre     class="programlisting">
+#define LED_VENDOR_ID	0x0fc5
+#define LED_PRODUCT_ID  0x1223
+</pre>
+</p><p>
+With this information, the code to find this device using libusb is
+the following:
+
+<pre     class="programlisting">
+
+for (usb_bus = usb_busses; usb_bus;
+     usb_bus = usb_bus-&gt;next) {
+        for (dev = usb_bus-&gt;devices; dev;
+             dev = dev-&gt;next) {
+            if ((dev-&gt;descriptor.idVendor ==
+                 LED_VENDOR_ID) &amp;&amp;
+                (dev-&gt;descriptor.idProduct ==
+                 LED_PRODUCT_ID))
+                return dev;
+	}
+}
+return NULL;
+
+</pre>
+</p><p>
+If the device is found in the system, a pointer to it is returned,
+otherwise NULL is returned. This pointer is of type struct usb_device.
+After this structure is found, the USB device must be opened and a
+handle must be created by libusb for the program to
+communicate with the device. This is done with the following simple code:
+
+<pre     class="programlisting">
+usb_handle = usb_open(usb_dev);
+if (usb_handle == NULL) {
+    fprintf(stderr,
+            "Not able to claim the USB device\n");
+    goto exit;
+}
+</pre>
+</p><p>
+This usb_handle variable is of type struct usb_dev_handle, and it is what
+libusb uses to determine with which USB device it should communicate.
+This handle is all that is needed to set up
+our USB device to be ready to communicate with it.
+</p><p>
+When the program is finished with the USB device, a
+call to <tt  >usb_close(usb_handle);</tt>
+is all that is necessary to clean up all of our structures and notify
+libusb that the device is no longer needed.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x2945f50"></a>
+Changing Colors</h2></div></div><p>
+Last time we set the color of the USB LED device
+from within our kernel driver with the following
+code:
+
+<pre     class="programlisting">
+usb_control_msg(led-&gt;udev,
+                usb_sndctrlpipe(led-&gt;udev, 0),
+                0x12,
+                0xc8,
+                (0x02 * 0x100) + 0x0a,
+                (0x00 * 0x100) + color,
+                buffer,
+                8,
+                2 * HZ);
+</pre>
+</p><p>
+libusb offers us an almost identical function call
+to send control messages to a USB device. It also is
+called usb_control_msg(), and to send the same
+type of color message as we did from within the
+kernel, our user-space program does it like this:
+
+<pre     class="programlisting">
+usb_control_msg(handle,
+                0xc8,
+                0x12,
+                (0x02 * 0x100) + 0x0a,
+                (0c00 * 0x100) + color,
+                buffer,
+                8,
+                5000);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x2946160"></a></h2></div></div><p>
+Other than the request type and request variables
+being reversed from the kernel function call, it
+looks identical.
+</p><p>
+Using libusb cuts down extremely
+the complexities of writing to a USB device, and it gives us a
+cross-platform program that is much better than a specific kernel driver
+for most devices.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x29462c0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 1. Controlling a USB LED Device</b></p><pre     class="programlisting">
+
+/*
+ * Set LED - program to control a USB LED device
+ * from user space using libusb
+ *
+ * Copyright (C) 2004
+ *     Greg Kroah-Hartman (greg@kroah.com)
+ *
+ * This program is free software; you can
+ * redistribute it and/or modify it under the terms
+ * of the GNU General Public License as published by
+ * the Free Software Foundation, version 2 of the
+ * License.
+ *
+ */
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+#include &lt;usb.h&gt;
+
+#define NONE    0x00
+#define BLUE    0x04
+#define RED     0x02
+#define GREEN   0x01
+
+
+#define LED_VENDOR_ID   0x0fc5
+#define LED_PRODUCT_ID  0x1223
+
+static void change_color
+        (struct usb_dev_handle *handle,
+         unsigned char color)
+{
+    char *dummy;
+
+    usb_control_msg(handle,
+                    0x000000c8,
+                    0x00000012,
+                    (0x02 * 0x100) + 0x0a,
+                    0xff &amp; (~color),
+                    dummy,
+                    0x00000008,
+                    5000);
+}
+
+static struct usb_device *device_init(void)
+{
+    struct usb_bus *usb_bus;
+    struct usb_device *dev;
+
+    usb_init();
+    usb_find_busses();
+    usb_find_devices();
+
+    for (usb_bus = usb_busses;
+         usb_bus;
+         usb_bus = usb_bus-&gt;next) {
+        for (dev = usb_bus-&gt;devices;
+             dev;
+             dev = dev-&gt;next) {
+            if ((dev-&gt;descriptor.idVendor
+                  == LED_VENDOR_ID) &amp;&amp;
+                (dev-&gt;descriptor.idProduct
+                  == LED_PRODUCT_ID))
+                return dev;
+        }
+    }
+    return NULL;
+}
+
+int main(int argc, char **argv)
+{
+    struct usb_device *usb_dev;
+    struct usb_dev_handle *usb_handle;
+    int retval = 1;
+    int i;
+    unsigned char color = NONE;
+
+    usb_dev = device_init();
+    if (usb_dev == NULL) {
+        fprintf(stderr, "Device not foundn\n");
+        goto exit;
+    }
+
+    usb_handle = usb_open(usb_dev);
+    if (usb_handle == NULL) {
+        fprintf(stderr,
+        goto exit;
+    }
+
+    usb_handle = usb_open(usb_dev);
+    if (usb_handle == NULL) {
+        fprintf(stderr,
+             "Not able to claim the USB device\n");
+        goto exit;
+    }
+
+    if (argc == 1) {
+        fprintf(stderr,
+                "specify at least 1 color\n");
+        goto exit;
+    }
+
+    for (i = 1; i &lt; argc; ++i) {
+        if (strcasecmp(argv[i], "red") == 0)
+            color |= RED;
+        if (strcasecmp(argv[i], "blue") == 0)
+            color |= BLUE;
+        if (strcasecmp(argv[i], "green") == 0)
+            color |= GREEN;
+        if (strcasecmp(argv[i], "none") == 0)
+            color = NONE;
+    }
+    change_color(usb_handle, color);
+    retval = 0;
+
+exit:
+    usb_close(usb_handle);
+    return retval;
+}
+
+
+</pre></div><p>
+Listing 1 allows any
+mixture of the three possible colors this device offers to be
+set. Simply pass the colors as command-line arguments
+to make changes:
+
+<pre     class="programlisting">
+To set the red led:
+        set_led red
+To set the green and blue led:
+        set_led green blue
+To turn off all leds:
+        set_led none
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x284d580.0x2946580"></a>
+Conclusion</h2></div></div><p>
+I hope that this example encourages you to
+experiment with libusb as a simple alternative to
+writing a kernel driver. USB devices almost
+always can be controlled properly with user-space
+programs instead of specialized kernel
+drivers. User-space programs using libusb are much
+easier to debug, do not require a special kernel
+version to be used and work across a wide range of
+operating systems.
+</p></div></div>
+<div class="authorblurb"><p>
+Greg Kroah-Hartman currently is the Linux kernel maintainer for a
+variety of different driver subsystems. He works
+for IBM, doing Linux kernel-related things, and can
+be reached at <a href="mailto:greg@kroah.com">greg@kroah.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../122/toc122.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

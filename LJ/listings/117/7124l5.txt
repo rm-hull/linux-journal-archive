@@ -1,0 +1,50 @@
+  1 void
+  2 d_move(struct dentry *dentry,
+  3        struct dentry *target)
+  4 {
+  5   spin_lock(&dcache_lock);
+  6   write_seqlock(&rename_lock);
+  7   if (target < dentry) {
+  8     spin_lock(&target->d_lock);
+  9     spin_lock(&dentry->d_lock);
+ 10   } else {
+ 11     spin_lock(&dentry->d_lock);
+ 12     spin_lock(&target->d_lock);
+ 13   }
+ 14   if (dentry->d_vfs_flags & DCACHE_UNHASHED)
+ 15     goto already_unhashed;
+ 16   if (dentry->d_bucket != target->d_bucket) {
+ 17     hlist_del_rcu(&dentry->d_hash);
+ 18 already_unhashed:
+ 19     dentry->d_bucket = target->d_bucket;
+ 20     hlist_add_head_rcu(&dentry->d_hash,
+ 21                        target->d_bucket);
+ 22     dentry->d_vfs_flags &= ~DCACHE_UNHASHED;
+ 23   }
+ 24   __d_drop(target);
+ 25   list_del(&dentry->d_child);
+ 26   list_del(&target->d_child);
+ 27   switch_names(dentry, target);
+ 28   smp_wmb();
+ 29   do_switch(dentry->d_name.len,
+ 30             target->d_name.len);
+ 31   do_switch(dentry->d_name.hash,
+ 32             target->d_name.hash);
+ 33   if (IS_ROOT(dentry)) {
+ 34     dentry->d_parent = target->d_parent;
+ 35     target->d_parent = target;
+ 36     INIT_LIST_HEAD(&target->d_child);
+ 37   } else {
+ 38     do_switch(dentry->d_parent,
+ 39               target->d_parent);
+ 40     list_add(&target->d_child,
+ 41        &target->d_parent->d_subdirs);
+ 42   }
+ 43   list_add(&dentry->d_child,
+ 44      &dentry->d_parent->d_subdirs);
+ 45   dentry->d_move_count++;
+ 46   spin_unlock(&target->d_lock);
+ 47   spin_unlock(&dentry->d_lock);
+ 48   write_sequnlock(&rename_lock);
+ 49   spin_unlock(&dcache_lock);
+ 50 }

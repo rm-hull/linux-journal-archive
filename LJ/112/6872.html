@@ -1,0 +1,694 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Driving Me Nuts</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;More necessary instructions for making your new device driver&#10;play nice in the 2.6 kernel.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x262e580.0x2725ab0"></a>Driving Me Nuts</h1></div><div><h3 class="subtitle"><i>Device Classes</i></h3></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #112, August 2003</div></div><div><p>
+More necessary instructions for making your new device driver
+play nice in the 2.6 kernel.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2726240"></a></h2></div></div><p>
+In the last Driving Me Nuts column [see <i  >LJ</i>, June 2003], we introduced the kernel driver model
+framework with an explanation of how the generic bus and
+driver and device code works. The i2c core was used as an
+example to show how these different subsystems work. This month,
+we cover how the driver class code works, again
+using the i2c code to provide some working examples.
+</p><p>
+As discussed in the last column, device classes do not meet the general
+object-oriented definition of a class; rather they are
+something that provides a single type of function to the user.
+For example, kernel classes are used for tty devices, block
+devices, network devices, SCSI hosts and, in the near future,
+filesystems.
+</p><p>
+In the 2.5.69 kernel, the driver class support was rewritten radically. In previous kernel versions, class support was
+tied tightly to the driver and device support. A class would be
+bound to the device at the same time it was registered to a driver.
+This did work for a number of devices and classes, but some
+real-world devices did not fit very well into this model.
+Now, class support is tied only loosely to devices and
+drivers; in fact, a device or driver is not even needed to use
+the class code now, as the tty class code shows.
+The class code is now split into three different types of
+structures: classes, class devices and class interfaces.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2726450"></a>Classes</h2></div></div><p>
+Classes in the kernel are defined with a simple
+struct class structure. Yes,
+class is not a reserved word in C. (Everyone
+who wants to build a kernel with a C++ compiler, go flame
+the author of the new class code.) To create a class
+structure, only the name variable in the
+struct class structure needs to be defined
+for it to be a valid class. This can be done with the
+following code:
+
+<pre     class="programlisting">
+
+static struct class i2c_adapter_class = {
+	.name = "i2c_adapter"
+};
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x27265b0"></a></h2></div></div><p>
+After the class structure is defined, it can be registered with
+the driver core by calling the
+class_register function:
+
+<pre     class="programlisting">
+
+if (class_register(&amp;i2c_adapter_class) != 0)
+    printk(KERN_ERR "i2c adapter class failed "
+                    "to register properly\n");
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2726710"></a></h2></div></div><p>
+After the class_register function returns
+without reporting an error, the
+/sys/class/i2c_adapter directory has
+been created successfully. Later, when the class needs to be unloaded, the
+class_unregister function should be called:
+
+<pre     class="programlisting">
+
+class_unregister(&amp;i2c_adapter_class);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2726870"></a>Class Devices</h2></div></div><p>
+Classes are used to manage a set of different class devices. A
+class device is defined in the kernel with the
+struct	class_device structure. This
+structure contains of a lot of variables the driver core uses,
+and it can be ignored by the driver writer. Only the following
+variables should be set:
+
+<div class="itemizedlist"><ul type="disc"><li><p>
+class: should point to the
+struct class that is going to manage
+the class device.
+</p></li><li><p>
+dev: should be set to the address of the
+struct device associated with the class device, if any. A single struct device can be pointed to by
+multiple class device structures. This is the main
+difference between the previous kernel class support
+and the current implementation. This variable does not
+have to be set for the kernel to work properly. If it
+is set, a device symbolic link
+is created in the sysfs entry for the class device
+that points to the struct device.
+See below for an example.
+</p></li><li><p>
+class_id: an array of characters used to
+describe the class device. It must be unique among all
+class device structures assigned to a single class
+structure.
+</p></li><li><p>
+class_data: used to store a pointer to any private
+data the class driver wants to associate with the class device. This
+variable should not be accessed directly, but the class_set_devdata
+and class_get_devdata functions
+should be used to set and retrieve the value of this
+variable.
+</p></li></ul></div>
+</p><p>
+To register a properly set up
+struct class_device structure, the
+class_device_register function should be
+called. An example of how to initialize a
+struct class_device and register it with the
+driver core can be seen in the following code from the
+drivers/i2c/i2c-core.c file:
+
+<pre     class="programlisting">
+
+/* Add this adapter to the i2c_adapter class */
+memset(&amp;adap-&gt;class_dev, 0x00,
+       sizeof(struct class_device));
+adap-&gt;class_dev.dev = &amp;adap-&gt;dev;
+adap-&gt;class_dev.class = &amp;i2c_adapter_class;
+strncpy(adap-&gt;class_dev.class_id,
+        adap-&gt;dev.bus_id, BUS_ID_SIZE);
+class_device_register(&amp;adap-&gt;class_dev);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2726d40"></a></h2></div></div><p>
+First, the struct class_device variable
+(embedded in the struct i2c_adapter
+variable) is initialized to zero. All driver model structures
+need to have all variables set to zero before they are registered,
+in order for the driver core to use them properly.
+</p><p>
+Then the dev variable is set to point to the
+i2c_adapter's struct device variable; in this
+case, the same structure, struct i2c_adapter,
+contains both a struct device and a
+struct class_device. The
+class variable is set to the address of the
+i2c_adapter_class variable, and then the
+class_id variable is set to the same value as
+the device's bus_id. Because the i2c_adapter
+device's bus_id is unique, it also ensures
+that the i2c_adapter class_device's class_id
+is unique. Finally, the class device structure is registered with the kernel
+driver core by a call to the
+class_device_register function.
+</p><p>
+With the above code and two i2c adapters loaded on a test
+machine, the /sys/class/i2c_adapter tree
+might look like the following:
+
+
+
+<pre     class="screen">
+
+$ tree /sys/class/i2c-adapter/
+/sys/class/i2c-adapter/
+|-- i2c-0
+|   |-- device -&gt; ../../../devices/pci0/00:07.3/i2c-0
+|   `-- driver -&gt; ../../../bus/i2c/drivers/i2c_adapter
+`-- i2c-2
+    |-- device -&gt; ../../../devices/legacy/i2c-2
+    `-- driver -&gt; ../../../bus/i2c/drivers/i2c_adapter
+
+</pre>
+</p><p>
+As you can see by the above tree output, a
+device and driver symbolic link are created automatically by the driver core to
+point to the proper place within the sysfs tree that represents
+those values. If the dev pointer was not set
+to point to a struct device, those
+symbolic links would not have been created. If you look in the
+/sys/class/tty directory, the majority of
+those class device entries do not have a corresponding
+struct device, so those symbolic links are
+not present.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2727000"></a>Class Interfaces</h2></div></div><p>
+Class interfaces simply are a way for your code to be notified
+whenever a struct class_device is
+registered or unregistered from a specific class. A class
+interface is defined with the struct class_interface structure. This
+structure is simple and looks like:
+
+<pre     class="programlisting">
+
+struct class_interface {
+    struct list_head  node;
+    struct class      *class;
+    int (*add)        (struct class_device *);
+    void (*remove)    (struct class_device *);
+};
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2727160"></a></h2></div></div><p>
+The class variable needs to be set to the
+class about which we want to be notified. The
+add and remove variables
+should be set to a function that is called when any
+devices are added or removed, respectively, from that class. It
+is not necessary to set both the add and remove variables if you
+do not want to be notified about one of those events.
+</p><p>
+To register a class interface with the kernel, the
+class_interface_register function is
+called. Likewise, to unregister a class interface, the
+class_interface_unregister function is
+called. An example of code that uses class interfaces is the CPU
+frequency core; this code can be found at
+kernel/cpufreq.c in the kernel source tree.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x27272c0"></a>Creating Files</h2></div></div><p>
+As described above, the i2c-adapter class is useful for easily
+determining all of the different i2c adapters present
+in the system and their specific location in the driver tree.
+But i2c adapters are not directly addressable by a user. To
+talk to an i2c adapter, an i2c chip driver needs to be loaded, or
+the i2c-dev driver can be used. The
+i2c-dev driver provides a character driver
+interface to all i2c adapters present in the system.
+Because it is useful to determine exactly which i2c-dev
+devices are attached to which i2c adapters, a i2c-dev class was
+created:
+
+<pre     class="programlisting">
+
+static struct class i2c_dev_class = {
+    .name	= "i2c-dev"
+};
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2727420"></a></h2></div></div><p>
+Then, when every i2c adapter is found by the
+i2c-dev driver, a new i2c class device is
+added to the driver core. This addition is done in the
+i2c_add_class_device function:
+
+<pre     class="programlisting">
+
+static void
+i2c_add_class_device(char *name, int minor,
+                     struct i2c_adapter *adap)
+{
+   struct i2c_dev *i2c_dev;
+   int retval;
+
+   i2c_dev = kmalloc(sizeof(*i2c_dev), GFP_KERNEL);
+   if (!i2c_dev)
+       return;
+   memset(i2c_dev, 0x00, sizeof(*i2c_dev));
+
+   if (adap-&gt;dev.parent == &amp;legacy_bus)
+       i2c_dev-&gt;class_dev.dev = &amp;adap-&gt;dev;
+   else
+       i2c_dev-&gt;class_dev.dev = adap-&gt;dev.parent;
+   i2c_dev-&gt;class_dev.class = &amp;i2c_dev_class;
+   snprintf(i2c_dev-&gt;class_dev.class_id,
+            BUS_ID_SIZE, "%s", name);
+   retval =
+       class_device_register(&amp;i2c_dev-&gt;class_dev);
+   if (retval)
+       goto error;
+   class_device_create_file (&amp;i2c_dev-&gt;class_dev,
+                             &amp;class_device_attr_dev);
+   i2c_dev-&gt;minor = minor;
+   spin_lock(&amp;i2c_dev_list_lock);
+   list_add(&amp;i2c_dev-&gt;node, &amp;i2c_dev_list);
+   spin_unlock(&amp;i2c_dev_list_lock);
+   return;
+error:
+   kfree(i2c_dev);
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2727580"></a></h2></div></div><p>
+This function looks almost like the i2c_adapter class
+registration code, with two exceptions. First, the
+class_dev.dev field is set to be either the
+adapter's parent device or the adapter's device. This is done
+because some i2c adapters do not have a real parent in the
+global kernel device tree, as they live on a bus that
+has not been converted to the kernel driver model (like
+ISA) or they do not really live on a bus at all (like some i2c
+embedded controllers). When an i2c adapter does not have a
+place in the kernel device tree, it is assigned to the legacy
+bus. The legacy bus, located at /sys/devices/legacy, is used for these
+kinds of devices.
+</p><p>
+The second thing that is different with this class device is
+the line:
+
+<pre     class="screen">
+
+class_device_create_file (&amp;i2c_dev-&gt;class_dev, &amp;class_device_attr_dev);
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x2727790"></a></h2></div></div><p>
+The class_device_create_file function is
+used to create a file in the class device's directory. The filename and attributes are defined with the
+CLASS_DEVICE_ATTR macro as:
+
+
+
+<pre     class="programlisting">
+
+static ssize_t
+show_dev(struct class_device *class_dev, char *buf)
+{
+   struct i2c_dev *i2c_dev = to_i2c_dev(class_dev);
+   return sprintf(buf, "%04x\n",
+                  MKDEV(I2C_MAJOR, i2c_dev-&gt;minor));
+}
+static
+CLASS_DEVICE_ATTR(dev, S_IRUGO, show_dev, NULL);
+
+</pre>
+</p><p>
+The CLASS_DEVICE_ATTR macro is itself defined as:
+
+<pre     class="programlisting">
+
+#define CLASS_DEVICE_ATTR(_name,_mode,_show,_store) \
+struct class_device_attribute                       \
+class_device_attr_##_name = { 	                    \
+    .attr  = {.name = __stringify(_name),           \
+              .mode = _mode },                      \
+    .show  = _show,                                 \
+    .store = _store,                                \
+};
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x27279f8"></a></h2></div></div><p>
+The arguments within the CLASS_DEVICE_ATTR macro
+are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+_name: both the name
+of the file to be
+created in sysfs and
+part of the variable name
+that describes this whole
+attribute.
+</p></li><li><p>
+_mode: the file access mode with which the file is
+created. Use the
+standard access macros to specify the proper value.
+</p></li><li><p>
+_show: points to a function that
+is called when the file
+is read from. This function
+must have the following return value and parameters. This variable does not
+have
+to be set if the file is
+not to be read from.
+
+<pre     class="programlisting">
+ssize_t
+show (struct class_device *class_dev, char *buf);
+</pre>
+</p></li><li><p>
+_store: points to a function that
+is called when the file is written to. This
+function must have the
+following return value and
+paramaters. This variable does not have
+to be set if the file is
+not to be written to.
+
+<pre     class="programlisting">
+ssize_t
+store (struct device *dev, const char *buf,
+       size_t count);
+</pre>
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x271e758"></a></h2></div></div><p>
+Almost all driver model structures have an ATTR() macro that declares a file
+within the sysfs tree.
+</p><p>
+In this example, a file named dev is
+created when the class_device_create_file
+function is called. This file is created to be
+read-only by any user. If the file is read from, the
+show_dev function is called by the
+driver core. The show_dev function fills
+in the buffer passed to it with the information it wants to
+give the user. In this case, the major and minor number for
+this specific device are passed to the user. All class devices
+using a major and minor number should have a
+dev file within their
+sysfs class device directory.
+</p><p>
+The class_device_remove_file
+function can be used to remove any files created by
+the class_device_create_file function. But
+it is not necessary to remove manually any file created if the
+device is about to be removed. When devices are removed from
+sysfs, all files created in their directories
+are removed automatically by the sysfs core. So, when the
+i2c-dev class device is removed from the system, all that is
+needed is the following:
+
+<pre     class="programlisting">
+
+static void
+i2c_remove_class_device(int minor)
+{
+    struct i2c_dev *i2c_dev = NULL;
+    struct list_head *tmp;
+    int found = 0;
+
+    spin_lock(&amp;i2c_dev_list_lock);
+    list_for_each (tmp, &amp;i2c_dev_list) {
+        i2c_dev = list_entry(tmp, struct i2c_dev,
+                             node);
+        if (i2c_dev-&gt;minor == minor) {
+            found = 1;
+            break;
+        }
+    }
+    if (found) {
+        list_del(&amp;i2c_dev-&gt;node);
+        spin_unlock(&amp;i2c_dev_list_lock);
+        class_device_unregister(&amp;i2c_dev-&gt;class_dev);
+        kfree(i2c_dev);
+    } else {
+    spin_unlock(&amp;i2c_dev_list_lock);
+    }
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x271e968"></a>What It All Looks Like</h2></div></div><p>
+With the i2c-dev driver and two i2c
+adapter drivers (the i2c-piix4 and
+i2c-isa drivers) loaded, the
+/sys/class/i2c-dev directory might look
+like the following:
+
+
+
+<pre     class="screen">
+
+$ tree /sys/class/i2c-dev/
+/sys/class/i2c-dev/
+|-- i2c-0
+|   |-- dev
+|   |-- device -&gt; ../../../devices/pci0/00:07.3
+|   `-- driver -&gt; ../../../bus/pci/drivers/piix4-smbus
+`-- i2c-2
+    |-- dev
+    |-- device -&gt; ../../../devices/legacy/i2c-2
+    `-- driver -&gt; ../../../bus/i2c/drivers/i2c_adapter
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x271eb20"></a></h2></div></div><p>
+The dev file in the
+/sys/class/i2c-dev/i2c-2/ directory would
+contain the following string:
+
+<pre     class="screen">
+
+$ cat /sys/class/i2c-dev/i2c-2/dev
+5902
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x271ec80"></a></h2></div></div><p>
+which corresponds to major number 86 and minor number 2, the
+character major and minor numbers for this specific device.
+</p><p>
+Also, the /sys/bus/i2c/ directory with a
+few i2c client drivers loaded looks like:
+
+
+
+<pre     class="screen">
+
+$ tree /sys/bus/i2c/
+/sys/bus/i2c/
+|-- devices
+|   |-- 0-0050 -&gt; ../../../devices/pci0/00:07.3/i2c-0/0-0050
+|   |-- 0-0051 -&gt; ../../../devices/pci0/00:07.3/i2c-0/0-0051
+|   |-- 0-0052 -&gt; ../../../devices/pci0/00:07.3/i2c-0/0-0052
+|   |-- 0-0053 -&gt; ../../../devices/pci0/00:07.3/i2c-0/0-0053
+|   `-- 2-0290 -&gt; ../../../devices/legacy/i2c-2/2-0290
+`-- drivers
+    |-- dev driver
+    |-- eeprom
+    |   |-- 0-0050 -&gt; ../../../../devices/pci0/00:07.3/i2c-0/0-0050
+    |   |-- 0-0051 -&gt; ../../../../devices/pci0/00:07.3/i2c-0/0-0051
+    |   |-- 0-0052 -&gt; ../../../../devices/pci0/00:07.3/i2c-0/0-0052
+    |   `-- 0-0053 -&gt; ../../../../devices/pci0/00:07.3/i2c-0/0-0053
+    |-- i2c_adapter
+    `-- w83781d
+        `-- 2-0290 -&gt; ../../../../devices/legacy/i2c-2/2-0290
+
+</pre>
+</p><p>
+And, the actual /sys/devices/ directories
+for the i2c adapters look like:
+
+<pre     class="screen">
+
+$ tree /sys/devices/pci0/00:07.3
+/sys/devices/pci0/00:07.3
+|-- class
+|-- device
+|-- i2c-0
+|   |-- 0-0050
+|   |   |-- eeprom_00
+|   |   |-- name
+|   |   `-- power
+|   |-- 0-0051
+|   |   |-- eeprom_00
+|   |   |-- name
+|   |   `-- power
+|   |-- 0-0052
+|   |   |-- eeprom_00
+|   |   |-- name
+|   |   `-- power
+|   |-- 0-0053
+|   |   |-- eeprom_00
+|   |   |-- name
+|   |   `-- power
+|   |-- name
+|   `-- power
+|-- irq
+|-- name
+|-- power
+|-- resource
+|-- subsystem_device
+|-- subsystem_vendor
+`-- vendor
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x271ef40"></a></h2></div></div><p>
+and:
+
+<pre     class="screen">
+
+$ tree /sys/devices/legacy/i2c-2/
+/sys/devices/legacy/i2c-2/
+|-- 2-0290
+|   |-- alarms
+|   |-- beep_enable
+|   |-- beep_mask
+|   |-- fan_div1
+|   |-- fan_div2
+|   |-- fan_div3
+|   |-- fan_input1
+|   |-- fan_input2
+|   |-- fan_input3
+|   |-- fan_min1
+|   |-- fan_min2
+|   |-- fan_min3
+|   |-- in_input0
+|   |-- in_input1
+|   |-- in_input2
+|   |-- in_input3
+|   |-- in_input4
+|   |-- in_input5
+|   |-- in_input6
+|   |-- in_input7
+|   |-- in_input8
+|   |-- in_max0
+|   |-- in_max1
+|   |-- in_max2
+|   |-- in_max3
+|   |-- in_max4
+|   |-- in_max5
+|   |-- in_max6
+|   |-- in_max7
+|   |-- in_max8
+|   |-- in_min0
+|   |-- in_min1
+|   |-- in_min2
+|   |-- in_min3
+|   |-- in_min4
+|   |-- in_min5
+|   |-- in_min6
+|   |-- in_min7
+|   |-- in_min8
+|   |-- name
+|   |-- power
+|   |-- pwm1
+|   |-- pwm2
+|   |-- pwm_enable2
+|   |-- sensor1
+|   |-- sensor2
+|   |-- sensor3
+|   |-- temp_input1
+|   |-- temp_input2
+|   |-- temp_input3
+|   |-- temp_max1
+|   |-- temp_max2
+|   |-- temp_max3
+|   |-- temp_min1
+|   |-- temp_min2
+|   |-- temp_min3
+|   |-- vid
+|   `-- vrm
+|-- name
+`-- power
+
+</pre>
+</p><p>
+I think the best description of the kernel driver model's use of
+interconnected structure pointers and representation to the user
+was issued by Jonathan Corbet: &ldquo;web woven by a spider on
+drugs&rdquo; (<a href="http://lwn.net/Articles/31185/" target="_self">lwn.net/Articles/31185/</a>).
+Hopefully, these two articles have helped you unravel the
+loony web, showing the true interconnectedness of all devices
+within the kernel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x262e580.0x271f1a8"></a>Acknowledgements</h2></div></div><p>
+I would like to thank Pat Mochel for creating such a powerful
+and complete framework in which all kernel drivers and devices
+easily can be shown to the user. Also, a big thanks to all of
+the kernel driver subsystem maintainers who have gladly
+converted their subsystems over to this model; without their
+help, the driver core code would have been little more than a
+nice academic exercise.
+
+
+</p></div></div>
+<div class="authorblurb"><p>
+Greg Kroah-Hartman
+is currently the Linux USB and PCI Hot Plug kernel maintainer.
+He works for IBM, doing various Linux kernel-related things and
+can be reached at <a href="mailto:greg@kroah.com">greg@kroah.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../112/toc112.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

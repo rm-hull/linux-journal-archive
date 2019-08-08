@@ -1,0 +1,408 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel Korner</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Here's how I/O schedulers contribute to disk performance in Linux and&#10;the improvements you can get from the new I/O schedulers in the 2.6 kernel.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x12d1580.0x13c8ab0"></a>Kernel Korner</h1></div><div><h3 class="subtitle"><i>
+I/O Schedulers</i></h3></div><div><div class="author"><h3 class="author">Robert Love</h3></div><div class="issuemoyr">Issue #118, February 2004</div></div><div><p>
+Here's how I/O schedulers contribute to disk performance in Linux and
+the improvements you can get from the new I/O schedulers in the 2.6 kernel.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12d1580.0x13c92f0"></a></h2></div></div><p>
+Although most Linux users are familiar with the role of process
+schedulers, such as the new O(1) scheduler, many users are not so
+familiar with the role of I/O schedulers. I/O schedulers are similar in
+some aspects to process schedulers; for instance, both schedule some resource
+among multiple users. A process scheduler virtualizes the resource of
+processor time among multiple executing processes on the system. So,
+what does an I/O scheduler schedule?
+</p><p>
+A na&iuml;ve system would not even include an I/O scheduler. Unlike the process
+scheduler, the I/O scheduler is not a mandatory component of the operating
+system. Instead, performance is the I/O scheduler's sole
+<span   class="foreignphrase"><i>raison d'&ecirc;tre</i></span>.
+</p><p>
+To understand the role of an I/O scheduler, let's go over some background
+information and then look at how a system behaves without an I/O
+scheduler. Hard disks address their data using the familiar geometry-based
+addressing of cylinders, heads and sectors. A hard
+drive is composed of multiple platters, each consisting of a single
+disk, spindle and read/write head. Each platter is divided further into
+circular ring-like tracks, similar to a CD or record. Finally,
+each track is composed of some integer number of sectors.
+</p><p>
+To locate a specific unit of data in a hard drive, the drive's logic
+requires three pieces of information: the cylinder, the head and the
+sector. The cylinder specifies the track on which the data resides. If
+you lay the platters on top of one another (as they are in a hard disk),
+a given track forms a cylinder through each platter. The head then
+identifies the exact read/write head (and thus the exact platter)
+in question. The search now is narrowed down to a single track on a
+single platter. Finally, the sector value denotes the exact sector on
+the track. The search is complete: the hard disk knows what sector,
+on what track, on what platter the data resides. It can position the
+read/write head of the correct platter over the correct track and read
+the proper sector.
+</p><p>
+Thankfully, modern hard disks do not force computers to communicate
+with them in terms of cylinders, heads and sectors. Instead, modern
+hard drives map a unique block number over each cylinder/head/sector
+triplet. The unique number identifies a specific cylinder/head/sector
+value. Modern operating systems then can address hard drives using
+this block number&mdash;called logical block addressing&mdash;and the
+hard drive translates the block number into the correct
+cylinder/head/sector value.
+</p><p>
+One thing of note about this block number: although nothing guarantees
+it, the physical mapping tends to be sequential. That is, logical
+block n tends to be physically adjacent to logical block
+n+1. We discuss why that is important later on.
+</p><p>
+Now, let's consider the typical UNIX system. Applications as varied
+as databases, e-mail clients, Web servers and text editors issue I/O
+requests to the disk, such as read this block and write to that
+block. The blocks tend to be located physically all over the disk. The
+e-mail spool may be located in an entirely different region of the disk
+from the Web server's HTML data or the text editor's configuration
+file. Indeed, even a single file can be strewn all over the disk if the
+file is fragmented, that is, not laid out in sequential blocks. Because the files
+are broken down into individual blocks, and hard drives are addressed by
+block and not the much more abstract concepts of files, reading or writing
+file data is broken down into a stream of many individual I/O requests,
+each to a different block. With luck, the blocks are sequential or at
+least physically close together. If the blocks are not near one
+another, the disk head must move to another location on the disk. Moving
+the disk head is called seeking, and it is one of the most expensive
+operations in a computer. The seek time on modern hard drives is measured
+in the tens of milliseconds. This
+is one reason why defragmented files are a good thing.
+</p><p>
+Unfortunately, it does not matter if the files are defragmented because
+the system is generating I/O requests for multiple files, all over the
+disk. The e-mail client wants a little from here and the Web server wants
+a little from there&mdash;but wait, now the text editor wants to read a
+file. The net effect is that the disk head is made to jump around the
+disk. In a worst-case scenario, with interleaved I/O requests to multiple
+files, the head can spend all of its time jumping around from
+one location to another&mdash;not a good thing for overall system performance.
+</p><p>
+This is where the I/O scheduler comes in. The I/O scheduler schedules
+the pending I/O requests in order to minimize the time spent moving the
+disk head. This, in turn, minimizes disk seek time and maximizes hard
+disk throughput.
+</p><p>
+This magic is accomplished through two main actions, sorting
+and merging. First, the I/O scheduler keeps the list of pending
+I/O requests sorted by block number. When a new I/O request is issued,
+it is inserted, block-wise, into the list of pending requests. This
+prevents the drive head from seeking all around the disk to service I/O
+requests. Instead, by keeping the list sorted, the disk head moves in
+a straight line around the disk. If the hard drive is busy servicing
+a request at one part of the disk, and a new request comes in to the
+same part of the disk, that request can be serviced before moving off
+to other parts of the disk.
+</p><p>
+Merging occurs when an I/O request is issued to an identical or adjacent
+region of the disk. Instead of issuing the new request on its own, it
+is merged into the identical or adjacent request. This minimizes
+the number of outstanding requests.
+</p><p>
+Let's look at an example. Consider the case where two applications issue requests
+to the following block numbers, such that they arrived in the kernel in
+this order: 10, 500, 12, 502, 14, 504 and 12. The I/O scheduler-less
+approach would service these blocks in the given order. That is seven
+long seeks, back and forth between two parts of the disk. What a waste!
+If the kernel sorted and merged these requests, however, and serviced
+them in that order, the results would be much different: 10, 12, 14, 500,
+502 and 504. Only a single far-off seek and one less request overall.
+</p><p>
+In this manner, an I/O scheduler virtualizes the resources of
+disk I/O among multiple I/O requests in order to maximize global
+throughput. Because I/O throughput is so crucial to system performance
+and because seek time is so horribly slow, the job of an I/O scheduler
+is important.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12d1580.0x13c98c8"></a>
+The Linus Elevator</h2></div></div><p>
+The I/O scheduler found in the 2.4 Linux kernel is named the Linus
+Elevator. I/O schedulers often are called elevator algorithms,
+because they tackle a problem similar to that of keeping an elevator
+moving smoothly in a large building. The Linus Elevator functions almost
+exactly like the classic I/O scheduler described above. For the most part,
+this was great because simplicity is a good thing and the 2.4 kernel's
+I/O scheduler just worked. Unfortunately, in the I/O scheduler's quest
+to maximize global I/O throughput, a trade-off was made: local
+fairness&mdash;in particular, request latency&mdash;can go easily out the window. Let's
+look at an example.
+</p><p>
+Consider a stream of requests to logical disk blocks such as 20, 30,
+700 and 25. The I/O scheduler's sorting algorithm would queue and issue
+the requests in the following order (assuming the disk head currently
+is at the logical start of the disk): 20, 25, 30 and 700. This is expected
+and indeed correct. Assume, however, that halfway through servicing
+the request to block 25, another request comes in to the same part of
+the disk. And then another. And yet another. It is entirely feasible
+that the request way over to block 700 is not serviced for a relatively
+long time.
+</p><p>
+Worse, what if the request was to read a disk block? Read requests
+generally are synchronous. When an application issues a request to
+read some data, it typically blocks and waits until the kernel
+returns the data. The application must sit and wait, twiddling
+its thumbs, until that request way over at block 700 finally
+is serviced. Writes, on the other hand, typically are not
+synchronous&mdash;they
+are asynchronous. When an application issues a write, the kernel
+copies the data and metadata into the kernel, prepares a buffer to hold
+the data and returns to the application. The application does not really
+care or even know when the data actually hits the disk.
+</p><p>
+It gets worse for our friend the read request, however. Because writes
+are asynchronous, writes tend to stream. That is, it is common
+for a large writeback of a lot of data to occur. This implies that many
+individual write requests are submitted to a close area of the hard
+disk. As an example, consider saving a large file. The application dumps
+write requests on the system and hard drive as fast as it is scheduled.
+</p><p>
+Read requests, conversely, usually do not stream. Instead, applications
+submit read requests in small one-by-one chunks, with each chunk dependent
+on the last. Consider reading all of the files in a directory. The
+application opens the first file, issues a read request for a suitable
+chunk of the file, waits for the returned data, issues a read request for
+the next chunk, waits and continues likewise until the entire file is
+read. Then the file is closed, the next file is opened and the process
+repeats. Each subsequent request has to wait for the previous,
+which means substantial delays to this application if the requests are to
+far-off disk blocks. The phenomenon of streaming write requests starving
+dependent read requests is called writes-starving-reads (see Sidebar
+&ldquo;Test 1. Writes-Starving-Reads&rdquo;).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12d1580.0x13c9b88"></a></h2></div></div><div class="sidebar"><p class="title"><b>Test 1. Writes-Starving-Reads</b></p><p>
+In the background, perform a streaming write, such as:
+
+
+<pre     class="programlisting">
+while true
+do
+        dd if=/dev/zero of=file bs=1M
+done
+</pre>
+</p><p>
+Meanwhile, time how long a simple read of a 200MB file takes:
+
+<pre     class="programlisting">
+time cat 200mb-file &gt; /dev/null
+</pre>
+</p><p>
+This test demonstrates the writes-starving-reads problem.
+</p></div><p>
+The possibility of not servicing some requests in a reasonable amount
+of time is called starvation. Request starvation results in
+unfairness. In the case of I/O schedulers, the system explicitly
+has decided to trade fairness for improved global throughput. That is,
+the system attempts to improve the overall performance of the system
+at the possible expense of any one specific I/O request. This is
+accepted and, indeed, desired&mdash;except that prolonged starvation is
+bad. Starving read requests for even moderate lengths of time results in
+high application latency for applications issuing read requests during
+other disk activity. This high read latency adversely affects
+system performance and feel (see Sidebar &ldquo;Test 2. Effects of High
+Read Latency&rdquo;).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12d1580.0x13c9fa8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Test 2. Effects of High Read Latency</b></p><p>
+Start a streaming read in the background:
+
+<pre     class="programlisting">
+while true
+do
+        cat big-file &gt; /dev/null
+done
+</pre>
+</p><p>
+Meanwhile, measure how long it takes for a read of every file in the kernel
+source tree to complete:
+
+<pre     class="programlisting">
+time find . -type f -exec cat '{}' ';' &gt; /dev/null
+</pre>
+</p><p>
+This measures the performance of a series of small dependent reads during a
+large streaming read.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12d1580.0x13ca318"></a>
+The Deadline I/O Scheduler</h2></div></div><p>
+Preventing the starvation of requests in general, and read requests in
+particular, was a goal of the new 2.6 I/O schedulers.
+</p><p>
+The Deadline I/O Scheduler was introduced to solve the starvation issue
+surrounding the 2.4 I/O scheduler and traditional elevator algorithms
+in general. As discussed, the Linus Elevator maintains the sorted list
+of pending I/O requests in a single queue. The I/O request at the head of
+the queue is the next one to be serviced. The Deadline I/O Scheduler continues to
+keep this queue, but kicks things up a notch by introducing two additional
+queues&mdash;the read FIFO queue and the write FIFO queue. The
+Deadline I/O Scheduler keeps the items in each of these queues sorted by
+submission time (effectively, first in is first out). The read FIFO
+queue, as its name suggests, contains only read requests. The write FIFO
+queue, likewise, contains only write requests. Each FIFO queue is assigned
+an expiration value. The read FIFO queue has an expiration time
+of 500 milliseconds. The write FIFO queue has an expiration time of five seconds.
+</p><p>
+When a new I/O request is submitted, it is insertion-sorted into the
+standard queue and placed at the tail of its respective (either read
+or write) FIFO queue. Normally, the hard drive is sent I/O requests from
+the head of the standard sorted queue. This maximizes global throughput
+by minimizing seeks, as the normal queue is sorted by block number,
+as with the Linus Elevator.
+</p><p>
+When the item at the head of one of the FIFO queues, however, grows
+older than the expiration value associated with its queue, the I/O
+scheduler stops dispatching I/O requests from the standard queue.
+Instead, it services the I/O request at the head of the FIFO queue, plus a
+couple extra for good measure. The I/O scheduler needs to check and
+handle only the requests at the head of the FIFO queues, as those are the
+oldest requests in the queue.
+</p><p>
+Remember our old friend, the request to block 700? Despite the flood of
+write requests to the faraway blocks, after 500 milliseconds the Deadline
+I/O Scheduler would stop servicing those requests and service the read
+over at block 700. The disk would seek to block 700, service the read
+request and then continue servicing the other outstanding requests.
+</p><p>
+In this manner, the Deadline I/O Scheduler can enforce a soft deadline on
+I/O requests. Although it makes no promise that an I/O request is serviced
+before the expiration time, the I/O scheduler generally services requests
+near their expiration times. Thus, the Deadline I/O Scheduler continues
+to provide good global throughput without starving any one request for
+an unacceptably long time. Because read requests are given short
+expiration times, the writes-starving-reads problem is minimized.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12d1580.0x13ca630"></a>
+Anticipatory I/O Scheduler</h2></div></div><p>
+This is all well and good, but it's not a perfect solution. Consider what
+happens with our fictional request to block 700, which presumably is the
+first of many dependent reads to that area of the disk. After servicing
+the read request, the Deadline I/O Scheduler continues servicing the
+write requests to the earlier blocks. This is fine, until the reading
+application submits its next read request (say, to block 710). In 500
+milliseconds, that request expires and the disk seeks over
+to block 710, services the request, seeks back to where it was before
+and continues servicing the streaming write. And then another read
+arrives.
+</p><p>
+The problem again stems from those darn dependent reads. Because reads
+are issued in dependent chunks, the application issues the next read
+only when the previous is returned. But by the time the application
+receives the read data, is scheduled to run and submits the next read,
+the I/O scheduler has moved on and begun servicing some
+other requests. This results in a wasted pair of seeks for each read:
+seek to the read, service it and seek back. If only there was some way
+for the I/O scheduler to know&mdash;nay, to anticipate&mdash;that another
+read would soon be submitted to the same part of the disk. Instead
+of seeking back and forth, it could wait in anticipation for the next
+read. Saving those awful seeks certainly is worth a few milliseconds of
+waiting; we save two seeks.
+</p><p>
+This is, of course, exactly what the Anticipatory I/O Scheduler
+does. It began as the Deadline I/O Scheduler; it implements the
+same deadline-based scheduling. But it was gifted with the addition
+of an anticipation mechanism. When a read request is submitted,
+the Anticipatory I/O Scheduler services it within its deadline, as
+usual. Unlike the Deadline I/O Scheduler, however, the Anticipatory
+I/O Scheduler then sits and waits, doing nothing, for up to six
+milliseconds. Chances are good that the
+application will issue another read to the same part of the filesystem
+during those six milliseconds. If
+so, that request is serviced immediately, and the Anticipatory I/O
+Scheduler waits some more. If six milliseconds go by without a read
+request, the Anticipatory I/O Scheduler guessed wrong and returns to
+whatever it was doing before.
+</p><p>
+If even a moderate number of requests are anticipated correctly, a great
+deal of time (two expensive seeks, each) is saved (Table 1). Because most reads are
+dependent, the anticipation pays off most of the time. To further improve
+the odds of a correct anticipation, the Anticipatory I/O Scheduler uses a
+heuristic to better guess for which processes to wait. To
+this end, the scheduler maintains I/O statistics about each process to
+keep track of its behavior. Because of these statistics and intelligent
+heuristics, the Anticipatory I/O Scheduler correctly anticipates the
+actions of applications a sufficiently large amount of the time to be
+well worth the overhead.
+</p><div class="table"><a name="N0x12d1580.0x13ca840"></a><p class="title"><b>
+Table 1. The Results</b></p><table     summary="&#10;Table 1. The Results6931t1.qrk" border="1"><colgroup><col><col><col></colgroup><thead><tr><th>I/O Scheduler and Kernel</th><th>Test 1</th><th>Test 2</th></tr></thead><tbody><tr><td>Linus Elevator on 2.4</td><td>45 seconds</td><td>30 minutes, 28 seconds</td></tr><tr><td>Deadline I/O Scheduler on 2.6</td><td>40 seconds</td><td>3 minutes, 30 seconds</td></tr><tr><td>Anticipatory I/O Scheduler on 2.6</td><td>4.6 seconds</td><td>15 seconds</td></tr></tbody></table></div><p>
+By minimizing unneeded seeks and more quickly servicing read requests,
+in many workloads the Anticipatory I/O Scheduler provides both improved
+request latency and global throughput over the Deadline I/O Scheduler
+and the Linus Elevator. Unsurprisingly, the Anticipatory I/O Scheduler
+is the default I/O scheduler in the 2.6 kernel. And rightly so, it rocks.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x12d1580.0x13c18b8"></a>
+Acknowledgement</h2></div></div><p>
+Andrea Arcangeli and Jens Axboe are the primary authors of the
+Linus Elevator. Jens Axboe is the primary author of the Deadline I/O
+Scheduler. Nick Piggin is the primary author of the Anticipatory I/O
+Scheduler.
+</p></div></div>
+<div class="authorblurb"><p>
+Robert Love (<a href="mailto:rml@tech9.net">rml@tech9.net</a>) is a kernel hacker at MontaVista Software
+and a student at the University of Florida. He is the author of <span   class="emphasis"><em>Linux
+Kernel Development</em></span>. Robert loves O.A.R. and lives in Gainesville,
+Florida.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../118/toc118.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,71 @@
+Listing 2. demo_connect Function
+
+static int demo_connect(vfs_handle_struct *handle,
+                        const char  *service,
+                        const char *user)
+{
+        int res = 0;
+         struct demo_struct *ctx = NULL;
+
+        /*
+         * Allow the next module to handle connections first
+         * If we get an error, don't do any of our initialization.
+         */
+        res = SMB_VFS_NEXT_CONNECT(handle, service, user);
+        if (res) {
+                return res;
+        }
+
+        /*
+         * Get some memory for the dir we are interested in
+         * watching and our other context info.
+         */
+        ctx = talloc_zero(handle, struct demo_struct);
+        if (!ctx) {
+                DEBUG(0, ("Unable to allocate memory for our context,
+                                can't proceed!\n"));
+                errno = ENOMEM;
+                return -1;
+        }
+
+        ctx->audit_path = lp_parm_const_string(SNUM(handle->conn),
+                                               DEMO_MODULE_NAME,
+                                              "audit path",
+                                               NULL);
+
+        DEBUG(10, ("audit path is \"%s\"", ctx->audit_path));
+
+        res = sem_init(&ctx->send_sem, 0, LOG_QUEUE_SIZE);
+        if (res) {
+                DEBUG(1, ("Unable to initialize send sem: %s\n",
+                        strerror(errno)));
+                goto error_no_thread;
+        }
+
+        res = sem_init(&ctx->recv_sem, 0, 0);
+        if (res) {
+                DEBUG(1, ("Unable to initialize recv sem: %s\n",
+                        strerror(errno)));
+                goto error_no_thread;
+        }
+
+        res = pthread_create(&ctx->log_thread,
+                             NULL,
+                             logging_thread,
+                             ctx);
+        if (res) {
+                DEBUG(1, ("Unable to create our background thread: %s\n",
+                        strerror(errno)));
+                goto error_no_thread;
+        }
+
+        SMB_VFS_HANDLE_SET_DATA(handle, ctx, NULL,
+                                struct demo_struct, goto error);
+        return res;
+error:
+
+error_no_thread:
+        talloc_free(ctx);
+        return res;
+}
+

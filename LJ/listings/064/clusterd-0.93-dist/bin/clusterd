@@ -1,0 +1,250 @@
+#!/bin/sh
+#
+# Checks heartbeat of failover server and controls failover mechanism
+#
+# Usage: clusterd <LOCAL NODENAME> <REMOTE NODENAME>
+#
+# Copyright (C) 1998, 1999 Philip J. Lewis
+#
+#    This program is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program; if not, write to the Free Software
+#    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+#
+#    Contact: lewispj@email.com
+#
+
+
+
+INSTALL=/usr/local/bin
+CONFIG=/etc/cluster.d
+MAC_CACHE_SECS=21
+PATH=$PATH":$INSTALL"
+STANDBY_CMD="/sbin/init 1"
+
+if [ "$1" = "" -o "$2" = "" ]; then
+        echo "Usage: $0 <LOCAL NODENAME> <REMOTE NODENAME>"
+	exit 1;
+fi
+if [ ! -d $CONFIG/$1 ]; then
+	echo "Node Description directory $CONFIG/$1/ does not exist"
+	exitstat=1
+fi
+if [ ! -d $CONFIG/$2 ]; then
+	echo "Node Description directory $CONFIG/$2/ does not exist"
+	exitstat=1
+fi
+if [ ! -f $CONFIG/$1.conf ]; then
+	echo "Node Config file  $CONFIG/$1.conf does not exist"
+	exitstat=1
+fi
+if [ ! -f $CONFIG/$2.conf ]; then
+	echo "Node Config file  $CONFIG/$2.conf does not exist"
+	exitstat=1
+fi
+if [ "$exitstat" = "1" ]; then
+	echo "$0 has terminated."
+	exit 1;
+fi
+
+# Determine the servers' NODENAMEs
+LOC=$1
+REM=$2
+
+# Get configuration for cluster
+. clusterd.functions
+get_local_config $CONFIG/$LOC.conf
+get_remote_config $CONFIG/$REM.conf
+# Local server NODENAME is $LOC
+# Remote server NODENAME is $REM
+ 
+# if local node's standby lockfile still exists then down our main 
+# interface then quit to avoid address clashes
+if [ -f /var/run/standby ]; then
+	ifdown $LMI
+	debug_output "Downing main interface to prevent addrss clash"
+	debug_output "Standby lockfile exists - quitting - remove manually"
+	sleep 10
+	exec $STANDBY_CMD
+	exit 1
+fi
+
+# if remote node is fully reachable
+# Remove stale local lock files
+# no need to resync because we didn't take over any services
+ifdown $LRI
+
+#if [ "$(is_alive $RHA)" = "1" -a "$(is_alive $RMA)" = "1" ]; then
+	rm -f /var/run/failover.$REM
+#else
+#	# put into standby again
+#	touch /var/run/standby
+#fi
+
+# stop cluster services for remote server
+cluster_init_stop $LOC
+cluster_init_stop $REM
+
+# if remote server is up, wait for the lockfile to clear
+if [ "$(is_alive $RHA)" = "1" ]; then
+	wait_remote_lock
+fi
+
+# start cluster services for this server
+cluster_init_start $LOC
+
+while [ 1 = 1 ]; do
+
+		
+	######## Cluster Node Failure Checking Loop #########
+	debug_output "Cluster Node Failure Checking Loop"
+	# Continuously check the heartbeat of remote node
+	result=1
+	while [ $result = 1 ]; do
+
+		result=0
+		# if remote heartbeat and main are both alive
+		if [ "$(is_alive $RMA)" = "1" -a "$(is_alive $RHA)" = "1" ]; then
+			result=1
+			debug_output "Remote Node $REM is Up"
+		# if either remote heartbeat or main are dead then check heartbeat addr
+		else
+
+			debug_output "Interface(s) on Remote Node are down"
+
+			# if both remote interfaces are unreachable then start failover
+			if [ "$(is_alive $RMA)" = "0" -a "$(is_alive $RHA)" = "0" ]; then
+				result=0
+				debug_output "WARNING: Remote Server $REM is not Reachable"
+			else
+
+				# Determine which interface is up
+				if [ "$(is_alive $RHA)" = "1" -a "$result" = "0" ]; then
+					RUPA=$RHA
+				elif [ "$(is_alive $RMA)" = "1" -a "$result" = "0" ]; then
+					RUPA=$RMA
+				fi
+	
+				# count the number of specified external hosts reachable from each node
+				debug_output "Checking remote reachlist via $RUPA"
+				REM_REACH_COUNT=$(ssh -lroot $RUPA $INSTALL/reach-count $CONFIG/reachlist)
+				if [ "$?" != "0" ]; then
+					debug_output "Failed to obtain remote reach count"
+					# this will cause local node to takeover - if one interface is 
+					# down AND ssh is not responding from remote then this is a fair
+					# decision - probably best to wait for 1 minute incase the remote node
+					# is trying to put this node into standby.
+					REM_REACH_COUNT=0
+					LOC_REACH_COUNT=1
+				else
+					debug_output "Checking local reachlist"
+					LOC_REACH_COUNT=$($INSTALL/reach-count $CONFIG/reachlist)
+				fi
+
+				# compare the reach counts and put the failure node into runlevel 1 (standby)
+				if [ "$REM_REACH_COUNT" = "$LOC_REACH_COUNT" ]; then
+					# tie break - do the checking again
+					alert_admin "internode comm errors - $RUPA is up"
+					result=1
+				elif [ "$REM_REACH_COUNT" -gt "$LOC_REACH_COUNT" ]; then
+					debug_output "This node is going into standby mode"
+					alert_admin "$LOC reachability is worse than $REM - $LOC going into standby"
+					touch /var/run/standby
+					## maybe stop services here first
+					exec $STANDBY_CMD
+					# incase exec fails
+					result=1
+				else # [ "$REM_REACH_COUNT" -lt "$LOC_REACH_COUNT" ]
+					result=0
+					debug_output "Remote node is going into standby mode"
+					alert_admin "$REM reachability is worse than $LOC - $REM going into standby"
+					ssh -lroot $RUPA touch /var/run/standby
+					ssh -lroot $RUPA $STANDBY_CMD &
+					SSHPID=$!
+					# wait for remote node to go into standby mode before failover
+					debug_output "waiting for $REM to go into standby mode"
+					while [ "$(is_alive $RMA)" = "1" -o "$(is_alive $RHA)" = "1" ]; do
+						sleep 3
+					done
+					# kill the ssh as it may linger
+					killall -9 $SSHPID >/dev/null 2>/dev/null
+				fi
+
+			fi
+		fi
+
+	done
+
+	failover start
+
+	######## MAIN FAILOVER STATE LOOP #########
+	debug_output "Node Failover checking loop"
+	# Continously ping evry 10 seconds the heartbeat of remote 
+	result=1
+	while [ $result = 1 ]; do
+
+		result=0
+		# if remote main and heartbeat is still down
+		if [ "$(is_alive $RHA)" = "0" ]; then
+			result=1
+			debug_output "Remote Node $REM heartbeat is Still Down"
+
+		else
+
+			failover stop
+			# pause for longer than the MAC cache on the ethernet switch
+			sleep $MAC_CACHE_SECS
+			result=0
+
+#			# if both remote interfaces are NOT up then shutdown the remote node
+#			if [ "$(is_alive $RHA)" = "0" -o "$(is_alive $RMA)" = "0" ]; then
+#
+#				# remote interface(s) are up - which ones?
+#				# Determine which interface is up
+#				if [ "$(is_alive $RHA)" = "1" -a "$result" = "0" ]; then
+#					RUPA=$RHA
+#					debug_output "only remote interface $RHA is up"
+#				elif [ "$(is_alive $RMA)" = "1" -a "$result" = "0" ]; then
+#					RUPA=$RMA
+#					debug_output "only remote interface $RMA is up"
+#				fi
+#
+#				# shutdown remote again as it is not fully operational
+#				debug_output "Remote node is going into standby mode"
+#				alert_admin "$REM is not fully reachable - $REM going into standby"
+#				ssh -lroot $RUPA touch /var/run/standby
+#				ssh -lroot $RUPA $STANDBY_CMD &
+#				SSHPID=$!
+#				# wait for remote node to go into standby mode before failover
+#				debug_output "waiting for $REM to go into standby mode"
+#				while [ "$(is_alive $RMA)" = "1" -o "$(is_alive $RHA)" = "1" ]; do
+#					sleep 3
+#				done
+#				# kill the ssh as it may linger
+#				killall -9 $SSHPID >/dev/null 2>/dev/null
+#				
+#				failover start
+#				result=1
+#			fi
+		fi
+#		# pause for longer than the MAC cache on the ethernet switch
+#		sleep $MAC_CACHE_SECS
+	done
+done
+
+
+
+check_remote_interfaces()
+{
+
+
+}

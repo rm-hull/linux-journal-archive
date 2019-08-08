@@ -1,0 +1,268 @@
+#!/bin/bash
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+# $Header: /var/log/sar/RCS/eth,v 1.1 1997/06/19 05:27:52 dgavin Exp dgavin $
+#
+# eth - display ethernet interface activity
+#
+# input - /var/log/sar/data/eth[0-9].Mondd.yy
+# output- 3 charts for each active ethernet interface;
+#         transmit/receive packets per second
+#         receive errors
+#         tranmit errors
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+trap '/bin/rm /tmp/gnuplot.eth* 2>/dev/null;exit' SIGHUP SIGINT SIGQUIT SIGTERM
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Function definitions
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+function checkForEmpty {
+if [ ! -f ${1} ] ; then echo "0 0" >${1} ; fi
+return
+}
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Mainline code
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Variable initialization
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+HARDCOPY=""
+GHOSTVIEW=""
+CMDNAME=`basename $0`
+#
+HELP="${CMDNAME} generates X11 or hardcopy graph of ethernet interface activity."
+USAGE="${CMDNAME} [-DHLVhPp] [MonDD[.YY]]
+  -D turns on execution tracing
+  -H displays help info and exits
+  -L displays RCS log and exits
+  -V display Revision info and exits
+  -h displays help info and exits
+  -P Print without display
+  -p display and offer print option
+
+  MonDD.YY - day to work with, defaults to today
+   i.e. Jun12.97 -the year will default to this year
+
+"
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+# Parse options
+#
+#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
+#
+while getopts DHLVhPp c ; do
+  case ${c} in
+    h|H) echo -e "\n${HELP}\n\n${USAGE}\n"
+       exit 1
+       ;;
+    p) HARDCOPY="YES"
+       GHOSTVIEW="YES"
+       ;;
+    P) HARDCOPY="YES"
+       GHOSTVIEW=""
+       ;;
+    D) echo "DEBUG ON"
+       set -x
+       DEBUG="yes"
+       trap '' SIGHUP SIGINT SIGQUIT SIGTERM
+       ;;
+    L) echo '
+$Log: eth,v $
+Revision 1.1  1997/06/19 05:27:52  dgavin
+Initial revision
+
+'
+       exit 1
+       ;;
+    V) echo '$Revision: 1.1 $'
+       exit 1
+       ;;
+    ?) echo -e "\n${HELP}\n\n${USAGE}\n"
+       exit 3
+       ;;
+  esac
+done
+# re-align the positional parameters as $1, $2,...
+shift `expr ${OPTIND} - 1`
+#
+cd /var/log/sar/data
+if [ $# -eq 0 ] ; then
+ arg="eth[0-9]"."`date +"%b%d.%y"`"
+else
+ l=`echo ${1} | wc -c`
+ l=`expr ${l} + 0`
+ case ${l} in
+  6) DAT=${1}".`date +%y`";;
+  9) DAT=${1};;
+  *) echo -e "\n${CMDNAME}: Invalid date  - ${1}\n"
+     exit
+     ;;
+ esac
+ arg="eth[0-9].${DAT}"
+fi
+LIST=`/bin/ls -1 ${arg} 2>/dev/null `
+n=`echo ${LIST} | tr " " "\n" | wc -l `
+#
+#Inter-|   Receive                  |  Transmit
+# face |packets errs drop fifo frame|packets errs drop fifo colls carrier
+#  eth0:1072737    1    1    0    1   360837    0    0    0  7049    1
+#1618   1069300    1    1    0    1   359772    0    0    0  7049    1
+#1620   1069406    1    1    0    1   359801    0    0    0  7049    1
+DEVLIST=""
+for FN in ${LIST} ; do
+DEVICE=`echo ${FN} | cut -c1-4 | tr "[A-Z]" "[a-z]"`
+DEVLIST="${DEVLIST} ${DEVICE}"
+awk '
+BEGIN{}
+{
+ if (NR == 1) {
+   mm=substr($1,3,2) * .016;
+   tim=substr($1,1,2)+mm;
+   old_time = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+   old_rpackets = $2;
+   old_rerrors = $3;
+   old_rdrop = $4;
+   old_rfifo = $5;
+   old_rframe = $6;
+   old_tpackets = $7;
+   old_terrors = $8;
+   old_tdrop = $9;
+   old_tfifo = $10;
+   old_tcolls = $11;
+   old_tcarrier = $12;
+ } else {
+   if(NF == 12 ) {
+     mm=substr($1,3,2) * .016;
+     tim=substr($1,1,2)+mm;
+     now = (substr($1,1,2) * 3600) + (substr($1,3,2) * 60);
+     delta_tim = now - old_time;
+     
+     if ( old_rpackets > $2 ) {
+       rpackets = 0;
+       rerrors = 0;
+       rdrop = 0;
+       rfifo = 0;
+       rframe = 0;
+       tpackets = 0;
+       terrors = 0;
+       tdrop = 0;
+       tfifo = 0;
+       tcolls = 0;
+       tcarrier = 0;
+     } else {
+       rpackets = $2 - old_rpackets; rerrors = $3 - old_rerrors;
+       rdrop = $4 - old_rdrop; rfifo = $5 - old_rfifo;
+       rframe = $6 - old_rframe;
+       tpackets = $7 - old_tpackets; terrors = $8 - old_terrors;
+       tdrop = $9 - old_tdrop; tfifo = $10 - old_tfifo;
+       tcolls = $11 - old_tcolls; tcarrier = $12 - old_tcarrier;
+     }
+
+     printf("%5.2f %7.2f %d %d %d %d %7.2f %d %d %d %d %d\n",tim,
+      rpackets/delta_tim,rerrors, rdrop, rfifo, rframe,
+      tpackets/delta_tim, terrors, tdrop, tfifo, tcolls,
+      tcarrier) >"/tmp/gnuplot.'${DEVICE}'";
+     old_time = now;
+     old_rpackets = $2; old_rerrors = $3; old_rdrop = $4; old_rfifo = $5;
+     old_rframe = $6;
+     old_tpackets = $7; old_terrors = $8; old_tdrop = $9; old_tfifo = $10;
+     old_tcolls = $11; old_tcarrier = $12;
+   }
+ }
+}
+END{}' ${FN}
+done
+#
+# Get system name and date of report into variables...
+system=`hostname -s | /usr/bin/tr "[A-Z]" "[a-z]"`
+sysdate=`echo ${FN} | cut -c 6-`
+echo "Generating plot for $system $sysdate"
+#
+#
+# Start building the /tmp/gnuplot.eth.script
+#
+if [ -z ${HARDCOPY} ]; then
+  TERMINAL="set terminal X11"
+  PAUSE="pause 10"
+  YLABEL1=""
+  YLABEL2=""
+  YLABEL3=""
+else
+  TERMINAL='set terminal postscript landscape monochrome dashed "Times-Roman" 18
+set output "/tmp/gnuplot.eth.ps"'
+  PAUSE=""
+  YLABEL1='set ylabel "Transmit | Receive"'
+  YLABEL2='set ylabel "Receive Errors"'
+  YLABEL3='set ylabel "Transmit Errors"'
+fi
+cat <<EOF >/tmp/gnuplot.eth.script 
+${TERMINAL}
+set data style lines
+set nogrid
+set key
+set xlabel "Time of Day"
+set xrange [00:24]
+set xtics 0,1,24
+EOF
+for DEV in ${DEVLIST} ; do
+echo "Processing plots for ${DEV} $system $sysdate"
+cat <<EOF >>/tmp/gnuplot.eth.script 
+set title "Network Packets per second - ${DEV} $system On $sysdate"
+${YLABEL1}
+set autoscale y
+plot \
+"/tmp/gnuplot.${DEV}" using 1:2 title "Received" with line 1, \
+"/tmp/gnuplot.${DEV}" using 1:7 title "Transmitted" with line 2
+${PAUSE}
+set title "Network Receive Errors - ${DEV} $system On $sysdate"
+${YLABEL2}
+set autoscale y
+plot "/tmp/gnuplot.${DEV}" using 1:3 title "Total Errors" with line 1, \
+     "/tmp/gnuplot.${DEV}" using 1:4 title "Drop Errors" with line 2, \
+     "/tmp/gnuplot.${DEV}" using 1:5 title "Fifo Errors" with line 3, \
+     "/tmp/gnuplot.${DEV}" using 1:6 title "Frame Errors" with line 4
+${PAUSE}
+set title "Network Transmit Errors - ${DEV} $system On $sysdate"
+${YLABEL2}
+set autoscale y
+plot "/tmp/gnuplot.${DEV}" using 1:8 title "Total Errors" with line 1, \
+     "/tmp/gnuplot.${DEV}" using 1:9 title "Drop Errors" with line 2, \
+     "/tmp/gnuplot.${DEV}" using 1:10 title "Fifo Errors" with line 3, \
+     "/tmp/gnuplot.${DEV}" using 1:11 title "Collisions" with line 4, \
+     "/tmp/gnuplot.${DEV}" using 1:12 title "Carrier Loss" with line 5
+${PAUSE}
+EOF
+#
+done
+#
+echo "quit" >>/tmp/gnuplot.eth.script
+#
+# Generate the plots
+#
+gnuplot /tmp/gnuplot.eth.script
+#
+if [ .${HARDCOPY} = ".YES" ]; then
+  if [ -z ${GHOSTVIEW} ] ; then
+    lpr /tmp/gnuplot.eth.ps
+  else
+    ghostview -upsidedown -magstep 3 /tmp/gnuplot.eth.ps
+    echo "Print ?"
+    read ans
+    if [ ${ans} = "y" ] ; then
+      lpr /tmp/gnuplot.eth.ps
+    fi
+  fi
+fi
+# clean up the junk
+if [ ${DEBUG}. = "." ]; then
+  rm /tmp/gnuplot.eth* 2>/dev/null
+fi
+exit

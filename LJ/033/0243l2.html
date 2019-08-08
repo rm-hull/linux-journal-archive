@@ -1,0 +1,317 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>Booting Linux from EPROM</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h3>Listing 2. epromdsk.c</h3>
+  <pre>
+/*
+ *  linux/kernel/blk_drv/epromdsk.c
+ *
+ *  from code by Theodore Ts'o, 12/2/91
+ *  Dave Bennett 11/95
+ *
+ */
+</pre>
+  <br>
+  <pre>
+
+#include &lt;linux/sched.h&gt;
+#include &lt;linux/minix_fs.h&gt;
+#include &lt;linux/ext2_fs.h&gt;
+#include &lt;linux/fs.h&gt;
+#include &lt;linux/kernel.h&gt;
+#include &lt;linux/string.h&gt;
+#include &lt;linux/mm.h&gt;
+</pre>
+  <pre>
+#include &lt;asm/system.h&gt;
+#include &lt;asm/segment.h&gt;
+#include &lt;asm/io.h&gt;
+</pre>
+  <pre>
+#define MAJOR_NR  EPROM_MAJOR
+#include "blk.h"
+</pre>
+  <pre>
+#define EPROMDISK_MINOR     1
+#define EPROMIMAGE_MINOR    2
+</pre>
+  <pre>
+static int    ed_length;
+static int    sector_map;
+static int    sector_offset;
+</pre>
+  <pre>
+static int ed_blocksizes[2] = {0, 0};
+</pre>
+  <pre>
+int get_edisk(unsigned char *buf, int sect, int num_sect);
+int get_image(unsigned char *buf, int ofs, int len);
+</pre>
+  <pre>
+#define    EPROM_WINDOW    0x0D0000
+#define    EPROM_START     0x080000
+#define    EPROM_START2    0x100000
+#define    EPROM_SIZE      0x100000
+#define    EPAGE_SIZE      0x010000
+#define    CONTROL_REG1    0x0274
+#define    CONTROL_REG2    0x0674
+</pre>
+  <pre>
+static void do_ed_request(void)
+{
+    int len,
+        ofs;
+
+</pre>
+  <pre>
+repeat:
+    INIT_REQUEST;
+    ofs = CURRENT-&gt;sector &lt;&lt; 9;
+    len = CURRENT-&gt;current_nr_sectors &lt;&lt; 9;
+</pre>
+  <pre>
+/ if (!( (MINOR(CURRENT-&gt;dev) == EPROMDISK_MINOR) ||
+           (MINOR(CURRENT-&gt;dev) == EPROMIMAGE_MINOR) ) ||
+        (ofs+len &gt; ed_length)) {
+printk("EPROMDISK: minor=%d ofs=%d len=%d
+ed_length=0x%x\n",MINOR(CURRENT-&gt;dev),ofs,len,ed_length);
+        end_request(0);
+        goto repeat;
+    }
+    if (CURRENT-&gt;cmd == READ) {
+        if (MINOR(CURRENT-&gt;dev) == EPROMDISK_MINOR) {
+            get_edisk(CURRENT-&gt;buffer,CURRENT-&gt;sector,CURRENT-&gt;current_nr_sectors);
+        }
+        if (MINOR(CURRENT-&gt;dev) == EPROMIMAGE_MINOR) {
+            get_image(CURRENT-&gt;buffer,ofs,len);
+        }
+    } else {
+        panic("EPROMDISK: unknown RAM disk command !\n");
+    }
+    end_request(1);
+    goto repeat;
+}
+</pre>
+  <pre>
+static struct file_operations ed_fops = {
+    NULL,            /* lseek - default */
+    block_read,      /* read - general block-dev read */
+    NULL,            /* write - general block-dev write */
+    NULL,            /* readdir - bad */
+    NULL,            /* select */
+    NULL,            /* ioctl */
+    NULL,            /* mmap */
+    NULL,            /* no special open code */
+    NULL,            /* no special release code */
+    NULL             /* fsync */
+};
+</pre>
+  <pre>
+/*
+ * Returns amount of memory which needs to be reserved.
+ */
+</pre>
+  <pre>
+long ed_init(long mem_start, int mem_end)
+{
+    int i,
+        ep;
+</pre>
+  <pre>
+    short   version,
+            length,
+            s_ofs;
+</pre>
+  <pre>
+    if (register_blkdev(EPROM_MAJOR,"ed",&amp;ed_fops)) {
+        printk("EPROMDISK: Unable to get major %d.\n",
+EPROM_MAJOR);
+        return 0;
+    }
+    blk_dev[EPROM_MAJOR].request_fn = DEVICE_REQUEST;
+</pre>
+  <pre>
+    for(i=0;i&lt;2;i++) ed_blocksizes[i] = 1024;
+    blksize_size[MAJOR_NR] = ed_blocksizes;
+</pre>
+  <pre>
+/* Search for valid eprom disk */
+</pre>
+  <pre>
+    ep    = EPROM_START;
+    get_image((unsigned char *)&amp;version,ep,sizeof(version));
+    if (version != 2) {    /* Didnt find it */
+        ep    = EPROM_START2;
+        get_image((unsigned char *)&amp;version,ep,sizeof(version));
+        if (version != 2) {    /* Didnt find it */
+            printk("EPROMDISK: Unable to find EPROM\n");
+            return 0;
+        }
+    }
+
+</pre>
+  <pre>
+    get_image((unsigned char *)&amp;length,ep+2,sizeof(length));
+    get_image((unsigned char *)&amp;s_ofs,ep+4,sizeof(s_ofs));
+</pre>
+  <pre>
+    if (length &lt; 4) {
+        printk("EPROMDISK: Length (%d) Too short.\n", length);
+        return 0;
+    }
+</pre>
+  <pre>
+    ed_length      = length * 512;
+    sector_map     = ep + 6;
+    sector_offset  = ep + s_ofs;
+</pre>
+  <pre>
+    printk("EPROMDISK: Version %d installed, %d bytes\n", (int)version,
+ed_length);
+    return 0;
+}
+</pre>
+  <pre>
+int get_edisk(unsigned char *buf, int sect, int num_sect)
+{
+    short    ss;   /* Sector start */
+    int      s;    /* Sector offset */
+</pre>
+  <pre>
+    for(s=0;s&lt;num_sect;s++) {
+        get_image((unsigned char *)&amp;ss,sector_map +
+(s+sect)*sizeof(short), 2);
+        get_image(buf+s*512,sector_offset + (int)ss*512,512);
+    }
+    return 0;
+}
+</pre>
+  <pre>
+int get_image(unsigned char *buf, int ofs, int len)
+{
+</pre>
+  <pre>
+static int socket[4] = {0x00,0x01,0x04,0x05};
+</pre>
+  <pre>
+    int nb,
+        bp,
+        bofs,
+        sock,
+        page,
+        offset,
+        cr1,
+        cr2;
+</pre>
+  <pre>
+    bp      = ofs;
+    bofs    = 0;
+</pre>
+  <pre>
+    for(;len&gt;0;) {
+        sock    =  bp / EPROM_SIZE;
+        page    = (bp % EPROM_SIZE) / EPAGE_SIZE;
+        offset    =  bp % EPAGE_SIZE;
+</pre>
+  <pre>
+        nb        =
+(len+offset)&gt;EPAGE_SIZE?EPAGE_SIZE-(offset%EPAGE_SIZE):len;
+</pre>
+  <pre>
+        cr1    = socket[sock] | ((page &lt;&lt; 4) &amp; 0x30) | 0x40;
+/* no board select for now */
+        cr2    = (page &gt;&gt; 2) &amp; 0x03;
+        outb((char)cr1,CONTROL_REG1);
+        outb((char)cr2,CONTROL_REG2);
+</pre>
+  <pre>
+        memcpy(buf+bofs,(char *)(EPROM_WINDOW + offset),nb);
+</pre>
+  <pre>
+        len     -= nb;
+        bp      += nb;
+        bofs    += nb;
+    }
+    return 0;
+}
+
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../033/toc033.html">Issue Table of Contents</a>
+    <a class="link3" href="../033/0243.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

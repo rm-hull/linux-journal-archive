@@ -1,0 +1,722 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Lock-Free Multi-Producer Multi-Consumer Queue on Ring Buffer
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;The work queue always has been one of the hottest points in server software.&#10;Here is how to scale it effectively for the multicore environment.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1e4a580.0x1f41ac0"></a>
+Lock-Free Multi-Producer Multi-Consumer Queue on Ring Buffer
+</h1></div><div><div class="author"><h3 class="author">
+Alexander
+ 
+Krizhanovsky
+</h3></div><div class="issuemoyr">Issue #228, April 2013</div></div><div><p>
+The work queue always has been one of the hottest points in server software.
+Here is how to scale it effectively for the multicore environment.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x1f421f8"></a></h2></div></div><p>
+Nowadays, high-performance server software (for example, the HTTP accelerator) in most
+cases
+runs on multicore machines. Modern hardware could provide 32, 64 or more CPU
+cores. In such highly concurrent environments, lock contention sometimes hurts
+overall system performance more than data copying, context switches and so
+on. Thus,
+moving the hottest data structures from a locked to a lock-free design can
+improve software performance in multicore
+environments significantly.
+</p><p>
+One of the hottest data structures in traditional server software is the work
+queue, which could have hundreds of thousands of push and pop operations per
+second from tens of producers and/or consumers.
+</p><p>
+The work queue is a FIFO data structure that has only two operations: push() and
+pop(). It usually limits its size such that pop() waits if there
+are no elements in the queue, and push() waits if the queue contains the maximum
+allowed number of elements. It is important that many threads can execute
+pop()
+and push() operations simultaneously on different CPU cores.
+</p><p>
+One of the possible work queue implementations is a ring buffer for storing pointers
+to the queued elements. It has good performance especially in comparison
+with the common non-intrusive linked list (which stores copies of values passed by
+the user, such as std::list).
+The significant thing about the ring buffer implementation is that it natively limits
+its size&mdash;you can only move the current position in a round-robin
+fashion. On the other hand,
+linked lists require maintaining an additional field for total queue
+length. With linked lists, push and pop operations have to modify the queue
+length in addition to element links updating, so you need to take more care
+with
+consistency in the queue for a lock-free implementation.
+</p><p>
+Basically, different CPU families provide different guarantees for ordering memory
+operations, and this is critical for lock-free algorithms.
+In this article, I concentrate on x86, as it is the most widespread architecture
+rather than write generic (but slower) code.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x1f424b8"></a>
+Naive Synchronized Queue</h2></div></div><p>
+First, let's define the interface for our queue (I use C++11 in this
+article):
+
+<pre     class="programlisting">
+
+template&lt;class T, long Q_SIZE&gt;
+class NaiveQueue {
+public:
+    NaiveQueue();
+    void push(T *x);
+    T *pop();
+};
+
+</pre>
+</p><p>
+The queue will store T* pointers and has a maximum size of Q_SIZE.
+</p><p>
+Let's see how the queue would look in a naive locked implementation. To develop
+the queue, we need an array in which we place our ring buffer. We can define
+this as:
+
+<pre     class="programlisting">
+T *ptr_array_[Q_SIZE];
+</pre>
+</p><p>
+Two members of the class, head_ and tail_, will point to the head (the next position
+to push an element) and tail (the next item to pop) of the queue and should be
+initialized to zero in the class construction. We can simplify our operations
+on the ring buffer by defining the counters as an unsigned long. An unsigned long (which
+is 64-bit in length) is large enough to handle more than millions of operations per
+second for thousands of years. So tail_ and head_ will be defined as:
+
+<pre     class="programlisting">
+unsigned long head_;
+unsigned long tail_;
+</pre>
+</p><p>
+This way, we can access the elements (the same for head_ and tail_) just
+by the following:
+
+<pre     class="programlisting">
+
+ptr_array_[tail_++ &amp; Q_MASK]
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x1f428d8"></a></h2></div></div><p>
+where Q_MASK is defined as:
+
+<pre     class="programlisting">
+static const unsigned long Q_MASK = Q_SIZE - 1;
+</pre>
+</p><p>
+To get the current position in the array, we can calculate a remainder of
+integer
+division of tail_ by Q_SIZE, but rather we define Q_SIZE as a power of 2
+(32768 in our case), so we can use bitwise AND between Q_MASK and tail_, which
+is bit faster.
+</p><p>
+Because the operations in the queue must wait if there are no elements or
+if the
+queue is full, we need two condition variables:
+
+<pre     class="programlisting">
+std::condition_variable cond_empty_;
+std::condition_variable cond_overflow_;
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x1f42b40"></a></h2></div></div><p>
+to wait on some new elements in the queue or for some free space, respectively.
+Surely, we need a mutex to serialize our queue:
+
+<pre     class="programlisting">
+std::mutex mtx_;
+</pre>
+</p><p>
+This way, we can write push() and pop() in the following manner:
+
+<pre     class="programlisting">
+
+void push(T *x)
+{
+    std::unique_lock&lt;std::mutex&gt; lock(mtx_);
+
+    cond_overflow_.wait(lock, [&amp;head_, &amp;tail_]() {
+                    return tail_ + Q_SIZE &gt; head_;
+            });
+
+    ptr_array_[head_++ &amp; Q_MASK] = x;
+
+    cond_empty_.notify_one();
+}
+
+T *pop()
+{
+    std::unique_lock&lt;std::mutex&gt; lock(mtx_);
+
+    cond_empty_.wait(lock, [&amp;head_, &amp;tail_]() {
+                    return tail_ &lt; head_;
+            });
+
+    T *x = ptr_array_[tail_++ &amp; Q_MASK];
+
+    cond_overflow_.notify_one();
+
+    return x;
+}
+
+</pre>
+</p><p>
+We perform both of the operations under an acquired exclusive lock using mtx_. When
+the lock is acquired, we can check the current queue state: whether it is empty (and
+we cannot pop any new element) or full (and we cannot push a new element).
+<tt  >std::condition_variable::wait()</tt> moves the current
+thread to the sleep state until
+the specified predicate is true. Next, we push or pop an element and notify
+the other thread (with the <tt  >notify_one()</tt> call) that we have changed the queue state.
+Because we add or delete only one element at a time, only one thread
+waiting
+for available elements or free slots in the queue can make progress, so we
+notify and wake up only one thread.
+</p><p>
+The problem with the implementation is that only one thread at single point
+in
+time can modify the queue. Moreover, mutexes and condition variables
+are expensive&mdash;in Linux, they are implemented by the futex(2) system call.
+So each time a thread needs to wait on a mutex or condition variable,
+that leads to a call to futex(2), which re-schedules the thread and moves it
+to the wait
+queue.
+</p><p>
+Now, let's run a basic test that just pushes and pops addresses to and from the
+queue in 16 producers and 16 consumers (there is a link at the end of
+article to
+the full source code). On a box with 16 Xeon cores, the test took about
+seven
+minutes:
+
+<pre     class="programlisting">
+# time ./a.out
+
+real    6m59.219s
+user    6m21.515s
+sys     72m34.177s
+</pre>
+</p><p>
+And, <tt  >strace</tt> with the <tt  >-c</tt> and
+<tt  >-f</tt> options shows that the program spends 99.98% of
+the time 
+in the futex system call.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x1f43118"></a>
+Lock-Free Multi-Producer Multi-Consumer Queue</h2></div></div><p>
+Hopefully, you do not have to ask the kernel for help with user-space thread
+synchronization. The CPU (at least in the most common architectures)
+provides atomic
+memory operations and barriers. With the operations, you can atomically:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Read the memory operand, modify it and write it back.
+</p></li><li><p>
+Read the memory operand, compare it with a value and swap it with the other
+value.
+</p></li></ul></div><p>
+Memory barriers are special assembly instructions also known as fences.
+Fences guarantee an instruction's execution order on the local CPU and visibility
+order on other CPUs. Let's consider two independent data instructions, A
+and B, separated by fence (let's use mfence, which provides a guarantee for
+ordering read and write operations):
+        
+<pre     class="programlisting">
+A
+mfence
+B
+</pre>
+</p><p>
+The fence guarantees that:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Compiler optimizations won't move A after the fence or B before the
+fence.
+</p></li><li><p>
+The CPU will execute A and B instructions in order (it normally
+executes instructions out of order).
+</p></li><li><p>
+Other CPU cores and processor packages, which work on the same bus, will
+see the result of instruction A before the result of instruction B.
+</p></li></ol></div><p>
+For our queue, we need to synchronize multiple threads' access to the head_ and
+tail_ fields. Actually, when you run <tt  >head_++</tt> (this
+is an example of an RMW,
+Read-Modify-Write, operation because the processor must read the current head_ value,
+increment it locally and write it back to memory) on two cores, both
+cores
+could read the current head_ value simultaneously, increment it and
+write the new value back simultaneously, so one increment is lost. For atomic operations,
+C++11 provides the std::atomic template, which should replace the current GCC sync_
+intrinsics in the future. Unfortunately, for my compiler (GCC 4.6.3 for
+x86-64),
+<tt  >std::atomic&lt;&gt;</tt> methods still generate extra fences independently on specified memory
+order. So, I'll the use old GCC's intrinsics for atomic operations.
+</p><p>
+We can atomically read and increment a variable (for example, our head_)
+by:
+
+
+<pre     class="programlisting">
+
+__sync_fetch_and_add(&amp;head_, 1);
+
+</pre>
+</p><p>
+This makes the CPU lock the shared memory location on which it's going to do an
+operation (increment, in our case). In a multiprocessor environment, processors
+communicate to each other to ensure that they all see the relevant data. This is
+known as the cache coherency protocol. By this protocol, a processor can take
+exclusive ownership on a memory location. However, these communications are not
+for free, and we should use such atomic operations carefully and only when
+we really need them. Otherwise, we can hurt performance significantly.
+</p><p>
+Meanwhile, plain read and write operations on memory locations execute
+atomically and do not require any additional actions (like specifying the
+<tt  >lock</tt>
+prefix to make the instruction run atomically on x86 architecture).
+</p><p>
+In our lock-free implementation, we're going to abandon the mutex mtx_ and
+consequently both the condition variables. However, we still need to wait if the
+queue is full on push and if the queue is empty on pop operations. For
+push, we
+would do this with a simple loop like we did for the locked queue:
+
+<pre     class="programlisting">
+
+while (tail_ + Q_SIZE &lt; head_)
+    sched_yield();
+
+</pre>
+</p><p>
+<tt  >sched_yield()</tt> just lets the other thread run on the current processor. This is
+the native way and the fastest way to re-schedule the current thread. However, if there is no
+other thread waiting in the scheduler run queue for available CPU,
+the current thread will be scheduled back immediately. Thus, we'll always see 100%
+CPU usage, even if we have no data to process. To cope with this, we can use
+usleep(3) with some small value.
+</p><p>
+Let's look more closely at what's going on in the loop. First, we read the tail_
+value;
+next we read the value of head_, and after that, we make the decision whether to wait
+or push an element and move head_ forward. The current thread can schedule at any
+place during the check and even after the check. Let's consider the two-thread
+scenario (Table 1).
+</p><div class="table"><a name="N0x1e4a580.0x1f43c18"></a><p class="title"><b>Table 1. Two-Thread Scenario</b></p><table     summary="Table 1. Two-Thread Scenario11224t1.qrk" border="1"><colgroup><col><col></colgroup><thead><tr><th>Thread 1</th><th>Thread 2</th></tr></thead><tbody><tr><td>read tail_</td><td>read tail_</td></tr><tr><td>read head_</td><td>read head_</td></tr><tr><td>(scheduled)</td><td>push an element</td></tr><tr><td>push an element</td><td>&nbsp;</td></tr></tbody></table></div><p>
+If we have only one free place in the ring buffer, we override the pointer to
+the oldest queued element. We can solve the problem by incrementing the shared
+head_ before the loop and use a temporal local variable (that is, we reserve a place
+to which we're going to insert an element and wait when it is free):
+
+
+<pre     class="programlisting">
+
+unsigned long tmp_head =
+    __sync_fetch_and_add(&amp;head_, 1);
+while (tail_ + Q_SIZE &lt; tmp_head)
+    sched_yield();
+ptr_array_[tmp_head &amp; Q_MASK] = x;
+
+</pre>
+</p><p>
+We can write similar code for pop()&mdash;just swap head and tail. However, the
+problem still exists. Two producers can increment head_, check that they have
+enough space and re-schedule at the same time just before inserting x. A
+consumer can wake up instantly (it sees that head_ moved forward to two
+positions) and read a value from the queue that was not inserted yet.
+</p><p>
+Before solving the issue, let's consider the following example, where we
+have two producers (P1 and
+P2) and two consumers (C1 and C2):
+
+<pre     class="programlisting">
+             LT                          LH
+| _ | _ | _ | x | x | x | x | x | x | x | _ | _ | _ |
+              ^   ^                       ^   ^
+              |   |                       |   |
+              C1  C2                      P1  P2
+</pre>
+</p><p>
+In this example,
+&ldquo;_&rdquo; denotes free slots and &ldquo;x&rdquo; denotes inserted elements. 
+C1 and C2 are going to read values, and P1 and P2 are going to
+write an element to currently free slots. Let LT be the latest (lowest) tail
+value among all the consumers, which is stored in tmp_tail of the latest consumer,
+C1 above. Consumer C1 currently can work on the queue at the LT position
+(that is, it is in the middle of fetching the element). And, let LH correspondingly
+be the lowest value of tmp_head among all the producers. At each given
+time, we
+cannot push an element to a position equal to or greater than LT, and we should not try to
+pop an element at a position equal to or greater than LH. This means all the
+producers should care about the current LT value, and all consumers should
+care about the current
+LH value. So, let's introduce the two helping class members for LH and LT:
+
+<pre     class="programlisting">
+volatile unsigned long last_head_;
+volatile unsigned long last_tail_;
+</pre>
+</p><p>
+Thus, we should check for the last_tail_ value instead of tail_ in the loop above.
+We need to update the values from multiple threads, but we're going to do this
+via plain write operations, without RMW, so the members do not have to be of
+the atomic type. I just specified the variables as volatile to prevent their
+values
+from caching in local processor registers.
+</p><p>
+Now the question is who should update the last_head_ and last_tail_
+values, and when. We do expect that in most cases, we are able to perform push and/or pop
+operations on the queue without a wait. Thus, we can update the two helping
+variables only when we really need them&mdash;that is, inside the waiting loop.
+So when a producer realizes that it cannot insert a new element because of
+a too-small last_tail_ value, it falls into the wait loop and tries to update
+the last_tail_
+value. To update the value, the thread must inspect the current tmp_tail of each
+consumer. So we need to make the temporal value visible to other threads.
+One possible solution is to maintain an array of tmp_tail and tmp_head
+values with the size equal to the number of running threads. We can do this with
+the following code:
+
+<pre     class="programlisting">
+struct ThrPos {
+    volatile unsigned long head, tail;
+};
+
+ThrPos thr_p_[std::max(n_consumers_, n_producers_)];
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x233ca18"></a></h2></div></div><p>
+where <tt  >n_consumers_</tt> is the number of consumers, and
+<tt  >n_producers_</tt> is the number
+of
+producers. We can allocate the array dynamically, but leave it statically
+sized
+for simplicity for now. Many threads read the elements of the array, but only
+one
+thread with a plain move instruction (no RMW operation) can update them,
+so we also can use regular reads on the variables.
+</p><p>
+Because thr_p_ values are used only to limit moving of the current queue pointers,
+we initialize them to the maximum allowed values&mdash;that is, we do not limit head_ and
+tail_ movements until somebody pushes or pops into the queue.
+</p><p>
+We can find the lowest tail values for all the consumers with the following loop:
+
+<pre     class="programlisting">
+
+auto min = tail_;
+for (size_t i = 0; i &lt; n_consumers_; ++i) {
+    auto tmp_t = thr_p_[i].tail;
+
+    asm volatile("" ::: "memory"); // compiler barrier
+
+    if (tmp_t &lt; min)
+        min = tmp_t;
+1}
+
+</pre>
+</p><p>
+The temporal variable <tt  >tmp_t</tt> is required here, because we cannot atomically
+compare whether <tt  >thr_p_[i].tail</tt> is less than min and update min if it is. When
+we remember the current consumer's tail and compare it with min, the consumer can
+move the tail. It can move it only forward, so the check in the while
+condition is still correct, and we won't overwrite some live queue elements.
+But, if we don't use <tt  >tmp_t</tt>, we write the code like this:
+
+<pre     class="programlisting">
+
+if (thr_p_[i].tail &lt; min)
+    min = thr_p_[i].tail;
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x233ce90"></a></h2></div></div><p>
+Then the consumer can have a lower tail value while we're comparing it with min,
+but moves it far forward after the comparison is done and just before the
+assignment. So we probably will find an incorrect minimal value.
+</p><p>
+I added the compiler barrier <tt  >asm volatile("" :::
+"memory)</tt>&mdash;this is a GCC-specific compiler barrier&mdash;to
+make sure that the compiler won't move <tt  >thr_p_[i].tail</tt>
+access and will access the memory location only once&mdash;to load its value to
+<tt  >tmp_t</tt>.
+</p><p>
+One important thing about the array is that it must be indexed by the current
+thread
+identifier. Because POSIX threads (and consequently the C++ threads that use
+them) do not use small monotonically increasing values for identifying
+threads,
+we need to use our own thread wrapping. I'll use the inline
+<tt  >thr_pos()</tt> method
+of
+the queue to access the array elements:
+
+<pre     class="programlisting">
+
+ThrPos&amp; thr_pos() const
+{
+    return thr_p_[ThrId()];
+}
+
+</pre>
+</p><p>
+You can find an example of the <tt  >ThrId()</tt> implementation in the source referenced at
+the end of the article.
+</p><p>
+Before writing the final implementation of push() and pop(), let's go back to
+the initial application of our queue, the work queue. Usually, producers and consumers
+do a lot of work between operations with the queue. For instance, it could be
+a very slow IO operation. So, what happens if one consumer fetches an element from
+the queue and goes to sleep in the long IO operation? Its tail value will stay
+the
+same for a long time, and all the producers will wait on it over all the other
+consumers fully cleared the queue. This is not desired behavior.
+</p><p>
+Let's fix this in two steps. First, let's assign to the per-thread tail pointer
+the maximum allowed value just after fetching the element. So, we should write
+the following at the end of the pop() method:
+
+<pre     class="programlisting">
+
+T *ret = ptr_array_[thr_pos().tail &amp; Q_MASK];
+thr_pos().tail = ULONG_MAX;
+return ret;
+
+</pre>
+</p><p>
+Because a producer in push() starts to find the minimal allowed value for the last_tail_
+from the current value of the global tail_, it can assign the current tail_ value
+to last_tail_ only if there are no active consumers (this is what we want).
+</p><p>
+Generally speaking, other processors can see
+<tt  >thr_pos().tail</tt> update before
+the local processor reads from ptr_array_, so they can move and overwrite the
+position in the array before the local processor reads it. This is possible on
+processors with relaxed memory operation ordering. However, x86 provides
+relatively strict memory ordering rules&mdash;particularly, it guarantees that
+1) stores are not reordered with earlier loads and
+2) stores are seen in consistent order by other processors.
+Thus, loading from <tt  >ptr_array_</tt> and storing to
+<tt  >thr_pos().tail</tt> in the code above
+will be done on x86 and seen by all processors in exactly this order.
+</p><p>
+The second step is to set thr_pos().tail correctly at the
+beginning of pop(). We assign the current thr_pos().tail with:
+
+<pre     class="programlisting">
+
+thr_pos().tail = __sync_fetch_and_add(&amp;tail_, 1);
+
+</pre>
+</p><p>
+The problem is that the operation is atomic only for tail_ shift, but not for
+the thr_pos().tail assignment. So there is a time window in which
+<tt  >thr_pos().tail = ULONG_MAX</tt>, and tail_ could be shifted significantly by other
+consumers, so push() will set last_tail_ to the current, just incremented tail_.
+So when we're are going to pop an element, we have to reserve a tail position
+less than or equal to the tail_ value from which we'll pop an element:
+
+
+<pre     class="programlisting">
+
+thr_pos().tail = tail_;
+thr_pos().tail = __sync_fetch_and_add(&amp;tail_, 1);
+
+</pre>
+</p><p>
+In this code, we actually perform the following three operations:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Write tail_ to thr_pos().tail.
+</p></li><li><p>
+Increment tail_.
+</p></li><li><p>
+Write the previous value of tail_ to thr_pos().tail.
+</p></li></ul></div><p>
+
+Again, in this general case, we have no guarantee that other processors will
+&ldquo;see&rdquo; the results of the write operations in the same order.
+Potentially, some other processor can read the incremented tail_ value first,
+try to find the new last_tail_,
+and only after that read the new current thread tail value. However,
+<tt  >__sync_fetch_and_add()</tt> executes locked instruction,
+which implies an implicit full
+memory barrier on most architectures (including x86), so neither the first nor
+third operations can be moved over the second one. Therefore, we also can skip
+explicit memory barriers here.
+</p><p>
+Thus, if the queue is almost full, all producers will stop at or before
+the position of element that we're popping.
+</p><p>
+Now let's write our final implementation of the push() and pop()
+methods:
+
+
+<pre     class="programlisting">
+
+void push(T *ptr)
+{
+    thr_pos().head = head_;
+    thr_pos().head = __sync_fetch_and_add(&amp;head_, 1);
+
+    while (__builtin_expect(thr_pos().head &gt;=
+                            last_tail_ + Q_SIZE, 0))
+    {
+        ::sched_yield();
+
+        auto min = tail_;
+        for (size_t i = 0; i &lt; n_consumers_; ++i) {
+            auto tmp_t = thr_p_[i].tail;
+
+            asm volatile("" ::: "memory"); // compiler barrier
+
+            if (tmp_t &lt; min)
+                min = tmp_t;
+        }
+        last_tail_ = min;
+    }
+
+    ptr_array_[thr_pos().head &amp; Q_MASK] = ptr;
+    thr_pos().head = ULONG_MAX;
+}
+
+T *pop()
+{
+    thr_pos().tail = tail_;
+    thr_pos().tail = __sync_fetch_and_add(&amp;tail_, 1);
+
+    while (__builtin_expect(thr_pos().tail &gt;=
+                            last_head_, 0))
+    {
+        ::sched_yield();
+
+        auto min = head_;
+        for (size_t i = 0; i &lt; n_producers_; ++i) {
+            auto tmp_h = thr_p_[i].head;
+       
+            asm volatile("" ::: "memory"); // compiler barrier
+
+            if (tmp_h &lt; min)
+                min = tmp_h;
+        }
+        last_head_ = min;
+    }
+
+    T *ret = ptr_array_[thr_pos().tail &amp; Q_MASK];
+    thr_pos().tail = ULONG_MAX;
+    return ret;
+}
+
+</pre>
+</p><p>
+Careful readers will notice that multiple threads can scan the current head or tail
+values over all the producing or consuming threads. So a number of threads can
+find different min values and try to write them to last_head_ or last_tail_
+simultaneously, so we probably would use a CAS operation here. However, atomic
+CAS is expensive, and the worst that can happen is that we assign too small
+of a value to last_head_ or last_tail_. Or, if we ever overwrite a new higher value with a
+smaller older value, we'll fall into sched_yield() again. Maybe we will fall to
+sched_yield() more frequently than if we use the synchronized CAS operation,
+but in practice, the cost of extra atomic operation reduces performance.
+</p><p>
+
+Also, I used __builtin_expect with the zero expect argument to say that we do not
+expect that the condition in the while statement will become true too frequently and
+the compiler should move the inner loop code after the code executed if the
+condition is false. This way, we can improve the instruction cache usage.
+</p><p>
+Finally, let's run the same test as for the naive queue:
+
+<pre     class="programlisting">
+# time ./a.out 
+
+real    1m53.566s
+user    27m55.784s
+sys     2m4.461s
+</pre>
+</p><p>
+This is 3.7 times faster than our naive queue implementation!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x233df68"></a>
+Conclusion</h2></div></div><p>
+Nowadays, high-performance computing typically is achieved in two ways:
+horizontal scaling (scale-out) by adding new computational nodes and
+vertical scaling (scale-up) by adding extra computational resources (like
+CPUs or memory) to a single node. Unfortunately, linear scaling is possible
+only in theory. In practice, if you double your computational resources, 
+it is likely that you get only a 30&ndash;60% performance gain. Lock contention is one
+of the problems that prevents efficient scale-up by adding extra CPUs.
+Lock-free algorithms make scale-up more productive and allow you to get more
+performance from multicore environments.
+</p><p>
+The code for naive and lock-free queue implementations with the tests for
+correctness is available at
+<a href="https://github.com/krizhanovsky/NatSys-Lab/blob/master/lockfree_rb_q.cc" target="_self">https://github.com/krizhanovsky/NatSys-Lab/blob/master/lockfree_rb_q.cc</a>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1e4a580.0x233e120"></a>Acknowledgement</h2></div></div><p>
+Special thanks to Johann George for the final review of this article.
+</p></div></div>
+<div class="authorblurb"><p>
+Alexander Krizhanovsky is the software architect and founder of NatSys-Lab.
+Before NatSys-Lab, he worked as a Senior Software Developer at IBM,
+Yandex
+and Parallels. He specializes in high-performance solutions for UNIX
+environments.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../228/toc228.html">Issue Table of Contents</a>
+    <a class="link3" href="../228/11224.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

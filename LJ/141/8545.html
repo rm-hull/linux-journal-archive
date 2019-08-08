@@ -1,0 +1,593 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Kernel Korner</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;IO Channels, a feature of the Glib library, make&#10;portable I/O simple and efficient. In this article, Robert shows how.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x235e580.0x2455ab0"></a>Kernel Korner</h1></div><div><h3 class="subtitle"><i>
+Easy I/O with IO Channels</i></h3></div><div><div class="author"><h3 class="author">
+Robert
+ 
+Love
+</h3></div><div class="issuemoyr">Issue #141, January 2006</div></div><div><p>
+IO Channels, a feature of the Glib library, make
+portable I/O simple and efficient. In this article, Robert shows how.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2456348"></a></h2></div></div><p>
+Glib's IO Channels provide several powerful features:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Buffered I/O: as with C's Standard Library, IO Channels
+provide user-side buffering, which minimizes the number of system call
+invocations and ensures that I/O is performed in optimally sized units.
+</p></li><li><p>
+Portability: IO Channels are portable, working in various UNIX
+systems as well as Windows.
+</p></li><li><p>
+Simple yet efficient I/O routines: helper routines to make
+common programming chores, such as &ldquo;read exactly one line&rdquo;
+or &ldquo;read the
+whole file&rdquo; easy.
+</p></li><li><p>
+Main loop integration: integration into the Glib main loop
+means multiplexed I/O and event-driven programming is easy.
+</p></li></ul></div><p>
+Although designed for powerful and complex GNOME applications, Glib is
+actually a separate library from GNOME and readily usable from any
+C application.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2456870"></a>
+Main Loops</h2></div></div><p>
+A main loop, sometimes called an event loop, allows a
+single-threaded process to wait for and handle events originating from
+multiple sources. Most GUI programmers are familiar with main loops:
+they allow event-driven GUI programming to register callback functions
+that are invoked in response to events, such as a button press or window
+close. The Gtk+ main loop is built on top of Glib's main loop.
+</p><p>
+The Glib main loop is implemented using multiplexing I/O&mdash;in Linux,
+via the poll() system call. Events are associated with file
+descriptors, which are watched via poll(). In this manner, the
+application need not check incessantly for new events but can sleep,
+consuming no processor time, so long as there is no activity.
+</p><p>
+Glib's main loop associates a callback function with each event. When
+the event occurs, the main loop will call back into the given
+function. Callbacks are invoked in the order that their associated
+event occurs, although priority may be given to events to change this
+order. Because multiple events may be watched and multiple callback
+functions registered, even a single-threaded process can juggle numerous
+events.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2456a28"></a>
+Glib</h2></div></div><p>
+The Glib library is GNOME's base library, providing portability
+wrappers and a set of helper functions to make programming in C less
+arduous. Although part of GNOME, Glib is very much usable on its own,
+and many non-GNOME projects do indeed utilize Glib without touching
+any other parts of GNOME. In fact, Glib is even beneficial to console
+applications. This article makes no assumptions about the use of other
+GNOME components; the interfaces covered work equally well in a
+complex GNOME application and a simple console program.
+</p><p>
+Compiling an application with the requisite Glib support is made easy
+by the pkg-config program. You can build a binary gio
+from the source file gio.c with the following command:
+
+<pre     class="programlisting">
+
+gcc -Wall -O2 \
+        `pkg-config --cflags --libs glib-2.0` \
+        -o gio \
+        gio.c
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2456be0"></a>
+IO Channels</h2></div></div><p>
+An IO Channel is represented by the GIOChannel data structure. Its
+fields are private, and it is accessed using only the official IO Channel
+interfaces.
+</p><p>
+Each IO Channel is associated with a single file or other
+&ldquo;file-like&rdquo;
+object. On Linux, an IO Channel can be associated with any open file
+descriptor, including sockets and pipes. Once associated, the IO Channel
+is used to access the file.
+</p><p>
+Watches are created against a given IO Channel, along with a
+set of events on which to wait for and a callback function to invoke in
+response. The watches then integrate with Glib's main loop. When an event
+occurs&mdash;say, a socket has new data available for reading&mdash;the watch is
+triggered and the callback is automatically invoked.
+</p><p>
+The watch lies at the heart of the power of IO Channels: applications can
+create multiple watches and integrate them, along with numerous other
+events, into the Glib main loop, providing event-driven programming to
+even simple single-threaded applications.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2456e48"></a>
+Getting Started</h2></div></div><p>
+Listing 1 is a complete and working console application that uses IO
+Channels to communicate across two pipes. It creates two IO Channels,
+one for the read side of the pipe and another for the write side of the
+pipe. It then registers watches for these two IO Channels. One watch
+invokes a callback, gio_in(), when the pipe is available for
+reading (that is, when a read from the read side of the pipe will not
+block). The other watch invokes a callback, gio_out(), when the
+pipe is available for writing (that is, when a write to the write side
+of the pipe will not block). The gio_out() callback writes a
+small message into the pipe. The gio_in() callback reads the
+available data from the pipe and prints it to standard out.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2456f50"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. A Complete and Working Console Application That Uses IO
+Channels to Communicate across Two Pipes
+</b></p><pre     class="programlisting">
+
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;string.h&gt;
+
+#include &lt;glib.h&gt;
+
+static gboolean
+gio_in (GIOChannel *gio, GIOCondition condition, gpointer data)
+{
+        GIOStatus ret;
+        GError *err = NULL;
+        gchar *msg;
+        gsize len;
+
+        if (condition &amp; G_IO_HUP)
+                g_error ("Read end of pipe died!\n");
+
+        ret = g_io_channel_read_line (gio, &amp;msg, &amp;len, NULL, &amp;err);
+        if (ret == G_IO_STATUS_ERROR)
+                g_error ("Error reading: %s\n", err-&gt;message);
+
+        printf ("Read %u bytes: %s\n", len, msg);
+
+        g_free (msg);
+
+        return TRUE;
+}
+
+static gboolean
+gio_out (GIOChannel *gio, GIOCondition condition, gpointer data)
+{
+        const gchar *msg = "The price of greatness is responsibility.\n";
+        GIOStatus ret;
+        GError *err = NULL;
+        gsize len;
+
+        if (condition &amp; G_IO_HUP)
+                g_error ("Write end of pipe died!\n");
+
+        ret = g_io_channel_write_chars (gio, msg, -1, &amp;len, &amp;err);
+        if (ret == G_IO_STATUS_ERROR)
+                g_error ("Error writing: %s\n", err-&gt;message);
+
+        printf ("Wrote %u bytes.\n", len);
+
+        return TRUE;
+}
+
+void
+init_channels (void)
+{
+        GIOChannel *gio_read, *gio_write;
+        int fd[2], ret;
+
+        ret = pipe (fd);
+        if (ret == -1)
+                g_error ("Creating pipe failed: %s\n", strerror (errno));
+
+        gio_read = g_io_channel_unix_new (fd[0]);
+        gio_write = g_io_channel_unix_new (fd[1]);
+        if (!gio_read || !gio_write)
+                g_error ("Cannot create new GIOChannel!\n");
+
+        if (!g_io_add_watch (gio_read, G_IO_IN | G_IO_HUP, gio_in, NULL))
+                g_error ("Cannot add watch on GIOChannel!\n");
+        if (!g_io_add_watch (gio_write, G_IO_OUT | G_IO_HUP, gio_out,
+NULL))
+                g_error ("Cannot add watch on GIOChannel!\n");
+}
+
+int
+main (void)
+{
+        GMainLoop *loop = g_main_loop_new (NULL, FALSE);
+        init_channels ();
+        g_main_loop_run (loop); /* Wheee! */
+        return 0;
+}
+
+</pre></div><p>
+To be sure, this is an example rooted solely in explanation. It is
+silly to operate a pipe like this in a single application. Further,
+the program will continually read from and write to the pipe (you can
+kill the process with Ctrl-C). Nonetheless, this example serves
+a good purpose: it demonstrates event-driven programming and the utility
+of a main loop multiplexing I/O. The natural extension of this program
+would be to separate it into two processes, a consumer and a producer,
+and actually communicate interprocess over the pipe. Add a handful of
+other IO Channels, some GUI events, a few timers, and so on, to the main
+loop, and you will have a real program!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2457160"></a>
+Creating an IO Channel</h2></div></div><p>
+There are two ways to create a new IO Channel. The easiest method creates
+the IO Channel from an existing open file descriptor. The file descriptor
+can map to any object, including sockets and pipes:
+
+<pre     class="programlisting">
+GIOChannel *gio;
+
+gio = g_io_channel_unix_new (fd);
+if (!gio)
+        g_error ("Error creating new GIOChannel!\n");
+</pre>
+</p><p>
+As its name suggests, this function is UNIX-specific. Another method is
+available for creating an IO Channel in a platform-independent manner:
+
+<pre     class="programlisting">
+
+GIOChannel *gio;
+GError *err = NULL;
+
+gio = g_io_channel_new_file ("/etc/passwd"
+                             "r",
+                             &amp;err);
+if (!gio)
+        g_error ("Error creating new GIOChannel: %s\n",
+                 err-&gt;msg);
+
+</pre>
+</p><p>
+The second parameter specifies the mode with which to open the file:
+one of r, w, r+, w+, a or a+. These values have the same
+meaning as with fopen(). For example, in this code snippet,
+we are asking to create a read-only IO Channel.
+</p><p>
+In our example program in Listing 1, we create two IO Channels using
+g_io_channel_unix_new(), one for each end of the pipe.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2457420"></a>
+Creating a Watch</h2></div></div><p>
+Given an IO Channel, creating a watch is easy:
+
+<pre     class="programlisting">
+guint ret;
+
+ret = g_io_add_watch (gio, G_IO_IN, callback, NULL);
+if (!ret)
+        g_error ("Error creating watch!\n");
+</pre>
+</p><p>
+The first parameter, gio, is the IO Channel we want to watch. The
+second parameter is a mask of one or more conditions for which to
+watch. The condition G_IO_IN is true when there is data to be
+read without blocking. Other conditions are G_IO_OUT (data can
+be written without blocking), G_IO_PRI (urgent data is available
+to read), G_IO_ERR (an error occurred) and G_IO_HUP
+(the connection was hung up). The third parameter is the callback function
+that the Glib main loop will invoke when the event occurs.
+</p><p>
+Watch callbacks take the following form:
+
+<pre     class="programlisting">
+gboolean callback (GIOChannel *gio,
+                   GIOCondition condition,
+                   gpointer data);
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2457688"></a></h2></div></div><p>
+where gio is the applicable IO Channel, condition is a
+bitmask of the triggered events and data is the last argument
+given to g_io_add_watch().
+</p><p>
+If the return value of the callback is FALSE, the watch is
+automatically removed.
+</p><p>
+In our example program in Listing 1, we create two watches, one for each
+of our IO Channels.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2457840"></a>
+Reading from an IO Channel</h2></div></div><p>
+The Glib library provides three basic interfaces for reading from an
+IO Channel.
+</p><p>
+The first, g_io_channel_read_chars(), is used to read a specific
+number of characters from an IO Channel into a pre-allocated buffer:
+
+<pre     class="programlisting">
+GIOStatus g_io_read_chars (GIOChannel *channel,
+                           gchar *buf,
+                           gsize count,
+                           gsize *bytes_read,
+                           GError **error);
+</pre>
+</p><p>
+This function reads up to <span   class="emphasis"><em>count</em></span> bytes from the IO Channel
+channel into the buffer buf. Upon successful return,
+bytes_read will point to the number of bytes actually read. On
+failure, error will point to a GError structure.
+</p><p>
+The return value is an integer with one of four values:
+G_IO_STATUS_ERROR (an error occurred), G_IO_STATUS_NORMAL
+(success), G_IO_STATUS_EOF (end-of-file was reached) or
+G_IO_STATUS_AGAIN (resource temporarily unavailable, try again).
+</p><p>
+The second interface, g_io_channel_read_line(), is used to
+read an entire line from a given IO Channel. It will not return until
+a newline-delimited line is read:
+
+<pre     class="programlisting">
+GIOStatus
+g_io_channel_read_line (GIOChannel *channel,
+                        gchar **str_return,
+                        gsize *length,
+                        gsize *terminator_pos,
+                        GError **error);
+</pre>
+</p><p>
+Upon successful return, str_return will contain a
+pointer to a newly allocated block of memory of
+<span   class="emphasis"><em>length</em></span>
+bytes. terminator_pos is the offset into str_return
+of the terminating character. The data returned by this function must
+be freed via a call to g_free().
+</p><p>
+The final interface, g_io_channel_read_to_end(), reads all
+remaining data from the file into the given buffer:
+
+<pre     class="programlisting">
+GIOStatus g_io_channel_read_to_end (GIOChannel *channel,
+                                    gchar **str_return,
+                                    gsize *length,
+                                    GError **error);
+</pre>
+</p><p>
+Upon successful return, str_return will contain a pointer to a
+newly allocated block of memory of length bytes, which must be
+freed via g_free().
+</p><p>
+This function should not be used on IO Channels that map to file
+descriptors that do not necessarily return end-of-file when exhausted of
+data. For example, we could not use this function in our example program,
+because pipes do not return end-of-file until the other side has closed
+its end of the connection. Thus, our example would block indefinitely
+if we use g_io_channel_read_to_end().
+</p><p>
+Instead, in our example, we use g_io_channel_read_line() to read
+an entire line from the pipe.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2763ea8"></a>
+Writing to an IO Channel</h2></div></div><p>
+Glib provides a single interface for writing to an IO Channel:
+
+<pre     class="programlisting">
+GIOStatus
+g_io_channel_write_chars (GIOChannel *channel,
+                          const gchar *buf,
+                          gssize count,
+                          gsize *bytes_written,
+                          GError **error);
+</pre>
+</p><p>
+A successful call to g_io_channel_write_chars() will write up to
+<span   class="emphasis"><em>count</em></span> bytes from the buffer pointed at by buf into the
+file represented by the IO Channel channel. If count
+is negative one, buf will be treated as a NULL-delimited
+string. On return, bytes_written contains the actual number of
+bytes written.
+</p><p>
+Like C's Standard I/O Library, IO Channels perform buffered
+I/O to optimize performance. Thus, a write request may
+not actually be submitted to the kernel after each call to
+g_io_channel_write_chars(). Instead, glib may wait until a
+sufficiently large buffer is full and then submit the write request,
+in one large swoop.
+</p><p>
+The g_io_channel_flush() function is used to force a submission
+of any pending write requests to the kernel:
+
+<pre     class="programlisting">
+GIOStatus
+g_io_channel_flush (GIOChannel *channel,
+                    GError **error);
+</pre>
+</p><p>
+Buffering can be turned off altogether, if so desired:
+
+<pre     class="programlisting">
+g_io_channel_set_encoding (gio, NULL, NULL);
+g_io_channel_set_buffered (gio, FALSE);
+</pre>
+</p><p>
+The second function disables buffering. The first sets the IO Channel's
+encoding to NULL, which is required for disabling buffering.
+</p><p>
+In our example program, we use g_io_channel_write_chars() to
+write a small string to the pipe. We do not mess with the buffering of
+the IO Channel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2764320"></a>
+Seeking Around an IO Channel</h2></div></div><p>
+As a file is written to or read from, Glib automatically updates the
+application's position within the file. When a file is first opened,
+the position is set to the start. Read four bytes, and the position is
+subsequently set to the fifth byte. This is the file I/O behavior nearly
+all developers are familiar with.
+</p><p>
+Sometimes, however, an application wants to seek around the file on its
+own. For that, Glib provides a single function:
+
+<pre     class="programlisting">
+GIOStatus
+g_io_channel_seek_position (GIOChannel *channel,
+                            gint64 offset,
+                            GSeekType type,
+                            GError **error);
+</pre>
+</p><p>
+A successful call will change the current position in the file as
+described by offset and type.
+</p><p>
+The type parameter is one of G_SEEK_CUR,
+G_SEEK_SET or G_SEEK_END.
+G_SEEK_CUR asks that the file's position be updated to
+offset bytes from the current position.
+G_SEEK_SET asks that the file's position be set to
+offset. Thus, the following code sets the file position to the
+start of the file:
+
+<pre     class="programlisting">
+
+GIOStatus ret;
+GError err;
+
+ret = g_io_channel_seek_position (gio,
+                                  0,
+                                  G_SEEK_SET,
+                                  &amp;err);
+if (ret)
+        g_error ("Error seeking: %s\n",
+                 err-&gt;message);
+
+</pre>
+</p><p>
+Finally, G_SEEK_END asks that the file's position be set to
+offset bytes from the end of the file.
+</p><p>
+We do not use g_io_channel_seek_position() in our sample
+application, because even if we had a reason to, pipes are not seekable.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2764690"></a>
+Closing an IO Channel</h2></div></div><p>
+When done with an IO Channel, it is destroyed and the file is closed
+via a call to g_io_channel_shutdown:
+
+<pre     class="programlisting">
+GIOStatus
+g_io_channel_shutdown (GIOChannel *channel,
+                       gboolean flush,
+                       GError **err);
+</pre>
+</p><p>
+If flush is TRUE, any pending I/O is first flushed.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2764848"></a>
+Deprecated Functions</h2></div></div><p>
+Several older IO Channel functions are provided by Glib:
+g_io_channel_read(), g_io_channel_write() and
+g_io_channel_seek(). The functions discussed in this article
+have replaced these older, deprecated functions and should be used
+instead. Particularly, <span   class="emphasis"><em>never</em></span> mix these old functions with the
+other functions on the same IO Channel.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x27649a8"></a>
+Putting It All Together</h2></div></div><p>
+We have now covered all of the IO Channel interfaces used in Listing
+1. Only two details go unexplained. First, in our example program,
+we create a pipe in the usual manner:
+
+<pre     class="programlisting">
+int fd[2], ret;
+
+ret = pipe (fd);
+if (ret)
+        g_error ("Creating pipe failed: %s\n",
+                 strerror (errno));
+</pre>
+</p><p>
+Second, our main() function initializes the Glib main loop, calls
+our function to initialize the IO Channels and then runs the main loop:
+
+<pre     class="programlisting">
+int
+main (void)
+{
+        GMainLoop *loop;
+
+        loop = g_main_loop_new (NULL, FALSE);
+        init_channels ();
+        g_main_loop_run (loop);    /* Wheee! */
+        return 0;
+}
+</pre>
+</p><p>
+The g_main_loop_new() function creates a new main loop and
+returns a pointer to a new GMainLoop structure. Once ready to
+start the main loop running, we call g_main_loop_run() and let
+Glib handle the rest.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x235e580.0x2764c10"></a>
+Conclusion</h2></div></div><p>
+Applications that use IO Channels combine a portable multiplexed I/O
+solution with smart buffering and Glib main loop integration. The result
+is a solution that allows applications to juggle I/O among hundreds
+of file descriptors. A graphical network client can manage all of its
+open sockets, handle new connections seamlessly, juggle a dozen open
+files and respond to numerous GUI events from a single place and with
+a single thread.
+</p><p>
+Glib's IO Channels make I/O easy, efficient, and&mdash;gasp&mdash;even fun!
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../141/8632.html" target="_self">/article/8632</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Robert Love is a senior kernel hacker in Novell's Ximian Desktop
+group and the author of <span   class="emphasis"><em>Linux Kernel Development</em></span> (SAMS 2005), now in
+its second edition. He holds degrees in CS and Mathematics from the
+University of Florida. Robert lives in Cambridge, Massachusetts.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../141/toc141.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

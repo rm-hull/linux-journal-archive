@@ -1,0 +1,452 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"/>
+<link href="https://fonts.googleapis.com/css?family=Lateef" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+<title>At the Forge: Testing Your Code with Python's pytest, Part II</title>
+
+
+<link href="../../css/archive.css" type="text/css" rel="stylesheet"/>
+<script type="text/javascript" src="../../js/archive.js"></script>
+<script type="text/javascript" src="../../js/highlight.js"></script>
+</head>
+
+<body class="from_sigil">
+  
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+
+  <div class="tophrdiv">
+  </div>
+
+  
+  <div id="top_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+<h1 class="title">At the Forge: Testing Your Code with Python's pytest, Part II</h1>
+
+<h2 class="sigil_not_in_toc">
+Testing functions isn't hard, but how do you test user input and output? By Reuven M.
+Lerner</h2>
+
+<p>
+In my <a href="https://www.linuxjournal.com/content/testing-your-code-pythons-pytest">last
+article</a>, I started looking at "pytest", a framework for testing Python programs
+that's really changed the way I look at testing. For the first time, I really
+feel like testing is something I can and should do on a regular basis; pytest makes
+things so easy and straightforward.
+</p>
+
+<p>
+One of the main topics I didn't cover in my last article is user input and output. How
+can you test programs that expect to get input from files or from the user? And, how
+can you test programs that are supposed to display something on the screen?
+</p>
+
+<p>
+So in this article, I describe how to test input and output in a variety of ways,
+allowing you to test programs that interact with the outside world. I try not 
+only to explain what you can do, but also show how it fits into the larger context of testing
+in general and pytest in particular.
+</p>
+
+<h3 class="sigil_not_in_toc">
+User Input</h3>
+
+<p>
+Say you have a function that asks the user to enter an integer and then
+returns the value of that integer, doubled. You can imagine that the function would
+look like this:
+
+</p>
+<pre><code>
+def double():
+    x = input("Enter an integer: ")
+    return int(x) * 2
+</code>
+</pre>
+<p></p>
+
+<p>
+How can you test that function with pytest? If the function were to take an argument,
+the answer would be easy. But in this case, the function is asking for
+interactive input from the user. That's a bit harder to deal with. After all, how
+can you, in your tests, pretend to ask the user for input?
+</p>
+
+<p>
+In most programming languages, user input comes from a source known as
+standard input (or <code>stdin</code>). In Python, <code>sys.stdin</code> is a read-only file object from
+which you can grab the user's input.
+</p>
+
+<p>
+So, if you want to test the "double" function from above, you can (should) replace
+<code>sys.stdin</code> with another file. There are two problems with this, however. First, you
+don't really want to start opening files on disk. And second, do you really want to
+replace the value of <code>sys.stdin</code> in your tests? That'll affect more than just one
+test.
+</p>
+
+<p>
+The solution comes in two parts. First, you can use the pytest "monkey patching"
+facility to assign a value to a system object temporarily for the duration of the
+test. This facility requires that you define your test function with a parameter named
+<code>monkeypatch</code>. The pytest system notices that you've defined it with that parameter,
+and then not only sets the <code>monkeypatch</code> local variable, but also sets it up to let you
+temporarily set attribute names.
+</p>
+
+<p>
+In theory, then, you could define your test like this:
+
+</p>
+<pre><code>
+def test_double(monkeypatch):
+    monkeypatch.setattr('sys.stdin', open('/etc/passwd'))
+    print(double())
+</code>
+</pre>
+<p></p>
+
+<p>
+In other words, this tells pytest that you want to open /etc/passwd and feed its
+contents to pytest. This has numerous problems, starting with the fact that
+/etc/passwd contains multiple lines, and that each of its lines is non-numeric.
+The function thus chokes and exits with an error before it even gets to the (useless)
+call to <code>print</code>.
+</p>
+
+<p>
+But there's another problem here, one that I mentioned above. You don't really want to
+be opening files during testing, if you can avoid it. Thus, one of the great
+tools in my testing toolbox is Python's <code>StringIO</code> class. The beauty of
+<code>StringIO</code> is
+its simplicity. It implements the API of a "file" object, but exists only in memory
+and is effectively a string. If you can create a <code>StringIO</code> instance, you can pass it
+to the call to <code>monkeypatch.setattr</code>, and thus make your tests precisely the way you
+want.
+</p>
+
+<p>
+Here's how to do that:
+
+</p>
+<pre><code>
+from io import StringIO
+from double import double
+
+number_inputs = StringIO('1234\n')
+
+def test_double(monkeypatch):
+    monkeypatch.setattr('sys.stdin', number_inputs)
+    assert double() == 2468
+</code>
+</pre>
+<p></p>
+
+<p>
+You first create a <code>StringIO</code> object containing the input you want to simulate from the
+user. Note that it must contain a newline (<code>\n</code>) to ensure that you'll see the end of
+the user's input and not hang.
+</p>
+
+<p>
+You assign that to a global variable, which means you'll be able to access it from
+within your test function. You then add the assertion to your test function, saying that
+the result should be 2468. And sure enough, it works.
+</p>
+
+<p>
+I've used this technique to simulate much longer files, and I've been quite satisfied
+by the speed and flexibility. Just remember that each line in the input "file"
+should end with a newline character. I've found that creating a <code>StringIO</code> with a
+triple-quoted string, which lets me include newlines and write in a more natural
+file-like way, works well.
+</p>
+
+<p>
+You can use <code>monkeypatch</code> to simulate calls to a variety of other objects as well. I
+haven't had much occasion to do that, but you can imagine all sorts of
+network-related objects that you don't actually want to use when testing. By monkey-patching those objects during testing, you can pretend to connect to a remote server,
+when in fact you're just getting pre-programmed text back.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Exceptions</h3>
+
+<p>
+What happens if you call the <code>test_double</code> function with a string? You probably
+should test that too:
+
+</p>
+<pre><code>
+str_inputs = StringIO('abcd\n')
+def test_double_str(monkeypatch):
+    monkeypatch.setattr('sys.stdin', str_inputs)
+    assert double() == 'abcdabcd'
+</code>
+</pre>
+<p></p>
+
+<p>
+It looks great, right? Actually, not so much:
+
+</p>
+<pre><code>
+E   ValueError: invalid literal for int() with base 10: 'abcd'
+</code>
+</pre>
+<p></p>
+
+<p>
+The test failed, because the function exited with an exception. And that's okay; after
+all, the function <em>should</em> raise an exception if the user gives input that isn't
+numeric. But, wouldn't it be nice to specify and test it?
+</p>
+
+<p>
+The thing is, how can you test for an exception? You can't exactly use a usual <code>assert</code>
+statement, much as you might like to. After all, you somehow need to trap the exception,
+and you can't simply say:
+
+</p>
+<pre><code>
+assert double() == ValueError
+</code>
+</pre>
+<p></p>
+
+<p>
+That's because exceptions aren't values that are returned. They are raised through a
+different mechanism.
+</p>
+
+<p>
+Fortunately, pytest offers a good solution to this, albeit with slightly different
+syntax than you've seen before. It uses a <code>with</code> statement, which many Python
+developers recognize from its common use in ensuring that files are flushed and
+closed when you write to them. The <code>with</code> statement opens a block, and if an
+exception occurs during that block, then the "context manager"—that is, the object
+that the <code>with</code> runs on—has an opportunity to handle the exception. pytest takes
+advantage of this with the <code>pytest.raises</code> context manager, which you can use in the
+following way:
+
+</p>
+<pre><code>
+def test_double_str(monkeypatch):
+    with pytest.raises(ValueError):
+        monkeypatch.setattr('sys.stdin', str_inputs)
+        result = double()
+</code>
+</pre>
+<p></p>
+
+<p>
+Notice that you don't need an <code>assert</code> statement here, because the
+<code>pytest.raises</code> is,
+effectively, the <code>assert</code> statement. And, you do have to indicate the type of error
+(<code>ValueError</code>) that you're trying to trap, meaning what you expect to receive.
+</p>
+
+<p>
+If you want to capture (or assert) something having to do with the exception that was
+raised, you can use the <code>as</code> part of the <code>with</code> statement. For example:
+
+</p>
+<pre><code>
+def test_double_str(monkeypatch):
+    with pytest.raises(ValueError) as e:
+        monkeypatch.setattr('sys.stdin', str_inputs)
+        results = double()
+    assert str(e.value) == "invalid literal for int() 
+     ↪with base 10: 'abcd'"
+</code>
+</pre>
+<p></p>
+
+<p>
+Now you can be sure that not only was a <code>ValueError</code> exception raised, but also what
+message was raised.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Output</h3>
+
+<p>
+I generally advise people not to use <code>print</code> in their functions. After all, I'd like
+to get some value back from a function; I don't really want to display something on
+the screen. But at some point, you really do actually need to display things to the
+user. How can you test for that?
+</p>
+
+<p>
+The pytest solution is via the <code>capsys</code> plugin. Similar to <code>monkeypatch</code>, you declare
+<code>capsys</code> as a parameter to your test function. You then run your function, allowing
+it to produce its output. Then you invoke the <code>readouterr</code> function on
+<code>capsys</code>,
+which returns a tuple of two strings containing the output to <code>stdout</code> and its
+error-message counterpart, <code>stderr</code>. You then can run assertions on those strings.
+</p>
+
+<p>
+For example, let's assume this function:
+
+</p>
+<pre><code>
+def hello(name):
+    print(f"Hello, {name}!")
+</code>
+</pre>
+<p></p>
+
+<p>
+You can test it in the following way:
+
+</p>
+<pre><code>
+def test_hello(capsys):
+    hello('world')
+    captured_stdout, captured_stderr = capsys.readouterr()
+    assert captured_stdout == 'Hello, world!'
+</code>
+</pre>
+<p></p>
+
+<p>
+But wait! This test actually fails:
+
+</p>
+<pre><code>
+E   AssertionError: assert 'Hello, world!\n' == 'Hello, world!'
+E     - Hello, world!
+E     ?              -
+E     + Hello, world!
+</code>
+</pre>
+<p></p>
+
+<p>
+Do you see the problem? The output, as written by <code>print</code>, includes a trailing
+newline (<code>\n</code>) character. But the test didn't check for that. Thus, you can check for
+the trailing newline, or you can use <code>str.strip</code> on <code>stdout</code>:
+
+</p>
+<pre><code>
+def test_hello(capsys):
+    hello('world')
+    captured_stdout, captured_stderr = capsys.readouterr()
+    assert captured_stdout.strip() == 'Hello, world!'
+</code>
+</pre>
+<p></p>
+
+<h3 class="sigil_not_in_toc">
+Summary</h3>
+
+<p>
+pytest continues to impress me as a testing framework, in no small part because it
+combines a lot of small, simple ideas in ways that feel natural to me as a developer.
+It has gone a long way toward increasing my use of tests, both in general
+development and in my teaching. My "Weekly Python Exercise" subscription service now
+includes tests, and I feel like it has improved a great deal as a result.
+</p>
+
+<p>
+In my next article, I plan to take a third and final look at pytest, exploring some of the other
+ways it can interact with (and help) write robust and useful programs.
+</p>
+
+<h3 class="sigil_not_in_toc">
+Resources</h3>
+
+<ul><li>
+The <a href="http://pytest.org">pytest website</a>.</li>
+
+<li>
+An excellent book on the subject is Brian Okken's <em>Python testing with
+pytest</em>,
+published by Pragmatic Programmers. He also has many other resources, about pytest
+and code testing in general, at <a href="http://pythontesting.net">http://pythontesting.net</a>.
+</li>
+
+<li>
+<a href="https://www.linuxjournal.com/content/testing-your-code-pythons-pytest">"Testing
+Your Code with Python's pytest"</a> by Reuven M. Lerner</li>
+</ul>
+<a href="https://www.linuxjournal.com/content/testing-your-code-pythons-pytest"></a>
+
+<h3 class="sigil_not_in_toc">About the Author</h3>
+
+  <div class="authorblurb">
+<p>
+Reuven Lerner teaches Python, data science and Git to companies
+around the world. You can subscribe to his free, weekly "better
+developers" e-mail list, and learn from his books and courses at
+<a href="http://lerner.co.il">http://lerner.co.il</a>. Reuven lives with his wife and children in
+Modi'in, Israel.
+</p>
+<img alt="Reuven M. Lerner" src="12605aa.jpg"/></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../293/toc293.html">Issue Table of Contents</a>
+    <a class="link3" href="../293/12605.html">Article</a>
+  </div>
+  <div class="bottomhrdiv"></div>
+
+  <div id="bottom_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+</body>
+</html>

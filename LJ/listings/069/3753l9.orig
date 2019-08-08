@@ -1,0 +1,151 @@
+Listing 9: better-cgi-search.pl, which improves on
+simple-cgi-search.pl by removing HTML tags and allowing for phrase,
+"and", and "or" searches.
+
+#!/usr/bin/perl -w
+
+use strict;
+use diagnostics;
+use File::Find;
+use CGI;
+use CGI::Carp qw|fatalsToBrowser|;
+
+# Which directory should start the search?
+my $search_root = "/usr/local/apache/htdocs";
+
+# What is the beginning of every URL?
+my $url_origin = "http://localhost";
+
+# Slurp up files in one fell swoop
+undef $/;
+
+# Create an instance of CGI
+my $query = new CGI;
+
+# Send a MIME header
+print $query->header("text/html");
+
+# Get the text pattern for which to search
+my $pattern = $query->param("pattern");
+
+# What kind of search will we run?
+my $search_type = $query->param("type");
+
+# How many matches did we find?
+my $total_matches = 0;
+
+# Make sure that $pattern is defined
+unless ($pattern)
+{
+    print $query->start_html(-title => "No pattern named");
+    print "<P>You must enter a pattern!</P>";
+    print $query->end_html;
+    exit;
+}
+
+# Start the HTML output
+print $query->start_html(-title => "Search results");
+print qq{
+<P>The following documents matched a $search_type search for "$pattern":</P>\n
+};
+
+# Start an unordered list
+print "<ul>\n";
+
+# Search for 
+find(\&find_matches, $search_root);
+
+# End an unordered list
+print "</ul>\n";
+
+print "<P>$total_matches matches found.</P>\n";
+print $query->end_html;
+
+# ------------------------------------------------------------
+# Subroutine that searches through files for matches
+sub find_matches
+{
+    # Make sure that this is an HTML or text
+    return unless (m/\.html?$/i or m/\.te?xt$/i);
+
+    # Get the filename
+    my $filename = $_;
+
+    # Open the file, and search through its contents
+    if (open FILE, $filename)
+    {
+	# Turn the filename into a viable URL
+	my $url = "$File::Find::dir/$filename";
+	$url =~ s/$search_root/$url_origin/;
+
+	# Get the file
+	my $contents = (<FILE>);
+
+	# Remove HTML tags
+	$contents =~ s|<.+?>||g;
+
+	# Literal phrase search
+	if ($search_type eq "phrase")
+	{
+	    # Print the filename, with the directory
+	    print qq{<li><a href="$url">$filename</a>\n}
+		if ($contents =~ m|\b$pattern\b|ios);
+
+	    $total_matches++;
+	}
+
+	# Boolean "and" search
+	elsif ($search_type eq "and")
+	{
+	    # Break up the words, and search for each one
+	    my @words = split /\s+/, $pattern;
+
+	    # How many items must we find?
+	    my $count = scalar @words;
+
+	    # Decrement $count if we match $word
+	    foreach my $word (@words)
+	    {
+		$count-- if ($contents =~ m|\b$word\b|is);
+	    }
+
+	    # Print the URL
+	    print qq{<li><a href="$url">$filename</a>\n}
+		unless $count;
+
+	    $total_matches++;
+
+	}
+	# Boolean "or" search
+	elsif ($search_type eq "or")
+	{
+	    # Break up the words, and search for each one
+	    my @words = split /\s+/, $pattern;
+
+	    # Finding even one match is sufficient for
+	    # matching this document
+	    foreach my $word (@words)
+	    {
+		# If we find a match, ignore the rest of the words
+		if ($contents =~ m|\b$word\b|is)
+		{
+		    print qq{<li><a href="$url">$filename</a>\n};
+		    return;
+
+		    $total_matches++;
+		}
+	    }
+	}
+	else
+	{
+	    warn qq{Unknown search_type "$search_type"!\n};
+	}
+
+	close FILE;
+    }
+    else 
+    {
+	warn qq{Unable to open "$filename": $! };
+	return;
+    }
+}

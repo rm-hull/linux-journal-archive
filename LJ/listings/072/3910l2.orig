@@ -1,0 +1,171 @@
+Listing 2. Kernel Patch Implementing Processor Affinity
+
+--- 2.3.38-pset/include/linux/sched.h.~1~	Tue Jan 11 14:46:45
+2000
++++ 2.3.38-pset/include/linux/sched.h	Tue Jan 11 17:58:52 2000
+@@ -363,6 +363,7 @@
+	u32 self_exec_id;
+/* Protection of fields allocatio/deallocation */
+	struct semaphore exit_sem;
+
++	int bind_cpu;
+
+ };
+
+ /*
+
+@@ -430,6 +431,7 @@
+
+ /* signals */	SPIN_LOCK_UNLOCKED, &init_signals, {{0}}, {{0}}, NULL,
+&init_task.sigqueue, 0, 0, \
+
+ /* exec cts */	0,0, \
+
+ /* exit_sem */	__MUTEX_INITIALIZER(name.exit_sem),	
+
++NO_PROC_ID,
+
+ }
+
+ #ifndef INIT_TASK_SIZE
+
+--- 2.3.38-pset/kernel/sched.c.~1~	Sun Jan  9 20:45:31 2000
+
++++ 2.3.38-pset/kernel/sched.c	Tue Jan 11 18:16:45 2000
+
+@@ -72,11 +72,13 @@
+
+ 	struct schedule_data {
+
+ 		struct task_struct * curr;
+
+ 		cycles_t last_schedule;
+
++		int bind;
+
+ 	} schedule_data;
+
+ 	char __pad [SMP_CACHE_BYTES];
+
+ } aligned_data [NR_CPUS] __cacheline_aligned = { {{&init_task,0}}};
+
+ #define cpu_curr(cpu) aligned_data[(cpu)].schedule_data.curr
+
++#define cpu_bind(cpu) (aligned_data[(cpu)].bind)
+
+ struct kernel_stat kstat = { 0 };
+
+@@ -94,6 +96,25 @@
+
+ void scheduling_functions_start_here(void) { }
+
++static int not_deadlocking(void)
+
++
+
++	int i;
+
++
+
++	for (i = 0; i < smp_num_cpus; i++) {
+
++		int cpu;
+
++
+
++		cpu = cpu_logical_map(i);
+
++		if (!cpu_bind(cpu))
+
++			return 1;
+
++	}
+
++	return 0;
+
++}
+
++
+
++void set_bind_cpu(int cpu, int set)
+
++{
+
++	cpu_bind(cpu_logical_map(cpu)) = set;
+
++}
+
++
+
+ /*
+
+  * This is the function that decides how desirable a process is..
+
+  * You can weigh different processes against each other depending
+
+@@ -111,6 +132,9 @@
+
+ static inline int goodness(struct task_struct * p, int this_cpu,
+struct
+mm_struct *this_mm)
+
+ {
+
+ 	int weight;
+
++
+
++	if (not_deadlocking() && cpu_bind(this_cpu) && p->bind_cpu != this_cpu)
+
++		return 0;
+
+
+
+ 	/*
+
+ 	 * Realtime process, select the first one on the
+
+--- 2.3.38-pset/kernel/sys.c.~1~	Tue Nov  2 12:06:25 1999
+
++++ 2.3.38-pset/kernel/sys.c	Tue Jan 11 18:18:34 2000
+
+@@ -1027,6 +1027,19 @@
+
+ 			}
+
+ 			current->dumpable = arg2;
+
+ 			break;
+
++		case PR_SET_CPU:
+
++			{
+
++				extern void set_bind_cpu(int, int);
+
++
+
++				error = -EINVAL;
+
++				if (arg2 >= smp_num_cpus || arg2 < 0)
+
++					break;
+
++
+
++				error = 0;
+
++				current->bind_cpu = cpu_logical_map(arg2);
+
++				set_bind_cpu(arg3, 1);
+
++				break;
+
++			}
+
+ 		default:
+
+ 			error = -EINVAL;
+
+ 			break;
+

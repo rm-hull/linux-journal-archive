@@ -1,0 +1,467 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+ZFS and Btrfs: a Quick Introduction to Modern Filesystems
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;In this article, I explain how to install a ZFS kernel module on&#10;Linux, create a filesystem and compare it to existing Btrfs utilities&#10;bundled with your Linux distro. &#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2867580.0x295eac0"></a>
+ZFS and Btrfs: a Quick Introduction to Modern Filesystems
+</h1></div><div><div class="author"><h3 class="author">
+Howard
+ 
+Powell
+</h3></div><div class="issuemoyr">Issue #218, June 2012</div></div><div><p>
+In this article, I explain how to install a ZFS kernel module on
+Linux, create a filesystem and compare it to existing Btrfs utilities
+bundled with your Linux distro. 
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2867580.0x295f250"></a></h2></div></div><p>
+I am a filesystem geek. I have to be&mdash;I run a small department and
+manage the backups of about ten different mission-critical servers.
+I buy hard drives by the 20-pack, several times a year. Disks are
+cheap, but not always reliable, so I've learned to adapt by using the
+latest generation of filesystems to overcome drive failures.
+</p><p>
+In the past, I relied on RAID hardware (and/or software) to handle drive
+redundancy and to increase performance, but that no longer is necessary.
+I also used LVM to make my storage more flexible and easier to manage.
+The newer filesystems like ZFS and Btrfs (have or will soon) implement
+redundancy and internal checking for consistency without that extra layer
+of expensive RAID controllers or slow software. They also handle pools
+of storage in a fundamental way that makes an LVM layer less useful.
+</p><p>
+The biggest concept to grasp with ZFS and Btrfs is that ZFS and Btrfs expect
+disks to be disks. The usage of expensive hardware or slow software RAID
+systems is unnecessary and conflicts with how these filesystems expect
+to talk to storage disks. You still can use hardware RAID if you want,
+but you're removing some of the built-in safeguards that help your
+filesystem prevent loss of data.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2867580.0x295f510"></a>
+ZFS</h2></div></div><p>
+First, I'm going to talk about ZFS. I start with a quick overview
+of how to download and install the source code for this system on your
+Red Hat-compatible OS, and help you set up a small ZFS storage pool.
+Then, I provide some code snippets you can use to create
+a rotating snapshot-like backup script using ZFS's native snapshot
+capability. Assuming you create your storage pool on multiple disks in a
+mirror or RAID-Z configuration, you will have built-in protection against
+bitrot&mdash;the natural propagation of errors in your data from misreads
+or writes to disk. If you then add to your system some off-site backups,
+you'll have a pretty good start to a robust backup solution.
+</p><p>
+The ZFS filesystem originally was created by Sun Microsystems for its Solaris
+operating system. ZFS has been something that many Linux users
+have desired for almost a decade because of its amazing features and
+simple-to-implement flexibility. Unfortunately, Sun decided to release
+ZFS under the CDDL license, which ultimately has caused the kernel gurus
+never to add support to the main Linux kernel. Some people have ported
+ZFS to FUSE so that it can run in userspace and not taint the kernel,
+but this is slower than native kernel-space access. Recently, a group at
+Lawrence Livermore National Labs ported ZFS so that it's a separately compiled kernel module that
+can be installed on your system. (This, of course, taints your kernel's
+license.) This module is considered to be in release candidate state, but
+the core ZFS code itself is based on the fairly stable Solaris version.
+</p><p>
+ZFS is notable because it's a mature implementation of a copy-on-write
+filesystem. Copy-on-write (COW) means that when your data is read
+(for example, when you open a file) and then modified, a new copy is saved to
+disk,
+and the old copy is either re-allocated for future use or preserved as
+a &ldquo;snapshot&rdquo; of the current state of the filesystem. This means
+that no file can ever be &ldquo;in the middle&rdquo; of a write operation,
+so corruption leading to long fscks are greatly reduced.
+</p><p>
+To get started with ZFS, first you need to download the source from
+<a href="http://zfsonlinux.com" target="_self">zfsonlinux.com</a>. You need two packages: the Solaris Porting Layer
+(this provides the Solaris kernel APIs) and the ZFS source.
+</p><p>
+You also need kernel-devel and a few other packages&mdash;this should
+work on a Red Hat-compatible distribution:
+
+<pre     class="programlisting">
+yum groupinstall "Development Tools" 
+yum install zlib-devel libuuid-devel libblkid-devel 
+ &#8618;libselinux-devel parted lsscsi 
+</pre>
+</p><p>
+Once the dependencies are installed, first you should compile the Solaris
+Porting Layer. You have to unzip the SPL, <tt  >cd</tt> into the directory, run
+<tt  >./configure</tt> and <tt  >make rpms</tt>. When done, you should have XYZ rpm files
+for your system, which you can next install with your package manager.
+For example, <tt  >rpm --Uvh *.x86_64.rpm</tt> should work on a 64-bit system.
+</p><p>
+Next, you need to unzip and configure the ZFS source directory.
+Again, run <tt  >make rpms</tt> and install the resulting rpm files
+it creates.
+</p><p>
+Once installed, you can begin creating a filesystem. Reboot or do
+<tt  >service zfs start</tt> to load the modules and prepare your system
+for ZFS:
+
+<pre     class="programlisting">
+zpool create puddle /dev/sdb /dev/sdc 
+</pre>
+</p><p>
+(Note that ZFS can use partitions, but if you give it a raw disk device, it
+automatically will create partitions and use the entire space effectively.
+This is the best practice for ZFS.)
+</p><p>
+The above example creates a concatenated storage pool called
+&ldquo;puddle&rdquo;. Storage on zfs is called &ldquo;pools&rdquo; or collections of
+disks and disk partitions. A storage pool is roughly analogous to the
+metadevices created by mdadm or lvm. The puddle filesystem you just created
+will be mounted at /puddle and can be browsed and used just like any
+other filesystem. Note the first big change&mdash;you do not need an entry
+in fstab or to mount the filesystem manually; ZFS takes care of this for you.
+</p><p>
+A mirror (equivalent in concept to a RAID-1) can be created with two or
+more devices by using the following command:
+
+<pre     class="programlisting">
+zpool create mirror puddle /dev/sdb /dev/sdc 
+</pre>
+</p><p>
+Finally, a RAID-5 equivalent pool can be created with:
+
+<pre     class="programlisting">
+zpool create raidz puddle /dev/sdb /dev/sdc /dev/sdd 
+</pre>
+</p><p>
+Oh, I almost forgot&mdash;if you prefer RAID-6 instead of RAID-5,
+and have the disks to throw at this, there's a solution for you also:
+
+
+<pre     class="programlisting">
+zpool create raidz-2 puddle /dev/sdb /dev/sdc /dev/sdd /dev/sde 
+</pre>
+</p><p>
+It should take only a moment or two to initialize the device.
+</p><p>
+You can check your new storage pool's status by using:
+
+<pre     class="programlisting">
+zpool status 
+</pre>
+</p><p>
+Next, you may decide you want to move your mounted filesystem to a 
+different mountpoint. You can use the ZFS command-line utility to do this:
+
+<pre     class="programlisting">
+zfs setmount puddle /mnt/puddle 
+</pre>
+</p><p>
+You also can use the ZFS utility to create new sub-pools of storage that
+can be handled independently or together with the main pool:
+
+<pre     class="programlisting">
+zfs create puddle/droplet 
+</pre>
+</p><p>
+Snapshots are a very effective way to make instantaneous same-disk backups 
+of your files:
+
+<pre     class="programlisting">
+zfs snapshot puddle/droplet@today 
+</pre>
+</p><p>
+You can mount these snapshots to copy or recover data:
+
+<pre     class="programlisting">
+mount -t zfs puddle/droplet@today /mnt/ 
+</pre>
+</p><p>
+You also can list the filesystems and snapshots, and you can see how much 
+disk space each is consumed by using the zfs list command:
+
+<pre     class="programlisting">
+zfs list puddle    # this will list all subvolumes below puddle 
+
+zfs list -t snapshot puddle   # this will list all snapshots 
+                              # of puddle and subvolumes 
+</pre>
+</p><p>
+Finally, maintenance of your filesystem is vital. With ext3/4 and other
+filesystems, you use fsck to make sure your system is coherent and healthy,
+but this requires you to take the filesystem and/or machine off-line, and it
+could take hours to check a large multi-terabyte disk. With ZFS, file
+&ldquo;scrubbing&rdquo; happens on-line while the system is active and available
+for use. Scrubbing scans through every file and makes sure that the
+internal checksums are still valid and correct. If you have redundant
+storage (a RAID-Z or a mirror), the filesystem will be self-healing
+and your data will be fixed automatically if any filesystem
+problems are detected:
+
+<pre     class="programlisting">
+zpool scrub puddle 
+</pre>
+</p><p>
+Much like fsck, a scrub operation can take a few hours, but the big
+difference is that your system remains on-line and ready for use!
+Go ahead and work with your system; you will not cause the scrub
+operation any problems.
+</p><p>
+Technically, a scrub of each file happens automatically every time that
+file is opened. The above scrub command will check every file on that
+storage pool, and best practices suggest the scrub command should be
+run periodically to check files that are rarely accessed.
+</p><p>
+Okay, now for a few code snippets to show you how you can use ZFS to your
+advantage for backups:
+
+<pre     class="programlisting">
+zfs list -H -r -d1 -t snapshot puddle 
+</pre>
+</p><p>
+This snippet lists, in chronological order, all of the snapshots for your
+pool. 
+</p><p>
+You easily can modify it to show just a sub-pool:
+
+<pre     class="programlisting">
+zfs list -H -r -d1 -t snapshot puddle/droplet 
+</pre>
+</p><p>
+If you feed that to a <tt  >head -1</tt> command, you instantly have the oldest
+snapshot on your system. You can use your favorite shell-fu commands
+to decide whether to keep or delete the old snapshot by:
+
+<pre     class="programlisting">
+zfs destroy puddle/droplet@today 
+</pre>
+</p><p>
+Let's say you're copying /home to /puddle once a day, and you now
+have five days' worth of snapshots. You want only the last five days
+of backups, so let's write a script to delete the oldest snapshot,
+rsync /home to /puddle, and create a new snapshot:
+
+<pre     class="programlisting">
+OLDEST=`zfs list -H -r -d1 -t snapshot puddle|head -1` 
+zfs destroy ${OLDEST} 
+rsync -av --delete /home /puddle 
+zfs snapshot puddle@'date +%Y%m%d-%H.%M.%S'
+</pre>
+</p><p>
+And there you go&mdash;with as few as four lines of code, you have a rotating 
+backup script for your data.
+</p><p>
+For those of you really interested in learning about ZFS, remember that it's
+a mature filesystem that's been around for almost a decade and heavily
+developed and invested in by many organizations, notably Sun and Oracle.
+Only the Linux kernel module implementation is new, so if you already
+have a ZFS filesystem created on a BSD UNIX or on Solaris, you easily
+can import it into your Linux system or vice versa. The Linux module is
+being actively maintained and updated periodically.
+</p><p>
+There is a lot of great documentation on-line about ZFS, but one of the
+best documents for people investigating using ZFS in a real environment
+is the ZFS Best Practices Guide, which references Solaris heavily,
+but don't let that scare you away (see Resources). 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2867580.0x2960b10"></a>
+Btrfs</h2></div></div><p>
+Now, some people may prefer to avoid downloading source code and compiling
+their own kernel modules (even though it's trivial to do so on a
+standard distribution these days). For these people, Btrfs (B-tree
+File System) is a GPL-licensed copy-on-write filesystem already included
+in most Linux distributions. Btrfs still is undergoing heavy development,
+and many features, such as parity-based RAID, aren't yet complete.
+</p><p>
+Btrfs modules already should be installed as part of modern kernels
+(I can confirm it's in RHEL 6.0 and above). You need to install
+the btrfs-progs package to create a filesystem and work with it:
+
+<pre     class="programlisting">
+yum install btrfs-progs 
+</pre>
+</p><p>
+Now you can create the filesystem on a second, unused partition (sdf1) and 
+assign it a label:
+
+<pre     class="programlisting">
+mkfs.btrfs -L/local /dev/sdf1 
+</pre>
+</p><p>
+To pool two or more devices together:
+
+<pre     class="programlisting">
+mkfs.btrfs -L/local /dev/sdf1 /dev/sdg1 
+</pre>
+</p><p>
+To create a mirrored filesystem for your data on two or more devices:
+
+<pre     class="programlisting">
+mkfs.btrfs -L/local -d raid1 /dev/sdf1 /dev/sdg1 
+</pre>
+</p><p>
+With Btrfs, you need to create an entry in /etc/fstab. You could use 
+&ldquo;LABEL=/local&rdquo; with the above example, but because RHEL 6 prefers UUIDs
+instead of labels, you can discover the UUID and use it instead with
+btrfs-show:
+
+<pre     class="programlisting">
+btrfs filesystem show /local 
+</pre>
+</p><p>
+Now you can add it to the fstab, such as:
+
+
+<pre     class="programlisting">
+UUID=[something here]     /local        btrfs   defaults    1 2 
+</pre>
+</p><p>
+Finally, to mount the disk, just run the <tt  >mount</tt> command. If you
+want to relocate the filesystem to a different mountpoint, update fstab
+and remount the filesystem.
+</p><p>
+To create a snapshot of a Btrfs mount:
+
+<pre     class="programlisting">
+btrfs subvolume snapshot /local /local/snapshot 
+</pre>
+</p><p>
+The snapshot is mounted automatically at /local/snapshot. You cannot
+mount these snapshots outside of the Btrfs tree&mdash;they have to be
+subvolumes of your main Btrfs mountpoint.
+</p><p>
+To list all of the snapshots on your Btrfs mount:
+
+<pre     class="programlisting">
+btrfs subvolume list /local 
+</pre>
+</p><p>
+Finally, to destroy a snapshot:
+
+<pre     class="programlisting">
+btrfs subvolume destroy /local/snapshot 
+</pre>
+</p><p>
+Now for a few other notes on Btrfs. Just like ZFS, the &ldquo;scrub&rdquo;
+equivalent of a file happens automatically each time that file is accessed
+or read. However, no on-line scrub of the entire filesystem
+currently is available. You could, however, use the find command to simulate
+a scrub:
+
+
+<pre     class="programlisting">
+find /local -mount -type f -exec cat '{}' &gt; /dev/null \; 
+</pre>
+</p><p>
+Okay, and now to replicate the functionality of the ZFS rotating snapshot
+backup I demoed before:
+
+
+<pre     class="programlisting">
+OLDEST=`btrfs subvolume list /local|head -1| awk '{print $NF}'` 
+btrfs subvolume destroy /local/${OLDEST} 
+rsync -av --delete /home /local 
+btrfs subvolume snapshot /local /local/snap-`date +%Y%m%d-%H.%M.%S` 
+</pre>
+</p><p>
+Now, you can wander through your snapshot directory at will and copy data as 
+necessary.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2867580.0x2d59968"></a>
+Other Similarities</h2></div></div><p>
+I've demonstrated some simple things you can do with ZFS and Btrfs
+here. Both filesystems have other features implemented that I did not
+mention, such as on-line compression using GZIP or LZO algorithms.
+Both filesystems support user and group quotas.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2867580.0x2d59a70"></a>
+Conclusions</h2></div></div><p>
+Personally, I have worked with ZFS longer and consider it to be more
+stable than Btrfs due to its heritage and inherited code base from
+Solaris and the BSD UNIXes. However, Btrfs is being worked on
+heavily by multiple groups, and at some point, it's likely that the features
+of Btrfs will advance further than those available in ZFS as more
+distributions add support for it and as more hackers get to play with it.
+</p><p>
+If you have pre-existing scripts or filesystems from other OSes that
+use ZFS, the ZFS on Linux Project is just what you need to get these
+filesystems working with your Linux OS efficiently and easily.
+</p><p>
+On the other hand, Btrfs offers the possibility to convert an ext3 or
+ext4 filesystem to Btrfs, which is perfect if you already have data in
+place on your disks. This is a powerful tool on large storage servers
+where downtime due to data migration must be minimized.
+</p><p>
+I hope these examples and this quick introduction inspire you to go out
+and look at the new filesystems available and help contribute feedback to
+the developers on features you need. With your help, we finally
+can break free from expensive RAID hardware and start to think of disks as
+just pools of storage to be used.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2867580.0x2d59c80"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+ZFS on Linux Project: <a href="http://zfsonlinux.org" target="_self">zfsonlinux.org</a>
+</p><p>
+Best Practices Guide: <a href="http://www.solarisinternals.com/wiki/index.php/ZFS_Best_Practices_Guide" target="_self">www.solarisinternals.com/wiki/index.php/ZFS_Best_Practices_Guide</a>
+</p><p>
+Btrfs: <a href="http://en.wikipedia.org/wiki/Btrfs" target="_self">en.wikipedia.org/wiki/Btrfs</a>
+</p><p>
+BTRFS Fu: <a href="http://www.funtoo.org/wiki/BTRFS_Fun" target="_self">www.funtoo.org/wiki/BTRFS_Fun</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Howard Powell has been working with Linux and Solaris systems for a decade
+at the University of Virginia Astronomy Department. He loves filesystems, and
+you can reach him at <a href="mailto:bofh@virginia.edu">bofh@virginia.edu</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../218/toc218.html">Issue Table of Contents</a>
+    <a class="link3" href="../218/11250.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

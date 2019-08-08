@@ -1,0 +1,254 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Loadable Kernel Module Programming and System Call Interception</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Loadable Kernel Module Programming and System Call Interception&#10;    "><meta name="keywords" content="kernel, tutorials, programming, module"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x18f7580.0x19eeab0"></a>Loadable Kernel Module Programming and System Call Interception</h1></div><div><div class="authorgroup"><div class="author"><h3 class="author">Nitesh Dhanjani</h3></div><div class="author"><h3 class="author">Gustavo Rodriguez-Rivera</h3></div><div class="issuemoyr">Issue #82, February 2001</div></div></div><div><p>
+    Loadable Kernel Module Programming and System Call Interception
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f7580.0x19ef818"></a></h2></div></div><p>Modern CPUs can run in two modes: kernel
+mode and user mode. When a CPU runs in kernel mode, an extended set
+of instructions is allowed, as is free access to anywhere in memory
+and device registers. Interrupt drivers and operating system
+services run in kernel mode. In contrast, when the CPU runs in user
+mode, only a restricted set of instructions is allowed, and the CPU
+has a restricted view of the memory and devices. Library functions
+and user programs run in user mode. Kernel and user mode together
+form the basis for security and reliability in modern operating
+systems.
+</p><p>Programs spend most of their time in user mode and switch to
+kernel mode only when they need an operating system service.
+Operating system services are offered through system calls. System
+calls are &ldquo;gates&rdquo; into the kernel implemented with software
+interrupts. Software interrupts are interrupts produced by a
+program and processed in kernel mode by the operating
+system.</p><p>The operating system maintains a &ldquo;system call table&rdquo; that
+has pointers to the functions that implement the system calls
+inside the kernel. From the program's point of view, this list of
+system calls provides a well-defined interface to the operating
+system services. You can obtain a list of the different system
+calls by looking at the file
+<b  >/usr/include/sys/syscall.h</b>. In Linux, this file
+includes the file
+<b  >/usr/include/bits/syscall.h</b>.</p><p>Loadable modules are pieces of code that can be loaded and
+unloaded into the kernel on demand. Loadable modules add extra
+functionality to the kernel without the need of rebooting the
+machine. For example, it is common in Linux to use loadable modules
+for new device drivers. The alternative to loadable modules is a
+monolithic kernel where new functionality is added directly into
+the kernel code. Monolithic kernels have the disadvantage of
+needing to be rebuilt and reinstalled every time new functionality
+is added.</p><p>Kernel programming can be difficult not only because of the
+intrinsic complexity but also because of the long debugging cycle.
+Debugging an operating system may require installing a new kernel
+and rebooting the machine in every cycle. We strongly recommend
+using loadable modules in kernel development because a) there is no
+need to rebuild the kernel or to reboot the machine more often than
+necessary; and b) since the end user does not need to
+replace/rebuild the existing kernel, the user is more likely to
+install the new functionality.</p><p>Loadable module support within the Linux kernel facilitates
+the interception of system calls, and this feature can be taken
+advantage of as described within the examples below. As a note, it
+is assumed that the reader is familiar with C programming.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f7580.0x19efb88"></a>1. System Calls, an Introduction</h2></div></div><p>Operating systems provide entry points through system calls
+that allow user-level processes to request services from the
+kernel. It is important to distinguish between system calls and
+library functions. Library functions are linked to the program and
+tend to be more portable since they are not bound to the kernel
+implementation. However, many library functions use system calls to
+perform various tasks within the system kernel. To illustrate,
+consider this C program that opens a file and prints its
+contents:</p><pre     class="programlisting">
+#include &lt;stdio.h&gt;
+int main(void)
+{
+    FILE *myfile;
+    char tempstring[1024];
+    if(!(myfile=fopen("/etc/passwd","r")))
+    {
+         fprintf(stderr,"Could not open file\n");
+         exit(1);
+    }
+    while(!feof(myfile))
+    {
+         fscanf(myfile,"%s\n",tempstring);
+         fprintf(stdout,"%s\n",tempstring);
+    }
+    exit(0);
+}
+</pre><p>Within the program, we used the
+<span   class="bold"><b>fopen</b></span> function call in order to
+open the <b  >/etc/passwd</b> file. However, it is
+important to note that fopen is not a system call. In fact, fopen
+calls the system call <span   class="bold"><b>open</b></span>
+internally in order to do the real I/O. To get a list of all the
+system calls invoked by a program, use the
+<span   class="bold"><b>strace</b></span> program. Assuming you have
+compiled the above program as a.out by running gcc example1.c,
+running strace like : <b  >strace ./a.out</b> will allow
+you to see all the system calls being invoked by
+<b  >a.out</b>.
+</p><p>The kernel switches to the user-id of the process owner
+invoking the system call. So, if a regular user were to run the
+above program, with <b  >/etc/shadow</b> (which is not
+readable) as the parameter to fopen, the open would fail and so
+would fopen, causing the if clause above to translate to true, thus
+printing the <b  >Could not open file</b> error
+message.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f7580.0x19f0058"></a>2. Intercepting System Calls via Loadable
+Modules, an Example</h2></div></div><p>Assume that we want to intercept the
+<span   class="bold"><b>exit</b></span> system call and print a
+message on the console when any process invokes it. In order to do
+this, we have to write our own fake exit system call, then make the
+kernel call our fake exit function instead of the original exit
+call. At the end of our fake exit call, we can invoke the original
+exit call. In order to do this, we must manipulate the system call
+table array (sys_call_table). Take a look at
+<b  >/usr/src/linux/arch/i386/kernel/entry.S</b>
+(assuming you are on an i386 architecture). This file contains a
+list of all the system calls implemented within the kernel and
+their position within the sys_call_table array.</p><p>Armed with the sys_call_table array, we can manipulate it to
+make the <b  >sys_exit</b> entry point to our new fake
+exit call. We must store a pointer to the original sys_exit call
+and call it when we are done printing our message to the console.
+Source code to implement the above is as shown in Listing 1.</p><p><a href="4378l1.html" target="_self">Listing 1. Example
+2.c</a></p><p>Compile the program shown in Listing 1 by invoking gcc:
+<b  >gcc -Wall -DMODULE -D__KERNEL__ -DLINUX -c
+example2.c</b>. This gives us our example2.o module. In order
+to insert this module into the kernel, do this as root:
+<b  >insmod example2.o</b>. Now, make sure you are on the
+console (since <span   class="bold"><b>printk</b></span> only prints
+to the console), and run any program which uses the exit system
+call. For example, <b  >ls</b> should print:
+<b  >HEY! sys_exit called with error_code=0</b>.</p><p>Next, try to invoke <b  >ls</b> with a file that
+does not exist; this should cause <b  >ls</b> to call the
+exit system call with an argument other than 0. Therefore,
+<b  >ls somefilethatdoesnotexist</b> should print:
+<b  >HEY! sys_exit called with error_code=1</b>.</p><p>In order to list all the modules loaded, use
+<span   class="bold"><b>lsmod</b></span>. To remove the module, run
+<b  >rmmod example2</b>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x18f7580.0x19f0840"></a>3. A More Interesting Example: Intercepting
+sys_execve to Protect Against</h2></div></div><p>&ldquo;root-kits&rdquo;
+</p><p>After a machine is compromised, malicious users tend to
+replace commonly used programs with trojan horses (programs that
+execute malicious instructions in addition to their normal
+functions). Packages of such trojan horses are widely distributed
+over the Internet and are easily accessible by anyone. Therefore,
+it becomes important to protect programs from being replaced by
+malicious users.</p><p>In order to protect against such problems, our next example
+involves the interception of various system calls, most importantly
+<b  >sys_execve</b>, to check the hash of the program to
+be executed against a known hash present in a database file. The
+program is denied execution if the hashes do not match, and such an
+attempt is logged. One way to implement this is seen in the
+following steps:</p><div class="orderedlist"><ol type="1"><li><p>Intercept <b  >sys_execve</b> and compute
+the inode of the file being executed, than compare it with the
+inodes of the files present in the hash database. Inodes are data
+structures that contain information about files in the file system.
+Since there is a unique inode for each file, we can be certain of
+our comparison results. If no match is found, call the original
+<b  >sys_execve</b> and return. However, if a match is
+found, compute the hash of the program and then compare it with the
+hash present in the hash database. If they match, call the original
+<b  >sys_execve</b> and return. If they do not match, log
+the attempt and return an error.</p></li><li><p>Intercept <b  >sys_delete_module</b>. If
+called with our module name as the parameter, return an error. Our
+module cannot be deleted.</p></li><li><p>Intercept <b  >sys_create_module</b>, and
+return an error. No more modules can be inserted because we do not
+want any malicious module to be able to intercept the
+<b  >sys_execve</b> described in step 1.</p></li><li><p>Intercept <b  >sys_open</b> to prevent
+our hash database and log file to be opened for writing.</p></li><li><p>Intercept <b  >sys_unlink</b> to prevent
+deletion of the hash database and log file.</p></li></ol></div><p>Note that the above does not offer complete protection, but
+it is a simple first-step implementation. For example, a malicious
+user may modify kernel symbols in <b  >/dev/kmem</b> or
+use raw device access to the hard disk, and bypass open to write to
+the hash database file. Also, since our implementation is only a
+loadable module, a malicious user can alter our
+<b  >/etc/rc.d</b> files and stop our module from being
+loaded the next time the machine is rebooted. In addition, various
+other system calls exist that could cause our hash database and log
+files to be altered or deleted.
+</p><p>At this time, it becomes important to acknowledge the
+possibility of loadable module support being misused by a malicious
+user. For example, the <b  >sys_execve</b> function call
+can be intercepted to invoke a trojan program instead of the one
+intended, and system calls such as
+<span   class="bold"><b>read</b></span> and
+<span   class="bold"><b>write</b></span> can be intercepted to
+perform keystroke logging. Therefore, the flexibility and power of
+loadable kernel modules can be misused by malicious users who may
+have gained access to the system. See Resources for a web site that
+has details of this example along with complete source code.</p><p><a href="4378s1.html" target="_self">Resources</a></p><p><a href="4378s2.html" target="_self">Acknowledgements</a></p></div></div>
+<div class="authorblurb"><p>
+          <div       class="mediaobject"><img src="4378aa.jpg"></div>
+          <span   class="bold"><b>Nitesh Dhanjani</b></span>
+          is a graduate student at Purdue University. His interests are
+          operating systems, networking and security. He has performed
+          security audits and reviews for various firms including Ernst &amp;
+          Young LLP, and offers consulting services in his spare time. He can
+          be reached at <a href="mailto:dhanjani@dhanjani.com">dhanjani@dhanjani.com</a>.
+        </p><p>
+          <span   class="bold"><b>Gustavo Rodriguez-Rivera</b></span>
+          is a Visiting Assistant Professor at
+          Purdue University and is also software architect for Geodesic
+          Systems. His interests are operating systems, networking and memory
+          management. He can be reached at <a href="mailto:grr@cs.purdue.edu">grr@cs.purdue.edu</a>.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../082/toc082.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

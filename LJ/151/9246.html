@@ -1,0 +1,398 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Running Network Services under User-Mode Linux, Part I</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Leverage the Linux kernel's virtualization features to isolate network&#10;d&aelig;mons.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2116580.0x220dab0"></a>
+Running Network Services under User-Mode Linux, Part I</h1></div><div><div class="author"><h3 class="author">
+Mick
+ 
+Bauer
+</h3></div><div class="issuemoyr">Issue #151, November 2006</div></div><div><p>
+Leverage the Linux kernel's virtualization features to isolate network
+d&aelig;mons.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2116580.0x220e3a0"></a></h2></div></div><p>
+In my May 2006 Paranoid Penguin column, I expounded on the virtues of Debian 3.1's excellent
+support for virtualization environments, including User-Mode Linux.  In
+that same issue, in the article &ldquo;User-Mode Linux&rdquo;,
+Matthew Hoskins gave a quick-and-dirty recipe for test-driving User-Mode
+Linux using prebuilt UML kernels and root filesystem images.
+</p><p>
+Did those articles whet your appetite for a more comprehensive and security-focused
+look at using UML? If so, you're in luck; for the next couple of columns, we're
+going to dive into the User-Mode Linux experience and cover every step
+(including every command) for creating your very
+own User-Mode Linux containers for network services.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2116580.0x220e558"></a>
+Objectives</h2></div></div><p>
+So, why are we doing this, and what do we hope to achieve? As I've said
+before in this space, virtualization is similar to the concept of the
+chroot (changed root) jail.  It encapsulates a process or d&aelig;mon into a
+subset of the operating environment in which it resides, in a manner that
+makes it much harder for attackers to get at the underlying environment
+should they succeed in compromising that process or d&aelig;mon.
+</p><p>
+Whereas chrooting restricts a process to a subset of the host system's real
+filesystem, virtualization restricts the process to a complete virtual
+machine running within the host (real) machine.  This includes a completely
+virtualized hard disk, memory and kernel, and even virtualized system
+devices, such as network and sound cards.  In the case of User-Mode Linux,
+this is achieved by running a guest (virtual) kernel as a user-space
+process within the host (real) kernel.
+</p><p>
+Because both guest and host kernel are Linux kernels, virtualization
+in User-Mode Linux is fast and efficient.  And, because the guest kernel does
+<span   class="emphasis"><em>not</em></span> need to run as root under the host kernel, even
+attackers who
+compromise some d&aelig;mon on the guest system <span   class="emphasis"><em>and</em></span>
+escalate their
+privileges to root (on the guest system) <span   class="emphasis"><em>and</em></span> somehow manage to
+gain shell access to the underlying host system will have achieved
+only unprivileged access to that host system.
+</p><p>
+This does not make it impossible to gain root access to the host system.
+If attackers do make it as far as shell access on the host, they
+may be able to escalate their privileges via some local privilege
+escalation vulnerability in the host's kernel or some user-space
+program on the host.  (Remember: no vulnerability is strictly local
+on <span   class="emphasis"><em>any</em></span> networked system!) It
+<span   class="emphasis"><em>does</em></span> mean, however, that it's
+more difficult for attackers to get to the point of being able to exploit
+such a vulnerability, especially if it isn't also present on the guest
+(virtual) system.
+</p><p>
+This brings us to our design goals.  The guest machine should be
+as bare-bones as possible with respect to installed software&mdash;both
+to minimize resource utilization and to minimize its potential for
+compromise (its attack surface).  If, for example, the guest machine
+is to act as a DNS server, it should have basic network support, BIND
+(or some other DNS server package) and very little else.  No X Window
+System and no Apache&mdash;nothing else not directly related to DNS services.
+</p><p>
+If you're really paranoid, you even can skip the Secure Shell d&aelig;mon
+and instead administer the system via a virtual serial console.  (Though
+allowing SSH from only authorized IP addresses, such as that of
+the host system, might be a more reasonable middle ground.) You could
+also run User-Mode Linux under SELinux; however, that's beyond the scope
+of this series of articles.
+</p><p>
+If a single bastion server is to host multiple network services&mdash;for
+example, Apache and BIND&mdash;you could run two different guest systems on
+the same host: one containing only Apache and its dependent packages
+and another containing only BIND et al.  In this way, a vulnerability in
+BIND would not lead directly to Web site defacement.  Conversely, a poorly
+coded Web application would not necessarily lead to DNS tampering.
+</p><p>
+In summary, our two design principles will be to run one virtual
+machine per major network service and to make each virtual machine
+as minimal and secure as possible.  The end result will (hopefully) be
+a very compartmentalized bastion server that places as much defensive
+abstraction as possible between attackers and total root compromise.
+</p><p>
+For the remainder of this series of articles, I use the example of
+a single guest system running BIND.  Both guest and host system are
+based on Debian 3.1, because Debian is so popular for UML guests (it
+lends itself to stripped-down installations&mdash;a trait it shares with
+Slackware).  However, most of what follows also applies to other Linux
+distributions on both host and guest.
+</p><p>
+Our tasks are:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Build a host kernel optimized for hosting User-Mode Linux guests.
+</p></li><li><p>
+Build one or more guest kernels to run on top of the host.
+</p></li><li><p>
+Obtain and customize a prebuilt root filesystem for our guests.
+</p></li><li><p>
+Run, configure and harden our guest system for secure DNS services.
+</p></li></ol></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2116580.0x220ee48"></a>
+Preparing the Host</h2></div></div><p>
+First, you need to make sure you've got the right kind
+of kernel on your host system.  You very likely may need
+to compile a new kernel.
+</p><p>
+On the one hand, some Linux distributions already have User-Mode Linux
+compiled into their default kernels.  On the other hand, your distribution
+of choice may or may not also have the skas (separate kernel address
+space) patch compiled in as well.  It is, in fact, somewhat unlikely that
+your default kernel has skas support.  Although the Linux kernel source
+code has included UML support since version 2.6.9, the skas patch is still
+maintained separately (and Linus has resisted its inclusion).
+</p><p>
+The skas patch is important.  It greatly improves UML performance
+and security by running the guest system's kernel in separate
+address space from its other processes (just like the host's
+kernel does).  The User-Mode Linux Web site's skas page on SourceForge
+provides a more detailed
+explanation of why you need skas (see the on-line Resources).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2116580.0x220f000"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Keeping Your Kernels and Guests Straight</b></p><p>
+In the contexts of User-Mode Linux, VMware and other virtualization
+systems, we use the words host and guest in a very specific way.  Your
+host is the system that runs the virtualization environment&mdash;that
+is, it acts as a host to one or more virtual machines.  Guests
+are virtual machine instances that live on top of the host.
+</p><p>
+Therefore, when we speak of the host kernel and guest kernels,
+remember that guest kernels run on top of the host kernel.  In
+User-Mode Linux, your host kernel is a normal Linux kernel, compiled
+for your particular hardware platform (Intel x86, IBM PowerPC and so on),
+with User-Mode Linux features (including the optional skas patch)
+compiled in as well.
+</p><p>
+Your guest kernel, on the other hand, must be compiled to run on virtual
+hardware: the um architecture.  Other than that, it does
+<span   class="emphasis"><em>not</em></span>
+need the skas patch or User-Mode Linux support enabled.  Unless, that is,
+you want to run other guest kernels on top of it.  Running guests
+within guests is possible (this is called nesting), but well beyond
+the scope of this article.
+</p><p>
+Each UML virtual machine instance consists of a guest kernel, a guest root
+filesystem and a COW (Copy On Write) file.  The root filesystem is a disk
+image file; it contains every file in your virtual machine except the
+kernel itself.  When you execute a guest kernel, the root filesystem file
+is mounted in precisely the same way you'd mount any other disk image,
+for example, a CD ISO file.  Like a CD-ROM, it's used in read-only mode.
+Any changes you make to the virtual filesystem in the course of a UML
+session, including new files and file deletions, are stored in a COW file.
+</p><p>
+Thanks to the magic of COWs, it's therefore possible to run the same
+guest kernel and root filesystem combination multiple times, by defining
+a unique COW file per instance.
+</p></div><p>
+To obtain kernel source code, your best bet may be simply to install your
+Linux distribution's kernel-source package.  Take care, however, that your
+distribution provides a kernel version of 2.6.9 or higher, because
+UML support is included from 2.6.9 onward,
+and prior UML patches had security vulnerabilities.
+</p><p>
+Because Debian 3.1 still uses kernel version 2.6.8, I decided not to use
+the official Debian kernel packages and instead downloaded the 2.6.17
+kernel from kernel.org.  I did, however, install the kernel-package
+package, which provides tools for generating Debian packages from official
+kernel source.
+</p><p>
+Besides kernel source code, you need the skas patch, the
+latest version of which is available on Blaisorblade's site (see Resources).  Be sure to download the
+patch version that corresponds to the kernel source code you're about
+to patch.
+</p><p>
+On my Debian host, I unpacked my official source code to
+/usr/src/linux-2.6.17.3, renamed the source code directory to
+/usr/src/linux-2.6.17.3-host and copied the skas patch tarball
+(skas-2.6.17-rc5-v9-pre9.patch.bz2) to /usr/src.  I then changed ownership
+of the directory /usr/src/linux-2.6.17.3-host to a nonroot account.  (Adhering to the principle of never being root unless you really need to,
+we're going to do most of this kernel build as an unprivileged user.)
+</p><p>
+Here are the commands I executed as root:
+
+<pre     class="programlisting">
+host:/usr/src/# tar -xjvf ./linux-2.6.17.3.tar.bz
+host:/usr/src/# mv ./linux-2.6.17.3 ./linux-2.6.17.3-host
+host:/usr/src/# chown mick ./linux-2.6.17.3
+host:/usr/src/# su - mick
+</pre>
+</p><p>
+To apply the skas patch, I then navigated, as my nonroot user, to
+/usr/src/linux-2.6.17.3-host and ran the following command:
+
+<pre     class="programlisting">
+host:/usr/src/linux-2.6.17.3-host$ bunzip2 -c
+ &#8618;../skas-2.6.17-rc5-v9 -pre9.patch.bz2 | patch -p1
+</pre>
+</p><p>
+Next, from the same directory, I issued the command <tt  >make
+menuconfig</tt>.  When
+setting up the kernel configuration for User-Mode Linux, the defaults
+generally are fine, though you should ensure that the
+configuration matches your host's hardware.  In addition, it's probably
+prudent to double-check the following settings:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Under Processor type and features, make sure /proc/mm is enabled.
+</p></li><li><p>
+Under Networking options, make sure IP: tunneling and 802.1d Ethernet
+Bridging are enabled.  If you intend to restrict guest system behavior
+with iptables, you also may want to check the Network packet filtering
+section to ensure that Core Netfilter Configuration, IP: Netfilter
+Configuration and Bridged IP/ARP packets filtering are set up.
+</p></li><li><p>
+Under Network device support, enable Universal TUN/TAP
+device driver support.
+</p></li><li><p>
+And, by all means, make sure to hard-compile (into the kernel, not as
+a module) the filesystem in which your system's root partition is formatted
+(for example, ext3 or ReiserFS).
+</p></li></ul></div><p>
+From this point on, the process is the same with any other kernel
+build: issue the commands <tt  >make bzImage</tt> and
+<tt  >make modules;</tt>.  Then, become
+root and issue the commands <tt  >make modules</tt>,
+<tt  >make modules_install</tt> and
+<tt  >make install</tt>.  (Or in the case of Debian, use the
+<tt  >make-kpkg</tt> command
+to achieve the same thing, and run <tt  >dpkg</tt> to install the resulting kernel
+package.)
+</p><p>
+Once your new host kernel is installed, reboot your system.  Your host
+system is now capable of running User-Mode Linux guest systems.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2116580.0x2607fb8"></a>
+Creating a Guest Kernel</h2></div></div><p>
+Okay, we've got UML host capabilities, but we still need a guest kernel
+to run.  This process is somewhat simpler than the host-kernel build,
+because we don't need the skas patch.
+</p><p>
+First, navigate back to the directory in which your Linux kernel-source
+tarball resides, and unpack it a second time.  Remember when we renamed the
+unzipped source code directory? This was so we could unpack the kernel
+tarball a second time.  We need to build our host and guest kernels in
+separate source trees.
+</p><p>
+On my Debian test system, therefore, I unpacked the source
+tarball to /usr/src/linux-2.6.17.3, and this time, renamed it to
+/usr/src/linux-2.6.17.3-guest.  Again, change ownership of this directory
+to a nonprivileged user, and change your working directory to it.
+</p><p>
+Again, at this point we can skip the step of applying the skas
+patch.  Because we're going to compile our kernel for the special um
+(User-Mode Linux) architecture rather than for a real architecture like
+x86, I recommend you prepare your source code tree with the following
+three commands:
+
+<pre     class="programlisting">
+host:/usr/src/linux-2.6.17.3-guest$ make mrproper ARCH=um
+host:/usr/src/linux-2.6.17.3-guest$ make defconfig ARCH=um
+host:/usr/src/linux-2.6.17.3-guest$ make menuconfig ARCH=um
+</pre>
+</p><p>
+The <tt  >make mrproper</tt> command clears out any configuration and object
+files in your source tree; <tt  >make defconfig</tt> generates a fresh default
+configuration file appropriate to the um architecture; and <tt  >make
+menuconfig</tt>,
+of course, gives you the opportunity to fine-tune this configuration file.
+</p><p>
+Pay particular attention to the following:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Life will be simpler if you skip loadable kernel module support
+and hard-compile everything into the kernel.  If you really want
+kernel modules, see the User-Mode Linux HOWTO, Section 2.2 (see
+Resources).
+</p></li><li><p>
+Under Processor type and features, double-check that your system
+architecture is set to um (User-Mode Linux), and make sure /proc/mm
+is enabled.
+</p></li><li><p>
+Under Networking options, make sure IP: tunneling and 802.1d Ethernet
+Bridging are enabled.
+</p></li><li><p>
+Under Network device support, enable Universal TUN/TAP device driver
+support.
+</p></li><li><p>
+Disable as many of the specialized hardware kernel modules as possible; this kernel
+is going to be running on virtualized hardware, so you won't need support
+for wireless LAN hardware, obscure parallel-port devices and so forth.
+</p></li></ul></div><p>
+Once you've saved your new configuration file, you can compile the
+kernel with this command (<span   class="emphasis"><em>without</em></span> first becoming root; execute this as
+an unprivileged user):
+
+<pre     class="programlisting">
+host:/usr/src/linux-2.6.17.3-guest$ make linux ARCH=um
+</pre>
+</p><p>
+Note that I did <span   class="emphasis"><em>not</em></span> tell you to make a zipped or bzipped
+image.  Remember, you're going to be running this kernel as though it
+were a user-space command, so it shouldn't be compressed.  The finished
+kernel will be located in the top-level directory of your source tree
+(/usr/src/linux-2.6.17.3-guest in the above examples) and will be
+named linux&mdash;you'll probably want to rename it to something more
+descriptive, such as uml-guestkernel-2.6.17.3.  You'll also probably want
+to move it to the directory from which you intend to run it&mdash;perhaps
+something like /usr/local/uml/.
+</p><p>
+By the way, don't be scared by the size of your guest kernel file.  Most
+of that bulk is symbol information that will <span   class="emphasis"><em>not</em></span> be loaded into
+memory when you execute it.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2116580.0x2608a08"></a>
+Conclusion</h2></div></div><p>
+Your host system now fully supports User-Mode Linux, and you've got a
+guest kernel image to run.  The next step is to obtain or create a root
+filesystem image to use with the guest kernel.  That's where we'll pick
+up again next time!
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../151/9260.html" target="_self">/article/9260</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Mick Bauer (<a href="mailto:darth.elmo@wiremonkeys.org">darth.elmo@wiremonkeys.org</a>) is Network
+Security
+Architect for one of the US's largest banks.  He is the author of
+the O'Reilly book <span   class="emphasis"><em>Linux Server Security</em></span>, 2nd edition
+(formerly called
+<span   class="emphasis"><em>Building Secure Servers With Linux</em></span>), an occasional
+presenter at
+information security conferences and composer of the &ldquo;Network
+Engineering Polka&rdquo;.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../151/toc151.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

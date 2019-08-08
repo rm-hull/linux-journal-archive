@@ -1,0 +1,379 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Block Device Drivers: Interrupts</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Last month, we gave an introduction to block device drivers. This month,&#10;    we look at some tricks that are useful when writing block device&#10;    drivers,&#10;    starting with the most basic &ldquo;trick&rdquo; of using hardware interrupts&#10;    where available and describing some neat infrastructure that block&#10;    device drivers can take advantage of by adding five lines of code and&#10;    one function.&#10;    "><meta name="keywords" content="kernel, driver, interrupts"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x20e5580.0x21dcab0"></a>Block Device Drivers: Interrupts</h1></div><div><div class="author"><h3 class="author">Michael K. Johnson</h3></div><div class="issuemoyr">Issue #10, February 1995</div></div><div><p>
+    Last month, we gave an introduction to block device drivers. This month,
+    we look at some tricks that are useful when writing block device
+    drivers,
+    starting with the most basic &ldquo;trick&rdquo; of using hardware interrupts
+    where available and describing some neat infrastructure that block
+    device drivers can take advantage of by adding five lines of code and
+    one function.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21dd450"></a></h2></div></div><p>Block devices, which are usually intended
+to hold file-systems, may or may not be interrupt-driven.
+Interrupt-driven block device drivers have the potential to be
+faster and more efficient than non- interrupt-driven block device
+drivers.
+</p><p>Last month, I gave an example of a very simplistic block
+device driver that reads its request queue one item at a time,
+satisfying each request in turn, until the request queue is
+emptied, and then returning. Some block device drivers in the
+standard kernel are like this. The ramdisk driver is the obvious
+example; it does very little more than the simplistic block device
+driver I presented. Less obvious to the casual observer, few of the
+CD-ROM drivers (actually none of them, as I write this) are
+interrupt-driven. It is easy to determine which drivers are
+interrupt-driven by reading drivers/block/blk.h, searching for the
+string <b  >DEVICE_INTR</b>, and noting which devices use
+it.</p><p>I'm tired of typing &ldquo;block device driver&rdquo;, and you are
+probably tired of reading it. For the rest of this article, I will
+use &ldquo;driver&rdquo; to mean &ldquo;block device driver&rdquo;, except where stated
+otherwise.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21dd660"></a>Efficiency Is Speed</h2></div></div><p>Interrupt-driven drivers have the potential to be more
+efficient than non-interrupt-driven ones because the drivers have
+to spend less time busy-waiting&mdash;sitting in a tight loop, waiting
+for the device to become ready or finish executing a command. They
+also have the potential to be faster, because it may be possible to
+arrange for multiple requests to be satisfied at once, or to take
+advantage of peculiarities of the hardware.</p><p>In particular, the SCSI disk driver tries to send the SCSI
+disk one command to read multiple sectors and satisfy each of the
+requests as the data for each block arrives from the disk. This is
+a big win considering the way the SCSI interface is designed;
+because initiating a SCSI transfer takes some complex negotiation,
+it takes a significant amount of time to negotiate a SCSI transfer,
+and when the SCSI driver can ask for multiple blocks at the same
+time, it only has to negotiate the transfer once, instead of once
+for each block.</p><p>This complex negotiation makes SCSI a robust bus that is
+useful for many things besides disk drives. It also makes it
+necessary to pay attention to timing when writing the driver, in
+order to take advantage of the possibilities without being
+extremely slow. Before certain optimizations were added to the
+generic, high-level SCSI driver in Linux, SCSI performance did not
+at all approach its theoretical peak. Those optimizations made for
+throughput 3 to 10 times greater on most devices.</p><p>As another example, the original floppy driver in Linux was
+very slow. Each time it wanted a block, it read it in from the
+media. The floppy hardware is very slow and has high latency (it
+rotates slowly and if you wanted to read the block that just
+started going past the head, you had to wait until the disk made a
+full revolution), which kept it very slow.</p><p>Around version .12, Lawrence Foard added a track buffer.
+Since it only takes approximately 30% to 50% more time to read an
+entire track off the floppy as it does to wait for the block you
+want to read to come around and be read (depending on the type of
+disk and the position of the disk at the start of the request), it
+makes sense, when reading a block, to read the entire track the
+block is in.</p><p>As soon as the requested block has been read into the track
+buffer, it is copied into the request buffer, the process waiting
+for it to be read can continue, and the rest of the track is read
+into a private buffer area belonging to the floppy driver. The next
+request for a block from that floppy is often for the very next
+block, and that block is now in the track buffer and ready
+immediately to be used to fulfill the request. This is true
+approximately 8 times out of 9 (assuming 9 blocks, or 18 sectors,
+per track). This single change turned the floppy driver from a very
+slow driver into a very fast driver.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21dd920"></a>Alright! Enough Already!</h2></div></div><p>So, you are convinced that interrupt-driven drivers have a
+lot more potential, and you want to know how to turn the
+non-interrupt-driven driver you wrote last month into an
+interrupt-driven one. I can't give you all the information you need
+in a single article, but I can get you started, and after reading
+the rest of this article, you will be better prepared to read the
+source code for real drivers, which is the best preparation for
+writing your own driver.</p><p>The basic control flow of a request for a block from a
+non-interrupt-driven driver usually runs something like this
+<span   class="bold"><b>simplification alert</b></span>:</p><p>user program calls <b  >read()</b>
+<b  >read()</b> (in the kernel) asks the buffer cache to
+get and fill in the block buffer cache notices that it doesn't have
+the data in the cache buffer cache asks driver to fill in a block
+with correct data driver satisfies request and returns buffer cache
+passes newly-filled-in block back to <b  >read()</b>
+<b  >read()</b> copies the data into the user program and
+returns user program continues An interrupt-driven driver runs more
+like this <span   class="bold"><b>simplification alert</b></span>:
+user program calls <b  >read()</b>
+<b  >read()</b> (in the kernel) asks the buffer cache to
+get and fill in the block buffer cache notices that it doesn't have
+the data in the cache buffer cache asks driver to fill in a block
+with correct data driver starts the process of satisfying the
+request and returns buffer cache waits for block to be read by
+sleeping on an event Some other processes run for a while, perhaps
+causing other I/O on the device. the physical device has the data
+available and interrupts the driver driver reads the data from the
+device and wakes up the buffer cache buffer cache passes the
+newly-filled-in block back to <b  >read()</b>.
+<b  >read()</b> copies the data into the user program and
+returns user program continues</p><p>Note that <b  >read()</b> is not the only way to
+initiate I/O.</p><p>One thing to note about this is that just about anything can
+be done before waking up the process(es) waiting for the request to
+complete. In fact, other requests might be added to the queue. This
+seems, at first, like a troublesome complication, but really is one
+of the important things that makes it possible to do some
+worthwhile optimizations. This will become obvious as we start to
+optimize the driver. We will start, though, by taking our
+non-interrupt-driven driver and making it use interrupts.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21ddf50"></a>Interrupts</h2></div></div><p>I am going to take the <span   class="emphasis"><em>foo</em></span> driver I
+started developing last month, and add interrupt service to it. It
+is hard to write good, detailed code for a hypothetical and vaguely
+defined device, so (as usual) if you want to understand better
+after reading this, take a look at some real devices. I suggest the
+hd and floppy devices; start from the
+<b  >do_hd_request()</b> and
+<b  >do_fd_request()</b> routines and follow the logic
+through.</p><pre     class="programlisting">
+static void do_foo_request(void) {
+  if (foo_busy)
+    /* another request is being processed;
+       this one will automatically follow */
+    return;
+    foo_busy = 1;
+    foo_initialize_io();
+}
+static void foo_initialize_io(void) {
+  if (CURRENT-&gt;cmd == READ) {
+    SET_INTR(foo_read_intr);
+  } else {
+    SET_INTR(foo_write_intr);
+  }
+    /* send hardware command to start io
+       based on request; just a request to
+       read if read and preparing data for
+       entire write; write takes more code */
+}
+static void foo_read_intr(void) {
+  int error=0;
+  CLEAR_INTR;
+    /* read data from device and put in
+       CURRENT-&gt;buffer; set error=1 if error
+       This is actually most of the function... */
+    /* successful if no error */
+    end_request(error?0:1);
+    if (!CURRENT)
+      /* allow new requests to be processed */
+      foo_busy = 0;
+    /* INIT_REQUEST will return if no requests */
+    INIT_REQUEST;
+    /* Now prepare to do I/O on next request */
+    foo_initialize_io();
+}
+static void foo_write_intr(void) {
+        int error=0;
+  CLEAR_INTR;
+  /* data has been written. error=1 if error */
+  /* successful if no error */
+  end_request(error?0:1);
+  if (!CURRENT)
+    /* allow new requests to be processed */ foo_busy = 0;
+/* INIT_REQUEST will return if no requests */
+  INIT_REQUEST;
+  /* Now prepare to do I/O on next request */
+  foo_initialize_io();
+}
+</pre><p>In blk.h, we need to add a few lines to the FOO_MAJOR
+section:</p><pre     class="programlisting">
+#elif (MAJOR_NR == FOO_MAJOR)
+#define DEVICE_NAME "foobar"
+#define DEVICE_REQUEST do_foo_request
+#define DEVICE_INTR do_foo
+#define DEVICE_NR(device) (MINOR(device) &gt; 6)
+#define DEVICE_ON(device)
+#define DEVICE_OFF(device)
+#endif
+</pre><p>Note that many functions are missing from this; this is the
+important part to understanding interrupt-driven device drivers;
+the &ldquo;heart&rdquo;, if you will. Also note that, obviously, I haven't
+tried to compile or run this hypothetical driver. I may have made
+some mistakes&mdash;you are bound to make mistakes of your own while
+writing your driver, and finding bugs in this skeleton will be good
+practice for finding bugs in your own driver, if you are so
+inclined. I do suggest that when you write your own driver, you
+start with code from some other working driver rather than starting
+from this skeleton code.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21de2c0"></a>Structure</h2></div></div><p>An explanation of some of the new ideas here is in order. The
+first new idea is (obviously, I hope) the use of interrupt routines
+to do part of servicing the hardware and walking down the request
+list. I used separate routines for reading and writing; this isn't
+fundamentally necessary, but it does generally help allow cleaner
+code and smaller, easier-to-read interrupt service routines. Most
+(all?) of the interrupt-driven device drivers of any kind in the
+real kernel use separate routines for reading and writing.</p><p>We also have a separate routine to do most of the I/O setup
+instead of doing it in the request() procedure. This is so that the
+interrupt routines can call the separate routings to set up the
+next request, if necessary, upon completion of a request. Again,
+this is a design feature that makes most real-world drivers smaller
+and easier to write and debug.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21de420"></a>Context</h2></div></div><p>It must be noted that any routine that is called from an
+interrupt is different than all the other routines I have described
+so far. Routines called from an interrupt do not execute in the
+context of any calling user-level program and cannot write to
+user-level memory. They can only write to kernel memory. If they
+absolutely need to allocate memory, they must do so with the
+<b  >GFP_ATOMIC</b> priority. In general, it is best for
+them to write into buffers allocated from user-process-context
+routines with priority <b  >GFP_KERNEL</b> before the
+interrupt routines are set up. They also can wake up processes
+sleeping on an event, as <b  >end_request()</b> does, but
+they cannot sleep themselves.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21de630"></a>Macros</h2></div></div><p>The header file blk.h provides some nice macros which are
+used here. I won't document them all (most are documented in
+<span   class="emphasis"><em>The Linux Kernel Hackers' Guide</em></span>, the
+<span   class="emphasis"><em>KHG</em></span>), but I will mention the ones I use, which
+are used to manage interrupts.</p><p>Instead of setting up interrupts manually, it is easier and
+better to use the <b  >SET_INTR()</b> macro. (If you want
+to know how to set them up manually, read the definitions of
+<b  >SET_INTR</b> in blk.h.) Easier because you just do
+<b  >SET_INTR(interrupt_handling_function)</b>, and
+better because if you set up automatic timeouts (which we will
+cover later), <b  >SET_INTR()</b> automatically sets them
+up.</p><p>Then, when the interrupt has been serviced, the interrupt
+service routine (<b  >foo_read_intr()</b> or
+<b  >foo_write_intr()</b> above) clears the interrupt, so
+that spurious interrupts don't get delivered to a procedure that
+thinks that it is supposed to read or write to the current request.
+It is possible&mdash;it only takes a little more work&mdash;to provide an
+interrupt routing to handle spurious interrupts. If you are
+interested, read the <b  >hd</b> driver.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21deb00"></a>Automatic Timeouts</h2></div></div><p>In blk.h, a mechanism for timing out when hardware doesn't
+respond is provided. If the <span   class="emphasis"><em>foo</em></span> device has not
+responded to a request after 5 seconds have passed, there is very
+clearly something wrong. We will update blk.h again:</p><pre     class="programlisting">
+#elif (MAJOR_NR == FOO_MAJOR)
+#define DEVICE_NAME "foobar"
+#define DEVICE_REQUEST do_foo_request
+#define DEVICE_INTR do_foo
+#define DEVICE_TIMEOUT FOO_TIMER
+#define TIMEOUT_VALUE 500
+/* 500 == 5 seconds */
+#define DEVICE_NR(device) (MINOR(device) &gt; 6)
+#define DEVICE_ON(device)
+#define DEVICE_OFF(device)
+#endif
+</pre><p>This is where using <b  >SET_INTR()</b> and
+<b  >CLEAR_INTR</b> becomes helpful. Simply by defining
+<b  >DEVICE_TIMEOUT</b>, <b  >SET_INTR</b> is
+changed to automatically set a &ldquo;watchdog timer&rdquo; that goes off if
+the foo device has not responded after 5 seconds,
+<b  >SET_TIMER</b> is provided to set the watchdog timer
+manually, and a <b  >CLEAR_TIMER</b> macro is provided to
+turn off the watchdog timer. The only three other things that need
+to be done are to:</p><div class="orderedlist"><ol type="1"><li><p>Add a timer, <b  >FOO_TIMER</b>, to
+<b  >linux/timer.h</b>. This must be a
+<b  >#define</b>'d value that is not already used and
+must be less than 32 (there are only 32 static timers).</p></li><li><p>In the <b  >foo_init()</b> function
+called at boot time to detect and initialize the hardware, a line
+must be added:</p><pre     class="programlisting">
+timer_table[FOO_TIMER].fn = foo_times_out;
+</pre></li><li><p>And (as you may have guessed from step 2) a
+function <b  >foo_times_out()</b> must be written to try
+restarting requests, or otherwise handling the time out
+condition.</p></li></ol></div><p>The <b  >foo_times_out()</b> function should
+probably reset the device, try to restart the request if
+appropriate, and should use the
+<b  >CURRENT-&gt;errors</b> variable to keep track of how
+many errors have occurred on that request. It should also check to
+see if too many errors have occurred, and if so, call
+<b  >end_request(0)</b> and go on to the next
+request.</p><p>Exactly what steps are required depend on how the hardware
+device behaves, but both the hd and the floppy drivers provide this
+functionality, and by comparing and contrasting them, you should be
+able to determine how to write such a function for your device.
+Here is a sample, loosely based on the
+<b  >hd_times_out()</b> function in hd.c:</p><pre     class="programlisting">
+static void hd_times_out(void)
+{
+   unsigned int dev;
+   SET_INTR(NULL);
+   if (!CURRENT)
+      /* completely spurious interrupt-
+         pretend it didn't happen. */
+      return;
+   dev = DEVICE_NR(CURRENT-&gt;dev);
+#ifdef DEBUG
+   printk("foo%c: timeout\n", dev+'a');
+#endif
+   if (++CURRENT-&gt;errors &gt;= FOO_MAX_ERRORS) {
+#ifdef DEBUG
+      printk("foo%c: too many errors\n", dev+'a');
+#endif
+      /* Tell buffer cache: couldn't fulfill request */
+      end_request(0);
+      INIT_REQUEST;
+   }
+   /* Now try the request again */
+   foo_initialize_io();
+}
+</pre><p><span   class="emphasis"><em>SET_INTR(NULL)</em></span> keeps this function from
+being called recursively. The next two lines ignore interrupts that
+occur when no requests have been issued. Then we check for
+excessive errors, and if there have been too many errors on this
+request, we abort it and go on to the next request, if any; if
+there are no requests, we return. (Remember that the
+<b  >INIT_REQUEST</b> macro causes a return if there are
+no requests left.)</p><p>At the end, we are either retrying the current request or
+have given up and gone on to the next request, and in either case,
+we need to re-start the request.</p><p>We could reset the foo device right before calling
+<b  >foo_initialize_io()</b>, if the device maintains
+some state and needs a reset. Again, this depends on the details of
+the device for which you are writing the driver.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x20e5580.0x21d60a0"></a>Stay Tuned...</h2></div></div><p>Next month, we will discuss optimizing block device
+drivers.</p><p><a href="2885s1.html" target="_self">Other Resources</a></p></div></div>
+<div class="authorblurb"><p>
+           <span   class="bold"><b>Michael K. Johnson</b></span>
+           is the editor of <i  >Linux Journal</i>, and is
+           also the author of the Linux Kernel Hackers' Guide (the KHG). He is using this
+           column to develop and expand on the KHG.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../010/toc010.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

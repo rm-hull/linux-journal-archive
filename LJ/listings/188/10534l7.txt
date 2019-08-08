@@ -1,0 +1,225 @@
+Listing 7. Humidity Controller Application C Code
+
+/*
+ * Humidity Controller Application
+ *
+ * Copyright (C) 2009  Jeffrey Ramsey
+ *                     <jeffreyramsey@e2atechnology.com>
+ *                     http://www.e2atechnology.com
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version
+ * 2 of the License, or (at your option) any later version, so long
+ * as an  * acknowledgment appears in derived source files.  The
+ * citation should list where the code came from. No warranty is
+ * attached; I assume no responsibility for errors or fitness for use.
+ *
+ */
+#include <stdlib.h>
+#include <stdio.h>
+#include <stddef.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include "/mnt/lfs/linux24/drivers/relay8/relay8Ioctl.h"
+#include "/mnt/lfs/linux24/drivers/sht1x/sht1xIoctl.h"
+
+/* Only expect this many characters in the
+ * targetHumidity output from snmpget */
+#define MAX_LINE                     132
+
+/* This is the humidifier power relay set */
+#define HUMIDIFIER_RELAY_ID         0x03
+
+/* This is the dehumidifier power relay set */
+#define DEHUMIDIFIER_RELAY_ID       0x0c
+
+/* Let dehumidifier settle for this # of seconds */
+#define DEHUMIDIFIER_SETTLING_TIME    60
+
+/* Maximum # readings before the average is rescaled */
+#define MAX_READINGS_BEFORE_RESCALE  500
+
+int main(int argc, char *argv[])
+{
+    int            fdSht11, fdRelays;
+    unsigned int   uiHumidity, uiTemperature;
+    unsigned int   uiMaxHumidity=0, uiMinHumidity=1000;
+    unsigned int   uiAvgHumidity=0, uiAvgCumulativeHumidity=0;
+    unsigned int   uiNumReadings=0;
+    int            iVals, iSetVals;
+    unsigned int   uiTargetHumidity = 50;
+    FILE           *fp1;
+    char           sTarget[MAX_LINE];
+    unsigned long  ulLastDehumidifierSecondStamp = 0;
+    unsigned long  ulCurrentSeconds = 0;
+    unsigned long  tdiff;
+
+    /* Open device instances */
+    fdRelays = open("/dev/relay80", O_RDWR);
+    if (fdRelays <= 0)
+    {
+        printf("cannot open relay8-0!\n");
+        exit(0);
+    }
+    fdSht11 = open("/dev/sht1x0", O_RDWR);
+    if( fdSht11 > 0 )
+    {
+        printf("cannot open sht1x-0!\n");
+        exit(0);
+    }
+
+    /* Perpetually process;
+     *   Fetch MIB value for targetHumidity
+     *   Read current humidity/temperature and
+     *   process/switch relays if necessary
+     *   Gather statistics and update the SNMP OIDs */
+    while (1)
+    {
+        /* Periodically poll system */
+        sleep(1);
+
+        /* Increment the seconds count; if it wraps to zero,
+         * reset the last dehumidifier second stamp even though
+         * the system will have to be up for many years for
+         * this to ever happen! */
+        if (++ulCurrentSeconds == 0)
+        {
+            ulLastDehumidifierSecondStamp = 0;
+        }
+
+        /* Fetch the current target humidity and just
+         * save it to be checked below against current readings */
+        system("snmpget -Ovqe -v 1 -c private "
+               "localhost targetHumidity.0 1>vals.txt");
+        fp1 = fopen("./vals.txt", "r");
+        if (fp1)
+        {
+            fgets(sTarget, sizeof( sTarget ) - 1, fp1);
+            sscanf(sTarget, "%d", &uiTargetHumidity);
+            close(fp1);
+        }
+
+        /* Read current humidity/temperature */
+        ioctl(fdSht11, SHT1X_IOC_READ_HUMIDITY, &uiHumidity);
+        ioctl(fdSht11, SHT1X_IOC_READ_TEMPERATURE, &uiTemperature);
+
+        /* Process depending on state determined by relay settings */
+        /* Check if adjustment required; +- 3.5% rH */
+        if ((uiHumidity * 10) > ((uiTargetHumidity * 10) + 35))
+        {
+            /* Need to dehumidify as long as dehumidifier
+             * isn't already running */
+            ioctl(fdRelays, RELAY8_IOC_READ_RELAYS, &iSetVals);
+            if (!(iSetVals & DEHUMIDIFIER_RELAY_ID))
+            {
+                /* Dehumidifier isn't on; but check if it was
+                 * on in the settling period and defer if it was
+                 * to give the compressor time to settle */
+                tdiff = ulCurrentSeconds
+                      - ulLastDehumidifierSecondStamp;
+
+                if (tdiff > DEHUMIDIFIER_SETTLING_TIME)
+                {
+                    /* Safe to turn on dehumidifer */
+                    iVals = DEHUMIDIFIER_RELAY_ID;
+                    ioctl(fdRelays, RELAY8_IOC_WRITE_RELAYS, &iVals);
+
+                    /* New second stamp for dehumidifier
+                     * settling time */
+                    ulLastDehumidifierSecondStamp = ulCurrentSeconds;
+                }
+            }
+        }
+        else if ((uiHumidity * 10) < ((uiTargetHumidity * 10) - 35))
+        {
+            /* Need to humidify as long as humidifier
+             * isn't already running */
+            ioctl(fdRelays, RELAY8_IOC_READ_RELAYS, &iSetVals);
+            if (!(iSetVals & HUMIDIFIER_RELAY_ID))
+            {
+                /* Humidifier isn't on; no settling period
+                 * required as there is no compressor */
+
+                /* Safe to turn on humidifer */
+                iVals = HUMIDIFIER_RELAY_ID;
+                ioctl(fdRelays, RELAY8_IOC_WRITE_RELAYS, &iVals);
+            }
+        }
+        else
+        {
+            /* All relays should be off; humidity
+             * is within target range */
+            iVals = 0;
+            ioctl(fdRelays, RELAY8_IOC_WRITE_RELAYS, &iVals);
+        }
+
+        /* Accumulate some statistics */
+        if (uiHumidity > uiMaxHumidity)
+        {
+            uiMaxHumidity = uiHumidity;
+        }
+        if (uiHumidity < uiMinHumidity)
+        {
+            uiMinHumidity = uiHumidity;
+        }
+        uiAvgCumulativeHumidity += uiHumidity;
+        uiAvgHumidity = uiAvgCumulativeHumidity / ++uiNumReadings;
+
+        /* Display current status on the console if debugging */
+        printf("targetH=%d "
+               "currentH=%d currentT=%d "
+               "minH=%d maxH=%d avgH=%d\n",
+               uiTargetHumidity,
+               uiHumidity, uiTemperature,
+               uiMinHumidity, uiMaxHumidity, uiAvgHumidity);
+
+
+        /* One more reading, and if it reaches a value where
+         * the previous might overrun for average calculations,
+         * rescale to 1.  The average across a sampling shouldn't
+         * be substantially different than the next sampling. */
+        if (uiNumReadings == MAX_READINGS_BEFORE_RESCALE)
+        {
+            uiNumReadings = 1;
+            uiAvgCumulativeHumidity = uiHumidity;
+        }
+
+        /* Now refresh the SNMP settings given what was just read.
+         * The following permits checking the set values to ensure
+         * the OIDs were really set (i.e. read back vals.txt and
+         * compare it against what was set), but this isn't
+         * done here.  Settings can be checked on the web
+         * interface values. */
+        sprintf(sTarget, "snmpset -Ovqe -v 1 -c private "
+                         "localhost currentHumidity.0 i %d",
+                         uiHumidity);
+        system(sTarget);
+        sprintf(sTarget, "snmpset -Ovqe -v 1 -c private "
+                         "localhost currentTemperature.0 i %d",
+                         uiTemperature);
+        system(sTarget);
+        sprintf(sTarget, "snmpset -Ovqe -v 1 -c private "
+                         "localhost minHumidity.0 i %d",
+                         uiMinHumidity);
+        system(sTarget);
+        sprintf(sTarget, "snmpset -Ovqe -v 1 -c private "
+                         "localhost maxHumidity.0 i %d",
+                         uiMaxHumidity);
+        system(sTarget);
+        sprintf(sTarget, "snmpset -Ovqe -v 1 -c private "
+                         "localhost avgHumidity.0 i %d",
+                         uiAvgHumidity);
+        system(sTarget);
+    }
+
+    /* The previous loop will normally never exit,
+     * but if it did, e.g. from testing, close the devices */
+    close(fdRelays);
+    close(fdSht11);
+
+    return(1);
+}
+
+
+

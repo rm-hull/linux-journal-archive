@@ -1,0 +1,99 @@
+Listing 1: Sample mason.pl, Handler Configuration File
+
+package HTML::Mason;
+use HTML::Mason;
+use strict;
+
+use Apache::DBI;
+
+my $dbsource = "dbi:mysql:atf";
+my $dbuser = 'atf';
+my $dbpass = 'atfpass';
+
+# Import some modules for use in components
+{  package HTML::Mason::Commands;
+   use vars qw(%session);
+   use CGI::Cookie;
+   use Apache::DBI;
+   use Apache::Session::DBI;
+}
+
+# Create a new Mason parser
+my $parser = new HTML::Mason::Parser;
+
+# Create a new Mason interpreter
+my $interp =
+    new HTML::Mason::Interp (parser => $parser,
+			     comp_root =>
+'/usr/local/apache/mason/',
+			     data_dir => '/usr/local/apache/masondata/');
+
+# Create a new Mason ApacheHandler
+my $ah = new HTML::Mason::ApacheHandler (interp => $interp);
+
+# Make sure that things are done as nobody, and not root!
+chown ( [getpwnam('nobody')]->[2], [getgrnam('nobody')]->[2],
+	$interp->files_written );
+
+# -----------------------------------------------------------
+# Create our content handler.
+
+sub handler
+{
+    # Get the Apache request object
+    my $r = shift;
+
+    # Only handle text
+    return -1<\n> 
+    if defined($r->content_type)
+    && $r->content_type !~ m|^text/|io;
+
+    # Get the incoming cookies
+    my %cookies = parse
+    CGI::Cookie($r->header_in('Cookie'));
+
+    # Try to re-establish an existing session
+    eval {
+    tie %HTML::Mason::Commands::session, 'Apache::Session::DBI',
+        ($cookies{'AF_SID'} ? $cookies{'AF_SID'}->value() : undef),
+	    {
+	     DataSource => $dbsource,
+	     UserName => $dbuser,
+	     Password => $dbpass
+	    };
+    };
+
+    # If we could not re-establish an existing
+    # session, create a new session.
+    if ( $@ )
+    {
+	if ( $@ =~ m#^Object does not exist in the data store# )
+	{
+	    tie %HTML::Mason::Commands::session,
+'Apache::Session::DBI',
+		undef,
+		{
+		 DataSource => $dbsource,
+		 UserName => $dbuser,
+		 Password => $dbpass
+		};
+	    undef $cookies{'AF_SID'};
+	}
+    }
+
+    if ( !$cookies{'AF_SID'} )
+    {
+	my $cookie =
+	    new CGI::Cookie(-name => 'AF_SID',
+			    -value =>
+			    $HTML::Mason::Commands::session{_session_id},
+			    -path => '/',);
+	$r->header_out('Set-Cookie', => $cookie);
+    }
+
+    my $status = $ah->handle_request($r);
+
+    untie %HTML::Mason::Commands::session;
+ 
+    return $status;
+}

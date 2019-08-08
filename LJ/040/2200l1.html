@@ -1,0 +1,359 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>A Web Crawler in Perl</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <pre>
+#! /usr/bin/perl
+#
+# spider.pl   Set tabstops to 3.
+#
+
+$| = 1;
+# 0=no debug, 1=display progress, 2=complete dump
+$DEBUG = 0;
+# Check hyperlinks to other hosts?
+$SPANHOSTS = "off";
+
+if(scalar(@ARGV) &lt; 2){
+print "Usage: $0 &lt;fully-qualified-URL&gt; &lt;search-phrase&gt;\n";
+exit 1;
+}
+
+# Initialize.
+%URLqueue = ();
+chop($client_host=`hostname`);
+$been = 0;
+$search_phrase = $ARGV[1];
+
+# Load the queue with the first URL to hit.
+$URLqueue{$ARGV[0]} = 0;
+$thisURL = &amp;find_new(%URLqueue);
+
+# While there's a URL in our queue which we haven't looked at ...
+while($thisURL ne ""){
+
+# Progress report.
+$count = 0;
+while(($key,$value) = each(%URLqueue)){
+   $count ++;
+}
+print "-----------------------------------------\n" if($DEBUG&gt;=1);
+printf("Been: %d  To Go: %d\n", $been, $count-$been)
+if($DEBUG&gt;=1);
+print "Current URL: $thisURL\n" if($DEBUG&gt;=1);
+&amp;dump_stack() if($DEBUG&gt;=2);
+
+# Split the protocol from the URL.
+($protocol, $rest) = $thisURL =~ m|^([^:/]*):(.*)$|;
+
+# If the protocol is http, fetch the page and process it.
+if($protocol eq "http"){
+
+   # Split out the hostname, port and document.
+   ($server_host, $port, $document) =
+      $rest =~ m|^//([^:/]*):*([0-9]*)/*([^:]*)$|;
+
+   # Get the page of text and remove CR/LF characters and HTML
+   # comments from it.
+   $page_text = &amp;get_http($client_host, $server_host, $port,
+      $document);
+   $page_text =~ tr/\r\n//d;
+   $page_text =~ s|&lt;!--[^&gt;]*--&gt;||g;
+
+   # Report if our search string is found here.
+   if($page_text =~ m|$search_phrase|i){
+      print "$thisURL\n"
+   }
+
+   # Find anchors in the HTML and update our list of URLs..
+   (@anchors) = $page_text =~ m|&lt;A[^&gt;]*HREF\s*=\s*"([^
+"&gt;]*)"|gi;
+   foreach $anchor (@anchors){
+      $newURL = &amp;fqURL($thisURL, $anchor);
+      if($URLqueue{$newURL} &gt; 0){
+
+         # Increment the count for URLs we've already
+         # checked out.
+         $URLqueue{$newURL}++;
+
+      }else{
+
+         # Add a zero record for URLs we haven't
+         # encountered.
+         # Optionally, ignore URL's which point to other
+         # hosts.
+         ($new_host) =
+            $newURL =~ m|^[^:/]*:/*([^/:]*):*[0-9]*/*[^:]*$|;
+         if($SPANHOSTS eq "on" || $new_host eq
+            $server_host){
+            $URLqueue{$newURL}=0;
+         }
+      }
+   }
+}else{
+   print "Protocol '$protocol' ignored.\n" if($DEBUG&gt;=1);
+}
+
+# Record the fact that we've been here, and get a new URL to process.
+$URLqueue{$thisURL} ++;
+$been ++;
+$thisURL = &amp;find_new(%URLqueue);
+
+}
+exit;
+
+#--------------------------------------------------------------
+# Build a fully specified URL.
+#--------------------------------------------------------------
+sub fqURL
+{
+local($thisURL, $anchor) = @_;
+local($has_proto, $has_lead_slash, $currprot, $currhost, $newURL);
+
+# Strip anything following a number sign '#', because its
+# just a reference to a position within a page.
+$anchor =~ s|^.*#[^#]*$|$1|;
+
+# Examine anchor to see what parts of the URL are specified.
+$has_proto = 0;
+$has_lead_slash=0;
+$has_proto = 1 if($anchor =~ m|^[^/:]+:|);
+$has_lead_slash = 1 if ($anchor =~ m|^/|);
+
+if($has_proto == 1){
+
+   # If protocol specified, assume anchor is fully qualified.
+   $newURL = $anchor;
+
+}
+elsif($has_lead_slash == 1){
+
+   # If document has a leading slash, it just needs protocol and host.
+   ($currprot, $currhost) = $thisURL =~ m|^([^:/]*):/+([^:/]*)|;
+   $newURL = $currprot . "://" . $currhost . $anchor;
+
+}
+else{
+
+   # Anchor must be just relative pathname, so append it to current URL.
+   ($newURL) = $thisURL =~ m|^(.*)/[^/]*$|;
+   $newURL .= "/" if (! ($newURL =~ m|/$|));
+   $newURL .= $anchor;
+
+}
+if($DEBUG &gt;=2){
+   print "Link Found\n   In:$thisURL\n   Anchor:$anchor\n   Result: $newURL\n"
+}
+return $newURL;
+}
+
+#---------------------------------------------------------------
+# Do a linear search of the URL stack to find a URL with a data
+# value of 0 (i.e. one we haven't checked out yet).
+#---------------------------------------------------------------
+sub find_new
+{
+local(%URLqueue) = @_;
+local($key, $value);
+
+while(($key, $value) = each(%URLqueue)){
+   return $key if($value == 0);
+}
+return "";
+}
+
+#-------------------------------------------------------------------
+# Debugging utility.
+#-------------------------------------------------------------------
+sub dump_stack
+{
+local($key, $x);
+local($done, $togo) = ("", "");
+
+foreach $key (keys(%URLqueue)){
+   if($URLqueue{$key} == 0){
+      $togo .= "  " . $key . "\n";
+   }else{
+      $done .= "  " . $key . " (hitcount = "
+          . $URLqueue{$key} . ")\n";
+   }
+}
+
+print "Been There:\n" . $done;
+print "To Go:\n" . $togo;
+print "------- Hit Q to Quit, Enter to Continue -------\n";
+read(STDIN, $key, 1);
+exit(1) if($key eq 'Q' || $key eq 'q');
+}
+
+#-------------------------------------------------------------------------
+# Get the page indicated by the $server_host and $document parameters.
+#-------------------------------------------------------------------------
+sub get_http
+{
+local($client_host, $server_host, $port, $document) = @_;
+local($name,$aliases,$type,$len);
+local($this,$thisaddr,$that,$thataddr);
+local($client_host, $sockaddr, $a,$b,$c,$d);
+local($page, $header, $header_text, $content);
+
+# Some constants used to access the TCP network.
+$AF_INET=2;
+$SOCK_STREAM=1;
+
+# Use default http port if none specified.
+$port = 80 if($port == 0);
+
+# Get the protocol number for TCP.
+($name,$aliases,$proto)=getprotobyname("tcp");
+
+# Get the IP addresses for the two hosts.
+($name,$aliases,$type,$len,$thisaddr) = gethostbyname($client_host);
+($name,$aliases,$type,$len,$thataddr) = gethostbyname($server_host);
+
+# Check we could resolve the server host name.
+($a,$b,$c,$d) = unpack('C4', $thataddr);
+if($a eq "" &amp;&amp; $b eq "" &amp;&amp; $c eq  "" &amp;&amp; $d eq ""){
+   print "ERROR: Unknown host $server_host.\n";
+   return "";
+}
+print "Server: $server_host ($a.$b.$c.$d)\n" if($DEBUG&gt;=2);
+
+# Pack the AF_INET magic number, the port, and the (already packed) IP
+# addresses into the same format as the C structure would use. Note
+# this is architecture dependent: this pack format works for 32 bit
+# architectures.
+$sockaddr="S n a4 x8";
+$this=pack($sockaddr, $AF_INET, 0, $thisaddr);
+$that=pack($sockaddr, $AF_INET, $port, $thataddr);
+
+# Create the socket and connect.
+if(socket(S, $AF_INET, $SOCK_STREAM, $proto) == false){
+   print "ERROR: Cannot create socket.\n";
+   return "";
+}
+print "Socket OK\n" if($DEBUG&gt;=2);
+if(connect(S, $that) == false){
+   print "ERROR: Cannot connect to server $server_host,
+       port $port.\n";
+   return "";
+}
+print "Connect OK\n" if($DEBUG&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;=2);
+
+# Turn buffering in the socket off, and send request to the server.
+select(S); $| = 1; select(STDOUT);
+print S "GET /$document HTTP/1.0\n\n";
+
+# Receive the response. Check to ensure the response is of MIME
+# type text/html or text/plain.
+$page = "";
+$header = 1;
+$header_text = "";
+while(&lt;S&gt;){
+
+   # Check if we've hit the end of the HTTP header (an empty
+line).
+   # If we have, check for a content-type header line, and
+ensure
+   # it is valid.
+   if( m|^[\n\r]*$| ){
+      $header = 0;
+      ($content) = $header_text =~ m|Content-type: (\S+)|i;
+      if($content ne "text/html" &amp;&amp; $content ne "text/plain"){
+         print "Content type '$content' ignored.\n"
+            if($DEBUG&gt;=1);
+         last;
+      }
+   }
+   # Save to a header string if we're still working on the HTTP
+   # header.
+   elsif($header == 1){
+      $header_text .= "   " . $_;
+   }
+   # Otherwise, save to the html page string.
+   else{
+      $page .= $_;
+   }
+
+print "HTTP header: \n $header_text" if($DEBUG&gt;=2);
+return $page;
+}
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../040/toc040.html">Issue Table of Contents</a>
+    <a class="link3" href="../040/2200.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

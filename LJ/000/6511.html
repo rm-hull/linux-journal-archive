@@ -1,0 +1,169 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Mutt Over SSH, but What About Attachments?</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    From the rejection files of Linux Journal, a suggestion&#10;    for handling attachments in a remote Mutt session.&#10;    "><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x173c580.0x1833ab0"></a>Mutt Over SSH, but What About Attachments?</h1></div><div><div class="author"><h3 class="author">Don Marti</h3></div><div class="issuemoyr">Issue #0, linuxjournal.com</div></div><div><p>
+    From the rejection files of <i  >Linux Journal</i>, a suggestion
+    for handling attachments in a remote Mutt session.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x173c580.0x1834298"></a></h2></div></div><p>If you've proposed an article for
+<i  >Linux Journal</i> and haven't heard back yet, one
+reason is sometimes our rejection letters get a little long. Here's
+an example.</p><p>Dear (contributor),</p><p>I'm going to have to reject your Mutt article.</p><p>Yes, it's cool to be able to get to your mail on any server
+easily by ssh, and yes, it's cool to be able to specify the
+application of your choice to view MIME attachments.</p><p>But what about combining the two? You can't expect people to
+stop sending you attachments just because you're out of
+town.</p><p>The whole &ldquo;Mutt plus viewers&rdquo; concept breaks down when you're
+reading mail in your account on a remote server&mdash;maybe a really
+remote server separated from you by a slow line&mdash;and you get an
+attachment. This happens to me all the time, especially with images
+for articles.</p><p>Your choices are basically save the image and
+<span   class="bold"><b>scp</b></span> it back to your desktop
+machine, bounce it to an alternate account that's set up to use a
+GUI mail client on localhost or run an X-based image viewer over
+the ssh connection. All three are dumb. The last is the easiest if
+your connection is fast, but you have to send the whole X protocol
+instead of only the compressed image, and it can be slow,
+especially for PDFs.</p><p>So, how do you efficiently handle attachments in a remote
+Mutt? I really want to know, because the more photos I get, the
+more I think about this.</p><p>I like the &ldquo;Only give your email address to literary UNIX
+greybeards who prefer text and maybe ASCII art&rdquo; method, but here's
+a second-best choice.</p><p><span   class="bold"><b>Important: you should not try this
+unless you control and trust both the system where you're running
+Mutt and your local system. Do this and it's possible that a bad
+person on the system running Mutt will see your attachments. A
+better version would protect your attachments from hostile users at
+both ends.</b></span></p><p>First, set up an ssh tunnel. I put this in my
+.ssh/config:</p><pre     class="programlisting">
+ProtocolKeepAlives 30
+Host mail
+    Protocol 2
+    EscapeChar none
+    ForwardX11 yes
+    PasswordAuthentication no
+    LocalForward 8088 localhost:8088
+</pre><p>The important part is the LocalForward line; when I establish
+an ssh connection to the host &ldquo;mail&rdquo;, I get an ssh tunnel from
+localhost's port 8088 to port 8088 on mail. You also need to have
+ForwardX11 on, since this method does use X for one little
+thing.</p><p>Second, which program do we know that can handle any MIME
+type we're interested in? Our Mozilla web browser. But it's sitting
+on our laps, back on the client. That's fine; we'll point it at
+http://localhost:8088/, which is tunneled to &ldquo;mail&rdquo; where the
+attachment is.</p><p>So we've got Mozilla making a secure connection to the host
+where the attachment is, but don't we need to write a web server to
+serve up the attachment? Sure. Here's a script suitable for
+demonstrating the idea, but it will need a little work to be useful
+on multi-user systems.</p><pre     class="programlisting">
+#!/bin/sh
+# spewtomoz.sh
+# You shouldn't install this dumb script for all users because it only
+# uses one pipe and one port.  Have it pick a better name for the pipe,
+# and set the port from an environment variable.
+TEMP="/tmp/spewtomoz"
+PORT=8088
+rm -f $TEMP
+mkfifo --mode=600 $TEMP
+# netcat is the fun part of this script.
+# -l:            listen for an incoming connection
+# -q 1:          wait 1s after EOF and quit
+# -s 127.0.0.1   only use the lo interface
+# -p $PORT       use $PORT
+netcat -l -q 1 -s 127.0.0.1 -p $PORT &lt; $TEMP &amp;&gt; /dev/null &amp;
+# send the HTTP headers, followed by a blank line.
+echo "HTTP/1.1 200 OK" &gt;&gt; $TEMP
+echo -n "Content-type: " &gt;&gt; $TEMP
+file -bni $1 2&gt; /dev/null &gt;&gt; $TEMP
+echo &gt;&gt; $TEMP
+# Get started sending the file...
+cat $1 &gt;&gt; $TEMP &amp;
+# Wait a second and tell the user's Mozilla, wherever it is, to start
+# viewing the file.  This works over the X protocol.
+# (the date is to blow the cache and may not be necessary)
+sleep 1 &amp;&amp; gnome-moz-remote http://localhost:$PORT/`date +%s`
+# end spewtomoz.sh
+</pre><p>All that remains is to make Mutt use this script as the
+handler for MIME attachments. That means we're going to have to
+give Mutt an alternate mailcap file. Put this in your .muttrc
+file:</p><pre     class="programlisting">
+set mailcap_path="~/.mutt-mailcap"
+</pre><p>And put this in ~/.mutt-mailcap</p><pre     class="programlisting">
+text/*; spewtomoz.sh %s
+application/*; spewtomoz.sh %s
+image/*; spewtomoz.sh %s
+audio/*; spewtomoz.sh %s
+</pre><p>Now, when you restart Mutt and select an attachment, it will
+come up in your Mozilla browser, if Mozilla understands the
+attachment's MIME type; if not, Mozilla will start a helper
+application, such as Abiword or xpdf.</p><p>I'm not totally satisfied with this method of handling
+attachments, and I haven't tried it over a very slow connection,
+but it's better than the alternatives I've seen. For example, if
+you get an interlaced image, it should display while loading,
+saving you some time.</p><p>A good Mutt article would have to handle this issue. I would
+welcome any suggestions for a better way.</p><p><span   class="bold"><b>Don Marti</b></span> is editor in chief
+of <i  >Linux Journal</i>.</p></div></div>
+<div class="authorblurb"><p>
+       email: <a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>
+       </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../000/toc000.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

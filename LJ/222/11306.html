@@ -1,0 +1,560 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Sacrifice a Canary upon the Stack of the Gods:
+on Canaries, Coal Mines and Stack Sanity
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;This article is a basic introduction to program execution&#10;stacks and how they become corrupted, and it discusses a means of detecting&#10;such corruption. GCC provides a compile-time solution for stack&#10;corruption detection and a set of protection&#10;mechanisms available through an additional GCC plugin.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x122f580.0x1326ac0"></a>
+Sacrifice a Canary upon the Stack of the Gods:
+on Canaries, Coal Mines and Stack Sanity
+</h1></div><div><div class="author"><h3 class="author">
+Matt
+ 
+Davis
+</h3></div><div class="issuemoyr">Issue #222, October 2012</div></div><div><p>
+This article is a basic introduction to program execution
+stacks and how they become corrupted, and it discusses a means of detecting
+such corruption. GCC provides a compile-time solution for stack
+corruption detection and a set of protection
+mechanisms available through an additional GCC plugin.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x122f580.0x13271f8"></a></h2></div></div><p>
+The Canary, or <span   class="emphasis"><em>Serinus canaria</em></span>, is a species of bird
+that was bred for
+captivity as early as the 17th century. These tiny and colorful (Tweety-bird-esque) birds are well known for domestication and
+singing abilities (<a href="http://en.wikipedia.org/wiki/Domestic_Canary" target="_self">en.wikipedia.org/wiki/Domestic_Canary</a>). To their dismay,
+however, these little feathered-friends often
+found themselves victims, acting as primitive detectors of methane, carbon
+monoxide and other toxic gases that lurk in the dark depths of coal mines
+(<a href="http://en.wikipedia.org/wiki/Animal_sentinels" target="_self">en.wikipedia.org/wiki/Animal_sentinels</a>).
+</p><p>
+Like their sacrificial brethren, a stack canary lies within the dark depths of a
+stack frame during execution time of a program. When a function is executed,
+the canary (also known as cookie, <a href="http://en.wikibooks.org/wiki/Reverse_Engineering/Common_Solutions" target="_self">en.wikibooks.org/wiki/Reverse_Engineering/Common_Solutions</a>) is placed on the stack, and just before
+the function returns, it checks to ensure that the canary value has not been
+modified. If the canary value appears to have been modified (for example, the canary
+has been stepped on, crushed, slaughtered and so on), the program can terminate
+prematurely, such as with an <tt  >abort()</tt>. Such a death of our digital fowl suggests
+that the stack has been modified/corrupted. A premature program
+termination&mdash;for example, <tt  >abort()</tt>&mdash;prevents the executable from acting on a corrupted stack, which
+could be the result of bad programming or a sign of an intentional buffer
+overflow from a user of malicious intent (getting own3d). If the program did
+continue and operate on a corrupted stack, it might crash, execute shell code or
+continue executing but operating on bad data. The latter case of continuing to
+execute without apparent fault is often difficult to debug. 
+</p><p>
+Personally, I am
+of the belief that it is best for a program to crash or terminate early,
+rather than be misleading and produce invalid output. In this article, I pay
+homage to the feathered martyrs and investigate the stack protector mechanism in
+GCC, as well as look at a few other implementations presented in SatanicCanary,
+a GCC plugin that instruments a polymorphic stack canary&mdash;a canary on 'roids.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x122f580.0x1327670"></a>
+Stacks, Flapjacks and Hungry Canaries</h2></div></div><p>
+When functions are called during the runtime of a binary, the data for each
+function exists on the program's stack. The stack grows or shrinks based on the
+function being executed. And, as I am sure you are aware, a function can call
+other functions, which can call other functions, and so on and on. And a
+function can, of course, be recursive and call itself. Well, this path from
+function caller to callee is termed a call-graph. How, at runtime, is a
+function to know to whom to return control? This caller-to-callee path can be
+envisioned as a stack data structure. And, in fact, this stack of function call
+data, stack frames, resides in the process' stack segment of memory. I am sure
+most computer science students have regurgitated the vision of a stack
+being a series of pancakes or as a tower of plates at a buffet. Well, on this
+stack is the return address and the arguments to the caller, as well as local
+variables (automatic variables) for the function being called. The stack grows
+as a function calls a function, which calls another function and so on.
+When the callee finishes its work, it pops the stack, and the caller is returned
+control. As you can probably imagine, the stack frame holds quite a bit of
+program
+integrity. 
+</p><p>
+If a frame is compromised, the return address, where the callee
+jumps back into the caller function, can be overridden. Because the memory area
+of a stack in the typical x86 calling convention is marked as executable,
+arbitrary code can be written to execute in place of the return address.
+This is a stack-smash or stack-overflow&mdash;whatever you want to call it. These
+can be intentional (exploit and shell code) or accidental (bad programming).
+Either way, protecting the stack from these vulnerabilities is key for assuring
+stack sanity and program safety.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x122f580.0x1327828"></a>
+Stack Frames and Calling Conventions</h2></div></div><p>
+As I suggested previously, there is a bit of black magic that occurs when a
+program runs and calls functions&mdash;mainly, the magic of returning to the
+call site in the caller function, so that the program can continue on. Well, the
+magic is pretty simple: a program operates on a stack of call frames, also
+known
+as stack frames. These frames are pushed onto the program's stack memory
+segment each time a function is called. When the function completes, it pops
+the data consisting of the frame off the stack, and the caller gets control
+back, by jumping to the return address that was pushed onto the stack as the
+frame was being constructed.
+</p><p>
+In this article, I focus on a simple x86 C calling convention, cdecl,
+but other architectures can provide a playground for other calling conventions.
+For instance, if the CPU has more registers, arguments to that function can be
+passed in registers that make their data immediately available to the caller,
+rather than pushing and popping arguments from the stack. Further,
+a calling convention also can vary for different languages. The compiler is
+responsible for actually generating the function calls and doing all of that
+magic; thus, how a function is called is based on what the compiler decides to
+do. In addition, a compiler can optimize away arguments and use various
+hardware features of the underlying architecture to accomplish a function call.
+</p><p>
+In fact, GCC employs a variety of calling conventions. For a 64-bit Intel x86
+architecture, the compiler will pass arguments by using registers instead of
+pushing to the stack, &agrave; la the System V AMD64 ABI. This is similar to the
+non-standardized &ldquo;fastcall&rdquo; calling convention. The 32-bit version of GCC for
+x86 uses a fastcall convention. The intricacies of these various
+conventions do not matter for our purposes here. Rather, the important piece to
+remember is a calling convention is a means of how a function is called, how the
+arguments are passed to it and how that callee function returns back to the
+caller.
+</p><p>
+The simple cdecl x86 calling convention places all return values from a function
+into the EAX/RAX register (32- or 64-bit, respectively). If you really want to
+explore other calling conventions, Wikipedia has some great articles
+explaining various calling conventions in more depth (see
+<a href="http://en.wikipedia.org/wiki/X86_calling_conventions" target="_self">en.wikipedia.org/wiki/X86_calling_conventions</a> and <a href="http://en.wikipedia.org/wiki/Calling_convention" target="_self">en.wikipedia.org/wiki/Calling_convention</a>).
+</p><p>
+It's probably easier to imagine a stack frame if I provide an example. Here
+goes:
+
+<pre     class="programlisting">
+int foo(int x, int y)
+{
+    int z = bar(x, y);
+    return x + y + z;
+}
+</pre>
+</p><p>
+Let's assume that the program is compiled using the cdecl calling convention on
+an x86 architecture and is executing the &ldquo;foo&rdquo; function. In
+this case, the
+current frame on top of the stack is foo. Below the
+foo frame is foo's
+caller. And it's turtles all the way down, until the stack hits main's frame.
+Anyway, foo's frame consists of both its parameters and local variables, and
+it looks like this:
+
+
+<pre     class="programlisting">
+bottom-of-stack --&gt; [y, x, RIP, caller's stack base pointer, z]
+</pre>
+</p><p>
+RIP is the instruction pointer register, and it points to the next instruction to
+be executed; therefore, that value is pushed onto the stack when a function is
+called, and that value will be the return point when the callee returns. Thus,
+if the stack is never corrupted, the return address will be valid.
+There are two more registers to be concerned with, the RBP and RSP (EBP and ESP
+on 32-bit x86 architectures). The former is the stack base pointer, and
+it represents the start of a new stack frame. RSP is the top of the stack.
+Because
+the x86 stack grows downward, meaning that as things are pushed onto it, the
+address those things live at approaches the address of zero. So, the RSP 
+always should be at an address smaller than RBP. When the function being called has
+been jumped to, the first thing that function (the callee) does is sets up the
+RBP and RSP. It saves the previous stack frame base pointer by pushing it on
+the stack (the caller's stack base pointer in the example above). The RBP is
+then updated to reflect the current frame, so it sets the current top of the
+stack to the base pointer. And the stack is then increased to hold the local
+variables. To increase the stack, the function
+<span   class="emphasis"><em>subtracts</em></span> from the base pointer
+(remember the stack grows downward toward zero). So the range from RBP to RSP
+contains the address of the previous frame's base pointer and the current
+function's local variables. By adding an offset to the function's current base
+pointer, it can access any arguments passed to it. See <a href="http://unixwiz.net/techtips/win32-callconv-asm.html" target="_self">unixwiz.net/techtips/win32-callconv-asm.html</a> for more
+detail and lovely pictures. 
+</p><p>
+Returning to our example, when the calling function calls
+foo, the cdecl
+convention first will push the arguments given to foo, such as
+<tt  >foo(666, 667)</tt>
+from right to left. The construction of the frame begins with 667 and 666, with
+666 on the top. Then, foo is called. By calling foo, via a
+&ldquo;call&rdquo;
+instruction, the return address where foo is to return to is pushed on the
+stack. This address is actually that of the RIP, since it points to the next
+instruction to execute, which just happens to be where foo will return control
+to. The RIP then is magically changed (a call instruction also jumps to the
+address of foo), and the foo function begins to execute. Because foo now
+has control, the first thing it does is sets up its stack frame. To do this,
+foo pushes the base pointer and grows the stack enough for any local variables
+(in this case z). Inside foo, the stack now looks like this, where top is the stack
+pointer and points to the top of the stack, z:
+
+<pre     class="programlisting">
+--&gt; top [z, base pointer, call return, 666, 667]
+</pre>
+</p><p>
+The following is assembly output (from gdb) showing the stack frame
+for the example function above, &ldquo;foo&rdquo;:
+
+<pre     class="programlisting">
+
+0x00000000004004a7 &lt;+0&gt;:  push   %rbp
+0x00000000004004a8 &lt;+1&gt;:  mov    %rsp,%rbp
+0x00000000004004ab &lt;+4&gt;:  sub    $0x18,%rsp
+
+</pre>
+</p><p>
+As you can see, the first line saves the caller's base-stack pointer by pushing it
+on top of the stack. Next, the top of the caller's stack is set to the
+bottom/base of foo's stack frame. Then, the stack frame is increased by 0x18
+(24) bytes, which is enough room to hold the local variables. This can
+hold three
+words, or more than enough to hold the three four-byte local variables x, y, z.
+</p><p>
+Why does this stack frame concern us? Well, the point of return (the RIP that
+was pushed onto the stack during the function
+call) is on that puppy. If
+somehow the stack is flooded with data, it is possible to overwrite the RIP and
+the function will jump to a bad address or possibly to the address of input
+data. This input data might be data passed from the user, as program input, and
+it might contain code that can do some pretty devious things (such as shell
+code). If
+the program is, say, a server and running under root privileges, any malicious
+user might be able to pass instructions as user input data to the
+server. The
+server might have a poorly written function that then might become victim of
+the user input data. If the data was formatted properly and of the right
+length, the RIP can be overridden, and instead of returning to the proper
+caller, the user can gain control. Consider the case where the evil user passes
+code as input, and this code (shell code) contains instructions to spawn another
+shell (for example, bash). Well, because in our scenario the d&aelig;mon, server, program,
+whatever, is running with root privileges, any commands it executes (even if
+they were from an angry prepubescent user who hates his daddy) will get executed
+as root; thus, the emo-black-hat user can gain a shell with root privileges.
+Crikey!
+</p><p>
+This is when our little buddy comes into play. The whole purpose of a stack
+canary (also known as a cookie) is to sit its feathered little butt on the
+stack
+and look pretty. If the canary remains intact from function start to function
+return (prologue to epilogue), chances are the stack was never overwritten by
+information, the return address is sane, and it has not been compromised by
+error or malicious intent. See, we like canaries, they are our friends.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x122f580.0x1328220"></a>
+<span   class="emphasis"><em>Serinus canaria digitalus</em></span></h2></div></div><p>
+The basic idea of the canary is to be a
+sacrificial beast sitting within the stack frame, and if this canary value is
+ever modified, that's a sign that the stack has been corrupted. There are
+a variety of these little sacrificial creatures. The first is the basic, static
+value canary. These are the easiest to implement from a compiler perspective
+and probably the easiest to defeat. When the compiler inserts code to summon
+the canary data into the stack frame, which will occur at runtime during
+function prologue as the stack frame is being constructed, the value inserted
+is constant. This makes checking the value upon function epilogue/return quite
+easy. Because the compiler inserts a known value at compile time, the
+checking routine just checks the canary data to see if it matches. Of course,
+if malware authors know what this value is, they can 
+craft their exploit code carefully to overwrite the RIP and the canary. A disassemble of
+the program will reveal the canary value.
+</p><p>
+Another type of canary is the terminator canary
+(<span   class="emphasis"><em>shudders</em></span>). This canary is just
+a value containing a NULL or some other control character typically used for
+terminating a string (<a href="https://buildsecurityin.us-cert.gov/bsi/articles/knowledge/coding/310-BSI.html" target="_self">https://buildsecurityin.us-cert.gov/bsi/articles/knowledge/coding/310-BSI.html</a>).
+Such a canary forces malware authors to insert a
+termination character into their malware source code. This means if one of
+the string manipulation functions (such as strcpy or strcat) is being used to trigger
+the stack overflow (corruption), it also might terminate the malware shell
+code
+prematurely, preventing the corruption from compromising the return address.
+</p><p>
+Random canaries are another species. These values can be decided upon at either
+compile or runtime. If the compiler chooses a random value, each function
+might have a different canary value. The check code, during function
+epilogue, is easy to create, because the compiler is inserting the value
+during compilation, much like the static canary, except that the value changes
+for each function and/or for each compilation of the program. Runtime random
+canaries are more tricky to implement. The value set at prologue must somehow
+be used to compare the canary against during epilogue. There are a variety of
+ways to accomplish this, such as storing the random data somewhere that both the
+prologue and epilogue easily can re-create.
+</p><p>
+XOR canaries are used to encode data (possibly random) against another piece of
+data, such as the return address. These canaries can protect the return
+address
+directly, and if the return address and the XOR'd canary value differ, a
+corruption has been detected.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x122f580.0x1328590"></a>
+Stack Protector: the GCC Species of Canary</h2></div></div><p>
+A good example of a stack canary that is common and out in the wild is that
+which GCC provides, the Stack Protector. This GCC feature can build canaries
+and their corresponding validity check into programs via the command-line
+argument <tt  >-fstack-protector</tt>. This argument guards
+only certain functions, and
+if <tt  >-Wstack-protector</tt> also is passed as an argument to GCC, those functions
+not guarded will be noted by a compiler warning. To enable the Stack Protector
+on all functions, the argument <tt  >-fstack-protector-all</tt> can be passed. The
+concept
+of this feature is pretty simple. Upon function prologue, a value is placed on
+the stack, and
+upon prologue epilogue, just before the return point, the canary value is
+checked to see if it has been corrupted/changed. So, let's peek at what this
+little sacrificial beast looks like. The following is the stack frame (as GDB
+output) for the &ldquo;foo&rdquo; function when compiled with GCC as:
+
+<pre     class="programlisting">
+
+'gcc -g3 test.c -fstack-protector-all'
+0x0000000000400514 &lt;+0&gt;:  push   %rbp
+0x0000000000400515 &lt;+1&gt;:  mov    %rsp,%rbp
+0x0000000000400518 &lt;+4&gt;:  sub    $0x20,%rsp
+0x000000000040051c &lt;+8&gt;:  mov    %edi,-0x14(%rbp)
+0x000000000040051f &lt;+11&gt;: mov    %esi,-0x18(%rbp)
+0x0000000000400522 &lt;+14&gt;: mov    %fs:0x28,%rax
+0x000000000040052b &lt;+23&gt;: mov    %rax,-0x8(%rbp)
+0x000000000040052f &lt;+27&gt;: xor    %eax,%eax
+
+</pre>
+</p><p>
+Upon function prologue, the stack frame is set up as normal; however, the
+stack is increased by 0x20 (32bytes) instead of 24. This is enough stack space
+to hold four one-word values (the local versions of x, y, z and a stack canary).
+Of course, the neat thing about canaries is how the value is chosen. What does
+the GCC species of canary look like? Well, this critter is generated at offset
++14 and +23 in the function. The word of data located at 0x28 (byte 40) from
+the start of the <tt  >fs</tt> (an extra segment) of memory is snagged and copied into
+the
+<tt  >rax</tt> register. The FS segment is an additional x86 register used for XXXX.
+This
+canary value is stored 8 bytes from the base of the stack and will be verified
+that it has not been changed just before the function returns.
+</p><p>
+Before control is returned to the caller and the stack frame popped, the
+additional code injected by GCC for stack protection, the actual safety
+canary mechanism, must be executed to check for any stack corruption. The
+assembly dump for the case above in the epilogue of foo
+looks like this:
+
+
+
+<pre     class="programlisting">
+
+0x0000000000400589 &lt;+58&gt;: mov    -0x8(%rbp),%rdx
+0x000000000040058d &lt;+62&gt;: xor    %fs:0x28,%rdx
+0x0000000000400596 &lt;+71&gt;: je     0x40059d &lt;foo+78&gt;
+0x0000000000400598 &lt;+73&gt;: callq  0x400410 &lt;__stack_chk_fail@plt&gt;
+0x000000000040059d &lt;+78&gt;: leaveq 
+0x000000000040059e &lt;+79&gt;: retq   
+
+</pre>
+</p><p>
+As the stack canary was created in the function prologue, the function epilogue
+essentially operates in reverse, by pulling the canary off the stack and then
+comparing it to what is 40 bytes from the start of the FS segment. If the
+values are equal, the canary is unchanged, and the function returns as normal.
+If the canary differs from where the value the canary was created from, 
+<tt  >__stack_chk_fail</tt> is called, and the program terminates with an error message:
+
+
+<pre     class="programlisting">
+*** buffer overflow detected ***: ./test terminated
+</pre>
+</p><p>
+The <tt  >leaveq</tt> instruction cleans up the stack, performing an addition on the base
+pointer restoring it to before we increased the stack size (via the subtraction
+operation at the &lt;+4&gt; offset listed above). <tt  >retq</tt> then pops the next value off
+the stack (the return address from the caller) and then jumps to that address.
+</p><p>
+Of course, the main issue with stack canaries is that they are not zero-sum when it
+comes to efficiency. While the above canary is relatively cheap on processing,
+it still adds a few instructions. Further, this also increases the code size of
+the binary&mdash;albeit, it's a very small addition, but I felt such
+&ldquo;negative&rdquo; properties
+of canaries deserve some mention. The other issue with canaries is that they
+are not 100% effective. If malware authors know what the value of the canary
+being used in the program will be, they can craft their malware in just the
+right fashion so that their code overrides the stack, but where the canary value
+is, they copy the same canary value the program expects. This is not
+necessarily an easy task to accomplish, but it is not impossible.
+Nonetheless, stack canaries still are useful for mere corruption detection and
+malware detection. Fly on good buddy, flap hard and true.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x122f580.0x131f608"></a>
+Birds of Another Feather</h2></div></div><p>
+So, where do we go from here? Well, I decided to write my own family of stack
+canaries that operate in a slightly different manner&mdash;the idea being to have
+different canaries inserted into the functions of the program, somewhat of a
+compile-time metamorphic effort. Further, I also wanted to create a species of
+canary, a metamorphic canary, that changes each time a function is called. This
+new breed is called SatanicCanary and is available as a GCC plugin, specifically
+for x86 64-bit architectures (<a href="https://github.com/enferex/sataniccanary" target="_self">https://github.com/enferex/sataniccanary</a>).
+</p><p>
+To become fertile and produce my own flavor of canaries, I decided to create a GCC
+plugin. The plugin operates toward the end of compilation during the RTL
+(register transfer language) passes (<a href="http://gcc.gnu.org/onlinedocs/gccint" target="_self">gcc.gnu.org/onlinedocs/gccint</a>). RTL is GCC's somewhat
+architecture-independent representation of a machine. RTL code is driven against a machine
+description (md) for each platform (such as ARM, x86 or MIPS). The RTL code must
+match a template in the machine description for the platform being compiled. If
+there is no match for the RTL code in the template, the architecture will
+not produce the proper code for the RTL, and GCC will leave you with an error.
+</p><p>
+Now, SatanicCanary is pretty simple as a GCC RTL plugin. The main execution
+function is called after the
+<tt  >pro_and_epilogue</tt> RTL pass. From that
+point, the plugin can look at each RTL expression that makes up the function. I
+insert
+the canary in the prologue, and I check the canary in the epilogue portion of the
+function. It's pretty simple. The most useful snippet of code from the
+SatanicCanary plugin is summarized below and shows the detection routine used to
+handle inserting and checking the canary values:
+
+
+<pre     class="programlisting">
+
+for (insn=get_insns(); insn; insn=NEXT_INSN(insn))
+  if (NOTE_P(insn) &amp;&amp; (NOTE_KIND(insn) == NOTE_INSN_PROLOGUE_END))
+    insert_canary();
+  else if (NOTE_P(insn) &amp;&amp; NOTE_KIND(insn) == NOTE_INSN_EPILOGUE_BEG)
+    insert_canary_check();
+
+</pre>
+</p><p>
+This is a summary of what you will find in the Git repository in the main
+execution routine of the plugin. As stated, we iterate through each RTL
+expression (insn) and check to see if there is a NOTE rtl expression. Notes do
+not get compiled into the binary, but are just metadata used during compilation.
+We look for the prologue end and epilogue begin notes and insert our canary data
+as necessary. 
+</p><p>
+SatanicCanary provides three canaries so far, the first (basic_canary) is just
+your typical random number inserted at compile time. Therefore, each function
+can have a different canary value and would require the malware author to be
+lucky or to know beforehand what the canary value is. Such data is not secret,
+as you can disassemble the binary to find it by looking at the canary check
+code just before each function returns. This does mean that each compilation of
+the same binary will change, because the random numbers will (should) be different
+each compile.
+</p><p>
+The second canary created was more or less something I was playing with,
+and it is
+disabled because it is totally insecure. This canary (tsc_canary) uses the
+timestamp counter (TSC) value from the processor as the canary value. This will
+change each time the function is called. So malware authors must be really
+lucky if they want to kill this canary...right? Well, no. The check routine,
+which occurs at the epilogue phase, must know this same value. By the time
+the epilogue occurs, the TSC will have elapsed a few cycles or more. To get the
+epilogue to compare the canary TSC value, it must have the same TSC to compare
+against. Well, my solution was poor. I just called the TSC (rdtsc) instruction
+and popped the low 32 bits of it onto the stack twice, figuring that the low
+32 bits would change more frequently than the higher bits. This was just
+blatantly stupid, and even the most amateur malware writers can defeat this
+canary. Recall that I said we pushed the TSC low 32 bits twice on the
+stack: once was
+the canary value, and the second push was for the epilogue to check the canary
+value against. To defeat this canary, just copy a string of all the same value
+across the stack, and both the canary and its check will pass the comparison in
+the epilogue (as long as they have the same data). This is merely an
+anecdote to say that if you do place your canary check value on the stack,
+encode it in some obscure way to prevent malware from easily compromising its
+integrity. Oh, and there is a better way of doing this canary, but the
+anecdote of the method I mentioned is important.
+</p><p>
+The third canary provided by SatanicCanary is the TSC canary, but the TSC is
+XOR'd against read-only data (tscdata_canary). Because the read-only data cannot be
+modified by the process, without issuing a segmentation fault, we encode our TSC
+against whatever data is in the code segment of the binary. In this case, we do
+store the canary (TSC value) and the check (TSC xor DATA) on the stack. Now the
+TSC and TSC-xor-DATA are two different values. Yes, I just went against what I
+said, and I placed a canary-check value on the stack. But it is encoded, so it
+differs from the canary value; thus, a simple stack overwrite will be defeated.
+This is what I would like to call a polymorphic stack canary. It changes each
+time the function is called and is also encoded against data that cannot be
+physically modified by the process (read-only). It does require a few ops: the
+encoding of TSC-xor-DATA and the check that just xors the TSC-xor-DATA and
+DATA. This should produce the TSC original canary value.
+</p><p>
+SatanicCanary is just a proof of concept. Work can be done to optimize it, such
+as not protecting functions that do not need to be protected, like those that
+do not manipulate user input.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x122f580.0x131fb30"></a>
+Conclusion</h2></div></div><p>
+I hope this expos&eacute; into the world of stack canaries was useful. I must
+say that I did not by any means exhaust this area of research. I owe a lot of
+kudos to the grsecurity and PaX teams for their GCC plugin for hardening the
+Linux kernel. They also provide their own species of canary/cookie
+(<a href="http://grsecurity.net" target="_self">grsecurity.net</a> and <a href="http://pax.grsecurity.net" target="_self">pax.grsecurity.net</a>).
+The beauty of canaries is that they can be as wicked and creative as you want, but
+remember this is just one means of stack protection. Non-executable stacks can
+get around the malware execution from stack problem; however, just because a
+stack is not executable does not mean it cannot get corrupted. Canaries help to
+detect both corruption and potential malware attempts at compromise. So go
+forthwith my faithful canary-loving friends, and sacrifice your sanity in the name
+of binary integrity.
+</p></div></div>
+<div class="authorblurb"><p>
+Matt Davis is a software engineer on leave from his job in the US to
+pursue a PhD from the computer science department at the University of
+Melbourne, where he is focusing his hackery toward the compiler field.
+He has been involved in both the fields of modeling and simulation,
+as well as kernel-level high-precision timing. His interests include
+coding, compilers, kernels, listening to obnoxious music, consuming
+vast quantities of coffee and being social with wulfpax and 757.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../222/toc222.html">Issue Table of Contents</a>
+    <a class="link3" href="../222/11306.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

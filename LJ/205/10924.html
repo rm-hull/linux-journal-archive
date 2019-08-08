@@ -1,0 +1,751 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Security Monitoring and Enforcement with Cfengine 3
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Cfengine is well known as a powerful system configuration management&#10;tool, but did you know you also can use it to secure your systems?&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1166580.0x125dac0"></a>
+Security Monitoring and Enforcement with Cfengine 3
+</h1></div><div><div class="author"><h3 class="author">
+Aleksey
+ 
+Tsalolikhin
+</h3></div><div class="issuemoyr">Issue #205, May 2011</div></div><div><p>
+Cfengine is well known as a powerful system configuration management
+tool, but did you know you also can use it to secure your systems?
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x125e2a8"></a></h2></div></div><p>
+Cfengine, from the start, has had security as a key part of
+its design and use scenarios. Here, I demonstrate how
+Cfengine 3 can be used to increase the security of a Linux
+system by monitoring file checksums, monitoring filesystems
+for suspicious filenames, monitoring running processes,
+monitoring open ports and managing sshd.conf.
+</p><p>
+Because Cfengine 3 is under active development, I suggest 
+you install the latest version from the Cfengine Source
+Archive (see Resources).
+</p><p>
+The purpose of this article is to give practical examples
+of how you can use Cfengine to increase security
+on a Linux system. See the Quick Start Guide in the Resources
+section of this article for help in learning the Cfengine
+language. (I don't provide a tutorial on the Cfengine
+language here.)
+This article is based on Cfengine version 3.1.5a1.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x125e510"></a>
+Monitoring File Checksums</h2></div></div><p>
+Cfengine 3.1.4 shipped with 214 unit tests that can 
+double as examples of Cfengine's functionality.
+They are installed to /usr/local/share/doc/cfengine/.
+I've adopted unit_change_detect.cf into detect_changes_in_etc.cf (Listing
+1).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x125e618"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 1. detect_changes_in_etc.cf</b></p><pre     class="programlisting">
+# GNU GPL 3
+
+###################################################
+#
+# Change detect
+#
+###################################################
+
+body common control
+
+{
+bundlesequence  =&gt; { "detect_changes_in_etc"  };
+}
+
+###################################################
+
+bundle agent detect_changes_in_etc
+
+{
+files:
+
+  "/etc"
+
+   changes      =&gt; detect_all_change,
+   depth_search =&gt; recurse("inf");
+}
+
+###################################################
+
+body changes detect_all_change
+
+{
+report_changes =&gt; "all";
+update_hashes  =&gt; "true";
+}
+
+###################################################
+
+body depth_search recurse(d)
+
+{
+depth        =&gt; "$(d)";
+}
+</pre></div><p>
+Run this with:
+
+<pre     class="programlisting">
+cf-agent -KIf detect_changes_in_etc.cf
+</pre>
+</p><p>
+cf-agent is the component of Cfengine that actually
+makes changes to the system. (There are other components
+to serve files, monitor system activity and so on.
+cf-agent is the piece that makes changes to the system,
+and the one you'd use to start learning Cfengine.) In the command above:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+-K &mdash; tells cf-agent to ignore time-based locks and allows you
+to run cf-agent repeatedly (no &ldquo;cool-off&rdquo; period, which
+might otherwise kick in to prevent system overload).
+</p></li><li><p>
+-I &mdash; tells cf-agent to inform you of its actions and any changes
+made to the system.
+</p></li><li><p>
+-f &mdash; specifies the policy filename.
+</p></li></ul></div><p>
+On the first pass, cf-agent builds a file information
+database containing file timestamps and inode numbers and
+builds an MD5 hash for each file. You should see
+something like this:
+
+<pre     class="programlisting">
+# cf-agent -KIf detect_changes_in_etc.cf
+  !! File /etc/hosts.allow was not in MD5
+     database - new file found 
+  I: Made in version 'not specified' of
+     'detect_changes_in_etc.cf' near line 22
+  ...
+#
+</pre>
+</p><p>
+There are two messages here, alert and info.
+</p><p>
+Cfengine prefixes its output to help you understand
+what kind of output it is (in other words, metadata): 
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Informational messages start with &ldquo;I&rdquo;.
+</p></li><li><p>
+Reports start with &ldquo;R&rdquo;.
+</p></li><li><p>
+Alerts start with !! or ALERT.
+</p></li><li><p>
+Notice of changes to the system starts with -&gt;.
+</p></li></ul></div><p>
+In the above case, the alert message is accompanied
+with an info message about the policy that was in 
+effect when the alert was produced, its version
+number (if supplied) and the line number.
+</p><p>
+I didn't specify the version number, but the line
+number is useful. Line 22 is:
+
+<pre     class="programlisting">
+changes      =&gt; detect_all_change,
+</pre>
+</p><p>
+This is the line responsible for Cfengine adding
+/etc/passwd to the MD5 database. It tells Cfengine
+what to do about changes&mdash;to detect them.
+</p><p>
+Now, I run cf-agent again, and it runs quietly. The contents
+of /etc match the MD5 sum database:
+
+<pre     class="programlisting">
+# cf-agent -KIf detect_changes_in_etc.cf
+# 
+</pre>
+</p><p>
+Next, I edit /etc/hosts.allow to add &ldquo;sshd: ALL&rdquo;
+to simulate an unauthorized change.
+Watch cf-agent scream:
+
+<pre     class="programlisting">
+# cf-agent -KIf detect_changes_in_etc.cf
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ALERT: Hash (MD5) for /etc/hosts.allow changed!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ -&gt; Updating hash for /etc/hosts.allow to
+MD5=2637c1edeb55081b330a1829b4b98c45
+I: Made in version 'not specified' of
+'./detect_changes_in_etc.cf' near line 22
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ALERT: inode for /etc/hosts.allow changed
+38901878 -&gt; 38901854
+ALERT: Last modified time for /etc/hosts.allow
+changed Sat Jan 29 17:09:26
+2011 -&gt; Mon Jan 31 08:00:02 2011
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# 
+</pre>
+</p><p>
+There are three alerts:
+</p><div class="orderedlist"><ol type="1"><li><p>
+MD5 hash changed (because the contents changed).
+</p></li><li><p>
+The inode number changed (when vi saved the file).
+</p></li><li><p>
+The modification time changed (when vi saved the file).
+</p></li></ol></div><p>
+Reminder: messages about actions that Cfengine takes are
+prefixed with &ldquo;-&gt;&rdquo;:
+
+
+<pre     class="programlisting">
+ -&gt; Updating hash for /etc/hosts.allow to
+MD5=2637c1edeb55081b330a1829b4b98c45
+</pre>
+</p><p>
+You can set up Cfengine to complain via e-mail or syslog,
+so even if the intruder tampers with the MD5 database, the
+alarm will sound. In commercial versions of
+Cfengine (Nova), you can set up multiple Cfengine nodes
+to share their MD5 databases and monitor and cross-check
+each other.
+</p><p>
+You can run this check fairly often&mdash;every five minutes, if you
+like and if your hardware will sustain it. (Computing lots of
+MD5 sums can be expensive on CPU and disk I/O.) Is the
+added security worth it to you?
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x125f958"></a>
+Monitoring for Suspicious Filenames</h2></div></div><p>
+Cfengine has a special cf-agent control variable called
+<tt  >suspiciousnames</tt>. You can put a list of names
+into it
+to warn about during any file search (such as was done
+during the MD5 hash check). If Cfengine sees these
+names during recursive (depth) file searches, it will
+warn about them. If <tt  >suspiciousnames</tt> is not set,
+cf-agent won't check for them. It's not set by default.
+</p><p>
+Let me demonstrate how this works by adding the following
+control block to detect_changes_in_etc.cf:
+
+<pre     class="programlisting">
+body agent control
+{
+suspiciousnames =&gt; { ".mo", "lrk3", "rootkit" };
+}
+</pre>
+</p><p>
+A cf-agent control block controls the behavior of cf-agent.
+This is where you can set things like dry-run mode
+(don't change anything but report only on what changes would
+have been made&mdash;useful for learning Cfengine), the largest
+file size Cfengine will edit and so on. So the
+<tt  >suspiciousnames</tt>
+variable is set in the agent control block. It's an array
+of strings.
+</p><p>
+Let's create a suspiciously named file to see cf-agent
+get excited:
+
+<pre     class="programlisting">
+# date &gt; /etc/rootkit
+# cf-agent -IKf detect_changes_in_etc.cf
+Suspicious file rootkit found in /etc
+#
+</pre>
+</p><p>
+So, if you're scanning your system directories for an MD5
+hash check, you can add the suspicious name check too.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x1657fc8"></a>
+Monitoring Running Processes</h2></div></div><p>
+I follow the best practice of securing servers by
+disabling unnecessary services. I often want to make
+sure my Web servers are not running CUPS&mdash;usually,
+a Web server does not need to print!
+</p><p>
+The example shown in Listing 2 is based on the Cfengine
+unit test unit_process_kill.cf.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x1658180"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. cups_not_running.cf</b></p><pre     class="programlisting">
+body common control
+
+{
+bundlesequence  =&gt; { "cups_not_running"  };
+}
+
+
+########################################
+
+
+bundle agent cups_not_running {
+
+
+    processes:
+
+            "cupsd"  signals =&gt; { "term", "kill" };
+
+}
+</pre></div><p>
+The line of interest in Listing 2 is:
+
+<pre     class="programlisting">
+processes: "cupsd"  signals =&gt; { "term", "kill" };
+</pre>
+</p><p>
+This means if there is an entry in the process table matching
+&ldquo;cupsd&rdquo;, that process will be sent TERM and then KILL
+signals:
+
+
+<pre     class="programlisting">
+# cf-agent -IKf cups_not_running.cf
+ -&gt; Signalled 'term' (15) to observed process match '28140'
+ -&gt; Signalled 'kill' (9) to observed process match '28140'
+#
+</pre>
+</p><p>
+But, let's not be so brutal. Cfengine can report suspicious process
+names. You can keep an eye out for password sniffers, crackers, IRC bots
+and so on with the policy shown in Listing 3.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x16585f8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. report_suspicious_process_names.cf</b></p><pre     class="programlisting">
+body common control
+
+{
+bundlesequence  =&gt;
+            { "report_suspicious_process_names"  };
+}
+
+###################################################
+
+bundle agent report_suspicious_process_names
+
+{
+
+vars:
+
+  "suspicious_process_names" slist =&gt;
+      {
+          "sniff",
+          "eggdrop",
+          "r00t",
+          "^\./",
+          "john",
+          "crack"
+      };
+
+
+processes:
+
+ ".*"
+
+    process_select  =&gt;
+      proc_finder("$(suspicious_process_names)");
+}
+
+
+###################################################
+
+body process_select proc_finder(pattern)
+
+{
+     command =&gt; ".*$(pattern).*";
+
+     process_result =&gt; "command";
+}
+</pre></div><p>
+The key line here is:
+
+<pre     class="programlisting">
+vars: "suspicious_process_names" slist =&gt; { "sniff",
+    "eggdrop", "r00t", "^\./", "john", "crack" };
+</pre>
+</p><p>
+A variable called &ldquo;suspicious_process_names&rdquo; is a list
+of strings; what we deem as suspicious process names
+includes, let's say, any processes starting with ./.
+As you can see, this list can include regular expressions.
+Cfengine uses Perl-compatible regular expressions.
+</p><p>
+You can set the contents of this array to reflect what
+you consider suspicious process names.
+Then, Cfengine scans the entire process table (that's the
+<tt  >processes: .*</tt>)
+and loops over the contents of the &ldquo;suspicious_process_names&rdquo; array.
+Cfengine has implicit looping over arrays, so if you have an array
+@{suspicious_process_names} and you reference ${suspicious_process_names},
+you're actually saying:
+
+
+<pre     class="programlisting">
+for ${suspicious_process_names} in (@{suspicious_process_names}
+do
+  ...
+done
+</pre>
+</p><p>
+That's what happens when you say <tt  >process_select  =&gt;
+proc_finder("$(suspicious_process_names)");</tt> You're actually saying,
+for each element in @(suspicious_process_names), find processes that
+match that regex.
+</p><p>
+Anyway, I want this to be a security demonstration rather than a language
+primer, so let's continue:
+
+<pre     class="programlisting">
+# cf-agent -IKf report_suspicious_process_names.cf
+ !! Matched: root     20044 20002 20044  0.0  0.0  
+    4956  19   664    1 22:05 00:00:00 ./eggdrop 
+#
+</pre>
+</p><p>
+The first numeric field (20044) is the PID. The last field is the process
+name. (Why is there an IRC bot on my Web server?)
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x1658cd8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Case Study</b></p><p>
+In 2000, David Ressman and John Valdes of University of Chicago reported
+in a LISA paper &ldquo;Use of Cfengine for Automated, Multi-Platform Software and
+Patch Distribution&rdquo; how they detected a cracker using similar functionality
+in Cfengine 2:
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+Since the people who break into our systems almost exclusively use the
+compromised systems to run sniffers, IRC bots, or DoS tools, we decided to
+make up a list of suspicious process names to have Cfengine look for and warn
+us about every time it ran. Besides the usual suspects (more than one running
+copy of inetd, anything with &ldquo;sniff&rdquo;, &ldquo;r00t&rdquo;,
+&ldquo;eggdrop&rdquo;, etc., in the
+process name, password crackers, etc.), we had Cfengine watch for any process
+with &ldquo;./&rdquo; in the process name.
+</p><p>
+One afternoon, we got an e-mail from Cfengine on one of our computers that had
+noticed that the regular user of that machine was running a program as
+&ldquo;./irc&rdquo;. It wasn't uncommon to see our users using
+&ldquo;./&rdquo; to run programs,
+nor do we have objections to our users running IRC, but in this case, it was a
+bit unusual for this particular user to be running an irc process (good UNIX
+system administration practice also dictates that you know your users).
+</p><p>
+Poking around the system, we discovered that the person running this program
+was not the regular user of the machine, but was someone who had evidently
+sniffed our user's password from somewhere else and remotely logged in to his
+system just minutes before Cfengine had alerted us. This person was in the
+process of setting up an IRC bot and had not yet tried to get a root shell. 
+</p></blockquote></div><p>
+You can add to your defense-in-depth by monitoring for suspicious process
+names.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x1659308"></a>
+Monitoring Open Ports</h2></div></div><p>
+You can increase your security situational awareness by knowing
+on what ports your server is listening. Intruders may install an FTP server
+to host warez or install an IRC server for bot command and control.
+Either way, your server's TCP profile has changed (increased) in
+terms of on what TCP ports it listens.
+</p><p>
+By constantly comparing desired and actual open TCP ports, Cfengine
+quickly can detect an intrusion. Cfengine 3 runs every five minutes
+by default, so it can detect a compromise pretty fast.
+</p><p>
+The code example shown in Listing 4 starts with hard-coded lists of what
+TCP ports and corresponding process names are expected on the system:
+<tt  >22 sshd 80 httpd 443 httpd 5308 cf-server</tt>. It then
+uses <tt  >lsof</tt> to
+get the actual list of TCP ports and process names, compare them
+and report <tt  >DANGER</tt> if the comparison fails.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x1659620"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. check_listening_ports.cf</b></p><pre     class="programlisting">
+body common control
+
+{
+bundlesequence  =&gt; { "check_listening_ports"  };
+inputs  =&gt; { "Cfengine_stdlib.cf"  };
+}
+
+bundle agent check_listening_ports
+{
+vars:
+"listening_ports_and_processes_ideal_scene"
+string =&gt;
+"22 sshd 80 httpd 443 httpd 5308 cf-server"; 
+# this is our expected configuration
+
+vars:
+"listening_ports_and_processes" string =&gt;
+execresult("/usr/sbin/lsof -i -n -P | \
+/bin/grep LISTEN | \
+/bin/sed -e 's#*:##' | \
+/bin/grep -v 127.0.0.1 | \
+/bin/grep -v ::1 | \
+/bin/awk '{print $8,$1}' | \
+/bin/sort | \
+/usr/bin/uniq | \
+/bin/sort -n | \
+/usr/bin/xargs echo", "useshell"); # actual config.
+# tell Cfengine to use a shell with "useshell"
+# to do a command pipeline.
+
+classes:
+"reality_does_not_match_ideal_scene" not =&gt;
+  regcmp (
+      "$(listening_ports_and_processes)",
+      "$(listening_ports_and_processes_ideal_scene)"
+  );  # check whether expected config matches actual
+
+reports:
+  reality_does_not_match_ideal_scene::
+"
+DANGER!
+DANGER! Expected open ports and processes:
+DANGER! $(listening_ports_and_processes_ideal_scene)
+DANGER!
+DANGER! Actual open ports and processes:
+DANGER! $(listening_ports_and_processes)
+DANGER!
+";  # and yell loudly if it does not match. 
+    # Note:  A "commands" promise could be used in
+    # addition to "reports" to send a text message
+    # to a sysadmin cell phone or to feed 
+    # CRITICAL status to a monitoring system.
+}
+</pre></div><p>
+Here's an example run:
+
+
+<pre     class="programlisting">
+# cf-agent -IKf ./check_listening_ports.cf
+R:
+DANGER!
+DANGER! Expected open ports and processes:
+DANGER! 22 sshd 80 httpd 443 httpd 5308 cf-server
+DANGER!
+DANGER! Actual open ports and processes:
+DANGER! 22 sshd 80 httpd 443 httpd 3306 mysqld 5308 cf-server
+DANGER!!!
+#
+</pre>
+</p><p>
+Again, this is a security demonstration, not a language primer,
+but if you want to understand the policy, follow the Quick Start
+Guide for Cfengine. If you need any help understanding
+this policy, come to the help-cfengine mailing list or ask me directly
+at <a href="mailto:aleksey@verticalsysadmin.com">aleksey@verticalsysadmin.com</a>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x16599e8"></a>
+Managing sshd.conf</h2></div></div><p>
+The next example is Diego Zamboni's Cfengine bundle for editing
+the sshd configuration file and restarting sshd if any changes were 
+made.
+It has two parts (to abstract the under-the-hood details).
+In the first part, the sysadmin edits the sshd array to set
+variables corresponding to the sshd configuration parameters.
+For example, to mandate Protocol 2 of SSH, set:
+
+<pre     class="programlisting">
+"sshd[Protocol]" string =&gt; "2";
+</pre>
+</p><p>
+If the parameter is commented out, Cfengine uncomments it and
+sets it to the desired value.
+If the parameter is absent, Cfengine adds it and sets it to the 
+desired value.
+Additionally, if any changes were made to sshd_config, sshd
+restarts to activate the change.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x1659bf8"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 5. use_edit_sshd.cf</b></p><pre     class="programlisting">
+bundle agent configfiles
+{
+vars:
+  "sshdconfig" string =&gt; "/etc/ssh/sshd_config";
+
+  # SSHD configuration to set
+  "sshd[Protocol]" string =&gt; "2";
+  "sshd[X11Forwarding]" string =&gt; "yes";
+  "sshd[UseDNS]" string =&gt; "no";
+
+methods:
+  "sshd" usebundle =&gt; edit_sshd("$(sshdconfig)", "configfiles.sshd");
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x1659e08"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 6. edit_sshd.cf</b></p><pre     class="programlisting">
+# Parameters are:
+# file: file to edit
+# params: an array indexed by parameter name, containing 
+# the corresponding values. For example:
+# "sshd[Protocol]" string =&gt; "2";
+# "sshd[X11Forwarding]" string =&gt; "yes";
+# "sshd[UseDNS]" string =&gt; "no";
+# Diego Zamboni, November 2010
+bundle agent edit_sshd(file,params)
+{
+files:
+  "$(file)"
+  handle =&gt; "edit_sshd",
+  comment =&gt; "Set desired sshd_config parameters",
+  edit_line =&gt; set_config_values("$(params)"),
+  classes =&gt; if_repaired("restart_sshd");
+
+# set_config_values is a bundle Diego wrote based on 
+# set_variable_values from Cfengine_stdlib.cf.
+
+commands:
+  restart_sshd.!no_restarts::
+    "/etc/init.d/sshd restart"
+    handle =&gt; "sshd_restart",
+    comment =&gt; "Restart sshd if the configuration file was modified";
+}
+
+bundle edit_line set_config_values(v)
+
+ # Sets the RHS of configuration items in the file of the form
+ # LHS RHS
+ # If the line is commented out with #, it gets uncommented first.
+ # Adds a new line if none exists.
+ # The argument is an associative array containing v[LHS]="rhs"
+ 
+ # Based on set_variable_values from Cfengine_stdlib.cf, modified to
+ # use whitespace as separator, and to handle commented-out lines.
+ 
+{
+vars:
+  "index" slist =&gt; getindices("$(v)");
+
+  # Be careful if the index string contains funny chars
+  "cindex[$(index)]" string =&gt; canonify("$(index)");
+
+field_edits:
+
+  # If the line is there, but commented out, first uncomment it
+  "#+$(index)\s+.*"
+     edit_field =&gt; col("\s+","1","$(index)","set");
+
+  # match a line starting like the key something
+  "$(index)\s+.*"
+     edit_field =&gt; col("\s+","2","$($(v)[$(index)])","set"),
+        classes =&gt; if_ok("not_$(cindex[$(index)])");
+
+insert_lines:
+
+  "$(index) $($(v)[$(index)])",
+      ifvarclass =&gt; "!not_$(cindex[$(index)])";
+}
+</pre></div><p>
+For an example of changes made, run <tt  >diff</tt> of sshd_config before and after
+Cfengine edited it to set Protocol, X11Forwarding and UseDNS:
+
+
+<pre     class="programlisting">
+
+# diff /etc/ssh/sshd_config /etc/ssh/sshd_config.cf-before-edit
+14c14
+&lt; #Protocol 2,1
+---
+&gt; Protocol 2
+95,96c95,96
+&lt; #X11Forwarding no
+&lt; X11Forwarding no
+---
+&gt; X11Forwarding yes
+&gt; X11Forwarding yes
+109c109
+&lt; #UseDNS yes
+---
+&gt; UseDNS no
+#
+
+</pre>
+</p><p>
+You may notice X11Forwarding is there twice after the edit, 
+because it was in the file twice before the edit, once 
+commented and once uncommented. But, this does not break
+things. Having <tt  >X11Forwarding yes</tt> is valid syntax, and
+the <tt  >/usr/sbin/sshd -t</tt> syntax checker does not complain.
+</p><p>
+You also may notice that cf-agent saved a copy of the original file,
+just in case.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x17e7858"></a>
+Learning More</h2></div></div><p>
+Download the source and follow the Recommended Reading
+on the Quick Start Guide site.
+Also, please visit us on the help-cfengine mailing list to
+share your ideas on automating security with Cfengine.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1166580.0x17e7960"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Cfengine Source Archive: <a href="http://www.cfengine.org/pages/source_code" target="_self">www.cfengine.org/pages/source_code</a>
+</p><p>
+Quick Start Guide: <a href="http://www.cfengine.org/pages/getting_started" target="_self">www.cfengine.org/pages/getting_started</a>
+</p><p>
+&ldquo;Automating Security with GNU
+Cfengine&rdquo;, Kirk Bauer, February 5, 2004 (although based on Cfengine 2,
+the article gives an excellent overview of Cfengine's philosophy and
+power): <a href="http://www.linuxjournal.com/article/6848" target="_self">www.linuxjournal.com/article/6848</a>
+</p><p>
+Diego Zamboni's Cfengine Bundle for Editing
+the sshd Configuration File and Restarting sshd If Needed: <a href="https://gist.github.com/714948" target="_self">https://gist.github.com/714948</a>
+</p><p>Download the Cfengine Policies Used in This Article:
+<a href="http://www.verticalsysadmin.com/cfengine/LJ-May-2011" target="_self">www.verticalsysadmin.com/cfengine/LJ-May-2011</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Aleksey Tsalolikhin has been a UNIX systems administrator for 13
+years,
+including seven at EarthLink. Wrangling EarthLink's server farms by
+hand, he developed an abiding interest in automating server
+configuration management. Aleksey taught &ldquo;Introduction to Automating
+System Administration with Cfengine 3&rdquo; at Ohio Linux Fest 2010 and
+Southern California Linux Expo 2011 as an instructor from the League
+of Professional System Administrators.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../205/toc205.html">Issue Table of Contents</a>
+    <a class="link3" href="../205/10924.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

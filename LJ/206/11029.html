@@ -1,0 +1,510 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Paranoid Penguin</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Configure your DNS server to check zone signatures using DNSSEC.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2696580.0x278dac0"></a>Paranoid Penguin</h1></div><div><h3 class="subtitle"><i>
+DNS Cache Poisoning, Part II: DNSSEC Validation
+</i></h3></div><div><div class="author"><h3 class="author">
+Mick
+ 
+Bauer
+</h3></div><div class="issuemoyr">Issue #206, June 2011</div></div><div><p>
+Configure your DNS server to check zone signatures using DNSSEC.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x278e460"></a></h2></div></div><p>
+Last month, I described, in detail, the problem of DNS cache poisoning and
+why it's fundamentally changed our understanding of DNS security. Whereas
+previously it seemed good enough to keep one's DNS server patched
+and limit the hosts for which it performed recursive queries and zone
+transfers, we now have no choice but to pay attention to the authenticity
+of DNS data that our local resolvers and recursing DNS servers receive
+from other servers.
+</p><p>
+This is because the way DNS recursion works makes it too easy for an
+attacker to trigger events that lead directly to that attacker's injecting
+forged DNS data into a recursing server's cache, resulting in
+<span   class="emphasis"><em>all</em></span>
+users who rely on that server being redirected to impostor &ldquo;evil
+twin&rdquo;
+sites for specific e-commerce and on-line banking sites, or malicious,
+malware-spreading Web sites and so forth.
+</p><p>
+I concluded last month by explaining that although the short-term fix to
+Kaminsky's cache-poisoning attack is to patch DNS software so that
+recursing servers randomize their source UDP ports for DNS queries,
+this only makes the attack take longer (albeit, much longer); it
+doesn't eliminate it as a threat. The best protection, rather, is for
+administrators of authoritative DNS servers to sign all their zone data cryptographically, and for administrators of recursing or caching DNS
+servers to configure their servers to check the signatures of
+<span   class="emphasis"><em>all</em></span>
+signed zones they come across.
+</p><p>
+All of this signing/validating functionality is achieved by way of
+DNSSEC, a set of extensions to the DNS protocol. Most modern DNS server
+software packages now support DNSSEC (with djbdns as the most notable
+exception).
+</p><p>
+This month, I explain how to configure your recursing/caching
+DNS server to check DNS zone data signatures. Because the Internet
+Software Consortium's BIND package is by far the most popular DNS
+server application for UNIX and UNIX-like systems, my examples all
+involve BIND.
+</p><p>
+If you administer your own DNS zones, you also should sign your own zones
+and publish your certificates and signatures, but that's out of scope
+for this article. (See Resources for links to other DNSSEC information
+and tutorials. I may cover zone signing and DNSSEC key management in
+a future column as well.)
+</p><p>
+Note that my preferred Linux server distribution nowadays is Ubuntu
+Server 10.10, so my examples all apply directly to Ubuntu and other
+Debian derivatives. If you run some other distribution, my examples
+still should be useful, because the only peculiar thing Ubuntu and Debian
+do in how they package BIND is to break up its configuration file
+(named.conf) into several parts (named.conf.options, named.conf.local
+and named.conf.default-zones) that are read into named.conf via
+&ldquo;include&rdquo;
+statements.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x278e9e0"></a>
+DNSSEC Overview</h2></div></div><p>
+Mainly what I want you to get out of this article is how to enable DNSSEC
+validation on your BIND-based nameserver. I probably could fill most of
+this space with an overview of what DNSSEC is, how it works and so forth,
+but in the interest of conciseness, I give the low-attention-span
+version instead.
+</p><p>
+DNSSEC is a Public Key Infrastructure (PKI) for DNS zone data. When a
+zone administrator digitally signs all of the different types of Resource
+Records (RRs) in a given zone, and publishes those signatures and the
+zone's signing key's public certificate, it then becomes possible for any
+recursing nameserver that makes queries against that zone to validate
+those signatures and, therefore, to have cryptographic proof that the
+answer to a given DNS query hasn't been forged or tampered with.
+</p><p>
+This probably doesn't sound simple to begin with, but in practice,
+it's much more complicated even than that. This is because DNS is both
+hierarchical and distributed, with a &ldquo;root&rdquo; zone at the top and individual
+hostnames and other Resource Records at the bottom. In between are layers
+of zones and subzones.
+</p><p>
+Consider the top-level domain (TLD) .us as an example. It consists of
+more than 50 subzones, each representing a different state or protectorate
+in the United States of America&mdash;for example, mn.us for Minnesota,
+wi.us for Wisconsin and so forth. Within each &ldquo;state&rdquo; subzone there
+can be hundreds of sub-subzones representing cities, counties, state or
+municipal government agencies and so forth. lib.mn.us, for example, is
+used by public libraries in the state of Minnesota, and stpaul.lib.mn.us
+is used by the Saint Paul Public Library system.
+</p><p>
+Suppose I'm the DNS administrator for mycowtown.lib.mn.us, and I sign
+all of the records in that zone and publish the corresponding RRSIG,
+DNSKEY and other related records. How praiseworthy of me!
+</p><p>
+However, if someone tries to resolve names in my domain, for example,
+interwebs.mycowtown.lib.mn.us, they'll speak to as many as
+<span   class="emphasis"><em>four</em></span>
+other nameservers before they make it all the way down the hierarchy
+to my beautiful, signed zone&mdash;that is, the respective authoritative nameservers for &ldquo;.&rdquo; (the root zone), .us, .mn.us and .lib.mn.us. What's to
+stop someone from tampering with the answer to one of those
+<span   class="emphasis"><em>prior</em></span>,
+recursive queries? (Who's authoritative for .us? Who's authoritative
+for .mn.us? Who's authoritative for .lib.mn.us?)
+</p><p>
+Obviously, there has to be a &ldquo;chain of validation&rdquo; all the way from the
+zone I really want to validate (mycowtown.lib.mn.us), all the way up
+to the root domain. As it happens, &ldquo;.&rdquo; root is signed, and I'll show
+you how to download and verify the initial root key shortly. So are
+.us and .mn.us. However, .lib.mn.us isn't yet signed (at the time of this
+writing). Does that mean it's pointless to sign zones below that?
+</p><p>
+Not at all. The Internet Software Consortium, creators and maintainers of
+BIND, maintain a DNS Look-aside Validation (DLV) database of keys for
+zones having precisely this sort of gap in their chains of
+validation. If
+I sign mycowtown.lib.mn.us and register my key-signing key with
+dlv.isc.org, resolving nameservers that are configured to use DLV
+still will be able to construct a complete enough chain of validation
+by seeing that isc.org vouches for the validity of my key-signing key,
+which actually is used to sign the keys (zone-signing keys) with
+which I actually sign zone data.
+</p><p>
+In recent versions of BIND, DNS Look-aside Validation is not only enabled
+by default, but preconfigured as well.
+</p><p>
+There's just one more DNSSEC mechanism I should describe before diving
+in to nameserver configuration, and that's automated key management. I
+alluded to there being two kinds of DNS keys: key-signing keys (KSKs)
+and zone-signing keys (ZSKs). Both types of keys must be regenerated
+periodically&mdash;every few months in the case of ZSKs, with which you
+actually sign zone data (although in my opinion, the need to do so does
+not speak well of how securely PKI is implemented in DNSSEC). Naturally,
+every time you change a KSK or ZSK, you must re-sign your entire zone.
+</p><p>
+Saying that this makes zone-signature management a bit of a headache
+is a gross understatement; however, there are various ways to automate
+this process. Luckily, right now you and I are concerned only with
+validating keys, not maintaining them, and recent versions of BIND 9
+have a mechanism for automatically checking and updating a caching nameserver's cache of DNS keys.
+</p><p>
+This is the managed-keys{} statement in named.conf, which can be used
+in lieu of the static trusted-keys{} definition. When you set up BIND
+with the root zone's signing key, you'll do so using a managed-keys{}
+statement that specifies an &ldquo;initial&rdquo; key that is itself not a KSK or
+ZSK, but is used in a transparent, cryptographic transaction in which
+your nameserver queries a root zone authority for a copy of its current
+public ZSK and caches the answer it receives.
+</p><p>
+But I'm getting a little ahead of myself. Let's set up a caching
+nameserver and then enable DNSSEC validation on it.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x278f220"></a>
+Setting Up a Caching Server</h2></div></div><p>
+If you already have a caching-only nameserver (or a general-purpose
+nameserver that also caches), and you need to know only how to set up
+DNSSEC validation, you can skip ahead to the Setting Up DNSSEC Validation section
+below. In the interest of completeness, however, and for the purpose of
+pointing out a few default settings it's good to change, here's a quick
+procedure on setting one up.
+</p><p>
+First, install whatever (sub-)version of BIND9 your distribution
+supports. At the time of this writing, Ubuntu 10.10 includes BIND version 9.7.1;
+to install it, use this command:
+
+<pre     class="programlisting">
+sudo apt-get install bind9 bind9utils
+</pre>
+</p><p>
+The bind9 package provides BIND 9.7.1 itself in the form of
+the d&aelig;mon named, plus its configuration files, man pages and
+libraries. The bind9utils package provides handy commands, such as
+rndc and named-checkconf, and the DNSSEC commands dnssec-keygen
+and dnssec-signzone. Those last two are used only for creating and
+maintaining actual DNSSEC zone keys and signatures, respectively. You
+won't actually need those if all you're doing with DNSSEC is validating
+signatures from other zones.
+</p><p>
+On Debian and Ubuntu systems, the bind9 package places its configuration
+files in /etc/bind. The files we're concerned with here are
+/etc/bind/named.conf, /etc/bind/named.conf.options and
+/etc/bind/bind.keys.
+</p><p>
+Actually, of those three files, we'll edit only one,
+named.conf.options. I mention the other two in order to point
+out that named.conf uses &ldquo;include&rdquo; statements to pull content from
+/etc/bind/named.conf.options, /etc/bind/named.conf.local (which contains
+your local zone files) and /etc/bind/named.conf.default-zones (which
+contains default zone information for local loopback interfaces).
+</p><p>
+At this point, I have good news for you: your Debian or Ubuntu system's
+named.conf.options file is, technically, already set up to run named as
+a caching-only nameserver. The bad news is, it needs to be tightened up
+a bit before you can consider it to be a <span   class="emphasis"><em>secure</em></span> caching nameserver.
+</p><p>
+Listing 1 shows the default Debian/Ubuntu named.conf.options file (with
+comment lines omitted).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x278f698"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Default Ubuntu/Debian named.conf.options File</b></p><pre     class="programlisting">
+options {
+	directory "/var/cache/bind";
+	auth-nxdomain no;    # conform to RFC1035
+	listen-on-v6 { any; };
+};
+</pre></div><p>
+Listing 2, in contrast, is much more secure.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x278f900"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. named.conf.local</b></p><pre     class="programlisting">
+acl mynetworks { 192.168.100.0/24; 10.10.0.0/16; };
+options {
+        directory "/var/cache/bind";
+        allow-query { mynetworks; };
+        auth-nxdomain no;    # conform to RFC1035
+        listen-on-v6 { none; };
+};
+</pre></div><p>
+Let's discuss why Listing 2 is better. First, I've defined an Access Control
+List (ACL) that specifies two IP networks in &ldquo;CIDR notation&rdquo;.
+Technically,
+this is not an option, but it needs to be loaded before any option
+statements, so it needs to go either here or in named.conf prior to
+this line:
+
+<pre     class="programlisting">
+include "/etc/bind/named.conf.options";
+</pre>
+</p><p>
+In and of itself, this acl doesn't do anything. But once it's defined,
+I can create an &ldquo;allow-query&rdquo; option that refers to it, and as you can
+see in Listing 2, that's exactly what I've done. Obviously, in adapting this
+file for your own use, you should replace the list in my acl statement
+(&ldquo;192.168.100.0/24; 10.10.0.0/16;&rdquo;) with a list of your organization's
+local IP subnets.
+</p><p>
+The other security tweak I've made is to change the value for the
+&ldquo;listen-on-v6&rdquo; option from &ldquo;any&rdquo; to
+&ldquo;none&rdquo;. Because none of my local
+subnets use IPv6, there's no reason to listen on any local IPv6
+interfaces. Technically, this shouldn't matter if I don't even
+<span   class="emphasis"><em>have</em></span>
+any IPv6 interface attached to my server and if I've set an acl and
+specified it in an allow-query statement. So, maybe I'm just being
+paranoid by turning off IPv6 altogether here, but turning off unused
+features is nearly always a good thing to do.
+</p><p>
+Once you've edited and saved your /etc/bind/named.conf.options file,
+you can check your work by running the <tt  >named-checkconf</tt> command with
+no arguments, like so:
+
+<pre     class="programlisting">
+bash-$ sudo named-checkconf
+</pre>
+</p><p>
+Assuming that doesn't return any configuration errors (I have a tendency
+to misplace or omit semicolons, myself), you then can make your running
+named process reload its configuration and zone files using the rndc
+command, like this:
+
+<pre     class="programlisting">
+bash-$ sudo rndc reload
+</pre>
+</p><p>
+Now, you can test your server by logging on to some other host on your
+network and running a <tt  >dig</tt> query or two against it. For example, if
+my caching nameserver's IP address is 192.168.100.253, I can have it
+look up DNS information for www.linuxjournal.com like so:
+
+<pre     class="programlisting">
+mick@someotherhost:/home/mick$ dig @192.168.100.253 
+ &#8618;www.linuxjournal.com
+</pre>
+</p><p>
+You can, of course, simply configure your client system to use your
+caching nameserver as its default nameserver, in which case you can
+omit the <tt  >@192.168.100.253</tt> in the above command. But, you probably don't
+want to do that until you're sure it <span   class="emphasis"><em>works</em></span>.
+</p><p>
+If it doesn't work, make sure your client system's IP address falls
+into one of the IP networks you specified in any acls you've set in
+/etc/bind/named.conf.options, as I described earlier.
+</p><p>
+At this point, your caching-only nameserver is up and working
+properly. Now you can configure DNSSEC validation.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x2b885a0"></a>
+Setting Up DNSSEC Validation</h2></div></div><p>
+Back on your caching nameserver, all you need to do to add DNSSEC
+validation is add three lines in the options{} section of your
+/etc/bind/named.conf.options file, plus a new managed-keys{} section,
+as shown in Listing 3.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x2b886a8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. DNSSEC-Enabled named.conf.local</b></p><pre     class="programlisting">
+acl mynetworks { 192.168.100.0/24; 10.10.0.0/16; };
+
+options {
+        directory "/var/cache/bind";
+        allow-query { mynetworks; };
+        auth-nxdomain no;    # conform to RFC1035
+        listen-on-v6 { none; };
+	dnssec-enable yes;
+	dnssec-validation yes; 
+	dnssec-lookaside auto;
+};
+managed-keys {
+        "." initial-key 257 3 8 "
+        AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQ
+        bSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh
+        /RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWA
+        JQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXp
+        oY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3
+        LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGO
+        Yl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGc
+        LmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0= ";
+};
+</pre></div><p>
+The first two new lines in Listing 3, <tt  >dnssec-enable yes;</tt> and
+<tt  >dnssec-validation yes;</tt>, enable DNSSEC on your caching nameserver. This
+is actually a redundant setting, because &ldquo;yes&rdquo; is the default value for
+both these settings in BIND versions 9.5 and later, but it doesn't hurt
+to specify them.
+</p><p>
+The third new line, <tt  >dnssec-lookaside auto;</tt>, tells BIND/named to
+use DLV automatically any time it can't
+validate a complete chain of trust from a given Resource Record all the
+way from root (.) downward. See the DNSSEC Overview section earlier in this
+article if you've forgotten how DLV works.
+</p><p>
+As I mentioned in that section, recent versions of BIND are preconfigured
+to find isc.org's DLV repositories. All you have to do to take advantage
+of this is set &ldquo;dnssec-lookaside&rdquo; to &ldquo;auto&rdquo;, and BIND will do the rest. As
+more and more TLDs are signed, this feature will become less important.
+</p><p>
+And, that brings me to the last new element in the named.conf.options
+file: the managed-keys{} section. This specifies a key for the DNS
+&ldquo;root&rdquo;
+domain, which is the top of any chain of DNSSEC trust.
+</p><p>
+You don't necessarily need to specify any keys &ldquo;lower&rdquo; in the DNS hierarchy
+than root; if you start out knowing the root key, you can trust signed
+replies from root nameservers. That trust flows downward to signed
+data from TLDs (.gov, .us, .net and so on) and so forth. &ldquo;Gaps&rdquo;
+in the downward chain of validation hopefully will be handled by DLV.
+</p><p>
+For heaven's sake, do <span   class="emphasis"><em>not</em></span> simply copy Listing 3's key
+entry for &ldquo;.&rdquo; verbatim! Tony Finch has written a quick-and-easy
+procedure on checking and validating the (initial) root certificate
+(see Resources). Summarized, this procedure consists of the following steps.
+</p><p>
+1) Use the following <tt  >dig</tt> command to obtain the current root certificate and save it to the file root-dnskey:
+
+<pre     class="programlisting">
+bash-$ dig +multi +noall +answer DNSKEY . &gt;root-dnskey
+</pre>
+</p><p>
+2) Create a hash of this certificate and save it to the file root-ds
+with this command:
+
+<pre     class="programlisting">
+bash-$ $ dnssec-dsfromkey -f root-dnskey . &gt;root-ds
+</pre>
+</p><p>
+3) Pull the official root certificate's hash from
+<a href="https://data.iana.org/root-anchors/root-anchors.xml" target="_self">https://data.iana.org/root-anchors/root-anchors.xml</a>, and compare it to the
+root-ds file you just created. For extra paranoia, you can use PGP to
+check the signature of root-anchors.xml (see Tony Finch's article).
+</p><p>
+4) If the hashes match, copy the key (the long one, number 257) from
+root-dnskey into your managed-keys statement, as shown in Listing 3. The
+first line of this block (after the <tt  >managed-keys {</tt> line) should be
+the same as in Listing 3.
+</p><p>
+As with your previous changes, after you save named.conf.options, you
+should check it with <tt  >named-checkconf</tt>, and then load it with <tt  >rndc
+reload</tt>.
+</p><p>
+Finally, to test DNSSEC validation, test some known-signed record, such as
+www.isc.org, using dig. Be sure to use the <tt  >+dnssec</tt> flag, like this:
+
+<pre     class="programlisting">
+mick@someotherhost:/home/mick$ dig @192.168.100.253 
+ &#8618;www.isc.org +dnssec
+</pre>
+</p><p>
+If everything is working, dig's output should indicate that the &ldquo;ad&rdquo;
+(authenticated data) flag is set. Listing 4 shows the first part of
+what a successful reply to our example dig command would look like.
+Note the line that begins <tt  >;; flags: qr rd ra ad;</tt>.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x2b89518"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. dig Output for Successful DNSSEC Validation</b></p><pre     class="programlisting">
+
+; &lt;&lt;&gt;&gt; DiG 9.6.0-APPLE-P2 &lt;&lt;&gt;&gt; @192.168.100.253 www.isc.org +dnssec
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; -&gt;&gt;HEADER&lt;&lt;- opcode: QUERY, status: NOERROR, id: 62704
+;; flags: qr rd ra ad; QUERY: 1, ANSWER: 2, AUTHORITY: 5, ADDITIONAL: 13
+
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x2b89728"></a>
+Conclusion</h2></div></div><p>
+And with that, your nameserver is successfully validating signed zone
+data! For now, I wish you thanks and goodbye. As I seem to
+do every couple years, I'm going to take a hiatus for a few months. I
+do plan on resuming the Paranoid Penguin after that, however, refreshed
+and renewed for your reading pleasure.
+</p><p>
+Until then, take care of yourself and especially your Linux systems!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2696580.0x2b89888"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+DNSSEC&mdash;the DNS Security Extensions&mdash;Protocol Home Page: <a href="http://www.dnssec.net" target="_self">www.dnssec.net</a>
+</p><p>
+Alan Clegg's 
+&ldquo;DNSSEC&mdash;Living and Loving Life after
+Kaminsky; Or: How I overcame my fear and signed
+my zones.&rdquo; Presentation to REN-ISAC on 10-30-2008:
+<a href="http://www.ren-isac.net/techburst/hardcopy/ren-isac_techburst_20081030_clegg_dnssec.pdf" target="_self">www.ren-isac.net/techburst/hardcopy/ren-isac_techburst_20081030_clegg_dnssec.pdf</a>
+</p><p>
+Geoff Huston's &ldquo;A Fundamental Look at DNSSEC,
+Deployment, and DNS Security Extensions&rdquo;:
+<a href="http://www.circleid.com/posts/dnssec_deployment_and_dns_security_extensions" target="_self">www.circleid.com/posts/dnssec_deployment_and_dns_security_extensions</a>
+</p><p>
+Ubuntu 10.10 Server Guide: &ldquo;Chapter 7. Domain Name System
+(DNS)&rdquo;: <a href="https://help.ubuntu.com/10.10/serverguide/C/dns.html" target="_self">https://help.ubuntu.com/10.10/serverguide/C/dns.html</a>
+</p><p>
+BIND 9.7 Administrator's Reference Manual
+(ARM): <a href="http://ftp.isc.org/isc/bind9/cur/9.7/doc/arm/Bv9ARM.pdf" target="_self">ftp.isc.org/isc/bind9/cur/9.7/doc/arm/Bv9ARM.pdf</a>
+</p><p>
+Tony Finch's &ldquo;How to set up DNSSEC validation with
+BIND-9.7&rdquo;: <a href="http://fanf.livejournal.com/107310.html" target="_self">fanf.livejournal.com/107310.html</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Mick Bauer (<a href="mailto:darth.elmo@wiremonkeys.org">darth.elmo@wiremonkeys.org</a>) is Network
+Security
+Architect for one of the US's largest banks. He is the author of
+the O'Reilly book <span   class="emphasis"><em>Linux Server Security</em></span>, 2nd edition
+(formerly called
+<span   class="emphasis"><em>Building Secure Servers With Linux</em></span>), an occasional
+presenter at
+information security conferences and composer of the &ldquo;Network
+Engineering Polka&rdquo;.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../206/toc206.html">Issue Table of Contents</a>
+    <a class="link3" href="../206/11029.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

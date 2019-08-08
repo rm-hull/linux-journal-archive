@@ -1,0 +1,476 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+NTPsec: a Secure, Hardened NTP Implementation
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Network time service has been in trouble. Now it's getting a makeover.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x228e580.0x2385ac0"></a>
+NTPsec: a Secure, Hardened NTP Implementation
+</h1></div><div><div class="author"><h3 class="author">
+Eric
+ S. 
+Raymond
+</h3></div><div class="issuemoyr">Issue #270, October 2016</div></div><div><p>
+Network time service has been in trouble. Now it's getting a makeover.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x228e580.0x23862a8"></a></h2></div></div><p>
+Network time synchronization&mdash;aligning your computer's clock to the
+same Universal Coordinated Time (UTC) that everyone else is using&mdash;is
+both necessary and a hard problem. Many internet protocols rely on
+being able to exchange UTC timestamps accurate to small tolerances,
+but the clock crystal in your computer drifts (its frequency varies by
+temperature), so it needs occasional adjustments.
+</p><p>
+That's where life gets complicated. Sure, you can get another
+computer to tell you what time it thinks it is, but if you don't know
+how long that packet took to get to you, the report isn't very useful.
+On top of that, its clock might be broken&mdash;or lying.
+</p><p>
+To get anywhere, you need to exchange packets with several computers
+that allow you to compare your notion of UTC with theirs, estimate
+network delays, apply statistical cluster analysis to the resulting
+inputs to get a plausible approximation of real UTC, and then adjust
+your local clock to it. Generally speaking, you can get sustained
+accuracy to on the close order of 10 milliseconds this way, although
+asymmetrical routing delays can make it much worse if you're in a bad
+neighborhood of the internet.
+</p><p>
+The protocol for doing this is called NTP (Network Time Protocol),
+and the original implementation was written near the dawn of internet
+time by an eccentric genius named Dave Mills. Legend has it that
+Dr Mills was the person who got a kid named Vint Cerf interested in
+this ARPANET thing. Whether that's true or not, for decades Mills was
+<span   class="emphasis"><em>the</em></span> go-to guy for computers and high-precision time measurement.
+</p><p>
+Eventually though, Dave Mills semi-retired, then retired completely.
+His implementation (which we now call NTP Classic) was left in the
+hands of the Network Time Foundation and Harlan Stenn, the man
+<span   class="emphasis"><em>Information Week</em></span> feted as &ldquo;Father Time&rdquo; in
+2015 (<a href="http://www.informationweek.com/it-life/ntps-fate-hinges-on-father-time/d/d-id/1319432" target="_self">www.informationweek.com/it-life/ntps-fate-hinges-on-father-time/d/d-id/1319432</a>). Unfortunately,
+on NTF's watch, some serious problems accumulated. By that year, the
+codebase already was more than a quarter-century old, and techniques
+that had been state of the art when it was first built were showing
+their age. The code had become rigid and difficult to modify, a
+problem exacerbated by the fact that very few people actually
+understood the Byzantine time-synchronization algorithms at its
+core.
+</p><p>
+Among the real-world symptoms of these problems were serious security
+issues. That same year of 2015, InfoSec researchers began to realize
+that NTP Classic installations were being routinely used as DDoS
+amplifiers&mdash;ways for crackers to packet-lash target sites by remote
+control. NTF, which had complained for years of being under-budgeted
+and understaffed, seemed unable to fix these bugs.
+</p><p>
+This is intended to be a technical article, so I'm going to pass
+lightly over the political and fundraising complications that
+ensued. There was, alas, a certain amount of drama. When the dust
+finally settled, a very reluctant fork of the Mills implementation had
+been performed in early June 2015 and named NTPsec (<a href="https://www.ntpsec.org" target="_self">https://www.ntpsec.org</a>). I had been funded
+on an effectively full-time basis by the Linux Foundation to be the
+NTPsec's architect/tech-lead, and we had both the nucleus of a capable
+development team and some serious challenges.
+</p><p>
+This much about the drama I will say because it is technically
+relevant: one of NTF's major problems was that although NTP Classic was
+nominally under an open-source license, NTF retained pre-open-source
+habits of mind. Development was closed and secretive, technically and
+socially isolated by NTF's determination to keep using the BitKeeper
+version-control system. One of our mandates from the Linux Foundation
+was to fix this, and one of our first serious challenges was simply
+moving the code history to git.
+</p><p>
+This is never trivial for a codebase as large and old as NTP Classic,
+and it's especially problematic when the old version-control system is
+proprietary with code you can't touch. I ended up having to 
+revise Andrew Tridgell's SourcePuller utility heavily&mdash;yes, the same code
+that triggered Linus Torvalds' famous public break with BitKeeper back
+in 2005&mdash;to do part of the work. The rest was tedious and difficult
+hand-patching with reposurgeon (<a href="http://www.catb.org/esr/reposurgeon" target="_self">www.catb.org/esr/reposurgeon</a>). A year later in May 2016&mdash;far
+too late to be helpful&mdash;BitKeeper went open source.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x228e580.0x2386988"></a>
+Strategy and Challenges</h2></div></div><p>
+Getting a clean history conversion to git took ten weeks, and
+grueling as that was, it was only the beginning. I had a problem: I was
+expected to harden and secure the NTP code, but I came in knowing very
+little about time service and even less about security engineering.
+I'd picked up a few clues about the former from my work leading GPSD
+(<a href="http://catb.org/gpsd" target="_self">catb.org/gpsd</a>), which is widely used for time service. Regarding the latter, I
+had some basics about how to harden code&mdash;because when you get right
+down to it, <span   class="emphasis"><em>that</em></span> kind of security engineering is a special case of
+reliability engineering, which I <span   class="emphasis"><em>do</em></span> understand. But I had no
+experience at &ldquo;adversarial mindset&rdquo;, the kind of active defense that
+good InfoSec people do, nor any instinct for it.
+</p><p>
+A way forward came to me when I remembered a famous quote by
+C. A. R. Hoare: &ldquo;There are two ways of constructing a software design:
+One way is to make it so simple that there are obviously no
+deficiencies, and the other way is to make it so complicated that
+there are no obvious deficiencies.&rdquo; A slightly different angle on
+this was the perhaps better-known aphorism by Saint-Exup&eacute;ry that
+I was to adopt as NTPsec's motto: &ldquo;Perfection is achieved, not when
+there is nothing more to add, but when there is nothing left to take
+away.&rdquo;
+</p><p>
+In the language of modern InfoSec, Hoare was talking about reducing
+attack surface, global complexity and the scope for unintended
+interactions leading to exploitable holes. This was bracing, because
+it suggested that maybe I didn't actually need to learn to think like
+an InfoSec specialist or a time service expert. If I could refactor,
+cut and simplify the NTP Classic codebase enough, maybe all those
+domain-specific problems would come out in the wash. And if not, then
+at least taking the pure software-engineering approach I was
+comfortable with might buy me enough time to learn the domain-specific
+things I needed to know.
+</p><p>
+I went all-in on this strategy. It drove my argument for one of the
+very first decisions we made, which was to code to a fully modern
+API&mdash;pure POSIX and C99. This was only partly a move for ensuring portability;
+mainly I wanted a principled reason (one we could give potential users
+and allies) for ditching all the cruft in the codebase from the
+big-iron UNIX era.
+</p><p>
+And there was a <span   class="emphasis"><em>lot</em></span> of that. The code was snarled with portability
+#ifdefs and shims for a dozen ancient UNIX systems: SunOS, AT&amp;T System
+V, HP-UX, UNICOS, DEC OSF/1, Dynix, AIX and others more obscure&mdash;all
+relics from the days before API standardization really took hold. The
+NTP Classic people were too terrified of offending their legacy
+customers to remove any of this stuff, but I knew something they
+apparently didn't. Back around 2006, I had done a cruft-removal pass
+over GPSD, pulling it up to pretty strict POSIX conformance&mdash;and
+nobody from GPSD's highly varied userbase ever said boo about it or
+told me they missed the ancient portability shims at all. Thus, what I
+had in my pocket was nine years of subsequent GPSD field experience
+telling me that the standards people had won their game without most
+UNIX systems programmers actually capturing all the implications of
+that victory.
+</p><p>
+So I decrufted the NTP code <span   class="emphasis"><em>ruthlessly</em></span>. Sometimes I had to fight my
+own reflexes in order to do it. I too have long been part of the
+culture that says &ldquo;Oh, leave in that old portability shim, you never
+know, there just <span   class="emphasis"><em>might</em></span> still be a VAX running ISC/5 out there, and
+it's not doing any harm.&rdquo;
+</p><p>
+But when your principal concern is reducing complexity and attack
+surface, that thinking is wrong. No individual piece of obsolete code
+costs very much, but in a codebase as aged as NTP Classic, the
+cumulative burden on readability and maintainability becomes massive
+and paralyzing. You have to be hard about this; it all has to go, or
+exceptions will pile up on you, and you'll never achieve the mission
+objective.
+</p><p>
+I'm emphasizing this point, because I think much of what landed NTP
+Classic in trouble was not want of skill but a continuing failure of
+what one might call surgical courage&mdash;the kind of confidence and
+determination it takes to make that first incision, knowing that
+you're likely to have to make a bloody mess on the way to fixing
+what's actually wrong. Software systems architects working on legacy
+infrastructure code need this quality almost as much as surgeons do.
+</p><p>
+The same applies to superannuated features. The NTP Classic codebase
+was full of dead ends, false starts, failed experiments, drivers for
+obsolete clock hardware, and other code that might have been a good
+idea once but had long outlived the assumptions behind it&mdash;Mode 7
+control messages, Interleave mode, Autokey, an SNMP d&aelig;mon that was
+never conformant to the published standard and never finished, and a
+half-dozen other smaller warts. Some of these (Mode 7 handling and Autokey
+especially) were major attractors for security defects.
+</p><p>
+As with the port shims, these lingered in the NTP Classic codebase
+not because they couldn't have been removed, but because NTF cherished
+compatibility back to the year zero and had an allergic reaction to
+the thought of removing any features at all. 
+</p><p>
+Then there were the incidental problems, the largest of which was
+Classic's build system. It was a huge, crumbling, buggy,
+poorly documented pile of autoconf macrology. One of the things that
+jumped out at me when I studied NTF's part of the code history was
+that in recent years they seemed to spend as much or more effort
+fighting defects in their build system as they did modifying code.
+</p><p>
+But there was one amazingly good thing about the NTP Classic code:
+that despite all these problems, it <span   class="emphasis"><em>still worked</em></span>. It wheezed and
+clanked and was rife with incidental security holes, but it did the
+job it was supposed to do. When all was said and done, and all the
+problems admitted, Dave Mills had been a brilliant systems architect,
+and even groaning under the weight of decades of unfortunate
+accretions, NTP Classic still functioned.
+</p><p>
+Thus, the big bet on Hoare's advice at the heart of our technical
+strategy unpacked to two assumptions: 1) that beneath the cruft and
+barnacles the NTP Classic codebase was fundamentally sound, and 2)
+that it would be practically possible to clean it up without breaking
+that soundness.
+</p><p>
+Neither assumption was trivial. This could have been the a priori
+<span   class="emphasis"><em>right</em></span> bet on the odds and still failed because the Dread God Finagle
+and his mad prophet Murphy micturated in our soup. Or, the code left
+after we scraped off the barnacles could actually turn out to be
+unsound, fundamentally flawed.
+</p><p>
+Nevertheless, the success of the team and the project at its declared
+objectives was riding on these premises. Through 2015 and early 2016
+that was a constant worry in the back of my mind. <span   class="emphasis"><em>What if I was
+wrong?</em></span> What if I was like the drunk in that old joke, looking for his
+keys under the streetlamp when he's dropped them two darkened streets
+over because &ldquo;Offisher, this is where I can see.&rdquo;
+</p><p>
+The final verdict is not quite in on that question; as I write, NTPsec
+is still in beta. But, as we shall see, there are now (in August
+2016) solid indications that the project is on the right track.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x228e580.0x2387538"></a>
+Stripping Down, Cleaning Up</h2></div></div><p>
+One of our team's earliest victories after getting the code history
+moved to git was throwing out the autoconf build recipe and replacing
+it with one written in a new-school build engine called waf (also used
+by Samba and RTEMS). Builds became <span   class="emphasis"><em>much</em></span> faster and more reliable.
+Just as important, this made the build recipe an order of magnitude
+smaller so it could be comprehended as a whole and maintained.
+</p><p>
+Another early focus was cleaning up and updating the NTP documentation.
+We did this before most of the code modifications because the research
+required to get it done was an excellent way to build knowledge about
+what was actually going on in the codebase.
+</p><p>
+These moves began a virtuous cycle. With the build recipe no longer a
+buggy and opaque mess, the code could be modified more rapidly and
+with more confidence. Each bit of cruft removal lowered the total
+complexity of the codebase, making the next one slightly easier.
+</p><p>
+Testing was pretty ad hoc at first. Around May 2016, for reasons not
+originally related to NTPsec, I became interested in Raspberry Pis.
+Then it occurred to me that they would make an excellent way to run
+long-term stability tests on NTPsec builds. Thus, it came to be that
+the windowsill above my home-office desk is now home to six headless
+Raspberry Pis, all equipped with on-board GPSes, all running stability
+and correctness tests on NTPsec 24/7&mdash;just as good as a conventional
+rack full of servers, but far less bulky and expensive!
+</p><p>
+We got a lot done during our first 18 months. The headline number
+shows just how much was the change in the codebase's total size.
+We went from 227KLOC to 75KLOC, cutting the total line count by a full
+factor of three.
+</p><p>
+Dramatic as that sounds, it actually understates the attack-surface
+reduction we achieved, because complexity was not evenly distributed
+in the codebase. The worst technical debt, and the security holes,
+tended to lurk in the obsolete and semi-obsolete code that hadn't
+gotten any developer attention in a long time. NTP Classic was not
+exceptional in this; I've seen the same pattern in other large, old
+codebases I've worked on.
+</p><p>
+Another important measure was systematically hunting down and replacing
+all unsafe C function calls with equivalents that can provably not cause
+buffer overruns. I'll quote from NTPsec's hacking guide:
+</p><div class="blockquote"><blockquote class="blockquote"><div class="itemizedlist"><ul type="disc"><li><p>
+strcpy, strncpy, strcat: use strlcpy and strlcat instead.
+</p></li><li><p>
+sprintf, vsprintf: use snprintf and vsnprintf instead.
+</p></li><li><p>
+In scanf and friends, the %s format without length limit is banned.
+</p></li><li><p>
+strtok: use strtok_r() or unroll this into the obvious loop.
+</p></li><li><p>
+gets: use fgets instead. 
+</p></li><li><p>
+gmtime(), localtime(), asctime(), ctime(): use the reentrant *_r
+variants.
+</p></li><li><p>
+tmpnam(): use mkstemp() or tmpfile() instead.
+</p></li><li><p>
+dirname(): the Linux version is re-entrant but this property is not
+portable.
+</p></li></ul></div></blockquote></div><p>
+This formalized an approach I'd used successfully on GPSD&mdash;instead
+of
+fixing defects and security holes after the fact, constrain your code
+so that it <span   class="emphasis"><em>cannot have</em></span> entire classes of defects.
+</p><p>
+The experienced C programmers out there are thinking &ldquo;What about
+wild-pointer and wild-index problems?&rdquo; And it's true that the achtung
+verboten above will not prevent those kinds of overruns. That's why another
+prong of the strategy was systematic use of static code analyzers like
+Coverity, which actually is pretty good at picking up the defects that
+cause that sort of thing. It's not 100% perfect, C will always allow you to
+shoot yourself in the foot, but I knew from prior success with GPSD
+that the combination of careful coding with automatic defect scanning
+can reduce your bug load a very great deal.
+</p><p>
+To help defect scanners do a better job, we enriched the type
+information in the code. The largest single change of this kind was
+changing int variables to C99 bools everywhere they were being used as
+booleans.
+</p><p>
+Little things also mattered, like fixing all compiler warnings. I
+thought it was shockingly sloppy that the NTP Classic maintainers
+hadn't done this. The pattern detectors behind those warnings are
+there because they often point at real defects. Also, voluminous
+warnings make it too easy to miss actual errors that break your
+build. And you never want to break your build, because later on, that
+will make bisection testing more difficult.
+</p><p>
+An early sign that this systematic defect-prevention approach was
+working was the extremely low rate of bugs we detected by testing as
+having been introduced during our cleanup. In the first 14
+months, we averaged less than one iatrogenic C bug every 90 days.
+</p><p>
+I would have had a lot of trouble believing that if GPSD hadn't posted
+a defect frequency nearly as low during the previous five years. A
+major lesson from both projects is that applying best practices in
+coding and testing really works. I pushed this point back in 2012 in
+my essay on GPSD for <span   class="emphasis"><em>The Architecture of Open Source, Volume
+2</em></span> (<a href="http://www.aosabook.org/en/gpsd.html" target="_self">www.aosabook.org/en/gpsd.html</a>);
+what NTPsec shows is that GPSD is not a fluke.
+</p><p>
+I think this is one of the most important takeaways from both
+projects. We really don't have to settle for what have historically
+been considered &ldquo;normal&rdquo; defect rates in C code. Modern tools and
+practices can go a very long way toward driving those defect rates
+toward zero. It's no longer even very difficult to do the right
+thing; what's too often missing is a grasp of the possibility and the
+determination to pursue it.
+</p><p>
+And here's the real payoff. Early in 2016, CVEs (security alerts)
+started issuing against NTP Classic that NTPsec dodged because we had
+already cut out their attack surface before we knew there was a bug! This
+actually became a regular thing, with the percentage of dodged bullets
+increasing over time. Somewhere, Hoare and Saint-Exup&eacute;ry might
+be smiling.
+</p><p>
+The cleanup isn't done yet. We're testing a major refactoring and
+simplification of the central protocol machine for processing NTP
+packets. We believe this already has revealed a significant number of
+potential security defects nobody ever had a clue about before. Every
+one of these will be another dodged bullet attributable to getting our 
+practice and strategic direction right.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x228e580.0x2780650"></a>
+Features? What Features?</h2></div></div><p>
+I have yet to mention new features, because NTPsec doesn't have many;
+that's not where our energy has been going. But, here's one that
+came directly out of the cleanup work.
+</p><p>
+When NTP originally was written, computer clocks delivered
+only microsecond precision. Now they deliver nanosecond precision (though
+not all of that precision is accurate). By changing some internal
+representations, we have made NTPsec able to use the full precision of
+modern clocks when stepping them, which can result in a factor 10 or more
+of accuracy improvement with real hardware, such as GPSDOs and
+dedicated time radios.
+</p><p>
+Fixing this was about a four-line patch. It might have been noticed
+sooner if the code hadn't been using an uneasy mixture of microsecond and
+nanosecond precision for historical reasons. As it is, anything short 
+of the kind of systematic API-usage update we were doing would have
+been quite unlikely to spot the problem.
+</p><p>
+A longstanding pain point we've begun to address is the
+nigh-impenetrable syntax of the ntp.conf file. We've already
+implemented a new syntax for declaring reference clocks that is far
+easier to understand than the old. We have more work planned toward
+making composing NTP configurations less of a black art.
+</p><p>
+The diagnostic tools shipped with NTP Classic were messy,
+undocumented and archaic. We have a new tool, ntpviz, which gives
+time-server operators a graphical and much more informative view of
+what's been going on in the server logfiles. This will assist in
+understanding and mitigating various sources of inaccuracy.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x228e580.0x2780910"></a>
+Where We Go from Here</h2></div></div><p>
+We don't think our 1.0 release is far in the future&mdash;in fact, given
+normal publication delays, it might well have shipped by the time you
+read this. Our early-adopter contingent includes a high-frequency-trading
+company for which accurate time is business-critical. The company hasn't
+actually put NTPsec in production yet, though its techie in charge of time
+actively contributes to our project and expects to adopt it for production in
+the not-distant future. 
+</p><p>
+There remains much work to be done after 1.0. We're cooperating
+closely with IETF to develop a replacement for Autokey public-key
+authentication that actually works. We want to move as much of the C
+code as possible outside ntpd itself to Python in order to reduce
+long-term maintenance load. There's a possibility that the core
+d&aelig;mon itself might be split in two to separate the TCP/IP parts from
+the handling of local reference clocks, drastically reducing global
+complexity.
+</p><p>
+Beyond that, we're gaining insight into the core time-synchronization
+algorithms and suspect there are real possibilities for improvement in
+those. Better statistical filtering that's sensitive to measurements
+of network weather and topology looks possible.
+</p><p>
+It's an adventure, and we welcome anyone who'd like to join in.
+NTP is vital infrastructure, and keeping it healthy over a time frame
+of decades will need a large, flourishing community. You can learn
+more about how to take part at our project website: <a href="https://www.ntpsec.org" target="_self">https://www.ntpsec.org</a>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x228e580.0x2780b78"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Eric S. Raymond is a wandering anthropologist and trouble-making
+philosopher. He's been known to write a few lines of code too.
+Actually, if the tag &ldquo;ESR&rdquo; means nothing to you, what are you doing
+reading this magazine?
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../270/toc270.html">Issue Table of Contents</a>
+    <a class="link3" href="../270/12074.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

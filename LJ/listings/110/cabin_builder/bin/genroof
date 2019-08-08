@@ -1,0 +1,254 @@
+#!/usr/bin/perl 
+
+# data must slope in y
+# min_y must be 0
+# Peak must be contant along x (in y)
+
+use Getopt::Std;
+
+die "Usage: genroof [ -o overhang_ft ] [-p] [-b diam_in] [-r caplog_rad_in] [-m cap_material] mat name data height_ft thickness_in\n" if $#ARGV < 4;
+
+# -r log_rad : Main cap log radius
+# -b diam_in : Turn on beams which follow roof slope (no beam at peak)
+# -p : Peak beam (seperate option to avoid duplicates)
+# -o overhang_ft : Number of feet the roof overhangs the walls.
+# -d : DEBUG
+# -m mat : Use mat as the end cap material (ypine is the default)
+
+getopts("dpb:o:r:m:");
+
+if(!defined($opt_r) || $opt_r < 1) { $opt_r = 4; }
+
+if(defined($opt_m)) {
+	$capmat = $opt_m;
+} else {
+	$capmat = "ypine";
+}
+
+$material = $ARGV[0];
+$name = $ARGV[1];
+$data_file = $ARGV[2];
+$height = $ARGV[3] * 12;
+$thickness = $ARGV[4];
+
+sub make_log
+{
+   my($sx,$sy, $sz, $ex, $ey, $ez, $rad, $mat, $name) = @_;
+   print <<EOF;
+$mat cylinder $name
+0
+0
+EOF
+print "7 $sx $sy $sz $ex $ey $ez $rad\n\n";
+
+# No end caps needed
+}
+
+# Read the data file.
+@rect_holes = ();
+@slope_holes = ();
+@caps = ();
+open DATA, "<$data_file" or die "No $data_file\n";
+while(<DATA>) {
+   chomp $_;
+   next if !m/[0-9]/;
+   next if /^\s*#/;
+   if(m/^c/) {
+      @data = split /:/;
+      shift @data; # Throw away the c
+      $data{cap} = [ split / /,$data[0] ];
+      warn "CAP: @{$data{cap}}\n" if $opt_d;
+      shift @data; # done with cap info
+      for $datum (@data) {
+         @hole = split / /,$datum;
+         if($hole[0] eq "r") { # Rectangular hole
+            shift @hole;
+            warn "RECT_HOLE: @hole\n" if $opt_d;
+            push(@rect_holes, [ @hole ]);
+         } elsif ($hole[1] eq "s") { # Sloped hole
+            shift @hole;
+            warn "SLOPE_HOLE: @hole\n" if $opt_d;
+            push(@slope_holes, [ @hole ]);
+         }
+      }
+      $data{rect} = [ @rect_holes ];
+      $data{slope} = [ @slope_holes ];
+      push(@caps, { %data });
+      warn "HASH:\n" if $opt_d;
+      warn "      cap: @{$data{cap}}\n" if $opt_d;
+      warn "      rect1: @{$data{rect}[0]}\n" if $opt_d;
+      warn "      slope1: @{$data{slope}[0]}\n" if $opt_d;
+      next;
+   } else {
+      @info = split / /;
+      warn "genroof: Points in $data_file should be in the positive x-y quadrant" if($info[0] < 0 || $info[1] < 0);
+      $info[0] *= 12;
+      $info[1] *= 12;
+      push @roof_data, [ @info ];
+   }
+}
+close DATA;
+
+# find the peak y
+$peaky = 0;
+for (@roof_data)
+{
+   $peaky = ${$_}[1] if ${$_}[2] =~ /p/;
+}
+$maxy = 0;
+for (@roof_data) {
+   $maxy = $_->[1] if $_->[1] > $maxy;
+}
+if($peaky > 0) {
+   $slope = $height / $peaky;
+   $find_z = sub { 
+      my($y) = @_; 
+      $y * $slope;
+   };
+   $find_y = sub { 
+      my($z) = @_; 
+      $z / $slope;
+   };
+   $rx_angle = atan2($slope,1) * 180.0 / 3.14158;
+} else {
+   $slope = $height / $maxy;
+   $find_z = sub { 
+      my($y) = @_; 
+      $height - $y * $slope;
+   };
+   $find_y = sub { 
+      my($z) = @_; 
+      -(($z - $height) / $slope);
+   };
+   $rx_angle = - atan2($slope,1) * 180.0 / 3.14158;
+}
+
+# Find the z adjustment value in inches
+$overhang_zadj = 0;
+if(defined($opt_o)) {
+   $overhang_zadj = $opt_o * 12 * $slope;
+   $overhang_zadj = -$overhang_zadj if $overhang_zadj > 0;
+   $overhang_zadj -= $thickness/2;
+}
+
+# Translate data
+for $datum (@roof_data) {
+   if($datum->[2] =~ /c/) { $datum->[3] = 1; } # Mark as a cap
+   if(${$datum}[2] =~ /^p/) {
+      ${$datum}[2] = $height;
+   } elsif(${$datum}[2] =~ /^mp/) {
+      if($datum->[1] > $peaky) {
+         ${$datum}[2] = $height + ($peaky - ${$datum}[1]) * $slope;
+      } else {
+         ${$datum}[2] = ${$datum}[1] * $slope;
+      }
+   } elsif(${$datum}[2] =~ /b/) {
+      ${$datum}[2] = 0;
+   }
+   $datum->[2] += $overhang_zadj;
+}
+
+# Generate slope
+print $material,"_bottom polygon $name\n";
+print "0\n0\n";
+print $#roof_data * 3 + 3, " ";
+for $datum (@roof_data) {
+   print "$datum->[0] $datum->[1] $datum->[2]\n";
+}
+
+# Generate underside slope
+print <<MATERIAL;
+
+dirty colorpict shake_pat
+13 red green blue shingle.pic shake.cal shake_u shake_v
+   -s 10 -rz 180 -rx $rx_angle
+0
+1 1.7037037
+
+shake_pat plastic roof_top
+0
+0
+5 .15 .08 .05 0 0
+
+MATERIAL
+
+print <<TOP;
+
+roof_top polygon $name
+0
+0
+TOP
+print $#roof_data * 3 + 3, " ";
+for $datum (reverse @roof_data) {
+   print "$datum->[0] $datum->[1] ", $datum->[2] + $thickness, "\n";
+}
+
+# Generate sides
+($ox,$oy,$oz) = ($roof_data[0][0], $roof_data[0][1], $roof_data[0][2]);
+
+for($p = 1; $p <= $#roof_data; $p++) {
+   print "\n",$material,"_edge polygon $name\n";
+   print "0\n0\n";
+   print "15 ";
+   ($x,$y,$z) = ($roof_data[$p][0], $roof_data[$p][1], $roof_data[$p][2]);
+   # front
+   # ox,oy,oz -> ox,oy,oz-thickness
+   print "$ox $oy $oz\n";
+   print "$ox $oy ", $oz + $thickness, "\n";
+   #          -> x,y,z-thickness
+   print "$x $y ", $z + $thickness, "\n";
+   #          -> x,y,z
+   print "$x $y $z\n";
+   #          -> ox,oy,oz
+   print "$ox $oy $oz\n";
+   ($ox,$oy,$oz) = ($roof_data[$p][0], $roof_data[$p][1], $roof_data[$p][2]);
+}
+
+print "\n";
+
+for $cap (@caps)
+{
+   my($sx,$sy,$z,$ex,$ey);
+   my $step = $opt_r * 2; # Log radius.
+
+   # DO NOT MODIFY DURING LOOP!!!
+   $sx = $cap->{cap}[0] * 12;
+   $sy = $cap->{cap}[1] * 12;
+   $ex = $cap->{cap}[2] * 12;
+   $ey = $cap->{cap}[3] * 12;
+
+   if($sx == $ex) {
+      $find_x = sub { $sx; };
+   } else {
+      $find_x = sub { 
+         my($y) = @_; 
+         $ex - ($ey - $y) * ($ex-$sx)/($ey-$sy);
+      };
+   }
+
+   my $cur_z;
+
+   # Make the logs
+   my($x1,$y1,$x2,$y2, $zadj);
+   $zadj = $opt_o * 12 * $slope;
+   $zadj = -$zadj if $zadj < 0;
+   for($cur_z = $opt_r + $zadj; $cur_z < $height; $cur_z += $step) {
+      $y1 = $sy; $y2 = $ey;
+      $x1 = $sx; $x2 = $ex;
+      if(&{$find_z}($y1) < $cur_z) { # $y1 causes an intersection w/roof
+         $y1 = &{$find_y}($cur_z);
+         $x1 = &{$find_x}($y1);
+         warn "y1 modified for slope at $cur_z\n" if $opt_d;
+      } elsif(&{$find_z}($y2) < $cur_z) { # $y2 causes an intersection.
+         $y2 = &{$find_y}($cur_z);
+         $x2 = &{$find_x}($y2);
+         warn "y2 modified for slope at $cur_z\n" if $opt_d;
+      } else {
+         warn "Problem with roof data file ${data_file}. Can't make end cap because log wouldn't intersect roof.";
+      }
+      make_log($x1, $y1, $cur_z - $zadj,
+               $x2, $y2, $cur_z - $zadj,
+               $opt_r, $capmat, "$name"."$cur_z");
+   }
+}
+

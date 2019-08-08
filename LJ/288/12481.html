@@ -1,0 +1,1445 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"/>
+<link href="https://fonts.googleapis.com/css?family=Lateef" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+<title>LJ Archive</title>
+<link href="../../css/archive.css" type="text/css" rel="stylesheet"/>
+<script type="text/javascript" src="../../js/archive.js"></script>
+<script type="text/javascript" src="../../js/highlight.js"></script>
+</head>
+
+<body class="from_sigil">
+  
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+
+  <div class="tophrdiv">
+  </div>
+
+  
+  <div id="top_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+<h1 class="title">
+Encrypting NFSv4 with Stunnel TLS</h1>
+
+<h2 id="sigil_toc_id_88">NFS clients and servers push file traffic over clear-text connections in the default configuration, which is incompatible with
+sensitive data. TLS can wrap this traffic, finally bringing protocol security. Before you use your cloud provider's NFS tools, review
+all of your NFS usage and secure it where necessary. By Charles Fisher</h2>
+
+<p>
+The Network File System (NFS) is the most popular file-sharing protocol in UNIX. Decades old and predating Linux, the most modern v4
+releases are easily firewalled and offer nearly everything required for seamless manipulation of remote files as if they were local.
+</p>
+
+<p>
+The most obvious feature missing from NFSv4 is native, standalone encryption. Absent Kerberos, the protocol operates only in
+clear text, and this presents an unacceptable security risk in modern settings. NFS is hardly alone in this shortcoming, as I have
+already covered <a href="https://www.linuxjournal.com/content/smbclient-security-windows-printing-and-file-transfer">clear-text
+SMB in a previous article</a>. Compared to SMB, NFS over stunnel offers better encryption (likely AES-GCM if
+used with a modern OpenSSL) on a wider array of OS versions, with no pressure in the protocol to purchase paid updates or newer OS
+releases.
+</p>
+
+<p>
+NFS is an extremely common NAS protocol, and extensive support is available for it in cloud storage. Although Amazon EC2 supports
+<a href="https://docs.aws.amazon.com/efs/latest/ug/mounting-fs.html">clear-text and encrypted</a> NFS, Google Cloud makes no mention
+of data security in its <a href="https://cloud.google.com/launcher/docs/single-node-fileserver">documented procedures</a>, and major initiatives for
+the protocol recently have been launched by <a href="https://www.theregister.co.uk/2017/10/03/netapp_builds_nfs_onramp_to_azure"></a>Microsoft Azure and <a href="https://blogs.oracle.com/linux/2017dec-oraclelinux-storage-appliance-in-oci">Oracle Cloud</a> that raise suspicion. When using these features over
+untrusted networks (even within the hosting provider), it must be assumed that vulnerable traffic will be captured, stored and
+reconstituted by hostile parties should they have the slightest interest in the content. Fortunately, wrapping TCP-based NFS with TLS
+encryption via stunnel, while not obvious, is straightforward.
+</p>
+
+<p>
+The performance penalty for tunneling NFS over stunnel is surprisingly small—transferring an Oracle Linux Installation ISO over an
+encrypted NFSv4.2 connection is well within 5% of the speed of clear text. Even more stunning is the performance of
+<code>fuse-sshfs</code>, which
+appears to beat even clear-text NFSv4.2 in transfer speed. NFS remains superior to <code>sshfs</code> in reliability, dynamic
+<code>idmap</code> and
+resilience, but FUSE and OpenSSH delivered far greater performance than expected.
+</p>
+
+<h3 id="sigil_toc_id_89">
+Installation</h3>
+
+<p>
+Most of the NFS client and server code is already present in the Linux kernel, including implementations compatible with Sun's
+original v2 and v3 servers, as well as v4. A running NFS server does require several <code>nfsd</code> processes that are launched by the tiny
+<code>/usr/sbin/rpc.nfsd</code> binary, which takes few arguments and runs principally as a userspace placeholder to schedule file server threads
+within the kernel. The stunnel binary will be needed on both the clients (where the TCP data stream will be emitted) and the server.
+Some clients also will need to run the <code>rpc.portmap</code> dæmon, but most can now do without it.
+</p>
+
+<p>
+On Oracle Linux 7.5 and its peers (CentOS, Scientific Linux, Red Hat), you can install the utilities with the following command (the
+<code>nfs-utils</code> package is likely already installed):
+
+</p>
+<pre><code>
+yum install nfs-utils stunnel
+</code>
+</pre>
+<p></p>
+
+<p>
+Ubuntu appears to <a href="https://help.ubuntu.com/lts/serverguide/network-file-system.html.en">require</a> the installation of the full <code>nfs-kernel-server</code> even to run a client.
+</p>
+
+<p>
+If you want NFS services to start on boot, use systemd to enable them with the following commands:
+
+</p>
+<pre><code>
+systemctl enable rpcbind
+systemctl enable nfs-server
+systemctl enable nfs-lock
+systemctl enable nfs-idmap
+</code>
+</pre>
+<p></p>
+
+<p>
+You can launch the services with the corresponding start commands (don't launch them now):
+
+</p>
+<pre><code>
+systemctl start rpcbind
+systemctl start nfs-server
+systemctl start nfs-lock
+systemctl start nfs-idmap
+</code>
+</pre>
+<p></p>
+
+<p>
+If you want to allow clear-text NFS over TCP and UDP into the server, reconfigure the firewall with the commands below. If you
+only intend to allow encrypted NFS over stunnel TLS or clear-text TCP (but not UDP), don't run these commands:
+
+</p>
+<pre><code>
+firewall-cmd --permanent --zone=public --add-service=nfs
+firewall-cmd --reload
+</code>
+</pre>
+<p></p>
+
+<p>
+As an alternative, if you'll be testing clear-text NFS over TCP port 2049, run this command instead:
+
+</p>
+<pre><code>
+iptables -w -I INPUT -p tcp --dport 2049 --syn -j ACCEPT
+</code>
+</pre>
+<p></p>
+
+<p>
+The iptables call will not survive a reboot and will not allow UDP transport, but the <code>firewall-cmd</code> changes will be persistent and
+provide full-featured NFS access.
+</p>
+
+<h3 id="sigil_toc_id_90">
+Clear-Text NFSv4</h3>
+
+<p>
+I should begin my coverage of NFSv4 with the admission that the protocol is not universally admired. Although <a href="https://www.kernel.org/doc/ols/2006/ols2006v2-pages-59-72.pdf">general criticism of NFS</a>
+from Linux kernel developers points out a number of major flaws in several versions, Theo de Raadt, leader of the OpenBSD project,
+had <a href="http://openbsd-archive.7691.n7.nabble.com/nfsv4-td18690.html">this commentary</a> on the status of v4 within the OpenBSD distribution:
+</p>
+
+<blockquote>
+<p>
+NFSv4 is a gigantic joke on everyone....NFSv4 is not on our roadmap. It is a ridiculous bloated protocol which they keep adding
+[expletive] to. In about a decade the people who actually start auditing it are going to see all the mistakes that it hides.
+</p>
+
+<p>
+The design process followed by the NFSv4 team members matches the methodology taken by the IPV6 people. (As in, once a mistake is
+made, and 4 people are running the test code, it is a fact on the ground and cannot be changed again.) The result is an unrefined
+piece of trash.
+</p>
+<blockquote>
+
+<p>
+Many times, one man's trash is another man's treasure. Although Theo de Raadt is a great visionary and we owe our usage of OpenSSH to
+him, NFSv4 is the easiest NFS implementation to run over stunnel TLS.
+</p>
+
+<p>
+NFSv3 and earlier are "stateless" file servers—the server only records read and write operations, and retains no status about
+client usage. NFS makes extensive use of Sun ONC RPC (Open Network Connectivity Remote Procedure Call), which is coordinated by the
+<code>rpc.portmap</code> dæmon with several other supporting processes to implement file locking, status reporting, crash recovery and ID
+mapping—these are distinct server processes running on separate ports that maintain client state information separate from the
+file server. The issue of using stunnel on v3 and below was <a href="https://marc.info/?t=122089506800034&amp;r=1&amp;w=2">raised</a> in a discussion thread in 2008, and one of the thread participants
+<a href="https://web.archive.org/web/20120801000000*/https://w3.physics.uiuc.edu/physwiki/doku.php?id=pcs:unix:nfs_over_stunnel">mentioned</a> a document that he had written on the subject that has since been archived. The procedure for tunneling v3 is quite
+complex.
+</p>
+
+<p>
+NFSv4 brings these stateful activities into the main protocol, and a client using it does not need to connect with the older v3
+<code>lockd</code>, <code>statd</code> or any other separate RPC service. A local <code>rpc.idmapd</code> is required for the proper ownership and permissions maintenance,
+but <code>idmapd</code> does not need remote network connectivity beyond the channels already provided by the TCP connection maintained by the v4
+client.
+</p>
+
+<p>
+NFS originally ran over UDP (the Unreliable Datagram Protocol) on port 2049 in the expectation that packet loss on a local network
+would not severely interfere with NFS traffic. NFS over UDP can and does suffer badly when high traffic causes packet loss. NFSv3
+added the ability to run over TCP (Transmission Control Protocol), and TCP transport on port 2049 is the default in Linux due to its
+greater tolerance to adverse conditions. There are usage scenarios where UDP is more efficient (see <code>man 5 nfs</code> for details), but UDP
+does not work with stunnel, so I don't address it here.
+</p>
+
+<p>
+Let's begin by configuring a directory to be offered to clients by an NFS server. Create and populate the directory on the server
+machine with the following commands:
+
+</p>
+<pre><code>
+mkdir /home/share
+
+chmod 777 /home/share
+
+cp /etc/services /etc/nsswitch.conf /etc/hosts /home/share
+</code>
+</pre>
+<p></p>
+
+<p>
+Edit the file /etc/exports so that it offers a read/write share for the IP address of the client:
+
+</p>
+<pre><code>
+/home/share 5.6.7.8(fsid=0,rw)
+</code>
+</pre>
+<p></p>
+
+<p>
+The <code>fsid</code> is very helpful for NFSv4 mounts and is explained in the <code>man exports</code> manual page: "For NFSv4, there is a distinguished
+filesystem which is the root of all exported filesystem[s]. This is specified with fsid=root or fsid=0 both of which mean exactly the
+same thing." Establishing a root <code>fsid</code> will make your exports work more smoothly.
+</p>
+
+<p>
+For purposes of instruction, define a small shell function and use it to check for <code>rpc</code> processes. After confirming that none of the
+well-known NFS programs are running, start the NFS server, and then observe what else is started:
+
+</p>
+<pre><code>
+# function pps { typeset a IFS=\| ; ps ax | while read a
+do case $a in *$1*|+([!0-9])) echo $a;; esac; done }
+
+# pps rpc
+  PID TTY      STAT   TIME COMMAND
+  598 ?        S&lt;     0:00 [rpciod]
+
+# systemctl start nfs-server
+
+# pps rpc
+  PID TTY      STAT   TIME COMMAND
+  598 ?        S&lt;     0:00 [rpciod]
+15120 ?        Ss     0:00 /usr/sbin/rpc.statd --no-notify
+15131 ?        Ss     0:00 /usr/sbin/rpc.idmapd
+15143 ?        Ss     0:00 /sbin/rpcbind -w
+15158 ?        Ss     0:00 /usr/sbin/rpc.mountd
+</code>
+</pre>
+<p></p>
+
+<p>
+It's apparent that the v3-related dæmons are started by the main file server unit under Oracle Linux 7. Don't be surprised by
+their presence.
+</p>
+
+<p>
+On the client, you can add an entry to the /etc/fstab file defining a remote mount—it must contain the hostname or IP address of the
+server and (for later usage) the TCP port number:
+
+</p>
+<pre><code>
+1.2.3.4:/ /home/share nfs noauto,vers=4.2,proto=tcp,port=2049 0 0
+</code>
+</pre>
+<p></p>
+
+<p>
+The above <code>fstab</code> entry will allow you to mount the server, assuming that any and all firewalls allow the traffic and they can ping one
+another:
+
+</p>
+<pre><code>
+# mount /home/share
+
+# ls -l /home/share
+total 664
+-rw-r--r--. 1 root root    158 May 16 11:34 hosts
+-rw-r--r--. 1 root root   1746 May 16 11:34 nsswitch.conf
+-rw-r--r--. 1 root root 670293 May 16 11:34 services
+
+# cp /etc/yum.conf /home/share
+
+# ls -l /home/share
+total 668
+-rw-r--r--. 1 root      root         158 May 16 11:34 hosts
+-rw-r--r--. 1 root      root        1746 May 16 11:34 nsswitch.conf
+-rw-r--r--. 1 root      root      670293 May 16 11:34 services
+-rw-r--r--. 1 nfsnobody nfsnobody    841 May 16 12:02 yum.conf
+</code>
+</pre>
+<p></p>
+
+<p>
+The <code>nfsnobody</code> above is an example of "root squash", where the server translates the activity of the client root account into an
+unprivileged user. There are several types of squashing, and they are usually an unexpected accident.
+</p>
+
+<p>
+The following is an example from (the discontinued and unsupported) Oracle Linux 5, where all permissions get squashed:
+
+</p>
+<pre><code>
+# ll /some/share
+total 44604
+-rwxr-xr-x   1 nobody nobody  1638192 Jul 28  2016 7za.16.02
+-rw-r--r--   1 nobody nobody    57280 Oct 18  2017 fuse-sshfs-2.4-1.el5.i386.rpm
+-rwxr--r--   1 nobody nobody   233066 May  2  2017 Oracle_LMS_Collection_Tool.zip
+</code>
+</pre>
+<p></p>
+
+<p>
+This is happening because an <code>idmap</code> "domain" must be specified in the /etc/idmapd.conf file. By default, the NFS domain is taken from
+the Fully Qualified Domain Name (FQDN) by removing the hostname prefix. If two servers are in separate DNS domains, their NFSv4
+mounts always will be completely squashed. To correct this, specify the NFS domain manually:
+
+</p>
+<pre><code>
+# service rpcidmapd stop
+Stopping RPC idmapd:                                       [  OK  ]
+
+# grep ^Domain /etc/idmapd.conf
+Domain = master_nfs_domain.yourco.com
+
+# service rpcidmapd start
+Starting RPC idmapd:                                       [  OK  ]
+
+# umount /some/share
+# mount /some/share
+
+# ls -l /some/share
+total 44604
+-rwxr-xr-x   1 cfisher grp     1638192 Jul 28  2016 7za.16.02
+-rw-r--r--   1 cfisher grp       57280 Oct 18  2017 fuse-sshfs-2.4-1.el5.i386.rpm
+-rwxr--r--   1 root    root     233066 May  2  2017 Oracle_LMS_Collection_Tool.zip
+</code>
+</pre>
+<p></p>
+
+<p>
+Note that NFSv3 and below did not work this way. By default, numerical user and group IDs were preserved on a plain mount without
+<code>idmap</code> access. Although it's still important to maintain uid/gid synchronization, NFSv4 no longer allows numeric mapping,
+so don't be
+surprised by aggressive squashing.
+</p>
+
+<p>
+Older Linux kernels used slightly different <code>fstab</code> syntax for NFSv4 mounts. Under Oracle Linux 5, note below the
+(deprecated) <code>nfs4</code>
+mount type and the lack of a <code>vers</code> option:
+
+</p>
+<pre><code>
+server:/ /share nfs4 noauto,proto=tcp,port=2049 0 0
+</code>
+</pre>
+<p></p>
+
+<p>
+Before closing this section, I'd like to return to the <code>fstab</code> entry on the client:
+
+</p>
+<pre><code>
+1.2.3.4:/ /home/share nfs noauto,vers=4.2,proto=tcp,port=2049 0 0
+</code>
+</pre>
+<p></p>
+
+<p>
+The <code>vers=4.2</code> requests the very latest version of the NFS protocol, which fails if it's not available on the server. Reduce this
+version if you're working with an older server. The client is chiefly responsible for determining the protocol version and feature
+settings of the connection (although the server can enable/disable specific NFS versions and some features system-wide in /etc/nfs.conf
+and /etc/sysconfig/nfs).
+</p>
+
+<p>
+The <code>noauto</code> above prevents boot delays due to unreachable NFS servers by not mounting them by default at startup. My
+advice is <em>always to use <code>noauto</code></em> to avoid a boot hung on an "NFS server not responding". There is a "background mount"
+option, which is useful, but I
+prefer a reboot entry in the (Vixie) crontab for root, which guarantees that NFS will not interfere in obtaining a login or otherwise
+bringing local services up. You can accomplish this with the following crontab entry:
+
+</p>
+<pre><code>
+@reboot /sbin/mount /home/share
+</code>
+</pre>
+<p></p>
+
+<p>
+More appropriate is to place all of your custom startup into a single script, then add the script as the reboot entry. Be sure to
+place your NFS mounts at the very end, in order of preference and tolerance for delay (you can launch particularly problematic mounts 
+as background processes).
+</p>
+
+<p>
+Some people express affinity for NFS automounters from various sources. I don't have enough mounts to justify the maintenance of
+multiple client automount configurations, so I've omitted such discussion here. With luck, the stunnel modifications that you're 
+about to make if you're following along here should be compatible with most automounters.
+</p>
+
+<h3 id="sigil_toc_id_91">
+NFSv4 over TLS with Stunnel</h3>
+
+<p>
+The interception of the TCP connection before it leaves the client will require a port for a local endpoint. A new port must also be
+selected on the server for TLS services. For reference, the following ports appear to be related to NFS:
+
+</p>
+<pre><code>
+# egrep -i '([^a-z]nfs|nfs[^a-z])' /etc/services
+
+nfs             2049/tcp  nfsd shilp # Network File System
+nfs             2049/udp  nfsd shilp # Network File System
+nfs             2049/sctp nfsd shilp # Network File System
+picknfs         1598/tcp             # picknfs
+picknfs         1598/udp             # picknfs
+3d-nfsd         2323/tcp             # 3d-nfsd
+3d-nfsd         2323/udp             # 3d-nfsd
+mediacntrlnfsd  2363/tcp             # Media Central NFSD
+mediacntrlnfsd  2363/udp             # Media Central NFSD
+winfs           5009/tcp             # Microsoft Windows Filesystem
+winfs           5009/udp             # Microsoft Windows Filesystem
+enfs            5233/tcp             # Etinnae Network File Service
+mountd          20048/tcp            # NFS mount protocol
+mountd          20048/udp            # NFS mount protocol
+nfsrdma         20049/tcp            # (NFS) over RDMA
+nfsrdma         20049/udp            # (NFS) over RDMA
+nfsrdma         20049/sctp           # (NFS) over RDMA
+</code>
+</pre>
+<p></p>
+
+<p>
+For the simple ease of reading a netstat, I open port 2363 on the server and redirect client mounts to their local port 2323.
+You might not want your NFS traffic easily identified—if so, choose unrelated ports.
+</p>
+
+<p>
+At a minimum, the stunnel TLS server must present a keypair. I actually generate and distribute a single self-signed keypair
+valid for ten years to the server and all the clients, which will act as a "local protocol key" that all members must both present
+and verify correct of all connected participants. Here I generate an example key:
+
+</p>
+<pre><code>
+$ openssl req -newkey rsa:4096 -x509 -days 3650 -nodes \
+  -out nfs-tls.pem -keyout nfs-tls.pem
+Generating a 4096 bit RSA private key
+.................................................++
+...................................++
+writing new private key to 'nfs-tls.pem'
+-----
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [XX]:US
+State or Province Name (full name) []:IL
+Locality Name (eg, city) [Default City]:Chicago
+Organization Name (eg, company) [Default Company Ltd]:NFS-TLS
+Organizational Unit Name (eg, section) []:CHI
+Common Name (eg, your name or your server's hostname) []:nfs-tls
+Email Address []:foo@bar.org
+</code>
+</pre>
+<p></p>
+
+<p>
+The above command generates a key similar to the following output. Move your file to the /etc/stunnel directory, and set it to 400
+read-only permission for root. <em>Do not copy the content below; it's for demonstration purposes only—you must generate your
+own</em>:
+
+</p>
+<pre><code>
+# f=nfs-tls.pem; cat $f ; chmod 400 $f ; mv $f /etc/stunnel
+-----BEGIN PRIVATE KEY-----
+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
+NqwdAo0hNa3SsNtiM4Z3TM0RzDLw6fw=
+-----END PRIVATE KEY-----
+
+-----BEGIN CERTIFICATE-----
+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
+-----END CERTIFICATE-----
+</code>
+</pre>
+<p></p>
+
+<p>
+On the file server, add an export for the same share to localhost. Set the <code>insecure</code> option, which will allow for connections from
+client ports above 1024 (I discuss the consequences of this momentarily). If you want to remove the clear-text export, make sure
+the client has unmounted first:
+
+</p>
+<pre><code>
+$ cat /etc/exports
+
+/home/share 5.6.7.8(fsid=0,ro)
+/home/share 127.0.0.1(fsid=0,ro,insecure)
+</code>
+</pre>
+<p></p>
+
+<p>
+Run the following command to activate the share to localhost:
+
+</p>
+<pre><code>
+exportfs -a
+</code>
+</pre>
+<p></p>
+
+<p>
+Add an inetd-style socket activation unit on port 2363 to launch stunnel with a timeout of ten minutes:
+
+</p>
+<pre><code>
+$ cat /etc/systemd/system/MC-nfsd.socket
+
+[Unit]
+Description=NFS over stunnel/TLS server
+
+[Socket]
+ListenStream=2363
+Accept=yes
+TimeoutSec=600
+
+[Install]
+WantedBy=sockets.target
+</code>
+</pre>
+<p></p>
+
+<p>
+Configure the socket to launch stunnel with a settings file that you'll define shortly:
+
+</p>
+<pre><code>
+$ cat /etc/systemd/system/MC-nfsd@.service
+
+[Unit]
+Description=NFS over stunnel/TLS server
+
+[Service]
+ExecStart=-/bin/stunnel /etc/stunnel/MC-nfsd.conf
+StandardInput=socket
+</code>
+</pre>
+<p></p>
+
+<p>
+Start the socket and enable it for automatic start at boot with the following commands:
+
+</p>
+<pre><code>
+systemctl start MC-nfsd.socket
+systemctl enable MC-nfsd.socket
+</code>
+</pre>
+<p></p>
+
+<p>
+Open port 2363 to allow encrypted NFS through your firewall:
+
+</p>
+<pre><code>
+iptables -w -I INPUT -p tcp --dport 2363 --syn -j ACCEPT
+</code>
+</pre>
+<p></p>
+
+<p>
+Create the following stunnel control file for the NFS server:
+
+</p>
+<pre><code>
+$ cat /etc/stunnel/MC-nfsd.conf
+
+#GLOBAL#######################################################
+
+TIMEOUTidle	=	600
+renegotiation	=	no
+	FIPS	=	no
+	options	=	NO_SSLv2
+	options	=	NO_SSLv3
+	options	=	SINGLE_DH_USE
+	options	=	SINGLE_ECDH_USE
+	options	=	CIPHER_SERVER_PREFERENCE
+	syslog	=	yes
+	debug	=	0
+	setuid	=	nobody
+	setgid	=	nobody
+	chroot	=	/var/empty/stunnel
+
+	libwrap	=	yes
+	service	=	MC-nfsd
+	; cd /var/empty; mkdir -p stunnel/etc; cd stunnel/etc;
+	; echo 'MC-nfsd: ALL EXCEPT 5.6.7.8' &gt;&gt; hosts.deny;
+	; chcon -t stunnel_etc_t hosts.deny
+
+	curve	=	secp521r1
+; https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers/
+↪ciphers=ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+
+↪AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS
+
+#CREDENTIALS##################################################
+
+	verify	=	4
+	CAfile	=	/etc/stunnel/nfs-tls.pem
+	cert	=	/etc/stunnel/nfs-tls.pem
+
+#ROLE#########################################################
+
+	connect	=	127.0.0.1:2049
+</code>
+</pre>
+<p></p>
+
+<p>
+Create the <code>chroot()</code> directory where stunnel will drop privileges:
+
+</p>
+<pre><code>
+# mkdir /var/empty/stunnel
+</code>
+</pre>
+<p></p>
+
+<p>
+Attempt a local clear-text socket connection to port 2363; stunnel configuration problems will appear here:
+
+</p>
+<pre><code>
+# nc localhost 2363
+Clients allowed=500
+stunnel 4.56 on x86_64-redhat-linux-gnu platform
+Compiled/running with OpenSSL 1.0.1e-fips 11 Feb 2013
+Threading:PTHREAD Sockets:POLL,IPv6 SSL:ENGINE,OCSP,FIPS 
+ ↪Auth:LIBWRAP
+Reading configuration from file /etc/stunnel/MC-nfsd.conf
+FIPS mode is disabled
+Compression not enabled
+Snagged 64 random bytes from /dev/urandom
+PRNG seeded successfully
+Initializing inetd mode configuration
+Certificate: /etc/stunnel/nfs-tls.pem
+Error reading certificate file: /etc/stunnel/nfs-tls.pem
+error queue: 140DC002: error:140DC002:SSL
+ routines:SSL_CTX_use_certificate_chain_file:system lib
+error queue: 20074002: error:20074002:BIO
+ routines:FILE_CTRL:system lib
+SSL_CTX_use_certificate_chain_file: 200100D:
+ error:0200100D:system library:fopen:Permission denied
+Service [MC-nfsd]: Failed to initialize SSL context
+str_stats: 11 block(s), 355 data byte(s), 638 control byte(s)
+</code>
+</pre>
+<p></p>
+
+<p>
+In this case, SELinux is enabled, and the type on the key is preventing stunnel from reading it. A <code>chcon</code> command is required to fix
+this:
+
+</p>
+<pre><code>
+# cd /etc/stunnel
+
+# ls -lZ
+-rw-r--r--. root root XXX:XXX:stunnel_etc_t:s0 MC-nfsd.conf
+-r--------. root root XXX:XXX:user_home_t:s0 nfs-tls.pem
+
+# chcon -t stunnel_etc_t nfs-tls.pem
+
+# ls -lZ
+-rw-r--r--. root root XXX:XXX:stunnel_etc_t:s0 MC-nfsd.conf
+-r--------. root root XXX:XXX:stunnel_etc_t:s0 nfs-tls.pem
+</code>
+</pre>
+<p></p>
+
+<p>
+When you can run the <code>netcat</code> without error, you're ready to move to the client. Add the inetd-style socket activation unit on the NFS
+client:
+
+</p>
+<pre><code>
+$ cat /etc/systemd/system/3d-nfsd.socket
+
+[Unit]
+Description=NFS over stunnel/TLS client
+
+[Socket]
+ListenStream=2323
+Accept=yes
+TimeoutSec=300
+
+[Install]
+WantedBy=sockets.target
+</code>
+</pre>
+<p></p>
+
+<p>
+Configure the socket to launch stunnel with a settings file that you'll define shortly:
+
+</p>
+<pre><code>
+$ cat /etc/systemd/system/3d-nfsd@.service
+
+[Unit]
+Description=NFS over stunnel/TLS client
+
+[Service]
+ExecStart=-/bin/stunnel /etc/stunnel/3d-nfsd.conf
+StandardInput=socket
+</code>
+</pre>
+<p></p>
+
+<p>
+Create a stunnel control file for the NFS client:
+
+</p>
+<pre><code>
+$ cat /etc/stunnel/3d-nfsd.conf
+
+#GLOBAL#######################################################
+
+sslVersion	=	TLSv1.2
+TIMEOUTidle	=	600
+renegotiation	=	no
+	FIPS	=	no
+	options	=	NO_SSLv2
+	options	=	NO_SSLv3
+	options	=	SINGLE_DH_USE
+	options	=	SINGLE_ECDH_USE
+	options	=	CIPHER_SERVER_PREFERENCE
+	syslog	=	yes
+	debug	=	0
+	setuid	=	nobody
+	setgid	=	nobody
+	chroot	=	/var/empty/stunnel
+
+	libwrap	=	yes
+	service	=	3d-nfsd
+	; cd /var/empty; mkdir -p stunnel/etc; cd stunnel/etc;
+	; echo '3d-nfsd: ALL EXCEPT 127.0.0.1' &gt;&gt; hosts.deny;
+	; chcon -t stunnel_etc_t hosts.deny
+
+	curve	=	secp521r1
+; https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers/
+↪ciphers=ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:
+↪ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS
+
+#CREDENTIALS##################################################
+
+	verify	=	4
+	CAfile	=	/etc/stunnel/nfs-tls.pem
+	cert	=	/etc/stunnel/nfs-tls.pem
+
+#ROLE#########################################################
+
+	client	=	yes
+	connect	=	nfs-server.yourco.com:2363
+</code>
+</pre>
+<p></p>
+
+<p>
+Note:
+I've referred to the server by the IP address 1.2.3.4 previously, but above it is <code>nfs-server.yourco.com</code>—use whatever form of
+your hostname you prefer.
+</p>
+
+<p>
+The latest Ubuntu is equipped with a "stunnel4", which is actually stunnel version 5.44. It does not run with the
+<code>NO_SSLv2</code> or
+either of the <code>SINGLE_*_USE</code> options (you must remove them), and the group "nogroup" should be used there for the
+<code>setgid</code> option above. 
+</p>
+
+<p>
+Modify the <code>fstab</code> entry for /home/share to connect to the local stunnel:
+
+</p>
+<pre><code>
+$ grep share /etc/fstab
+localhost:/ /home/share nfs noauto,vers=4.2,proto=tcp,port=2323 0 0
+</code>
+</pre>
+<p></p>
+
+<p>
+Mount the volume, and check for a stunnel process, and then examine the active network connections:
+
+</p>
+<pre><code>
+# mount /home/share
+
+# pps stun
+  PID TTY      STAT   TIME COMMAND
+ 5870 ?        Ss     0:00 /bin/stunnel /etc/stunnel/3d-nfsd.conf
+
+# netstat -ap | grep nfsd
+tcp        0      0 localhost:860        localhost:3d-nfsd       
+ ↪ESTABLISHED -                   
+tcp        0      0 squib:48804          192.168.:mediacntrlnfsd 
+ ↪ESTABLISHED 5870/stunnel        
+tcp6       0      0 [::]:3d-nfsd         [::]:*                  
+ ↪LISTEN      1/init              
+tcp6       0      0 localhost:3d-nfsd    localhost:860           
+ ↪ESTABLISHED 1/init              
+
+# ls -l /home/share/
+total 676
+-rw-r--r-- 1 root    root       158 May 21 18:58 hosts
+-rw-rw-r-- 1 cfisher cfisher   5359 May 21 19:22 nfs-tls.pem
+-rw-r--r-- 1 root    root      1760 May 21 18:58 nsswitch.conf
+-rw-r--r-- 1 nobody  nogroup   1921 May 21 19:17 passwd
+-rw-r--r-- 1 root    root    670293 May 21 18:58 services
+</code>
+</pre>
+<p></p>
+
+<p>
+Also, examine the server's stunnel process and network status:
+
+</p>
+<pre><code>
+# pps stun
+  PID TTY    STAT   TIME COMMAND
+16282 ?      Ss     0:00 /bin/stunnel /etc/stunnel/MC-nfsd.conf
+
+# netstat -ap | grep nfsd
+tcp6       0      0 [::]:mediacntrlnfsd     [::]:*                  
+ ↪LISTEN      1/systemd
+tcp6       0      0 192.168.:mediacntrlnfsd 192.168.0.24:48824      
+ ↪ESTABLISHED 1/systemd
+</code>
+</pre>
+<p></p>
+
+<p>
+Squashed permissions may be recorded in your syslog:
+
+</p>
+<pre><code>
+rpc.idmapd[4321]: nss_getpwnam: name 'cfisher@yourhost'
+  does not map into domain 'localdomain'
+</code>
+</pre>
+<p></p>
+
+<p>
+To remedy this, you'll need to set the domain in /etc/idmapd.conf manually.
+</p>
+
+<p>
+A major problem on the NFS client is the ability of any local users to
+connect to the NFS endpoint via SSH or other port-forwarding
+tools. They can forward this to a server of their choosing (and under their control) to mount and manipulate the remote file server.
+Any local user on the client is able to:
+
+</p>
+<pre><code>
+# telnet localhost 2323
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+
+Connection closed by foreign host.
+</code>
+</pre>
+<p></p>
+
+<p>
+The ability to connect to the endpoint grants the ability to control it.
+</p>
+
+<p>
+There are no native stunnel options to restrict client access to privileged ports, but you can write a wrapper of your own to restrict
+this access—it calls an <code>exec()</code> function to start stunnel after verifying that the incoming port is privileged, passing the active
+file descriptors to the replacement process. To engage this wrapper, place the following file:
+
+</p>
+<pre><code>
+# cat /bin/pstunnel.c
+
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;arpa/inet.h&gt;
+
+
+int main(int argc, char *argv[], char *envp[])
+{
+ struct sockaddr_storage addr;
+ socklen_t len = sizeof addr;
+ int port = 65535, bad = 0;
+
+ if(getpeername(fileno(stdin), (struct sockaddr *) &amp;addr, &amp;len)) bad = 1;
+ else if(addr.ss_family == AF_INET) //IPv4
+ {
+  struct sockaddr_in *s = (struct sockaddr_in *) &amp;addr;
+  port = ntohs(s-&gt;sin_port);
+ }
+ else if(addr.ss_family == AF_INET6) //IPv6
+ {
+  struct sockaddr_in6 *s = (struct sockaddr_in6 *) &amp;addr;
+  port = ntohs(s-&gt;sin6_port);
+ }
+ else bad = 1;
+
+ if(!bad &amp;&amp; port &lt; IPPORT_RESERVED) execve("/bin/stunnel", argv, envp);
+ else printf("Nope.\n");
+}
+</code>
+</pre>
+<p></p>
+
+<p>
+Compile the privileged wrapper with the following commands:
+
+</p>
+<pre><code>
+# cd /bin
+
+# cc -s -O2 -DFORTIFY_SOURCE=2 -Wall -o pstunnel pstunnel.c
+</code>
+</pre>
+<p></p>
+
+<p>
+Modify the socket unit file to call the privileged wrapper:
+
+</p>
+<pre><code>
+# cat /etc/systemd/system/3d-nfsd@.service 
+[Unit]
+Description=NFS over stunnel/TLS client
+
+[Service]
+ExecStart=-/bin/pstunnel /etc/stunnel/3d-nfsd.conf
+StandardInput=socket
+</code>
+</pre>
+<p></p>
+
+<p>
+Then reload systemd to recognize the modified unit:
+
+</p>
+<pre><code>
+# systemctl daemon-reload
+</code>
+</pre>
+<p></p>
+
+<p>
+Connections from non-privileged clients are now blocked, but mount requests still will pass:
+
+</p>
+<pre><code>
+# telnet localhost 2323
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+Nope.
+Connection closed by foreign host.
+
+# mount /home/share
+
+# pps stun
+  PID TTY      STAT   TIME COMMAND
+ 2483 ?        Ss     0:00 /bin/pstunnel /etc/stunnel/3d-nfsd.conf
+
+# umount /home/share
+</code>
+</pre>
+<p></p>
+
+<p>
+Note that <code>argv[0]</code> will retain the name of the wrapper.
+</p>
+
+<p>
+Rather than simply print "Nope", you might adjust your wrapper to trigger notifications that unprivileged users are abusing your
+endpoint—a matter of some seriousness.
+</p>
+
+<p>
+The <code>pstunnel.c</code> wrapper doesn't work quite as expected under Oracle Linux 5. Any active NFS mount will be reported by netstat as
+originating from a privileged client port, but mount attempts will fail after moving to the privileged wrapper in <code>xinetd</code>. An observed
+workaround is to mount without the wrapper, switch the <code>xinetd</code> configuration to <code>pstunnel</code>, then allow the stunnel timeout to expire,
+causing new stunnels spawned to service the existing connection to enforce privileged ports. It appears that the cause of this
+problem is a preliminary non-privileged client connection when the mount is established (perhaps the <code>STATD_OUTGOING_PORT</code> parameter in
+<code>nfsconf</code> is the culprit). This workaround might be useful on other operating systems, so I've included it here even though Oracle
+Linux 5 is out of support.
+</p>
+
+<p>
+If you're on a system that doesn't block remote connections to the 2323 endpoint with a firewall, you should use the
+<code>libwrap</code>
+feature documented above in the client stunnel <code>controlfile</code> to restrict access to localhost. The <code>libwrap</code> features are less useful on
+the server, where the RSA keypair must be presented before access is allowed.
+</p>
+
+<p>
+Be advised that Microsoft Windows has NFS clients available,
+but the platform does not observe limitations on the privileged ports under 1024—any Windows user is allowed to originate connections from these restricted ports,
+so low port filtering will not be an effective security control.
+If you export NFS volumes to a windows client, you must trust <em>all</em> of the client's users.
+</p>
+
+<p>
+Note also that the insecure option on the NFS server will allow local users there to do similar mischief. Linux iptables has an owner
+match module that can be locked to root, which may be able to protect the server's vulnerable port 2049 similarly. If you cannot
+protect the NFS server from users establishing subversive local connections, you shouldn't have any untrusted local users on
+it.
+</p>
+
+<p>
+Finally, be aware that the following socket options in your stunnel control files might be very useful for NFS:
+
+</p>
+<pre><code>
+socket	=	a:TCP_NODELAY=1
+socket	=	a:SO_KEEPALIVE=1
+</code>
+</pre>
+<p></p>
+
+<p>
+The <code>NODELAY</code> option disables the Nagle algorithm, which prevents delays in your NFS traffic at the expense of (potentially) sending
+"tinygrams"—stunnel will not wait in the hope of a full packet to send, which should make operations on small amounts of data more
+responsive. If you will be exchanging large amounts of data constantly, this option might not be as helpful.
+</p>
+
+<p>
+NFSv4 has deep file locking and "delegations" where a client can "check out" a file from a server for an indefinite time. The server
+must be able to contact the client to cancel the delegation and obtain the current contents if the file is requested by another
+client, which will not occur if the stunnel connection shuts down. The client can restart the connection automatically if/when it has
+activity for the server, but the reverse is not true, which might impact locks and delegations. Although the server can disable
+delegations system wide with the command <code>echo '0' &gt; /proc/sys/fs/leases-enable</code>, the <code>KEEPALIVE</code> option might be a helpful alternative,
+and is left as a topic of research for the reader.
+</p>
+
+<h3 id="sigil_toc_id_92">
+Performance Benchmarks</h3>
+
+<p>
+For those with real data security concerns, performance is irrelevant; sensitive information cannot be allowed over clear-text
+connections. Still, it's important to understand the price that must be paid for the encryption overhead, so I've performed a few
+simple tests involving NFSv4 to make the penalty clear.
+</p>
+
+<p>
+Linux once had an NFS server implemented entirely in userspace, but this was moved into the kernel for Linux 2.2 to improve
+performance (there is still a <a href="https://github.com/nfs-ganesha/nfs-ganesha/wiki">userspace NFS server</a> under active development that is useful for specific applications, notably FUSE).
+I had expected a heavy speed penalty in forcing a trip back into userspace for the stunnel on each side, but the impact was far less
+than anticipated.
+</p>
+
+<p>
+My test was performed on two HP DL360 G9 servers running recent releases of the Oracle Unbreakable Enterprise Kernel v4 (UEK). The
+test involved pushing a copy of the Oracle Linux 7.5 install ISO to the server, under both clear-text NFS and TLS.
+</p>
+
+<p>
+I made an attempt to clear the caches on both the client and server before sending any data over NFS:
+
+</p>
+<pre><code>
+# sync &amp;&amp; echo 3 &gt; /proc/sys/vm/drop_caches
+</code>
+</pre>
+<p></p>
+
+<p>
+I removed any copy of the ISO on the server from the previous test:
+
+</p>
+<pre><code>
+# rm /home/share/V975367-01.iso
+rm: remove regular file '/home/share/V975367-01.iso' y
+</code>
+</pre>
+<p></p>
+
+<p>
+I then verified the Oracle-supplied sha256 ISO hash on the client side in an effort to get the ISO's contents into the client's
+buffer cache:
+
+</p>
+<pre><code>
+# tail -1 sha256
+D0CC4493DB10C2A49084F872083ED9ED6A09CC065064C009734712B9EF357886  
+ ↪V975367-01.iso
+
+# sha256sum -c &lt; sha256
+V975367-01.iso: OK
+</code>
+</pre>
+<p></p>
+
+<p>
+At this point, I mounted the server over a clear-text NFSv4.2 connection:
+
+</p>
+<pre><code>
+# tail -1 /etc/fstab
+1.2.3.4:/ /home/share nfs noauto,vers=4.2,proto=tcp,port=2049 0 0
+
+# mount /home/share
+</code>
+</pre>
+<p></p>
+
+<p>
+Then I ran three iterations of the copy, clearing caches between each run:
+
+</p>
+<pre><code>
+# time cp V975367-01.iso /home/share
+
+real    0m39.697s
+user    0m0.005s
+sys     0m2.173s
+
+
+# time cp V975367-01.iso /home/share
+
+real    0m39.927s
+user    0m0.005s
+sys     0m2.159s
+
+
+# time cp V975367-01.iso /home/share
+
+real    0m39.489s
+user    0m0.001s
+sys     0m2.218s
+</code>
+</pre>
+<p></p>
+
+<p>
+The average wall clock time to move the ISO over a clear-text connection was 39.70 seconds. I then reconfigured to use stunnel:
+
+</p>
+<pre><code>
+# tail -1 /etc/fstab
+localhost:/ /home/share nfs noauto,vers=4.2,proto=tcp,port=2323 0 0
+
+# mount /home/share
+</code>
+</pre>
+<p></p>
+
+<p>
+And ran the tests again:
+
+</p>
+<pre><code>
+# time cp V975367-01.iso /home/share
+
+real    0m39.476s
+user    0m0.002s
+sys     0m2.265s
+
+
+# time cp V975367-01.iso /home/share
+
+real    0m40.376s
+user    0m0.005s
+sys     0m2.189s
+
+
+# time cp V975367-01.iso /home/share
+
+real    0m41.971s
+user    0m0.001s
+sys     0m2.894s
+</code>
+</pre>
+<p></p>
+
+<p>
+The average time taken for the encrypted connection was 40.61, a difference of 2.2% (hardly a high price to pay).
+</p>
+
+<p>
+The DL380 servers have CPUs that implement AES-NI native machine instructions, which likely boosted performance. Configuring stunnel
+for high logging (setting <code>debug=debug</code>), the reported cipher used was ECDHE-RSA-AES256-GCM-SHA384. Systems without AES-NI recognized
+by OpenSSL will not perform this well.
+</p>
+
+<p>
+I also tested this activity with <code>fuse-sshfs</code> from the <a href="https://fedoraproject.org/wiki/EPEL">EPEL</a> repository. I unmounted NFS, installed the RPM, then reconnected to the
+remote target:
+
+</p>
+<pre><code>
+# sshfs cfisher@1.2.3.4:/home/share /home/share
+The authenticity of host '1.2.3.4 (1.2.3.4)' can't be established.
+ECDSA key fingerprint is 
+ ↪4c:90:f8:48:2e:03:f5:31:30:c1:73:a3:5e:da:42:d3.
+Are you sure you want to continue connecting (yes/no)? yes
+cfisher@1.2.3.4's password:
+</code>
+</pre>
+<p></p>
+
+<p>
+I then reran the tests:
+
+</p>
+<pre><code>
+# time cp V975367-01.iso /home/share
+
+real    0m38.727s
+user    0m0.039s
+sys     0m4.733s
+
+
+# time cp V975367-01.iso /home/share
+
+real    0m39.498s
+user    0m0.035s
+sys     0m4.751s
+
+
+# time cp V975367-01.iso /home/share
+
+real    0m39.536s
+user    0m0.030s
+sys     0m4.763s
+</code>
+</pre>
+<p></p>
+
+<p>
+The average for <code>sshfs</code> was 39.25 seconds, 3.3% faster than NFSv4 over stunnel. There have been <a href="http://prokop.uek.krakow.pl/projects/fs_benchmark.html">other tests</a> that indicate NFS to be
+faster, but I did not see that behavior, although this test might not have performed enough activity under sufficiently rigorous
+conditions to reveal the discrepancy.
+</p>
+
+<p>
+NFS is preferable to <code>sshfs</code> in several scenarios, despite any performance differences. More filesystem features are
+supported (such as the <code>df</code> command as mentioned in the FAQ), NFS implements dynamic id mapping (<code>sshfs</code> accepts only static maps), and NFS clients with or
+without stunnel will restart broken TCP connections automatically, allowing long-term mounts to be maintained reliably in adverse
+network conditions. OpenSSH is a tool focused on interactive use; the client was not intended to run out of inetd as stunnel does,
+and stunnel is more suited to basic automated services for these reasons.
+</p>
+
+<h3 id="sigil_toc_id_93">
+Conclusion</h3>
+
+<p>
+In the decades of NFSv4 development, it is astonishing that a simple symmetric cipher was overlooked in the stampede of new features
+into the protocol. Version 4.2, published in November 2016 in <a href="https://tools.ietf.org/html/rfc7862">RFC 7862</a>, was recent enough for the authors to be painfully aware of
+the abuse of plain-text traffic. The omission was likely intentional, and an AEAD suite in common use (that is, AES-GCM and/or
+ChaCha20-Poly1305) should be retrofitted immediately upon all versions of NFS in supported products.
+</p>
+
+<p>
+The <code>sec=krb5p</code> option will encrypt NFSv4 traffic in a Kerberos realm, but requiring this infrastructure is inappropriate in hosted
+environments and is generally far from helpful. Basic access to symmetric cryptography does not and should not mandate such enormous
+baggage.
+</p>
+
+<p>
+It is increasingly obvious that we cannot trust our networks. <a href="https://www.theregister.co.uk/2018/05/18/network_roundup_17_may_2018">Cisco</a> has again been found with hard-coded back doors in its
+products. As I write this, an <a href="https://www.ic3.gov/media/2018/180525.aspx">FBI advisory</a> is in effect <a href="https://arstechnica.com/information-technology/2018/05/fbi-tells-router-users-to-reboot-now-to-kill-malware-infecting-500k-devices">requesting</a> a reboot of home and small office routing equipment due to malware
+penetration by unknown vectors. The internet is awash in compromised devices, because we don't patch the software that runs this
+infrastructure. Assuming compromise and encrypting all traffic has become the only reasonable stance.
+</p>
+
+<p>
+While the crusade against telnet may have been largely won, Linux and the greater UNIX community still have areas of willful
+blindness. NFS should have been secured long ago, and it is objectionable that a workaround with stunnel is even necessary. Sensitive
+data should not be shared with unknown sources. Until protocol and kernel architects take this to heart, use stunnel to wrap your
+NFS.
+</p>
+
+<h3 id="sigil_toc_id_94">Disclaimer</h3>
+
+<p>
+The views and opinions expressed in this article are those of
+the author and do not necessarily reflect those of <em>Linux
+Journal</em>.
+</p>
+
+<h3 id="sigil_toc_id_95">About the Author</h3>
+
+<p>Charles Fisher has an electrical engineering degree from the
+University of Iowa and works as a systems and database administrator
+for a Fortune 500 mining and manufacturing corporation.</p>
+
+</blockquote>
+</blockquote>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../288/toc288.html">Issue Table of Contents</a>
+    <a class="link3" href="../288/12481.html">Article</a>
+  </div>
+  <div class="bottomhrdiv"></div>
+
+  <div id="bottom_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+</body>
+</html>

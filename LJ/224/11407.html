@@ -1,0 +1,314 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Work the Shell
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Testing and redirecting stdin, stdout and stderr can be complicated within&#10;a shell script. Dave digs in and shows you how to change your&#10;redirects even halfway&#10;through running a script.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x24cd580.0x25c4ac0"></a>
+Work the Shell
+</h1></div><div><h3 class="subtitle"><i>
+Working with Stdin and Stdout
+</i></h3></div><div><div class="author"><h3 class="author">
+Dave
+ 
+Taylor
+</h3></div><div class="issuemoyr">Issue #224, December 2012</div></div><div><p>
+Testing and redirecting stdin, stdout and stderr can be complicated within
+a shell script. Dave digs in and shows you how to change your
+redirects even halfway
+through running a script.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24cd580.0x25c5358"></a></h2></div></div><p>
+Last month, I erroneously titled my column as &ldquo;SIGALRM Timers and
+Stdin Analysis&rdquo;. It turned out that by the time I'd finished writing
+it, I had spent a lot of time talking about SIGALRM and how to set up
+timers to avoid scripts that hang forever, but I never actually got to
+the topic of stdin analysis. Oops.
+</p><p>
+So this month, let's start with that topic. The behavior to
+emulate here is something a lot of utilities do without you paying much
+attention: they behave differently if their input or output is a pipe or
+file than they do when it's stdin (the keyboard) or stdout (the
+screen). Try <tt  >ls</tt> versus <tt  >ls|cat</tt> to see what I mean.
+</p><p>
+The <tt  >test</tt> command has a helpful flag in this regard:
+<tt  >-t</tt>. From the
+man page:
+
+<pre     class="programlisting">
+True if the file whose file descriptor number is
+file_descriptor is open and is associated with a terminal.
+</pre>
+</p><p>
+Worth knowing is that file descriptor #0 is stdin; #1 is stdout, and #2 is
+stderr (pronounced &ldquo;standard in&rdquo;, &ldquo;standard out&rdquo; and
+&ldquo;standard error&rdquo;, respectively). That's why using
+<tt  >&gt;&amp;</tt>
+to redirect by file descriptors works with <tt  >2&gt;&amp;1</tt> to cause error
+messages to go to stdout just like regular output messages.
+</p><p>
+Back to the topic though&mdash;in practice, the <tt  >-t</tt> test
+can be used like this:
+
+<pre     class="programlisting">
+#!/bin/sh
+if [ -t 0 ]; then
+  echo script running interactively
+else
+  echo stdin coming from a pipe or file
+fi
+</pre>
+</p><p>
+It's easy to test:
+
+<pre     class="programlisting">
+
+$ sh inter.sh
+script running interactively
+$ sh inter.sh &lt; inter.sh
+stdin coming from a pipe or file
+$ cat inter.sh | sh inter.sh
+stdin coming from a pipe or file
+
+</pre>
+</p><p>
+Perfect. Now, what about identifying if the output is an interactive
+terminal, file or pipe? It turns out that you can use the same basic test, just
+replace the file ID 0 with #1:
+
+<pre     class="programlisting">
+if [ -t 1 ] ; then
+  echo output going to the screen
+else
+  echo output redirected to a file or pipe
+fi
+</pre>
+</p><p>
+The results:
+
+<pre     class="programlisting">
+$ sh inter.sh
+script running interactively
+output going to the screen
+$ sh inter.sh | cat
+script running interactively
+output redirected to a file or pipe
+$ sh inter.sh &gt; output.txt
+$ cat output.txt
+script running interactively
+output redirected to a file or pipe
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24cd580.0x25c5d50"></a></h2></div></div><p>
+Pretty cool, actually.
+</p><p>
+Let's back up a bit and have another look at file redirection before 
+leaving this topic, however.
+</p><p>
+I already talked about the common trick of <tt  >2&gt;&amp;1</tt> to redirect stderr to
+stdout&mdash;something that's very helpful on the command line. You also
+can redirect specific lines of output in a shell script to stderr, so your error
+messages are sent to the screen even if stdout is being sent to a pipe or
+file:
+
+<pre     class="programlisting">
+
+echo Error: this is an error message &gt;&amp;2
+
+</pre>
+</p><p>
+But, what if you want to have your script force stdout to a specific target
+regardless of what someone does on the command line? It can be done&mdash;of
+course&mdash;although it involves a very different approach: the use of the
+<tt  >exec</tt> command.
+</p><p>
+At its most basic, the <tt  >exec</tt> call is like a subshell invocation
+(which is really what happens each time you invoke any system command like
+<tt  >ls</tt> or <tt  >fmt</tt>), but it's the
+existing shell that's
+replaced with the specified command, effectively killing the current
+process. If you have a shell script that sets up specific parameters for an
+external call, for example, you could end it with:
+
+<pre     class="programlisting">
+exec $cmd $args
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24cd580.0x25c6278"></a></h2></div></div><p>
+and anything you might have after that point in the original script is
+jettisoned because the script is no longer running, it's replaced by
+<tt  >$command</tt>.
+</p><p>
+But <tt  >exec</tt> actually is more nuanced than that, and in
+particular, a
+quirk of its behavior gives the solution we seek:
+<tt  >exec</tt>
+replaces all the current assignments for stdin, stdout and stderr with
+those specified as part of the invocation.
+</p><p>
+So here's the solution, redirecting stdout to a file:
+
+<pre     class="programlisting">
+exec &gt; output.txt
+</pre>
+</p><p>
+In practice, you can see how it works with this snippet:
+
+<pre     class="programlisting">
+echo This is stdout
+exec &gt; output.txt
+echo This is still stdout but goes elsewhere
+</pre>
+</p><p>
+Let's actually put a few different things together in this script, so
+you can see how this all works together:
+
+<pre     class="programlisting">
+
+echo this goes to stdout
+echo and this goes to stderr &gt;&amp;2
+exec &gt; output.txt
+echo This is still stdout but goes elsewhere
+echo but where does this go\? &gt;&amp;2
+exec date
+echo this script is kaput
+
+</pre>
+</p><p>
+Here's what happens when you run the program:
+
+<pre     class="programlisting">
+$ sh test.sh
+this goes to stdout
+and this goes to stderr
+but where does this go?
+</pre>
+</p><p>
+But, what's actually in output.txt?
+
+<pre     class="programlisting">
+$ cat output.txt
+</pre>
+</p><p>
+This is still stdout, but it goes elsewhere:
+
+<pre     class="programlisting">
+Sun Oct  7 10:29:56 MDT 2012
+</pre>
+</p><p>
+Interesting. Notice that, as expected, &ldquo;this script is kaput&rdquo;
+never shows up because once the <tt  >exec</tt> invokes an external program
+(in this case, <tt  >date</tt>), the script itself is done, because its process
+has been replaced with the <tt  >date</tt> program.
+</p><p>
+Notice that the <tt  >exec</tt> redirected only stdout, so that the error
+message at the very end still goes to the screen. Want to have both stdout
+and stderr redirected to the file? It's literally a one-character
+change! Instead of the above <tt  >exec</tt> redirect, use this:
+
+<pre     class="programlisting">
+
+exec &amp;&gt; output.txt
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24cd580.0x25c6c70"></a></h2></div></div><p>
+That's easy enough, isn't it?
+</p><p>
+Now, what about the opposite situation where the user has redirected stdout
+to a file, but you still want it to go to the screen anyway? That's done
+with yet another sequence on the <tt  >exec</tt> invocation:
+<tt  >1&gt;&amp;2</tt>,
+which redirects stdout to stderr.
+</p><p>
+Let's look at the same script as above, with <tt  >exec
+1&gt;&amp;2</tt>. Here's what
+happens:
+
+<pre     class="programlisting">
+$ sh test2.sh &gt; /dev/null
+and this goes to stderr
+This is still stdout but goes elsewhere
+but where does this go?
+Sun Oct  7 10:47:44 MDT 2012
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24cd580.0x25bd818"></a></h2></div></div><p>
+Pretty cool, eh?
+</p><p>
+That's it for this month. As always, if you have any interesting
+scripting projects, challenges or ideas, drop me a note via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a>, and I'll have
+a look. Input always is welcome!
+</p><p>
+Also, if you have an extraordinary memory, you might recall that Mitch
+Frazier wrote about similar topics in <span   class="emphasis"><em>Linux Journal</em></span>'s
+Upfront section, during 2010,
+but his approach was considerably more complicated than mine. Sorry Mitch!
+</p></div></div>
+<div class="authorblurb"><p>
+Dave Taylor has been hacking shell scripts for more than 30 years. Really.
+He's the author of the popular <span   class="emphasis"><em>Wicked Cool Shell
+Scripts</em></span> and
+can be found on Twitter as @DaveTaylor and more generally at
+<a href="http://www.DaveTaylorOnline.com" target="_self">www.DaveTaylorOnline.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../224/toc224.html">Issue Table of Contents</a>
+    <a class="link3" href="../224/11407.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

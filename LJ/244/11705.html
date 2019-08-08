@@ -1,0 +1,216 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Hack and /
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Kyle covers some of the headaches and gotchas when deploying&#10;servers to cloud environments that hand out completely random IPs.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2879580.0x2970ac0"></a>
+Hack and /
+</h1></div><div><h3 class="subtitle"><i>
+Not So Dynamic Updates
+</i></h3></div><div><div class="author"><h3 class="author">Kyle Rankin</h3></div><div class="issuemoyr">Issue #244, August 2014</div></div><div><p>
+Kyle covers some of the headaches and gotchas when deploying
+servers to cloud environments that hand out completely random IPs.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2879580.0x29713b0"></a></h2></div></div><p>
+Typically when a network is under my control, I like my servers to have
+static IPs. Whether the IPs are truly static (hard-coded into network
+configuration files on the host) or whether I configure a DHCP server to make static
+assignments, it's far more convenient when you know a server always will have
+the same IP. Unfortunately, in the default Amazon EC2 environment, you don't
+have any say over your IP address. When you spawn a server in EC2, Amazon's DHCP
+server hands out a somewhat random IP address. The server will maintain that
+IP address even through reboots as long as the host isn't shut down. If you
+halt the machine, the next time it comes up, it likely will be on a different
+piece of hardware and will have a new IP.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2879580.0x2971568"></a>
+dhclient Overrides</h2></div></div><p>
+To deal with this unpredictable IP address situation, through the years, I've leaned
+heavily on dynamic DNS updates within my EC2 environments. When a host starts
+for the first time and gets configured, or any time the IP changes, the host
+will update internal DNS servers with the new IP. Generally this approach has
+worked well for me, but it has one complication. If I controlled the DHCP
+server, I would configure it with the IP addresses of my DNS servers. Since
+Amazon controls DHCP, I have to configure my hosts to override the DNS
+servers they get from DHCP with mine. I use the ISC DHCP client, so that
+means adding three lines to the /etc/dhcp/dhclient.conf file on a
+Debian-based system:
+
+
+<pre     class="programlisting">
+supersede domain-name "example.com";
+supersede domain-search "dev.example.com", "example.com";
+supersede domain-name-servers 10.34.56.78, 10.34.56.79;
+</pre>
+</p><p>
+With those options, once the network has been restarted (or the machine
+reboots), these settings will end up in my /etc/resolv.conf:
+
+<pre     class="programlisting">
+domain example.com
+search dev.example.com. example.com
+nameserver 10.34.56.78
+nameserver 10.34.56.79
+</pre>p
+</p><p>
+I've even gone so far as to add a bash script under
+/etc/dhcp/dhclient-exit-hooks.d/ that fires off after I get a new lease. For
+fault tolerance, I have multiple puppetmasters, and if you were to perform a
+DNS query for the puppet hostname, you would get back multiple IPs. These
+exit hook scripts perform a DNS query to try to identify the puppetmaster
+that is closest to it and adds a little-known setting to resolv.conf called
+sortlist. The sortlist setting tells your resolver that in the case when a
+query returns multiple IPs to favor the specific IP or subnets in this line.
+So for instance, if the puppetmaster I want to use has an IP of 10.72.52.100,
+I would add the following line to my resolv.conf:
+
+<pre     class="programlisting">
+sortlist 10.72.52.100/255.255.255.255
+</pre>
+</p><p>
+The next time I query the hostname that returns multiple A records, it 
+always will favor this IP first even though it returns multiple IPs. If you use
+ping, you can test this and see that it always pings the host you specify in
+sortlist, even if a dig or nslookup returns multiple IPs in random order. In
+the event that the first host goes down, if your client has proper support for
+multiple A records, it will fail over to the next host in the list.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2879580.0x2971988"></a>
+dhclient Is Not So Dynamic</h2></div></div><p>
+This method of wrangling a bit of order into such a dynamic environment as
+EC2 has worked well for me, overall. That said, it isn't without a few
+complications. The main challenge with a system like this is that the IPs of
+my DNS servers themselves might change. No problem, you might say. Since I
+control my dhclient.conf with a configuration management system, I can just
+push out the new dhclient.conf. The only problem with this approach is that
+dhclient does not offer any way that I have been able to find to reload the
+dhclient.conf configuration file without restarting dhclient itself (which
+means bouncing the network). See, if you controlled the DHCP server, you
+could update the DHCP server's DNS settings, and it would push out to clients
+when they ask for their next lease. In my case, a DNS server IP change meant
+generating a network blip throughout the entire environment.
+</p><p>
+I discovered this requirement the hard way. I had respawned a DNS server and
+pushed out the new IP to the dhclient.conf on all of my servers. As a
+belt-and-suspenders approach, I also made sure that the /etc/resolv.conf file
+was updated by my configuration management system to show the new IP. The
+change pushed out and everything looked great, so I shut down the DNS server.
+Shortly after that, disaster struck.
+</p><p>
+I started noticing that a host would have internal health checks time out;
+the host became sluggish and unresponsive, and long after my resolv.conf
+change should have made it to the host, it seemed it was updating the file
+again. When I examined the resolv.conf on faulty systems, I noticed it had
+the old IP scheme configured even though the DNS servers with that
+information were long gone. What I eventually realized was that even though I
+updated dhclient.conf, the dhclient script itself never grabbed those
+changes,
+so after a few hours when it renewed its lease, it overwrote resolv.conf with
+the old DNS IPs it had configured!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2879580.0x2971b98"></a>
+The Blip Heard Round the World</h2></div></div><p>
+I realized that basically every host in this environment was going to renew
+its lease within the next few hours, so the network needed to be bounced on
+every single host to accept the new dhclient.conf. My team scrambled to stage
+the change on groups of servers at a time. The real problem was less that
+dhclient changes required a network blip, but more that the network blip was
+more like an outage that lasted a few seconds. We have database clusters that
+don't take kindly to the network being removed. At least, they view it
+(rightly so) as a failure on the host and immediately trigger failover and
+recovery of the database cluster. The hosts seemed to be taking way longer
+than they should to bounce their network, were triggering cluster failovers,
+and in some cases, required some manual intervention to fix things.
+</p><p>
+Fortunately for us, this issue affected only the development environment, but
+we needed to respawn DNS servers in production as well and definitely
+couldn't handle that kind of disruption there. I started researching the
+problem and after confirming that there was no way to update dhclient.conf
+without bouncing the network, I turned to why it took so long to restart the
+network. My dhclient-exit-hook script was the smoking gun. Inside the script,
+I slept for five seconds to make sure the network was up and then performed a
+dig request. This meant that when restarting the network, the DNS queries
+configured for the old IPs would time out and cause the host to pause before
+the network was up. The fix was for me to replace the sleep and dig query
+with a template containing a simple echo to append my sortlist entry to
+resolv.conf. My configuration management system would do the DNS query itself
+and update the template. With the new, faster script in place, I saw that my
+network restarts barely caused a network blip at all. Once I deployed that
+new exit hook, I was able to bounce the network on any host without any ill
+effects. The final proof was when I pushed changes to DNS server IPs in
+production with no issues.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2879580.0x2971cf8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Kyle Rankin is a Sr. Systems Administrator in the San Francisco Bay Area
+and
+the
+author of a number of books, including <span   class="emphasis"><em>The Official Ubuntu Server
+Book</em></span>,
+<span   class="emphasis"><em>Knoppix Hacks</em></span> and <span   class="emphasis"><em>Ubuntu Hacks</em></span>.
+He is currently the president of the North
+Bay Linux Users' Group.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../244/toc244.html">Issue Table of Contents</a>
+    <a class="link3" href="../244/11705.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

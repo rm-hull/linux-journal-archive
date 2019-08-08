@@ -1,0 +1,1102 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Porting LinuxBIOS to the AMD SC520</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Building a Linux system that will boot in seconds, not minutes,&#10;requires a custom BIOS. But thanks to a new compiler and&#10;development process, we can build&#10;a BIOS for a new motherboard with only C code&mdash;no assembly.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x22a5580.0x239cab0"></a>
+Porting LinuxBIOS to the AMD SC520</h1></div><div><div class="author"><h3 class="author">
+Ron
+ 
+Minnich
+</h3></div><div class="issuemoyr">Issue #136, August 2005</div></div><div><p>
+Building a Linux system that will boot in seconds, not minutes,
+requires a custom BIOS. But thanks to a new compiler and
+development process, we can build
+a BIOS for a new motherboard with only C code&mdash;no assembly.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239d1e8"></a></h2></div></div><p>
+In this article, we describe the work done by the Cluster Research Team
+at Los Alamos National Laboratory to port LinuxBIOS
+to the AMD SC520 CPU. Although space does not permit a
+detailed description of all the work involved, we
+hope you can get some idea of what it takes to port
+to a new board.
+</p><p>
+The AMD SC520 is a small, low-power, integrated CPU. It
+is used in many embedded applications, one of the more
+interesting being the Portland Aerospace Society's
+open-source rocket. This rocket uses a standard board from
+Kontron to control all onboard computing functions.
+The board features a number of nice control buses,
+including the CAN bus for power control of rocket
+subsystems.
+</p><p>
+We were asked whether we could port LinuxBIOS to the
+board the rocket team uses. We purchased the board they
+use and found one main problem: the BIOS Flash
+is soldered on. If you burn a bad BIOS, the board is
+now a nice paperweight. It might be nice to have a fancy
+burned-out board as a paperweight, but we would rather have
+working boards.
+</p><p>
+After doing some research, we learned that Advanced Digital Logic (ADL)
+makes a nice SC520 board with a removable BIOS Flash part. We
+decided to use this board for development. We've used
+ADL boards for our miniclusters in the past, and
+they've worked well.
+</p><p>
+We would start our work by porting to the board with removable Flash. Once
+the port is solid, our plan was to take a deep breath and try it on the
+board with a non-removable Flash. If we fail, of course, we're the proud
+owners of a $400 brick!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239d450"></a>
+Steps in Porting LinuxBIOS</h2></div></div><p>
+The steps in any LinuxBIOS port process change little from board to board.
+First,
+enumerate the resources provided on
+the mainboard, such as the CPU, I/O parts and so on. Next,
+create the configuration files that describe the
+resources and populate the directory tree with
+those files. Then, fill in the blanks with code.
+</p><p>
+LinuxBIOS itself is about 98% C code. The small amount of assembly involved
+is common to almost all the boards for a given CPU. In this sense,
+LinuxBIOS is a far better piece of code than proprietary
+BIOSes, which we are told are almost completely
+assembly code. We have not seen this source code, of
+course.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239d5b0"></a>
+How the LinuxBIOS Build Process Works</h2></div></div><p>
+The LinuxBIOS build process bears little resemblance to
+the Linux kernel build process. Instead, the LinuxBIOS build process
+was inspired by the Plan 9 and BSD kernel build
+processes, although the LinuxBIOS process adds more formality
+and control. A lot of checking is needed for
+building a BIOS, as the price of error is high. Because our clusters
+may have 1,024 or 2,048 nodes, we want to make
+sure that the BIOS we flash to all the nodes at once is good. As
+we will see, however, we can afford to flash a bad BIOS if we use
+LinuxBIOS's fallback BIOS feature.
+</p><p>
+A target is a specific instance of LinuxBIOS for a
+motherboard. As built for a target, a LinuxBIOS image
+consists of glue code for resource management code and
+the resource code itself. A resource can be thought of
+as one or more .c files that control a hardware
+component, be it a motherboard, CPU or other chip.
+Resource code can invoke code for other resources as
+part of the configuration process. For example, the
+motherboard resource invokes code for CPU startup.
+</p><p>
+Each resource has a directory, so for the SC520, we need
+to have a directory called src/cpu/amd/sc520. The
+directory includes source code and two configuration
+files, one of which specifies options used for the
+resource and default option values. The other specifies
+what parts are built and how they are built.
+A given configuration file for a resource may specify
+other resources to be used, in which case the
+configuration files for those resources are read in and
+processed.
+</p><p>
+The LinuxBIOS configuration tool, starting from an
+initial configuration file called the target
+configuration file, creates a build directory. Once the
+configuration tool is run, the user changes to the build
+directory and types <tt  >make</tt>. At that point, an image of
+the LinuxBIOS for that target is built and can be
+burned into Flash.
+</p><p>
+A given motherboard can have several target
+configuration files. Different options may be set for
+these different targets. One target might have a lot of
+debugging, another might use a different bootloader
+and so on. All of this control is set by options in the
+build process.
+</p><p>
+Options are defined in the LinuxBIOS source tree, and
+only defined options may be used. Options have default
+values and can be set only once in order to avoid confusion in
+how they are set and what values they may have.
+</p><p>
+The goal of this process is to make it easy to
+build all the targets on a single machine, quickly,
+while having only one copy of the source. A second goal is to
+avoid errors that cropped up in earlier versions of
+LinuxBIOS, when options were uncontrolled or set in too
+many places. The process supports
+cross-compilation, so we can build our PowerPC targets
+on an x86 machine.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239d920"></a>
+LinuxBIOS Directory Tree Structure</h2></div></div><p>
+A portion of the LinuxBIOS directory tree structure is
+shown in Figure 1. Starting at the top of the tree, there are
+three main directories: src, targets and util. The src
+directory contains all the source for all the BIOSes&mdash;all
+mainboards, all CPUs, all devices and so on. You
+build a specific BIOS in the target directory using a
+config file. For example, for our project, we built our
+BIOS in the targets/digitallogic/msm586seg
+directory, using the file Config.lb in that directory.
+Finally, the util directory contains many utilities
+used to create BIOS files or to burn the BIOS image into
+the motherboard Flash part.
+</p><div       class="mediaobject"><a href="8120f1.large.jpg"><img src="8120f1.jpg"></a><div class="caption"><p>
+Figure 1. The LinuxBIOS directory tree includes
+three top-level directories for source, config files
+and utilities.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239dbe0"></a>
+Configuration Files</h2></div></div><p>
+Configuration files in LinuxBIOS describe resources and
+how they are used in the construction of a target. Each
+resource can have a set of options defined for it. The
+set of all available options is defined in one file,
+src/config/Options.lb; only options defined in that
+file may be used or set in configuration files. Once a
+resource is named in a configuration file, resources
+defined within the scope of that resource inherit the options
+settings for that resource. The options have
+lexical scope; once the block for the resource ends, the
+options revert to values they had before the
+block was started. Options may have a default value set
+in the Options.lb file, or it may not be set; they may
+have a default value set in the mainboard configuration
+file; or they may be set in the target configuration
+file. To avoid the confusion we saw in earlier
+versions of the configuration tool, options may be set in only
+a few places: the target file, the mainboard
+file and CPU files. Options may be set only once.
+Thus, an option may have a default value, which can be
+changed once and only once in a configuration file.
+Forcing the set-once rule avoids problems we saw
+earlier with dueling configuration files.
+</p><p>
+A full writeup on the configuration language would
+consume this entire article. Therefore, this article touches
+on the important points, but we cannot cover all the
+aspects of the configuration language.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239dd40"></a>
+Static vs. Dynamic Information</h2></div></div><p>
+In all mainboards, some resource hardware can be
+queried to determine what other resources it needs,
+for example, how much memory and I/O space it needs. There
+also is hardware that cannot be queried, such as the
+wires that wire a PCI slot to an interrupt controller.
+For the latter type of resource, the only way to tell
+the BIOS about it is to put the information directly into the
+BIOS. Unfortunately, this information is
+contained in many places in PC BIOSes. Interrupt routing
+may be found in the $PIR (uniprocessor), _MP_ (multiprocessor or IO-APIC) or
+ACPI tables. The configuration tool must generate these
+tables, but the user in turn must tell the tool what
+values go in the tables.
+</p><p>
+Super I/O chips cannot be queried dynamically, and the
+location in I/O space and type of Super I/O chip must
+be specified in the mainboard configuration file.
+</p><p>
+Newer PC mainboards are harder to figure out at
+runtime. For example, Opteron processors have three
+HyperTransport ports that can be wired in arbitrary
+configurations on different mainboards. The
+configuration file for a mainboard has to specify how
+these ports are wired.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239def8"></a>
+Compiling C Code without Memory: romcc</h2></div></div><p>
+On modern systems, with Synchronous DRAM chips, the
+memory is not accessible until a lot of setup has been
+done. The size and parameters of the DRAM are read in
+over a two-wire bus called the SMBUS. Thus, in order to
+establish working memory, the BIOS has to:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Turn on the chipset to some extent.
+</p></li><li><p>
+Enable the SMBUS, usually on a Super I/O or southbridge.
+</p></li><li><p>
+Read in parameters of DRAM over SMBUS; more than 20 in
+some cases.
+</p></li><li><p>
+Perform complex calculations to determine timing.
+</p></li><li><p>
+Initialize DRAM control registers with proper values.
+</p></li><li><p>
+Perform a complex sequence of reads not writes from
+DRAM to get it running.
+</p></li></ul></div><p>
+All this has to be done without a stack, which means
+that function calls and variables are almost impossible
+to use. Without memory, programming is limited to the
+registers. Function calls can be
+made only one level deep. In the bad old days, a
+big, bad ball of assembly code was used to get this work done.
+Expert assembly code writers used every trick in the
+book to get this code working. Writing this code is the
+single hardest part of any BIOS.
+</p><p>
+In 2002, Eric Biederman of Linux NetworX developed a
+compiler called romcc. romcc is a simple optimizing C
+compiler&mdash;one file, 25,043 lines of code&mdash;that uses
+only registers, not memory. The compiler can use
+extended register sets such as MMX, SSI or 3DNOW.
+romcc allowed us to junk almost all of the
+assembly code in LinuxBIOS, so that even the
+earliest code, run with no working DRAM, can
+be written in C.
+</p><p>
+romcc is used only for early, pre-memory code. For code that runs
+after memory comes up, we use GCC.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239e580"></a>
+What the Build Process Builds</h2></div></div><p>
+The build process builds a binary image that is loaded to
+a Flash part. LinuxBIOS provides a utility, flash_rom, for
+this purpose. Alternatively, you can use the MTD
+drivers in the Linux kernel.
+</p><p>
+The layout of a typical ROM image is shown in Figure 2. The top
+16 bytes contain two jump vectors, a jump to the
+fallback and a jump to the normal. LinuxBIOS always
+jumps to the fallback first. If all is well, it jumps
+back to the jump to normal vector at the top of memory,
+and from there to the normal image. If the fallback
+code detects problems or if the CMOS settings indicate
+that fallback BIOS should be run, the fallback BIOS runs.
+</p><div       class="mediaobject"><a href="8120f2.large.jpg"><img src="8120f2.jpg"></a><div class="caption"><p>
+Figure 2. A typical ROM image includes a fallback
+BIOS to allow booting in case of trouble with the
+main BIOS.
+</p></div></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239e898"></a>
+Building a Tree for the SC520 Board</h2></div></div><p>
+Enough overview, let's get to work. To build support
+for a new board, we start with the mainboard first, and
+the easiest way to do this is to pick a similar
+mainboard. Because the Digital Logic ADL855 is much like
+the SC520, we start with that. We can clone much
+of the directory structure of the ADL855 for the SC520
+board.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239e9a0"></a>
+Mainboard Tree and Files</h2></div></div><p>
+The basic naming process for directories in LinuxBIOS is to name
+the type of resource, in this case, mainboard; the vendor, here
+digitallogic; and the part name, in this case,
+msm586seg. Before we start the mainboard configuration
+file, we need to know what's on this mainboard. We
+don't have to get everything at first; in fact, we can
+leave a lot out simply to get something to work.
+Typically, the best approach is to make sure you know
+what drives the serial port and make sure you get that.
+To get DRAM up, you need to make sure you set up
+whatever device drives the SMBUS. None of these chips
+are in the right state when the board is turned on; you
+ need to set a few bits to get things going.
+</p><p>
+For figuring this all out, you have a few choices.
+Almost always, the easiest thing to do is boot Linux
+and type <tt  >lspci</tt>. For work with this type of board,
+it's easiest to have a CompactFlash part with a small
+Linux distribution installed so you can boot long enough to run
+the lspci command. You can use lspci to dump
+configuration space registers too, which sometimes is
+invaluable for discovering how to set control bits
+the vendor might have forgotten to tell you about. The
+setpci command also is handy for probing bits and learning
+the effects of setting and clearing them. On several
+boards, we've used setpci to probe the chipsets to find
+undocumented enable lines for onboard devices.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x239eb58"></a>
+Devices</h2></div></div><p>
+Although lspci shows discrete devices, on the SC520
+they are integrated into the part. In the old
+days, we would create a new resource even if the part
+was integrated into the CPU. We have decided, based on
+previous experience, that if a part is integrated into
+the CPU, we do not consider it a separate resource.
+Therefore, there are no separate directories for
+the north and south bridge. The code for these devices
+is supported in the CPU device. The LinuxBIOS code base
+is flexible in this way. A given BIOS can be implemented
+with different types of parts, but in fact none of them
+are required.
+</p><p>
+Our first step in getting the resources set up for the
+mainboard is to name the CPU and set up the directory
+for it. The code for a given CPU is contained in the
+src/cpu directory. Luckily, the CPU in this case is an
+x86 system, so there is no need to add an
+architecture directory.
+</p><p>
+This article traces development from our
+point of view&mdash;a LinuxBIOS developer. If you want to
+develop a new tree, however, you can clone the
+LinuxBIOS arch repository, do development and submit
+patches to a developer. We will check your patches and
+help get them into the repository. In most cases with
+new developers, if their code is good, we allow them to
+become developers for our team.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x23955a0"></a>
+CPU</h2></div></div><p>
+We create a directory, src/cpu/amd/sc520, and
+populate it with files to support the CPU. We are not
+going to show all the commands for everything we do in
+this port, but for this first change, we show the
+commands to give you flavor of how it works. Even this
+simple part explains a lot of the important aspects of
+how LinuxBIOS is constructed:
+
+<pre     class="programlisting">
+cd src/cpu/amd
+mkdir sc520
+tla commit
+</pre>
+</p><p>
+This sets up the directory; now we need to populate it.
+The src/amd/socket_754 directory is a good candidate
+for providing model files, so we use them:
+
+<pre     class="programlisting">
+cd sc520
+cp ../socket_754/* .
+</pre>
+</p><p>
+This gives us an initial set of files:
+
+<pre     class="programlisting">
+rminnich@q:~/src/freebios2/src/cpu/amd/sc520&gt; ls
+chip.h Config.lb socket_754.c
+</pre>
+</p><p>
+The chip.h file defines a simple data structure that
+is linked into the BIOS image by the Makefile, which is
+generated by the config tool. For this part, it's
+basically empty:
+
+<pre     class="programlisting">
+rminnich@q:~/src/freebios2/src/cpu/amd/sc520&gt; catchip.h
+
+extern struct chip_operations cpu_amd_socket_754_ops;
+
+struct cpu_amd_socket_754_config {
+
+};
+</pre>
+</p><p>
+What does this mean? First, we create an instance of a
+struct called chip_operations for this part, called
+cpu_amd_socket_754_ops. This is a generic structure,
+used by all chips. This generic structure looks like this:
+
+<pre     class="programlisting">
+/* Chip operations */
+
+struct chip_operations {
+
+        void (*enable_dev)(struct device *dev);
+
+#if CONFIG_CHIP_NAME == 1
+
+        char *name;
+
+#endif
+
+};
+</pre>
+</p><p>
+The chip_operations structure, in
+src/include/device/device.h, defines a generic method
+of accessing chips. It currently has two structure
+members: a function pointer to enable the device,
+enable_dev; and an optional name, used for debug
+prints, called name. Notice that in the style of the
+Linux kernel, C preprocessor-enabled code is
+controlled by testing the value of a preprocessor
+symbol, not by testing whether it is defined. As you
+can see, the enable_dev function takes a pointer to a
+device struct.
+</p><p>
+Why do we do this? Although there is one
+chip_operations structure for a type of chip, there
+is a device structure for each possible instance of a
+chip. We say possible because a device structure is
+defined for each chip that may exist in a system.
+Consider an SMP motherboard, which has from one to four or even eight
+CPUs; not all the CPUs may be there. Part of the job of
+the enable function is to determine whether the chip is even
+there.
+</p><p>
+The device struct looks like this:
+
+<pre     class="programlisting">
+struct device {
+   struct bus * bus; /* bus this device is on, for
+                      * bridge devices, it is the
+                      * upstream bus */
+
+   device_t sibling; /* next device on this bus */
+   device_t next;    /* chain of all devices */
+   struct device_path path;
+   unsigned vendor;
+   unsigned device;
+   unsigned int class; /* 3 bytes:
+                        * (base,sub,prog-if) */
+   unsigned int hdr_type; /* PCI header type */
+   unsigned int enabled : 1; /* set if we should
+                              * enable the device */
+   unsigned int initialized : 1;
+    /* set if we have initialized the device */
+   unsigned int have_resources : 1;
+    /* Set if we have read the device's resources */
+   unsigned int on_mainboard : 1;
+   unsigned long rom_address;
+   uint8_t command;
+
+   /* Base registers for this device. I/O, MEM and
+      Expansion ROM */
+
+   struct resource resource[MAX_RESOURCES];
+   unsigned int resources;
+
+   /* links are (downstream) buses attached to the
+    * device, usually a leaf device with no child
+    * has 0 busses attached and a bridge has 1 bus */
+
+   struct bus link[MAX_LINKS];
+
+   /* number of buses attached to the device */
+unsigned int links;
+
+   struct device_operations *ops;
+   struct chip_operations *chip_ops;
+   void *chip_info;
+
+};
+</pre>
+</p><p>
+This is a pretty complicated structure, and we don't go
+into all the issues here. During the configuration step, the
+LinuxBIOS configuration tool instantiates a struct
+device for each chip by writing C code to a file in
+the build directory. The C code that the config tool
+generates has initial values so that the array of
+device structures forms a tree, with sibling and child
+nodes. The LinuxBIOS hardwaremain() function walks this
+tree, starting at the root, and performs device probing
+and initialization.
+</p><p>
+The last structure member is a void *&mdash;that
+is, a pointer that can point to anything. The
+next-to-last element is a chip_operations pointer. As
+part of the creation of the initialized C structures,
+the config tool fills in the chip_info and
+chip_operations pointer with a pointer to the per-chip
+configuration structure and per-chip-type structure.
+Thus, each device in the tree has pointers to
+structures for the type of chip and the individual
+instance of the chip. The enable structure member,
+which is a function pointer, for the type of chip is
+called with a pointer to the structure for the device
+for each instance of the chip. The device structure has
+a lot of generic structure members, as you
+can see, and it has a pointer to a structure for
+nongeneric chip components.
+</p><p>
+For each chip, we optionally can provide declarations
+of both structures, but it is not required. The
+chip_operations structure, or the type-of-chip structure,
+has a type fixed by LinuxBIOS itself; the chip_info
+structure has a structure fixed by the chip. The enable function in the chip_operations structure
+can be un-initialized, in which case there is no enable
+function to call for the chip&mdash;the chip is always
+enabled. That is the case for the SC520 CPU&mdash;there is
+only one, and it is always there.
+</p><p>
+Now we need to change these files to match the SC520.
+We show them before and after to give you an idea how
+it looks.
+</p><p>
+chip.h changes to look like this:
+</p><pre     class="programlisting">
+extern struct chip_operations cpu_amd_sc520_ops;
+
+struct cpu_amd_sc520_config {
+
+};
+</pre><p>
+The enable_dev pointer is empty and is not
+called. We leave it empty for now but may fill it
+in later as needed. Similarly, there are no special
+structure members for the chip_info structure.
+</p><p>
+The C code looks like this:
+</p><pre     class="programlisting">
+
+#include &lt;device/device.h&gt;
+#include "chip.h"
+
+struct chip_operations cpu_amd_socket_754_ops =
+  { CHIP_NAME("socket 754") };
+
+</pre><p>
+The changes are simple; we rename the file to sc520.c
+and then change it to this:
+</p><pre     class="programlisting">
+
+#include &lt;device/device.h&gt;
+#include "chip.h"
+
+struct chip_operations cpu_amd_sc520_ops =
+  { CHIP_NAME("AMD SC520") };
+
+</pre><p>
+The final file is the Config.lb file. Here we get
+our first glance at what a configuration file looks like.
+The original file looks like this:
+</p><pre     class="programlisting">
+
+uses CONFIG_CHIP_NAME
+
+if CONFIG_CHIP_NAME
+
+        config chip.h
+
+end
+
+object socket_754.o
+
+dir /cpu/amd/model_fxx
+
+</pre><p>
+The first line declares that we are using the
+CONFIG_CHIP_NAME option. The language requires that we
+declare the variables we are going to use before we use them. In the
+case of this file that seems trivial, but in longer
+files this requirement is really useful. Second, if we
+are using the CONFIG_CHIP_NAME option, we use the
+chip.h file. Notice that nothing is set in chip.h unless
+we were using the CHIP_NAME macro, which is why this
+test is there. We declare any object files produced in
+this directory, in this case, socket_754. Finally, we
+include another directory using the dir keyword. The
+naming scheme in the config language for other
+directories is that the pathname is relative if it does
+not start with a /. Otherwise, it is rooted at the
+source of the LinuxBIOS source tree. In this case, the
+dir directive points to src/cpu/amd/model_fxx. As it
+happens, this is code for Opteron and is of no use to
+the SC520. After modifying this file for the SC520, it
+looks like this:
+
+<pre     class="programlisting">
+uses CONFIG_CHIP_NAME
+
+if CONFIG_CHIP_NAME
+
+        config chip.h
+
+end
+
+object sc520.o
+</pre>
+</p><p>
+That's about it. We've now set up support for the SC520.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x23960a0"></a>
+Mainboard</h2></div></div><p>
+Now we set up the mainboard. We first <tt  >cd</tt>
+to mainboard/digitallogic and issue:
+
+<pre     class="programlisting">
+mkdir msm586seg
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2396258"></a></h2></div></div><p>
+We then populate it from the adjacent adl855pc directory.
+</p><p>
+There are a lot of files here. We do not have enough space here
+to go into the changes for each file, but we can summarize what
+we do to each one.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x23963b8"></a>
+auto.c</h2></div></div><p>
+This file is compiled by romcc, and in a proprietary BIOS it
+would be a large blob of assembly code. To start, we
+completely empty this file&mdash;all it should have is a print function. This is the
+easiest way to get a new port going&mdash;make sure you
+have the ability to get some output. There is not room
+to show the whole file, but you can see it in the
+repository or use <tt  >viewarch</tt>. There are two key things
+to get right, however. First is picking include files. For romcc, additional
+C code is not linked in; it is included. The include files look like this:
+
+<pre     class="programlisting">
+
+#define ASSEMBLY 1
+
+#define ASM_CONSOLE_LOGLEVEL 8
+
+#include &lt;stdint.h&gt;
+#include &lt;device/pci_def.h&gt;
+#include &lt;arch/io.h&gt;
+#include &lt;device/pnp_def.h&gt;
+#include &lt;arch/romcc_io.h&gt;
+#include &lt;arch/hlt.h&gt;
+#include "pc80/mc146818rtc_early.c"
+#include "pc80/serial.c"
+#include "arch/i386/lib/console.c"
+#include "ram/ramtest.c"
+#include "cpu/x86/mtrr/earlymtrr.c"
+#include "cpu/x86/bist.h"
+#include "cpu/amd/sc520/raminit.c"
+
+</pre>
+</p><p>
+For romcc, we define the ASSEMBLY value to 1. We
+also set the console log level for assembly to a very
+high level&mdash;8 in this case. LinuxBIOS uses macros for
+printing so that when a production BIOS is built, the
+debug print macros can be compiled out to save space. A
+console log level of 8 ensures that every print
+call is compiled.
+</p><p>
+Here's the main function, which does nothing at all:
+
+<pre     class="programlisting">
+static void main(unsigned long bist)
+
+{
+    print_err("Hello\n");
+}
+</pre>
+</p><p>
+With this simple main we can test a lot. We can build
+the BIOS, load it and see if we get a printout. Simply
+getting print to work is a huge step in getting your
+BIOS going.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x23966d0"></a>
+chip.h</h2></div></div><p>
+We saw chip.h for a CPU; is it different for the
+mainboard? In fact, it's not really different at all:
+
+<pre     class="programlisting">
+extern struct chip_operations
+    mainboard_digitallogic_msm586seg_ops;
+
+struct mainboard_digitallogic_msm586seg_config {
+};
+</pre>
+</p><p>
+As before, there is a generic chip_operations
+structure and a specialized structure for the chip,
+which in this case is a mainboard. Every single device
+in LinuxBIOS is treated the same way. This uniform
+structure has proven to be powerful.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2396888"></a>
+cmos.layout</h2></div></div><p>
+cmos.layout defines the structure of the CMOS memory,
+which is a battery-backed memory on the motherboard. We
+leave this unchanged for now.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2396990"></a>
+Config.lb</h2></div></div><p>
+Config.lb is pretty standard across platforms, so for
+reasons of space we show only a subset here, the part
+that is mainboard-specific. We are going to touch on a
+few highlights, but for more detail you need to study
+the full file in the archive.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2396a98"></a>
+driver mainboard.o</h2></div></div><p>
+This statement declares a driver file, mainboard.o,
+which is included in the set of binaries linked in
+to the final image:
+
+<pre     class="programlisting">
+##
+## Build our 16 bit and 32 bit linuxBIOS entry code
+##
+
+mainboardinit cpu/x86/16bit/entry16.inc
+mainboardinit cpu/x86/32bit/entry32.inc
+ldscript /cpu/x86/16bit/entry16.lds
+ldscript /cpu/x86/32bit/entry32.lds
+</pre>
+</p><p>
+These commands relate to early initialization. The
+config tool builds a loader script for the BIOS, an
+assembly code file as well as a C file and Makefiles.
+The mainboardinit command tells the config tool to add
+the entry16.inc and entry32.inc assembly code files to
+the assembly code file for the mainboard. The .lds
+files are used in the ld script to determine how
+the assembly code is linked.
+</p><p>
+A number of mainboardinit and ldscript directives are in
+this file. These are
+architecture-related, for example, for the x86 architecture;
+CPU-related, for example, specific to the SC520 CPU; and, in
+some cases, mainboard-related.
+</p><p>
+Now we come to the complicated part of the file, which
+we are going to simplify for reasons of space:
+
+<pre     class="programlisting">
+chip cpu/amd/sc520
+     device pci_domain 0 on
+          device pci 0.0 on end
+          device pci 1.0 on end
+   end
+end
+</pre>
+</p><p>
+We are declaring the CPU and the nested devices under
+that CPU. The first device is the PCI domain, domain 0,
+which is the only domain this CPU has. We declare
+device 0:0.0 and 0:0.1. That's it for now&mdash;this does
+get more complex later, however.
+</p><p>
+Some of these files are complex, in some cases
+running to 100 or more lines, as some boards are
+complicated.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2396e08"></a>
+failover.c</h2></div></div><p>
+Failover.c is included in auto.c and is code for
+managing failover of the fallback BIOS image if the
+normal BIOS image is corrupted in some way.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2396f10"></a>
+irq_tables.c</h2></div></div><p>
+PC hardware does not have a defined way of mapping PCI
+slot interrupt lines to interrupt pins on the interrupt
+controller. There is a structure in the BIOS called the
+$PIR structure that the operating system reads to
+find out how to map interrupts.
+</p><p>
+The irq_tables.c file has an initialized C structure
+that defines the connection of the interrupt lines.
+This structure is compiled into LinuxBIOS and forms the
+$PIR table.
+</p><p>
+This file is generated automatically by a utility
+provided with linuxbios, called getpir. It is found in
+util/getpir. You run this utility under Linux, when
+booted under the factory BIOS. The utility prints
+out the $PIR table as C code. One caveat: we have found
+that the $PIR tables on many BIOSes have errors. On
+occasion, we have had to fix the tables to correspond
+to the actual hardware.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x23970c8"></a>
+mainboard.c</h2></div></div><p>
+This code is compiled by GCC, not romcc. There is not
+much to this file right now:
+
+<pre     class="programlisting">
+
+#include &lt;console/console.h&gt;
+#include &lt;device/device.h&gt;
+#include &lt;device/pci.h&gt;
+#include &lt;device/pci_ids.h&gt;
+#include &lt;device/pci_ops.h&gt;
+#include "chip.h"
+
+struct chip_operations
+mainboard_digitallogic_msm586seg_ops = {
+  CHIP_NAME("Digital Logic MSM586SEG mainboard ")
+
+};
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2397228"></a>
+Options.lb</h2></div></div><p>
+This file contains the names of options used for this
+mainboard. First, all the options to be used are
+listed, for example:
+
+<pre     class="programlisting">
+uses HAVE_FALLBACK_BOOT
+</pre>
+</p><p>
+If the option has some desired value, it may be set in
+this file:
+
+<pre     class="programlisting">
+## Build code for the fallback boot
+default HAVE_FALLBACK_BOOT=1
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2397438"></a></h2></div></div><p>
+which sets the option to 1. This option may be overridden in
+the target file; that is, we can set the following in
+targets/digitallogic/msm586seg/Config.lb:
+
+<pre     class="programlisting">
+option HAVE_FALLBACK_BOOT=1
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2397598"></a></h2></div></div><p>
+and the BIOS can be built without a fallback boot
+image. In general, the default values set in this file
+do not need to be changed.
+</p><p>
+We do need to change the default ROM size, as it is set
+to 1024*1024 for the other mainboard:
+
+<pre     class="programlisting">
+default ROM_SIZE  = 256*1024
+</pre>
+</p><p>
+Why make this a default? So that a target with a larger
+ROM size can override it. If you build a target for a 1MB
+of ROM, you would put the command:
+
+<pre     class="programlisting">
+option ROM_SIZE = 256*1024
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2926740"></a></h2></div></div><p>
+in the target configuration file.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2926848"></a>
+reset.c</h2></div></div><p>
+This file contains code to perform a hard reset of the
+CPU.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2926950"></a>
+Target Configuration File</h2></div></div><p>
+Now we add the target directory for the mainboard:
+
+<pre     class="programlisting">
+cd targets/digitallogic
+mkdir msm586seg
+tla add msm586seg
+cp adl855pc/Config.lb msm586seg/
+tla add Config.lb
+</pre>
+</p><p>
+We then commit, and the code is in. Next, we fix up the
+Config.lb for the msm586seg:
+
+<pre     class="programlisting">
+target msm586seg
+mainboard digitallogic/msm586seg
+option DEFAULT_CONSOLE_LOGLEVEL=10
+option MAXIMUM_CONSOLE_LOGLEVEL=10
+romimage "normal"
+        option USE_FALLBACK_IMAGE=0
+        option ROM_IMAGE_SIZE=0x10000
+        option LINUXBIOS_EXTRA_VERSION=".0Normal"
+        payload /etc/hosts
+end
+
+romimage "fallback"
+        option USE_FALLBACK_IMAGE=1
+        option ROM_IMAGE_SIZE=0x10000
+        option LINUXBIOS_EXTRA_VERSION=".0Fallback"
+        payload /etc/hosts
+
+end
+
+buildrom ./linuxbios.rom ROM_SIZE "normal" "fallback"
+</pre>
+</p><p>
+The file defines seven basic things:
+</p><div class="orderedlist"><ol type="1"><li><p>
+The target build directory is msm586seg; it
+could be anything.
+</p></li><li><p>
+The mainboard is the digitallogic/msm586seg.
+</p></li><li><p>
+The default console log level is 10; this controls
+which compiled-in messages are printed. It can be
+overridden by the CMOS setting in the normal BIOS
+image.
+</p></li><li><p>
+The maximum console log level is 10; this controls
+which print macros are compiled.
+</p></li><li><p>
+The normal romimage is not a fallback image; it is
+0x10000 bytes (64KB), has a version tag of .0Normal
+and has a payload of /etc/hosts.
+</p></li><li><p>
+The fallback romimage is a fallback image; it is
+0x10000 bytes (64KB), has a version tag of .0Fallback
+and has a payload of /etc/hosts.
+</p></li><li><p>
+The ROM target is linuxbios.rom; it has a size of
+ROM_SIZE, as defined in the mainboard Options.lb
+above, and has two images in it, normal and fallback.
+</p></li></ol></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x29270e0"></a>
+Shoot the Dice and Wear a Blindfold</h2></div></div><p>
+Well, let's see how it goes. We have a script for this part, to
+save some typing:
+
+<pre     class="programlisting">
+cd src/targets
+
+./buildtarget digitallogic/msm586seg
+</pre>
+</p><p>
+This step works. It builds, but we get errors, which
+is expected. The version covered above,
+by the way, is:
+
+<pre     class="programlisting">
+linuxbios@linuxbios.org--devel/freebios--devel--2.0--patch-21
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x29272f0"></a></h2></div></div><p>
+if you want to see what goes wrong. With a few modifications, we
+get a working version, which is stored at:
+
+<pre     class="programlisting">
+linuxbios@linuxbios.org--devel/freebios--devel--2.0--patch-22
+</pre>
+</p><p>
+It builds! The next step is to see if we can get any serial
+output. Make sure, of course, that you place the Flash part you
+want to burn into the Flash socket or you're going to
+be pretty unhappy. Better yet, <span   class="emphasis"><em>before</em></span> you
+start burning, make a backup of your factory BIOS to cover for
+mistakes:
+
+<pre     class="programlisting">
+flash_rom -r /tmp/backup
+</pre>
+</p><p>
+Put in a new Flash part:
+
+<pre     class="programlisting">
+flash_rom /tmp/backup
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2927608"></a></h2></div></div><p>
+and store the Flash part somewhere safe.
+</p><p>
+We're building on a laptop and using an SC520 running
+Linux as the burner node. So use:
+
+<pre     class="programlisting">
+scp linuxbios.rom root@burnnode:
+ssh root@burnnode flash_rom linuxbios.rom
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x29277c0"></a>Did It Work?</h2></div></div><p>
+Let's find out if it worked. Be sure to follow our progress on the
+<i  >Linux Journal</i> Web site.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2927920"></a>
+Next Steps</h2></div></div><p>
+You can track our progress on
+the Web page or the LinuxBIOS Wiki (see the on-line Resources)&mdash;we have set up a status
+page there so you can see how it is going.
+</p><p>
+We have tried to show you a quick overview of how to do
+a LinuxBIOS port to a new system. If you really want to
+give it a go, join the mailing list and tell people
+what you are doing. There's a lot of expertise out
+there, and people are ready to help. For the record, it
+took one person totally unfamiliar with this system four
+hours to build a new BIOS port from scratch. That's not
+bad. Although it looks rather complex, once you see how
+to build a BIOS, you probably will find it to be pretty
+easy.
+</p><p>
+This research was funded in part by the Mathematical
+Information and Computer Sciences (MICS) Program of the
+DOE Office of Science and the Los Alamos Computer
+Science Institute (ASCI Institutes). Los Alamos
+National Laboratory is operated by the University of
+California for the National Nuclear Security
+Administration of the United States Department of
+Energy under contract W-7405-ENG-36. Los Alamos, NM
+87545 LANL LA-UR-05-3336.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x22a5580.0x2927ad8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+How to Set Up a LinuxBIOS Port System
+</b></p><p>
+We do not use Flash part burners at LANL, and most
+other places also do not. To burn a new Flash part, we
+actually pop the Flash part out of a running machine,
+put in a new part and run the flash_rom program to
+erase and rewrite the part. By far, the easiest way to
+set up a LinuxBIOS port station is to have one machine
+on which to build, one machine on which to burn and
+one machine on which to test.
+</p><p>
+The worst case is to have the burn, build and test
+machine be one and the same. In other words, the user
+has to boot the machine, build the LinuxBIOS, pop the
+Flash BIOS part out and put in a test part, burn it,
+reboot the machine to test and, in the likely event of
+failure&mdash;this is a new port, after all&mdash;put the
+factory BIOS back in and boot. The edit/compile/test
+cycle time can be long, as long as 3&ndash;5 minutes.
+In some cases, the burn and build machine can be
+the same.
+</p><p>
+For the SC520, we had a build machine, our x24 laptop;
+a burn machine, which is an MSM586SEG board; and a test
+machine, another MSM586SEG board. To simplify
+the situation further, we ran the two MSM586SEG boards as two
+bproc slave nodes using the Clustermatic software suite.
+Clustermatic lets us set
+up the two slave nodes with no local disk of any kind.
+All the state and control is managed from the laptop.
+We have been doing ports this way for five years now, and
+it is the easiest possible way we have found.
+</p><p>
+We've made a 64MB compact Flash image available at
+the LinuxBIOS Wiki, so you can make a slave machine with
+no effort. For more details, see the Clustermatic Web site for
+instructions on how to set up a laptop as a master node.
+</p></div><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../136/8327.html" target="_self">/article/8327</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Ron Minnich is the team leader of the Cluster Research Team at Los Alamos
+National Laboratory. He has worked in cluster computing for longer than
+he would like to think about.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../136/toc136.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

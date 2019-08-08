@@ -1,0 +1,449 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Embedding Perl in MySQL</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Add your own functionality to MySQL&#10;with MyPerl, which brings the powerful, versatile&#10;Perl interpreter into the heart of the relational&#10;database.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1b7d580.0x1c74ab0"></a>
+Embedding Perl in MySQL</h1></div><div><div class="author"><h3 class="author">
+Brian Aker</h3></div><div class="issuemoyr">Issue #116, December 2003</div></div><div><p>
+Add your own functionality to MySQL
+with MyPerl, which brings the powerful, versatile
+Perl interpreter into the heart of the relational
+database.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c75298"></a></h2></div></div><p>
+Despite the fact that MySQL comes with a rich set of functions, at some
+point you will find yourself wishing for some additional function or
+needing an advanced regular expression engine. To
+solve this problem, MySQL supports user-defined functions (UDFs). Through
+the UDF interface, you can load
+new functions into your database dynamically. Although this is a powerful
+feature, it does
+mean time spent debugging C or C++ code. As much as I like C, sometimes I
+don't have the time to write and debug applications written
+in it, and at other times I want a much faster development cycle. Enter
+Perl, the Swiss Army knife of languages, with a cast of thousands thanks
+to the Comprehensive Perl Archive Network
+(CPAN). Embedding Perl into MySQL gave me a lot of flexibility in being
+able to extend my database quickly. For these reasons, the embedded MySQL
+Perl interpreter, MyPerl, was written.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c753a0"></a>
+Setting Up Perl</h2></div></div><p>
+The first step in putting Perl into the database is to get the right
+setup for Perl. Perl by default is not threadsafe, and MySQL, on the
+other hand, uses a thread for each user connection. So for Perl to live
+inside the database, you must compile a threadsafe version of Perl:
+
+<pre     class="programlisting">
+./Configure -Dusethreads -Duseithreads
+</pre>
+</p><p>
+Once this is finished and built, you will have a Perl that is threadsafe.
+This does not mean your code or any Perl modules
+you use will be threadsafe, it simply means that Perl itself will
+be. Building Perl to be threadsafe is a necessary step, because I know
+of no vendors shipping a threadsafe Perl at this time. Don't
+be fooled by the fact that MyPerl will build with a nonthreaded Perl;
+it can, but at some point it will crash your database. I suspect that
+with the advent of Apache 2.0 and a final release of mod_perl 2, some
+vendors will consider shipping their Perl binaries with threads enabled.
+While completing this article, I finally upgraded to Red Hat 9 and saw that
+they have begun shipping Perl with threads enabled.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c755b0"></a>
+Writing the Embedded Perl Interpreter</h2></div></div><p>
+UDFs have three stages: init, request and deinit. The init stage is
+called once at the beginning of a query; the request stage is called
+once per row returned, and the deinit stage is called after the data
+is sent to the client. Both the init and deinit stages can be skipped,
+although for all but the most simple UDF you need to
+create and clean up memory you will use to return data to the client.
+</p><p>
+MyPerl starts off with the following init function:
+
+<pre     class="programlisting">
+
+my_bool
+myperl_init(UDF_INIT *initid, UDF_ARGS *args,
+            char *message)
+{
+    myperl_passable *pass = NULL;
+    int exitstatus = 0;
+    char *embedding[] = { "perl",
+                          "-MMyPerl::Request",
+                          "-e", "1" };
+    PerlInterpreter *my_perl;
+    uint i =0;
+    initid-&gt;max_length = 256;
+    initid-&gt;maybe_null=1;
+
+</pre>
+</p><p>
+Three parameters are passed into the init method, and it returns
+either success or failure. The UDF_INIT structure holds information
+that controls the behavior of how UDF responds. It also is the only
+structure that is passed between all three stages. First,
+MySQL is told the UDF will be sending data
+back that is greater than the size of a VARCHAR. By telling the server
+it needs more space then a VARCHAR, the server assumes it
+will be returning blobs.
+</p><p>
+Although MyPerl does not know that it actually will be doing this, at this
+point it has
+no way of knowing how much data it will be returning, so
+telling the server that it is returning blobs is the safer bet. Next, it
+sets maybe_null to 1, because there is always the possibility it will
+be returning NULL values. MyPerl returns NULL for both empty results
+and upon compilation errors that occur from code that you eval().
+</p><p>
+The next thing is to check the rows being passed in:
+
+<pre     class="programlisting">
+
+if (args-&gt;arg_count == 0 || i
+    args-&gt;arg_type[0] != STRING_RESULT) {
+    strncpy(message,USAGE, MYSQL_ERRMSG_SIZE);
+    return 1;
+}
+for (i=0 ; i &lt; args-&gt;arg_count; i++)
+        args-&gt;arg_type[i]=STRING_RESULT;
+
+</pre>
+</p><p>
+MyPerl expects that the first row being passed in is the code it
+will execute. Therefore, if no rows are passed in or if the first row
+is not a string, an error should occur. Error messages must be at most
+the size of MYSQL_ERRMSG_SIZE, and they must be copied into the message
+string. To save some time, MyPerl walks through the arguments that MySQL
+will be passing in and tells it to convert them to strings.
+</p><p>
+Before the Perl interpreter is set up, a structure must be created to
+store the interpreter and track a memory block that it will use to
+return data for each request:
+
+<pre     class="programlisting">
+
+pass = (myperl_passable *)
+    malloc(sizeof(myperl_passable));;
+if (!pass) {
+    strncpy(message, "Could not allocate memory",
+            MYSQL_ERRMSG_SIZE);
+    return 1;
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c759d0"></a></h2></div></div><p>
+The structure is as follows:
+
+<pre     class="programlisting">
+
+typedef struct {
+    char *returnable;
+    size_t  size;
+    PerlInterpreter *myperl;
+    size_t  messagesize;
+} myperl_passable;
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c75b30"></a></h2></div></div><p>
+The char pointer returnable is used to store the block of memory, and size
+and messagesize are used to track both the total size and
+the current size of the returnable data. Because creating and destroying
+memory is quite costly, it is important to keep this down to a minimum. The
+Perl interpreter also will be stored in this structure.
+</p><p>
+At this point, the work of setting up the Perl interpreter that will be
+used for the query must be done. Currently, MyPerl creates a new Perl
+interpreter for each request to keep from leaking memory and ensure
+the security of data between requests. The odds of this becoming a pool
+of Perl interpreters in the future is quite high:
+
+<pre     class="programlisting">
+
+if((my_perl = perl_alloc()) == NULL) {
+    strncpy(message, "Could not allocate perl",
+            MYSQL_ERRMSG_SIZE);
+    return 1;
+}
+perl_construct(my_perl);
+exitstatus = perl_parse(my_perl, xs_init, 4,
+                        embedding, environ);
+PL_exit_flags |= PERL_EXIT_DESTRUCT_END;
+if (exitstatus) {
+    strncpy(message, "Error in creating perl parser",
+            MYSQL_ERRMSG_SIZE);
+    goto error;
+}
+exitstatus = perl_run(my_perl);
+if (exitstatus) {
+    strncpy(message, "Error in parsing your perl",
+            MYSQL_ERRMSG_SIZE);
+    goto error;
+}
+
+</pre>
+</p><p>
+The first function, perl_alloc(), allocates a new Perl
+interpreter that is then constructed with perl_construct().
+Now it is simply a matter of starting up Perl. The embedding variable
+is used as parameters for the Perl interpreter. These are exactly the
+same parameters you would use on the command line.
+Errors must be checked for at every point in dealing with the Perl
+interpreter. In
+the current design, if an error occurs, MyPerl jumps to a collection of
+function calls that will clean up the memory that has been allocated.
+</p><p>
+Now that a good Perl interpreter exists, a few defaults in the
+pass structure need to be set; the interpreter must be stored, and the
+address of the structure must be stored in initid-&gt;ptr pointer so
+it can be used throughout the query:
+
+<pre     class="programlisting">
+
+pass-&gt;returnable = NULL;
+pass-&gt;size = 0;
+pass-&gt;messagesize = 0;
+pass-&gt;myperl = my_perl;
+initid-&gt;ptr = (char*)pass;
+return 0;
+
+</pre>
+</p><p>
+After all of this setup, MyPerl is ready to start taking requests:
+
+<pre     class="programlisting">
+
+char *
+myperl(UDF_INIT *initid, UDF_ARGS *args,
+       char *result, unsigned long *length,
+       char *is_null, char *error)
+{
+    myperl_passable *pass =
+        (myperl_passable *)initid-&gt;ptr ;
+    char *returnable = NULL;
+    unsigned long x = 0;
+    size_t size = 0;
+    char *newspot = NULL;
+    char *string = NULL;
+    myperl_passable *pass =
+        (myperl_passable *)initid-&gt;ptr ;
+    STRLEN n_a; //Return strings length
+    PerlInterpreter *my_perl = pass-&gt;myperl;
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c75ea0"></a></h2></div></div><p>
+It is important that the address of the interpreter is copied
+into a variable named my_perl. Much of the Perl internals are based on
+macros that expect you to use variables with certain names. STRLEN is
+a variable type that Perl uses to store the size of strings.
+</p><p>
+At this point the interpreter is called:
+
+<pre     class="programlisting">
+
+dSP;
+ENTER;
+SAVETMPS;
+PUSHMARK(SP);
+// Now we push the additional values into ARGV
+for(x = 0; x &lt; args-&gt;arg_count  ; x++) {
+    XPUSHs(sv_2mortal(newSVpvn(args-&gt;args[x],
+           args-&gt;lengths[x])));
+}
+PUTBACK;
+call_pv("MyPerl::Request::handler", G_SCALAR);
+SPAGAIN;
+string = POPpx;
+size = (size_t)n_a;
+
+</pre>
+</p><p>
+XPUSHs is used to push all of the rows into an array of strings
+that will be passed to the Perl function handler() in the library
+MyPerl::Request(). This Perl module is similar to the Apache::Request
+module except where the Apache module uses a filename to track code
+it has eval'ed, MyPerl uses the code itself to determine this.
+</p><p>
+Because the variable named size now holds the size of the data that will
+be returned, space needs to be allocated for it:
+
+<pre     class="programlisting">
+
+if (size) {
+    if(pass-&gt;size &lt; size) {
+        newspot = (char *)realloc(pass-&gt;returnable,
+                                  size);
+        if(!newspot) {
+            error[0] = '1';
+            returnable =  NULL;
+            goto error;
+        }
+        pass-&gt;size = size;
+        pass-&gt;returnable = newspot;
+    }
+    // Always know the current size,
+    // it may be less than the full size
+    pass-&gt;messagesize = size;
+    memcpy(pass-&gt;returnable, string, size);
+} else {
+    is_null[0] = '1';
+}
+
+error:
+PUTBACK;
+FREETMPS;
+LEAVE;
+*length = pass-&gt;messagesize;
+
+return pass-&gt;returnable;
+}
+
+</pre>
+</p><p>
+This is where the information that needs to be sent to the server is
+stored. The memory call realloc() is used if more memory needs to be
+allocated. If no data is received from the Perl interpreter, is_null is set
+to 1 so that MySQL knows a null result
+should be returned to the client. MyPerl also makes sure to clean up
+memory that might have been used for the call_pv() function.
+</p><p>
+The myperl() function is now called for each row. After MySQL
+returns its data to the client, it calls the deinit function to
+free the interpreter and release any allocated memory:
+
+<pre     class="programlisting">
+
+void myperl_deinit(UDF_INIT *initid)
+{
+    myperl_passable *pass =
+        (myperl_passable *)initid-&gt;ptr ;
+    perl_destruct(pass-&gt;myperl);
+    perl_free(pass-&gt;myperl);
+    free(pass-&gt;returnable);
+    free(initid-&gt;ptr);
+}
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c762c0"></a>
+Examples Using MyPerl</h2></div></div><p>
+Now that a Perl UDF exists, simple tricks like this can be performed:
+
+<pre     class="programlisting">
+mysql&gt; select myperl('return $ARGV[0]',User)
+       from mysql.user;
+</pre>
+</p><p> As you can see, each row corresponds with
+a value in @ARGV. You also can use MyPerl with
+CPAN modules to enter data directly. This example
+fetches the content for a list of URLs and inserts
+the content into the database:
+
+<pre     class="programlisting">
+mysql&gt; insert into html select
+       myperl("use LWP::Simple;
+       my $content = get($ARGV[0]);
+       return $content", url) from urls;
+</pre>
+</p><p>
+Using modules like XML::Simple and XML::XPath, you can even query any XML
+you may have stored in your database. I have used MyPerl
+for quickly debugging serialized Perl objects I have stored
+in the database.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c76528"></a>
+But What about GROUP BY?</h2></div></div><p>
+Although the above demonstrates how to handle row requests with this code,
+it does not work for queries that use GROUP BY to treat data as sets. For
+this reason, there is an additional type of UDF called an aggregate.
+Aggregates
+differ from their more bland cousins by having two additional stages,
+reset and add. With aggregate UDFs, the add function handles each row,
+and the request stage sorts out the results and sends the data on to
+the client. The reset stage is called at the beginning of each data set,
+so it is guaranteed to be called at least once. MyPerl currently has an
+aggregate UDF, but its design is still in flux.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b7d580.0x1c76630"></a>
+Conclusion</h2></div></div><p>
+By embedding Perl into MySQL, the realm of possibilities as to what you
+can do in your database has expanded. Although frequently it is better
+to keep your database as simple as possible, you may find in some
+cases this is not practical. Imagine having to pull a gigabyte of
+text out of the database and send it to a client to be used. The time
+spent on sending the data would be considerable; being able to do work on
+the data directly in the database with Perl may turn out to be a real time-saver. Being able to make use of Perl advanced regular
+expressions may allow you to write simple clients in other languages
+that do not have a good regular expression support. I am sure
+you will find many uses for this in your own environments.
+MyPerl can be found at <a href="http://software.tangent.org" target="_self">software.tangent.org</a> along with other
+UDFs you can use as examples to write your own.
+</p></div></div>
+<div class="authorblurb"><p>
+Brian Aker (<a href="mailto:brian@tangent.org">brian@tangent.org</a>) spends his time working on
+MySQL and Apache modules, which include mod_layout and the Apache streaming
+services module, mod_mp3. He recently coauthored the <span   class="emphasis"><em>Running Weblogs
+with Slash</em></span> book for O'Reilly. For years he worked on Slashdot and now
+works for MySQL AB as a senior software architect. He also teaches the
+Perl Certification course at the University of Washington. He lives
+in Seattle, Washington with his dog Rosalynd.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../116/toc116.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

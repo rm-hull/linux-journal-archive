@@ -1,0 +1,476 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Using Hiera with Puppet
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;A guide to using Hiera with Puppet, separating code from data and&#10;encrypting&#10;passwords and certificates.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xcfb580.0xdf2ac0"></a>
+Using Hiera with Puppet
+</h1></div><div><div class="author"><h3 class="author">
+Scott
+ 
+Lackey
+</h3></div><div class="issuemoyr">Issue #251, March 2015</div></div><div><p>
+A guide to using Hiera with Puppet, separating code from data and
+encrypting
+passwords and certificates.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xcfb580.0xdf3250"></a></h2></div></div><p>
+With Hiera, you can externalize your systems' configuration data and
+easily understand how those values are assigned to your servers. With
+that data separated from your Puppet code, you then can encrypt sensitive
+values, such as passwords and keys.
+</p><p>
+Separating code and data can be tricky. In the case of configuration
+management, there is significant value in being able to design a
+hierarchy of data&mdash;especially one with the ability to cascade through
+classifications of servers and assign one or several options. This is
+the primary value that Hiera provides&mdash;the ability to separate the code
+for &ldquo;how to configure the /etc/ntp.conf&rdquo; from the values that define
+&ldquo;what ntp servers should each node use&rdquo;. In the most concise sense,
+Hiera lets you separate the &ldquo;how&rdquo; from the
+&ldquo;what&rdquo;.
+</p><p>
+The idea behind separating code and data is more than just having a
+cleaner Puppet environment; it allows engineers to create more re-usable
+Puppet modules. It also puts your variables in one place so that they
+too can be re-used, without importing manifests across modules. Hiera's
+use cases include managing packages and versions or using it as a Node
+Classifier. One of the most compelling use cases for Hiera is for
+encrypting credentials and other sensitive data, which I talk
+about later in this article.
+</p><p>
+Puppet node data originally was managed through node inheritance,
+which is no longer supported, and subsequently through using a params.pp
+module subclass. Before Hiera, it was necessary to modify the params.pp
+module class locally within the module, which frequently damaged the
+re-usability of the module. params.pp still is used in modules today,
+but as of Puppet version 3, Hiera is not only the default, but also the
+first place checked for variable values. When a variable is defined in
+both Hiera and a module, Hiera takes precedence by default. As you'll
+see, it's easy to use a module with params.pp and store some or all
+of the variable data in Hiera, making it easy to migrate incrementally.
+</p><p>
+To get started using Hiera with your existing Puppet 3 implementation,
+you won't have to make any significant changes or code migrations. You
+need only a hierarchy file for Hiera and a yaml file with a key/value
+pair. Here is an example of a Hiera hierarchy:
+
+<pre     class="programlisting">
+hiera.yaml:
+
+:backends:
+    - yaml
+:yaml:
+  :datadir: /etc/puppet/hieradata
+:hierarchy:
+  - "node/%{::fqdn}"
+  - "environment/%{::env}/main"
+  - "environment/%{::env}/%{calling_module}"
+  - defaults
+</pre>
+</p><p>
+And a yaml file:
+
+<pre     class="programlisting">
+/etc/puppet/hieradata/environment/prod/main.yaml:
+---
+$nginx::credentials::basic_auth: 'password'
+</pre>
+</p><p>
+Hiera can have multiple back ends, but for now, let's start with yaml,
+which is the default and requires no additional software. The
+<tt  >:datadir:</tt>
+is just the path to where the hierarchy search path should begin, and
+is usually a place within your Puppet configuration. The
+<tt  >:hierarchy:</tt>
+section is where the core algorithm of how Hiera does its key/value
+lookups is defined. The <tt  >:hierarchy:</tt> is something that will grow and change
+over time, and it may become much more complex than this example. 
+</p><p>
+Within
+each of the paths defined in the <tt  >:hierarchy:</tt>, you can reference any
+Puppet variable, even <tt  >$operatingsystem</tt> and
+<tt  >$ipaddress</tt>, if set. Using
+the <tt  >%{variable}</tt> syntax will pull the value. 
+</p><p>
+This example is actually a
+special hierarchical design that I use and recommend, which employs a
+fact assigned to all nodes called <tt  >@env</tt> from within
+facter. This <tt  >@env</tt>
+value can be set on the hosts either based on FQDN or tags in EC2 or
+elsewhere, but the important thing is that this is the separation of
+one large main.yaml file into directories named prod, dev and so on,
+and, therefore, the initial separation of Hiera values into categories.
+</p><p>
+The second component of this specific example is a special Hiera variable
+called <tt  >%{calling_module}</tt>. This variable is unique and reserved for Hiera
+to indicate that the yaml filename to search will be the same as the
+Puppet module that is performing the Hiera lookup. Therefore, the way
+this hierarchy will behave when looking for a variable in Puppet is like:
+
+<pre     class="programlisting">
+$nginx::credentials::basic_auth 
+</pre>
+</p><p>
+First, Hiera knows that it's looking in /etc/puppet/hieradata/node
+for a file named &lt;hostname.domain.tld&gt;.yaml and for a value
+for <tt  >nginx::credentials::basic_auth</tt>. If either the file
+or the variable isn't there, the next step is to look in
+/etc/puppet/hieradata/environment/&lt;prod|stage|dev&gt;/main.yaml,
+which is a great way to have one yaml file with most of your Hiera
+values. If you have a lot of values for the nginx example and you
+want to separate them for manageability, you simply can move them to
+the /etc/puppet/hieradata/environment/&lt;prod|stage|dev&gt;/nginx.yaml
+file. Finally, as a default, Hiera will check for the value in
+defaults.yaml at the top of the hieradata directory.
+</p><p>
+Your Puppet manifest for this lookup should look something like this:
+
+<pre     class="programlisting">
+modules/nginx/manifests/credentials.pp
+
+
+class nginx::credentials (
+  basic_auth = 'some_default',
+){}
+</pre>
+</p><p>
+This class, when included, will pull the value from Hiera and can
+be used whenever included in your manifests. The value set here of
+<tt  >some_default</tt> is just a placeholder; Hiera will override anything
+set in a parameterized class. In fact, if you have a class you are
+thinking about converting to pull data from Hiera, just start by moving
+one variable from the class definition in {} to a parameterized section
+in (), and Puppet will perform a Hiera lookup on that variable. You 
+even can leave the existing definition intact, because Hiera will override
+it. This kind of Hiera lookup is called Automatic Parameter Lookup
+and is one of several ways to pull data from Hiera, but it's by far
+the most common in practice. You also can specify a Hiera lookup with:
+
+<pre     class="programlisting">
+modules/nginx/manifests/credentials.pp
+
+
+class nginx::credentials (
+  basic_auth = hiera('nginx::credentials::basic_auth'),
+){}
+</pre>
+</p><p>
+These will both default to a priority lookup method in the Hiera
+data files. This means that Hiera will return the value of the first
+match and stop looking further. This is usually the only behavior you
+want, and it's a reasonable default. There are two lookup methods worth
+mentioning: <tt  >hiera_array</tt> and
+<tt  >hiera_hash</tt>. <tt  >hiera_array</tt> will find all of
+the matching values in the files of the hierarchy and combine them in
+an array. In the example hierarchy, this would enable you to look up all
+values for a single key for both the node and the environment&mdash;for
+example, adding an additional DNS search path for one host's
+/etc/resolv.conf. To use a <tt  >hiera_array</tt> lookup, you must define
+the lookup type explicitly (instead of relying on Automatic Parameter Lookup):
+
+
+<pre     class="programlisting">
+modules/nginx/manifests/credentials.pp
+
+
+class nginx::credentials (
+  basic_auth = hiera_array('nginx::credentials::basic_auth'),
+){}
+</pre>
+</p><p>
+A <tt  >hiera_hash</tt> lookup works in the same way, only it gathers all matching
+values into a single hash and returns that hash. This is often useful
+for an advanced <tt  >create_resources</tt> variable import as well as many other
+uses in an advanced Puppet environment.
+</p><p>
+Perhaps Hiera's most powerful feature is the ability to pull data from a
+variety of back-end storage technologies. Hiera back ends are too numerous
+to list, but they include JSON, Redis, MongoDB and even HTTP to create a
+URL-driven Puppet value API. Let's take a look at two useful back ends:
+Postgres and hiera-eyaml.
+</p><p>
+To start with the psql back end, you need to install the hiera-psql gem
+on your Puppet master (or each node if you're using masterless Puppet
+runs with Puppet apply), with a simple hiera.yaml file of: 
+
+<pre     class="programlisting">
+:hierarchy:
+* 'environment/%{env}'
+* default 
+:backends: 
+* psql 
+:psql:
+  :connection:
+    :dbname: hiera 
+    :host: localhost 
+    :user: root 
+    :password: password
+</pre>
+</p><p>
+You can do lookups on a local Postgres installation with a single database
+called hiera with a single table called config with three
+columns: Path, Key and Value.
+
+
+<pre     class="programlisting">
+path                   key                               value
+
+'environment/prod'   'nginx::credentials::basic_auth'   'password'
+</pre>
+</p><p>
+This is extremely useful if you want to expose your Hiera data to custom
+in-house applications outside Puppet, or if you want to create a
+DevOps Web console or reports.
+</p><p>
+Storing credentials in Puppet modules is a bad idea. If you store
+credentials in Puppet and your manifests on an external code repository,
+you're not only unable to share those manifests with developers with
+less-secure access, but you're obviously exposing vital security data
+outside the organization, and possibly in violation of various types
+of compliance. So how do you encrypt sensitive data in Puppet while keeping
+your manifests relevant and sharable? The answer is with
+hiera-eyaml.
+</p><p>
+Tom Poulton created hiera-eyaml to allow engineers to do just that:
+encrypt only the sensitive string of data inside the actual file rather
+than encrypting the entire file, which also can be done with hiera-gpg
+(a very useful encryption gem but not covered in this article).
+</p><p>
+To get started, install the hiera-eyaml gem, and generate a keypair on the
+Puppet master:
+
+<pre     class="programlisting">
+$ eyaml createkeys
+</pre>
+</p><p>
+Then move the keys to a secure location, like /etc/puppet/secure/keys.
+Your hiera.yaml configuration should look something like this:
+
+
+<pre     class="programlisting">
+
+hiera.yaml:
+---
+:backends:
+  - eyaml
+  - yaml
+:yaml:
+  :datadir: /etc/puppet/hieradata
+:eyaml:
+  :datadir: /etc/puppet/hieradata
+  :extension: 'yaml'          # &lt;- so all files can be named .yaml
+  :pkcs7_private_key: /path/to/private_key.pkcs7.pem
+  :pkcs7_public_key: /path/to/public_key.pkcs7.pem
+:hierarchy:
+  - "node/%{::fqdn}"
+  - "environment/%{::env}/main"
+  - "environment/%{::env}/%{calling_module}"
+* defaults
+
+</pre>
+</p><p>
+To encrypt values, you need only the public key, so distribute it to
+anyone who needs to create encrypted values:
+
+<pre     class="programlisting">
+$ eyaml encrypt -s 'password'
+</pre>
+</p><p>
+This will generate an encrypted block that you can add as the value in
+any yaml file:
+
+
+<pre     class="programlisting">
+main.yaml:
+nginx::credentials::user: slackey       #cleartext example value
+nginx::credentials::basic_auth : &gt;      #encrypted example value
+ENC[PKCS7,Y22exl+OvjDe+drmik2XEeD3VQtl1uZJXFFF2Nn
+   /HjZFXwcXRtTlzewJLc+/gox2IfByQRhsI/AgogRfYQKocZg
+   IZGeunzwhqfmEtGiqpvJJQ5wVRdzJVpTnANBA5qxeA==]
+</pre>
+</p><p>
+Editing encrypted values in place is one of the coolest features of the
+hiera-eyaml back end. <tt  >eyaml edit</tt> opens a copy of the eyaml file in your
+editor of choice and automatically decrypts all of the values in the
+file. Here you can modify the values just as though they were plain
+text. When you exit the editor by saving the file, it automatically
+encrypts all of the modified values and saves the new file in place. You
+can see that the unencrypted plain text is marked to allow the eyaml tool
+to identify each encrypted block, along with the encryption method that
+originally was used. This is used to make sure that the block is encrypted
+again only if the clear text value has changed and is encrypted using
+the original encryption mechanism:
+
+
+<pre     class="programlisting">
+nginx::credentials::user: user1
+nginx::credentials::basic_auth : DEC(1)::PKCS7[very secret password]! 
+</pre>
+</p><p>
+Blocks and strings of encrypted text can get rather onerous once you have
+more than a hundred entries or so. Because these yaml files are meant to
+be modified by humans directly, you want them to be easy to navigate. In
+my experience, it makes sense to keep your encrypted values in a separate
+file, such as a secure.yaml, with a hierarchy path of:
+
+<pre     class="programlisting">
+:hierarchy:
+  - "node/%{::fqdn}"
+ - "environment/%{::env}/secure"
+  - "environment/%{::env}/main"
+  - "environment/%{::env}/%{calling_module}"
+</pre>
+</p><p>
+This isn't necessary, as each value is encrypted individually and
+can be distributed safely to other teams. It may work well for your
+environment, however, because you can store the encrypted files in a
+separate repository, perhaps in a different Git repository. Only the
+private keys need to be protected on the Puppet master. I also recommend 
+having separate keys for each environment, as this can give more granular
+control over who can decrypt different datafiles in Hiera, as well as
+even greater security separation. One way to do this is to name the keys
+with the possible values for the @env fact, and include that in the path
+of the hierarchy. You'll need to encrypt values with the correct key,
+and this naming convention makes it easy to tell which one is correct:
+
+<pre     class="programlisting">
+:pkcs7_private_key: /path/to/private_key.pkcs7.pem-%{::env}
+:pkcs7_public_key: /path/to/public_key.pkcs7.pem-%{::env}
+</pre>
+</p><p>
+When using Hiera values within Puppet templates, either encrypted or
+not, you must be careful to pull them into the class that contains
+the templates instead of calling the values from within the template
+across classes&mdash;for example, in the template mytest.erb in a module
+called mymodule:
+
+
+<pre     class="programlisting">
+mytest.erb:
+...
+username: user1
+passwd: &lt;%= scope.lookupvar('nginx::credentials::basic_auth') %&gt; 
+ &#8618;#don't do this
+...
+</pre>
+</p><p>
+Puppet may not have loaded a value into
+<tt  >nginx::credentials::basic_auth</tt>
+yet because of the order of operations. Also, if you are using the
+<tt  >%calling_module</tt> Hiera variable, the calling module in this case
+would be mymodule, and not nginx, so it would not find the value in the
+nginx.yaml file, as one might expect.
+</p><p>
+To avoid these and other issues, it's best to import the values into the
+mymodule class and assign local values:
+
+<pre     class="programlisting">
+mymodule.pp:
+class mymodule {
+  include nginx::credentials
+  $basic_auth = "${nginx::credentials::basic_auth}"
+  file { '/etc/credentials/boto_cloudwatch.cfg':
+     content =&gt;  template ("mymodule/mytest.erb"),
+  }
+</pre>
+</p><p>
+And then reference the local value from the template:
+
+<pre     class="programlisting">
+
+mytest.erb:
+...
+username: user1
+passwd: &lt;%= @basic_auth %&gt;
+
+</pre>
+</p><p>
+You're now ready to start introducing encrypted Hiera values
+gradually into your Puppet environment. Maybe after you separate data from your
+Puppet code, you can contribute some of your modules to the PuppetForge
+for others to use!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xcfb580.0xdeb9d0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Docs&mdash;Hiera 1 Overview: <a href="https://docs.puppetlabs.com/hiera/1" target="_self">https://docs.puppetlabs.com/hiera/1</a>
+</p><p>
+&ldquo;First Look: Installing and Using Hiera&rdquo;: <a href="http://puppetlabs.com/blog/first-look-installing-and-using-hiera" target="_self">puppetlabs.com/blog/first-look-installing-and-using-hiera</a>
+</p><p>
+TomPoulton/hiera-eyaml: <a href="https://github.com/TomPoulton/hiera-eyaml" target="_self">https://github.com/TomPoulton/hiera-eyaml</a>
+</p><p>
+dalen/hiera-psql: <a href="https://github.com/dalen/hiera-psql" target="_self">https://github.com/dalen/hiera-psql</a>
+</p><p>
+&ldquo;Encrypting sensitive data in Puppet&rdquo;: <a href="http://www.theguardian.com/info/developer-blog/2014/feb/14/encrypting-sensitive-data-in-puppet" target="_self">www.theguardian.com/info/developer-blog/2014/feb/14/encrypting-sensitive-data-in-puppet</a>
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xcfb580.0xdebfa8"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Scott Lackey is a 17-year engineering veteran and Sr. DevOps Engineer for
+Salesforce.com. He's passionate about helping companies migrate to the cloud
+and mentoring prospective DevOps engineers. He lives in Los Angeles with his
+dachshund Zelda. Reach him at <a href="mailto:sudosudash@gmail.com">sudosudash@gmail.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../251/toc251.html">Issue Table of Contents</a>
+    <a class="link3" href="../251/11812.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

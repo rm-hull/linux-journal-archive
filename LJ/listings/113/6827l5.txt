@@ -1,0 +1,93 @@
+/**************************************************
+ * 
+ * This program just sits around and periodically
+ * checks port 5678 on the pumpserver.  When the
+ * current state changes, the log file is updated.
+ * 
+ ************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <fcntl.h>
+#include <time.h>
+
+#include "config.h"
+
+int main( int argc, char *argv[] ){
+
+  int sockfd;
+  struct sockaddr_in srv_addr;
+  char state[256];
+  char buf[256];
+  int len;
+  int loop = 0;
+  struct in_addr *ina;
+
+  /* really lame configuration utility */
+  do_config( argc, argv );
+  
+  if ( pconf.nodaemon == 0 ){ 
+    if ( fork() ){
+      exit(0);
+    }
+    loop = 1;
+  }
+  
+  bzero( state, 256 );
+  bzero( (char *)&srv_addr, sizeof( srv_addr ) );
+  srv_addr.sin_family = AF_INET;
+  ina = (struct in_addr*)&srv_addr.sin_addr.s_addr;
+
+  if (inet_aton( pconf.pump_address, ina ) == 0 ){ 
+    exit(1); 
+  }  
+  srv_addr.sin_port = htons(pconf.port);
+
+
+  do {
+
+    sockfd = socket( AF_INET, SOCK_STREAM, 0);
+    
+    connect( sockfd, 
+	     (struct sockaddr *)&srv_addr, 
+	     sizeof( srv_addr ));
+    
+    int fd = open( pconf.logname, 
+		   O_WRONLY | O_APPEND | O_CREAT, 
+		   0644 );
+
+    if ( fd > 0 ){
+      bzero( buf, 256 );
+      len = read( sockfd, buf, 255 );
+	  
+      if ( len ){
+	if ( strncmp( state, buf, len ) ){
+	  time_t t = time(NULL);
+	  struct tm *gmt = gmtime(&t);
+	  char *at = asctime( gmt );
+	  at[ strlen(at)-1 ] = '\0';
+	  buf[len+1] = '\0';
+	  strcpy( state, buf );
+	  len = snprintf( buf, 
+			  255, 
+			  "%s (%ld) %s\n", 
+			  at, t, state );
+	  write( fd, buf, len );
+	}
+      }
+      close(fd);
+    }
+    
+    close(sockfd);
+
+    if ( loop ){ sleep(pconf.wait); }
+  } while( loop );
+
+exit(0);
+
+}

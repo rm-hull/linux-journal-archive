@@ -1,0 +1,466 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>Motif/Lesstif Application Development</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h4>Listing 1</h4>
+  <pre>
+/* xtxtvw.c
+
+   X11/Motif based text file viewer - example program meant to accompany
+   <cite>Linux Journal</cite> article on Motif development
+
+   the following command should build the application on most linux systems
+
+   gcc -o xtxtvw xtxtvw.c -I/usr/X11R6/include -L/usr/X11R6/lib -lXm -lXt -lX11
+
+   the following command should build the application on many Solaris systems
+
+   gcc -o xtxtvw xtxtvw.c -I/usr/dt/include -L/usr/openwin/lib -lXm -lXt -lX11
+
+*/
+
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;X11/Xmu/Editres.h&gt;
+#include &lt;Xm/FileSB.h&gt;
+#include &lt;Xm/Form.h&gt;
+#include &lt;Xm/LabelG.h&gt;
+#include &lt;Xm/PushB.h&gt;
+#include &lt;Xm/RowColumn.h&gt; /* for the menu widget */
+#include &lt;Xm/SelectioB.h&gt;
+#include &lt;Xm/Text.h&gt;
+#include &lt;Xm/TextF.h&gt;
+
+/* the class is used to identify application resources */
+const char *X_APP_CLASS = "XTxtVw";
+/* reasonable default values for some essential resources */
+const String FALLBACKRES[] =
+{
+     "*background:   grey"
+   , "*forground:    black"
+   /* don't use * here otherwise all widgets will have these dimensions */
+   , "XTxtVw.width:  400"
+   , "XTxtVw.height: 400"
+   , NULL
+};
+
+/* most applications have only 1 top level shell */
+Widget g_topshell;
+
+/* the file selection dialog is invoked from multiple routines
+   so it is easiest to make the widget global */
+Widget g_filedlg;
+
+/* we use the widget to keep the file name */
+Widget g_filenamew;
+
+/* we would like to alter the text display from many routines so... */
+Widget g_filetextw;
+
+/* callback routine names are suffixed with CB by convention */
+void fileCB(Widget widget, XtPointer client_data, XtPointer call_data);
+void readfileCB(Widget widget, XtPointer client_data, XtPointer call_data);
+void fileselCB(Widget widget, XtPointer client_data, XtPointer call_data);
+void file_okCB(Widget widget, XtPointer client_data, XtPointer call_data);
+
+void setMainTitle(char *fn);
+
+/*---------------------------------------- main */
+int
+main(int argc, char *argv[])
+{
+   XtAppContext app;
+   Widget       menubar;
+   Widget       form;
+   Widget       label;
+   Widget       browseb;
+   Widget       w;
+   XmString     xms_file;
+   XmString     xms_open;
+   XmString     xms_exit;
+   XmString     xms_openacc;
+   XmString     xms_exitacc;
+   char         *fn;
+   Arg          args[10];
+   int          nargs;
+
+   /* initialize toolkit and create top level shell */
+
+   XtSetLanguageProc(NULL, NULL, NULL);
+
+   g_topshell = XtAppInitialize(&amp;app, X_APP_CLASS, NULL, 0, &amp;argc, argv
+    , (String *) FALLBACKRES, NULL, 0);
+
+   /* enable editres support */
+
+   XtAddEventHandler(g_topshell, (EventMask) 0, True
+    , (XtEventHandler) _XEditResCheckMessages, 0);
+
+   setMainTitle(NULL);
+
+   /* handle command line arguments that remain - Xt has already taken
+      care of any arguments intended for it, what remains is yours */
+
+   if(argc &gt; 1)
+      fn = argv[1];
+
+   /* build GUI components */
+
+   form = XmCreateForm(g_topshell, "form", NULL, 0);
+
+   /* build the menu bar */
+
+   /* most of the strings that get displayed by Motif are handled as the
+      XmString type in order to support localization */
+
+   xms_file = XmStringCreateLocalized("File");
+
+   /* XmVa* functions require a trailing 'NULL' argument */
+
+   menubar  = XmVaCreateSimpleMenuBar(form, "menubar"
+    , XmVaCASCADEBUTTON,  xms_file, 'F'
+    , XmNtopAttachment,   XmATTACH_FORM
+    , XmNleftAttachment,  XmATTACH_FORM
+    , XmNrightAttachment, XmATTACH_FORM
+    , NULL);
+
+   /* if Motif Creates or Gets an XmString then you must normally
+      explicitly release the associated storage */
+
+   XmStringFree(xms_file);
+
+   /* build the File pulldown menu */
+
+   xms_open    = XmStringCreateLocalized("Open");
+   xms_openacc = XmStringCreateLocalized("Ctrl+O");
+   xms_exit    = XmStringCreateLocalized("Exit");
+   xms_exitacc = XmStringCreateLocalized("Ctrl+X");
+
+   XmVaCreateSimplePulldownMenu(menubar, "filemenu", 0, fileCB
+    , XmVaPUSHBUTTON, xms_open, 'O', "Ctrl&lt;Key&gt;O", xms_openacc
+    , XmVaSEPARATOR
+    , XmVaPUSHBUTTON, xms_exit, 'x', "Ctrl&lt;Key&gt;X", xms_exitacc
+    , NULL);
+
+   XmStringFree(xms_open);
+   XmStringFree(xms_exit);
+
+   XtManageChild(menubar);
+
+   /* build file selection dialog that will be used by the Browse button */
+
+   g_filedlg = XmCreateFileSelectionDialog(g_topshell, "filesb", NULL, 0);
+   XtAddCallback(g_filedlg, XmNokCallback, fileselCB, NULL);
+   XtAddCallback(g_filedlg, XmNcancelCallback, fileselCB, NULL);
+
+   w = XmSelectionBoxGetChild(g_filedlg, XmDIALOG_HELP_BUTTON);
+   XtUnmanageChild(w);
+   w = XmSelectionBoxGetChild(g_filedlg, XmDIALOG_APPLY_BUTTON);
+   XtUnmanageChild(w);
+
+   /* build the filename entry/display area */
+
+   label = XtVaCreateManagedWidget("Filename: ", xmLabelGadgetClass, form
+    , XmNtopAttachment,  XmATTACH_WIDGET
+    , XmNtopWidget,      menubar
+    , XmNtopOffset,      10
+    , XmNleftAttachment, XmATTACH_FORM
+    , NULL);
+
+   g_filenamew = XtVaCreateManagedWidget("filename", xmTextFieldWidgetClass, form
+    , XmNtopAttachment,  XmATTACH_WIDGET
+    , XmNtopWidget,      menubar
+    , XmNtopOffset,      5
+    , XmNleftAttachment, XmATTACH_WIDGET
+    , XmNleftWidget,     label
+    , XmNleftOffset,     2
+    , NULL);
+
+   browseb = XtVaCreateManagedWidget("Browse", xmPushButtonWidgetClass, form
+    , XmNtopAttachment,   XmATTACH_WIDGET
+    , XmNtopWidget,       menubar
+    , XmNtopOffset,       6
+    , XmNrightAttachment, XmATTACH_FORM
+    , XmNrightOffset,     10
+    , NULL);
+
+   XtVaSetValues(g_filenamew
+    , XmNrightAttachment, XmATTACH_WIDGET
+    , XmNrightWidget,     browseb
+    , XmNrightOffset,     10
+    , NULL);
+
+   /* build the file contents area */
+
+   /* an alternative to using the XmVa*() is to build an argument list
+      and passing it to the function. I have noticed that sometimes
+      Lesstif/gcc and the XmVa*() functions can choke the compiler
+   */
+
+   nargs = 0;
+   XtSetArg(args[nargs], XmNtopAttachment,    XmATTACH_WIDGET); nargs++;
+   XtSetArg(args[nargs], XmNtopWidget,        g_filenamew); nargs++;
+   XtSetArg(args[nargs], XmNleftAttachment,   XmATTACH_FORM); nargs++;
+   XtSetArg(args[nargs], XmNrightAttachment,  XmATTACH_FORM); nargs++;
+   XtSetArg(args[nargs], XmNbottomAttachment, XmATTACH_FORM); nargs++;
+   XtSetArg(args[nargs], XmNeditable,         False); nargs++;
+   XtSetArg(args[nargs], XmNeditMode,         XmMULTI_LINE_EDIT); nargs++;
+   g_filetextw = XmCreateScrolledText(form, "filetext", args, nargs);
+
+   XtManageChild(g_filetextw);
+
+   /* tie in some callbacks to make this thing live */
+
+   XtAddCallback(g_filenamew, XmNactivateCallback, readfileCB,    NULL);
+   XtAddCallback(browseb,  XmNactivateCallback, fileCB, NULL);
+
+   /* start up the X event loop and expose the GUI */
+
+   XtManageChild(form);
+
+   XtRealizeWidget(g_topshell);
+
+   XtAppMainLoop(app);
+
+   return 0;
+} /* main */
+
+/*---------------------------------------- fileCB
+  file menu callback
+
+  client_data is a reserved for your use normally, call_data is
+  typically valued by Motif - see fileselCB
+*/
+void
+fileCB(Widget widget, XtPointer client_data, XtPointer call_data)
+{
+   static Widget filename;
+   int menuitem;
+
+   if(call_data == NULL)
+   {
+      filename = (Widget) client_data;
+      return;
+   }
+
+   menuitem = (int) client_data;
+
+   switch(menuitem)
+   {
+      case 0:  /* open */
+         XtManageChild(g_filedlg);
+         break;
+
+      case 1: /* exit */
+         exit(0);
+         break;
+
+      default:
+         break;
+   } /* switch */
+
+   return;
+} /* fileCB */
+
+/*---------------------------------------- fileselCB
+  callback used by the action buttons in the file selection dialog
+
+  Motif callbacks usually populate the call_data parameter with a
+  widget specific Callback structure, in this case it is a superset
+  of XmSelectionBoxCallbackStruct (the first few members are identical)
+*/
+void
+fileselCB(Widget widget, XtPointer client_data, XtPointer call_data)
+{
+   char *fn;
+   int  allswell = 0;
+   XmFileSelectionBoxCallbackStruct *cbs;
+
+   cbs = (XmFileSelectionBoxCallbackStruct *) call_data;
+
+   if(cbs-&gt;reason == XmCR_OK)
+   {
+      if(!XmStringGetLtoR(cbs-&gt;value, XmFONTLIST_DEFAULT_TAG, &amp;fn))
+         return;
+      if(strlen(fn) &gt; 0 &amp;&amp; access(fn, R_OK) == 0)
+      {
+         XmTextFieldSetString(g_filenamew, fn);
+         allswell = 1;
+      }
+      XtFree(fn);
+   }
+
+   /* dialog will disappear but it is not deallocated - may need it later */
+
+   XtUnmanageChild(g_filedlg);
+
+   if(allswell)
+   {
+      XmUpdateDisplay(g_topshell);
+
+      readfileCB(NULL, NULL, NULL);
+   }
+
+   return;
+} /* fileselCB */
+
+/*---------------------------------------- readfileCB
+  callback used to trigger file-read
+  invoked by user pressing Enter on the filename text field or by
+  selecting OK from the file selection box
+*/
+void
+readfileCB(Widget widget, XtPointer client_data, XtPointer call_data)
+{
+   const int bufsz = 1024;
+
+   FILE *fh;
+   char *fn;
+   char buf[bufsz];
+   char *txt;
+   char *msg;
+   int  pos = 0;
+
+   /* clear the text display */
+
+
+   XmTextSetString(g_filetextw, "");
+
+   fn = XmTextFieldGetString(g_filenamew);
+
+   fh = fopen(fn, "r");
+   if(fh)
+   {
+      setMainTitle(fn);
+
+      while(fgets(buf, bufsz, fh))
+      {
+         XmTextInsert(g_filetextw, pos, buf);
+         pos += strlen(buf);
+      }
+
+      fclose(fh);
+   }
+   else
+   {
+      msg = (char *) malloc(strlen(fn) + 9);
+      sprintf(msg, "fopen (%s)", fn);
+      perror(msg);
+      free(msg);
+   }
+
+   XtFree(fn);
+
+   return;
+} /* readfileCB */
+
+/*---------------------------------------- setMainTitle
+  set the application title - icon titles should also be assigned here
+*/
+void
+setMainTitle(char *fn)
+{
+   Arg    args[3];
+   int    nargs = 0;
+   char   title[256];
+   char   *p = NULL;
+
+   /* strip any path info from the filename */
+
+   if(fn)
+   {
+      p = strrchr(fn, '/');
+      if(p)
+         p++;
+      else
+         p = fn;
+   }
+
+   sprintf(title, "xTxtVw%s%s", (p ? ": " : ""), (p ? p : ""));
+   XtSetArg(args[nargs], XmNtitle,    title); nargs++;
+   XtSetArg(args[nargs], XmNiconName, title); nargs++;
+   XtSetValues(g_topshell, args, nargs);
+
+   return;
+} /* setMainTitle */
+
+/* xtxtvw.c */
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../064/toc064.html">Issue Table of Contents</a>
+    <a class="link3" href="../064/3392.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

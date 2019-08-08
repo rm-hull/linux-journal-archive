@@ -1,0 +1,564 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Dynamic Kernels: Modularized Device Drivers</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    This is the first in a series of four articles co-authored&#10;    by Alessandro Rubini and Georg Zezchwitz which present a&#10;    practical approach to writing Linux device drivers as kernel&#10;    loadable modules. This installment presents and introduction&#10;    to thte topic, preparing the reader to understand next&#10;    month's installment.&#10;    "><meta name="keywords" content="device, driver, kernel, development, programming, system, admin"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1a53580.0x1b4aab0"></a>Dynamic Kernels: Modularized Device Drivers</h1></div><div><div class="author"><h3 class="author">Alessandro Rubini</h3></div><div class="issuemoyr">Issue #23, March 1996</div></div><div><p>
+    This is the first in a series of four articles co-authored
+    by Alessandro Rubini and Georg Zezchwitz which present a
+    practical approach to writing Linux device drivers as kernel
+    loadable modules. This installment presents and introduction
+    to thte topic, preparing the reader to understand next
+    month's installment.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1b4b558"></a></h2></div></div><p>Kernel modules are a great feature of
+recent Linux kernels. Although most users feel modules are only a
+way to free some memory by keeping the floppy driver out of the
+kernel most of the time, the real benefit of using modules is
+support for adding additional devices without patching the kernel
+source. In the next few Kernel Korners Georg Zezschwitz and I will
+try to introduce the &ldquo;art&rdquo; of writing a powerful module&mdash;while
+avoiding common design errors.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1b4b660"></a>What is a device?</h2></div></div><p>A device driver is the lowest level of the software that runs
+on a computer, as it is directly bound to the hardware features of
+the device.</p><p>The concept of &ldquo;device driver&rdquo; is quite abstract, actually,
+and the kernel can be considered like it was a big device driver
+for a device called &ldquo;computer&rdquo;. Usually, however, you don't
+consider your computer a monolithic entity, but rather a CPU
+equipped with peripherals. The kernel can thus be considered as an
+application running on top of the device drivers: each driver
+manages a single part of the computer, while the kernel-proper
+builds process scheduling and file-system access on top of the
+available devices.</p><p><a href="1219f1.html" target="_self">See Figure 1.</a></p><p>A few mandatory drivers are &ldquo;hardwired&rdquo; in the kernel, such
+as the processor driver and the the memory driver; the others are
+optional, and the computer is usable both with and without
+them&mdash;although a kernel with neither the console driver nor the
+network driver is pointless for a conventional user.</p><p>The description above is somehow a simplistic one, and
+slightly philosophical too. Real drivers interact in a complex way
+and a clean distinction among them is sometimes difficult to
+achieve.</p><p>In the Unix world things like the network driver and a few
+other complex drivers belong to the kernel, and the name of
+<span   class="emphasis"><em>device driver</em></span> is reserved to the low-level
+software interface to devices belonging to the following three
+groups:</p><div class="variablelist"><dl><dt><span class="term">character devices</span></dt><dd><p>Those which can be considered files, in that they
+can be read-from and/or written-to. The console (i.e. monitor and
+keyboard) and the serial/parallel ports are examples of character
+devices. Files like /dev/tty0 and /dev/cua0 provide user access to
+the device. A char device usually can only be accessed
+sequentially.</p></dd><dt><span class="term">block devices</span></dt><dd><p>Historically: devices which can be read and written
+only in multiples of the block-size, often 512 or 1024 bytes. These
+are devices on which you can mount a filesystem, most notably
+disks. Files like /dev/hda1 provide access to the devices. Blocks
+of block devices are cached by the <span   class="bold"><b>buffer
+cache</b></span>. Unix provides uncached character devices
+corresponding to block devices, but Linux does not.</p></dd><dt><span class="term">network interfaces</span></dt><dd><p>Network interfaces don't fall in the device-file
+abstraction. Network interfaces are identified by means of a name
+(such as eth0 or plip1) but they are not mapped to the filesystem.
+It would be theoretically possible, but it is impractical from a
+programming and performance standpoint; a network interface can
+only transfer packets, and the file abstraction does not
+efficiently manage structured data like packets.</p></dd></dl></div><p>The description above is rather sketchy, and each flavour of
+Unix differs in some details about what is a block device. It
+doesn't make too much a difference, actually, because the
+distinction is only relevant inside the kernel, and we aren't going
+to talk about block drivers in detail.</p><p>What is missing in the previous representation is that the
+kernel also acts as a library for device drivers; drivers request
+services from the kernel. Your module will be able to call
+functions to perform memory allocation, filesystem access, and so
+on.</p><p>As far as loadable modules are concerned, any of the three
+driver-types can be constructed as a module. You can also build
+modules to implement filesystems, but this is outside of our
+scope.</p><p>These columns will concentrate on character device drivers,
+because special (or home-built) hardware fits the character device
+abstraction most of the time. There are only a few differences
+between the three types, and so to avoid confusion, we'll only
+cover the most common type.</p><p>You can find an introduction to block drivers in issues 9,
+10, and 11 of <i  >Linux Journal</i>, as well as in the
+<span   class="emphasis"><em>Linux Kernel Hackers' Guide</em></span>. Although both are
+slightly outdated, taken together with these columns, they should
+give you enough information to get started.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1b4c108"></a>What is a module?</h2></div></div><p>A module is a code segment which registers itself with the
+kernel as a device driver, is called by the kernel in order to
+communicate with the device, and in turn invokes other kernel
+functions to accomplish its tasks. Modules utilize a clean
+interface between the &ldquo;kernel proper&rdquo; and the device, which both
+makes the modules easy to write and keeps the kernel source code
+from being cluttered.</p><p>The module must be compiled to object code (no linking; leave
+the compiled code in .o files), and then loaded into the running
+kernel with <span   class="bold"><b>insmod</b></span>. The insmod
+program is a <span   class="bold"><b>runtime linker</b></span>, which
+resolves any undefined symbols in the module to addresses in the
+running kernel by means of the kernel symbol table.</p><p>This means that you can write a module much like a
+conventional C-language program, and you can call functions you
+don't define, in the same way you usually call
+<b  >printf()</b> and <b  >fopen()</b> in your
+application. However, you can count only on a minimal set of
+external functions, which are the <span   class="emphasis"><em>public</em></span>
+functions provided by the kernel.
+<span   class="bold"><b>insmod</b></span> will put the right
+kernel-space addresses in your compiled module wherever your code
+calls a kernel function, then insert the module into the running
+Linux kernel.</p><p>If you are in doubt whether a kernel-function is public or
+not, you can look for its name either in the source file
+/usr/src/linux/kernel/ksyms.c or in the run-time table
+/proc/ksyms.</p><p>To use make to compile your module, you'll need a Makefile as
+simple as the following one:</p><pre     class="programlisting">
+
+TARGET = <span   class="emphasis"><em>myname</em></span>
+
+ifdef DEBUG
+  # -O is needed, because of "extern inline"
+  # Add -g if your gdp is patched and can use it
+  CFLAGS = -O -DDEBUG_$(TARGET) -D__KERNEL__ -Wall
+else
+  CFLAGS = -O3 -D__KERNEL__ -fomit-frame-pointer
+endif
+
+all: $(TARGET).o
+</pre><p>As you see, no special rule is needed to build a module, only
+the correct value for <b  >CFLAGS</b>. I recommend that
+you include debugging support in your code, because without
+patches, gdb isn't able to take advantage of the symbol information
+provided by the <b  >-g</b> flag to a module while it is
+part of the running kernel.</p><p>Debugging support will usually mean extra code to print
+messages from within the driver. Using <b  >printk()</b>
+for debugging is powerful, and the alternatives are running a
+debugger on the kernel, peeking in /dev/mem, and other extremely
+low-level techniques. There are a few tools available on the
+Internet to help use these other techniques, but you need to be
+conversant with gdb and be able to read real kernel code in order
+to benefit from them. The most interesting tool at time of writing
+is kdebug-1.1, which lets you use gdb on a running kernel,
+examining or even changing kernel data structures (including those
+in loaded kernel modules) while the kernel is running.
+<span   class="emphasis"><em>Kdebug</em></span> is available for ftp from
+sunsite.unc.edu and its mirrors under /pub/Linux/kernel.</p><p>Just to make things a little harder, the kernel equivalent of
+the standard <b  >printf()</b> function is called
+<b  >printk()</b>, because it does not work exactly the
+same as <b  >printf()</b>. Before 1.3.37, conventional
+<b  >printk()</b>'s generated lines in
+<b  >/var/adm/messages</b>, while later kernels will dump
+them to the console. If you want quiet logging (only within the
+messages file, via syslogd) you must prepend the symbol
+<b  >KERN_DEBUG</b> to the format string.
+<b  >KERN_DEBUG</b> and similar symbols are simply
+strings, which get concatenated to your format string by the
+compiler. This means that you must <span   class="emphasis"><em>not</em></span> put a
+comma between <b  >KERN_DEBUG</b> and the format string.
+These symbols can be found in
+<b  >&lt;linux/kernel.h&gt;</b>, and are documented
+there. Also, <b  >printk()</b> does not support floating
+point formats.</p><p>Remember, that syslog write to the messages file as soon as
+possible, in order to save all messages on disk in case of a system
+crash. This means that an over-printk-ed module will slow down
+perceptibly, and will fill your disk in a short time.</p><p>Almost any module misbehaviour will generate an [cw]Oops[ecw]
+message from the kernel. An <b  >Oops</b> is what happens
+when the kernel gets an exception from kernel code. In other words,
+<b  >Oops</b>es are the equivalent of segmentation faults
+in user space, though no core file is generated. The result is
+usually the sudden destruction of the responsible process, and a
+few lines of low-level information in the messages file. Most
+<b  >Oops</b> messages are the result of dereferencing a
+<b  >NULL</b> pointer.</p><p>This way to handle disasters is a friendly one, and you'll
+enjoy it whenever your code is faulty: most other Unices produce a
+kernel panic instead. This does not mean that Linux never panics.
+You must be prepared to generate panics whenever you write
+functions that operate outside of a process context, such as within
+interrupt handlers and timer callbacks.</p><p>The scarce, nearly unintelligible information included with
+the [cw]Oops[ecw] message represents the processor state when the
+code faulted, and can be used to understand where the error is. A
+tool called ksymoops is able to print more readable information out
+of the oops, provided you have a kernel map handy. The map is what
+is left in /usr/src/linux/System.map after a kernel compilation.
+Ksymoops was distributed within util-linux-2.4, but was removed in
+2.5 because it has been included in the kernel distribution during
+the linux-1.3 development.</p><p>If you really understand the <b  >Oops</b> message,
+you can use it as you want, like invoking gdb off-line to
+disassemble the whole responsible function. if you understand
+neither the <b  >Oops</b> nor the ksymoops output, you'd
+better add some more debugging <b  >printk()</b> code,
+recompile, and reproduce the bug.</p><p>The following code can ease management of debugging messages.
+It must reside in the module's public include file, and will work
+for both kernel code (the module) and user code (applications).
+Note however that this code is gcc-specific. Not too big a problem
+for a kernel module, which is gcc-dependent anyway. This code was
+suggested by Linus Torvalds, as an enhancement over my previous
+ansi-compliant approach.</p><pre     class="programlisting">
+#ifndef PDEBUG
+#  ifdef DEBUG_<span   class="emphasis"><em>modulename</em></span>
+#    ifdef __KERNEL__
+#      define PDEBUG(fmt, args...) printk (KERN_DEBUG fmt , ## args)
+#    else
+#      define PDEBUG(fmt, args...) fprintf (stderr, fmt , ## args)
+#    endif
+#  else
+#    define PDEBUG(fmt, args...)
+#  endif
+#endif
+
+#ifndef PDEBUGG
+#  define PDEBUGG(fmt, args...)
+#endif
+</pre><p>After this code, every <b  >PDEBUG("any %i or %s...\n",
+i, s);</b> in the module will result in a printed message
+only if the code is compiled with
+<b  >-DDEBUG_<i><tt>modulename</tt></i></b>,
+while <b  >PDEBUGG()</b> with the same arguments will
+expand to nothing. In user mode applications, it works the same,
+except that the message is printed to <b  >stderr</b>
+instead of the messages file.</p><p>Using this code, you can enable or disable any message by
+removing or adding a single <b  >G</b> character.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1b43cd8"></a>Writing Code</h2></div></div><p>Let's look at what kind of code must go inside the module.
+The simple answer is &ldquo;whatever you need&rdquo;. In practice, you must
+remember that the module is kernel code, and must fit a
+well-defined interface with the rest of Linux.</p><p>Usually, you start with header inclusion. And you begin to
+have contraints: you must always define the
+<b  >__KERNEL__</b> symbol before including any header
+unless it is defined in your makefile, and you must
+<span   class="emphasis"><em>only</em></span> include files pertaining to the
+<b  >&lt;linux/*&gt;</b> and
+<b  >&lt;asm/*&gt;</b> hierarchies. Sure, you can include
+your module-specific header, but never, ever, include library
+specific files, such as <b  >&lt;stdio.h&gt;</b> or
+<b  >&lt;sys/time.h&gt;</b>.</p><p>The code fragment in Listing 1 represents the first lines of
+source of a typical character driver. If you are going to write a
+module, it will be easier to cut and paste these lines from
+existing source rather than copying them by hand from this
+article.</p><pre     class="programlisting">
+#define __KERNEL__         /* kernel code */
+
+#define MODULE             /* always as a module */
+#include &lt;linux/module.h&gt;  /* can't do without it */
+#include &lt;linux/version.h&gt; /* and this too */
+
+/*
+ * Then include whatever header you need.
+ * Most likely you need the following:
+ */
+#include &lt;linux/types.h&gt;   /* ulong and friends */
+#include &lt;linux/sched.h&gt;   /* current, task_struct, other goodies */
+#include &lt;linux/fcntl.h&gt;   /* O_NONBLOCK etc. */
+#include &lt;linux/errno.h&gt;   /* return values */
+#include &lt;linux/ioport.h&gt;  /* request_region() */
+#include &lt;linux/config.h&gt;  /* system name and global items */
+#include &lt;linux/malloc.h&gt;  /* kmalloc, kfree */
+
+#include &lt;asm/io.h&gt;        /* inb() inw() outb() ... */
+#include &lt;asm/irq.h&gt;       /* unreadable, but useful */
+
+#include "<span   class="emphasis"><em>modulename</em></span>.h" /* your own material */
+</pre><p>After including the headers, there comes actual code. Before
+talking about specific driver functionality&mdash;most of the code&mdash;it
+is worth noting that there exist two module-specific functions,
+which must be defined in order for the module to be loaded:</p><pre     class="programlisting">
+int init_module (void);
+void cleanup_module (void);
+</pre><p>The first is in charge of module initialization (looking for
+the related hardware and registering the driver in the appropriate
+kernel tables), while the second is in charge of releasing any
+resources the module has allocated and deregistering the driver
+from the kernel tables.</p><p>If these functions are not there, <b  >insmod</b>
+will fail to load your module.</p><p>The <b  >init_module()</b> function returns 0 on
+success and a negative value on failure. The
+<b  >cleanup_module()</b> function returns
+<b  >void</b>, because it only gets invoked when the
+module is known to be unloadable. A kernel module keeps a usage
+count, and <b  >cleanup_module()</b> is only called when
+that counter's value is 0 (more on this later on).</p><p>Skeletal code for these two functions will be presented in
+the next installment. Their design is fundamental for proper
+loading and unloading of the module, and a few details must dealt
+with. So here, I'll introduce you to each of the details, so that
+next month I can present the structure without explaining all the
+details.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1b44518"></a>Getting a major number</h2></div></div><p>Both character drivers and block drivers must register
+themselves in a kernel array; this step is fundamental for the
+driver to be used. After <b  >init_module()</b> returns,
+the driver's code segment is part of the kernel, and won't ever be
+called again unless the driver registers its functionality. Linux,
+like most Unix flavors, keeps an array of device drivers, and each
+driver is identified by a number, called the major number, which is
+nothing more than the index in the array of available
+drivers.</p><p>The major number of a device is the first number appearing in
+the output of <b  >ls -l</b> for the device file. The
+other one is the minor number (you guessed it). All the devices
+(file nodes) featuring the same major number are serviced by the
+same driver code.</p><p>It is clear that your modularized driver needs its own major
+number. The problem is that the kernel currently uses a static
+array to hold driver information, and the array is as small as 64
+entries (it used to be 32, but it was increased during the 1.2
+kernel development because of lack of major numbers).</p><p>Fortunately, the kernel allows dynamic assignment of major
+numbers. The invocation of the function</p><pre     class="programlisting">
+int register_chrdev(unsigned int major,
+                    const char *name,
+                    struct file_operations *fops);
+</pre><p>will register your char-driver within the kernel. The first
+argument is either the number you are requesting or 0, in which
+case dynamic allocation is performed. The function returns a number
+less than 0 to signal an error, and 0 or greater to signal
+successful completion. If you asked for a dynamically assigned
+number, the positive return value is the major number your driver
+was assigned. The <b  >name</b> argument is the name of
+your driver, and is what appears within the /proc/devices file.
+finally, <b  >fops</b> is the structure used for calling
+all the other functions in your driver, and will be described later
+on.</p><p>Using dynamic allocation of major numbers is a winning choice
+for custom device drivers: you're assured that your device number
+doesn't conflict with any other device within your system&mdash;you're
+assured that <b  >register_chrdev()</b> will succeed,
+unless you have loaded so many devices that you have run out of
+free device numbers, which is unlikely.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1b449e8"></a>Loading and unloading</h2></div></div><p>Since the major number is recorded inside the filesystem node
+that applications use to access the device, dynamic allocation of
+the major number means that you can't create your nodes once, and
+keep them in /dev forever. You need to recreate them each time you
+load your module.</p><p>The scripts in this page are the ones I use to load and to
+unload my modules. A little editing will suit your own module: you
+only need to change the module name and the device name.</p><p>The <span   class="bold"><b>mknod</b></span> command creates a
+device node with a given major and minor number (I'll talk about
+minor numbers in the next installment), and
+<span   class="bold"><b>chmod</b></span> gives the desired
+permissions to the new devices.</p><p>Though some of you may dislike creating (and changing
+permissions) any time the system is booted, there is nothing
+strange in it. If you are concerned about becoming root to perform
+the task, remember that insmod itself must be issued with root
+privileges.</p><p>The loading script can be conveniently called
+<span   class="emphasis"><em>drvname</em></span>_load, where
+<span   class="emphasis"><em>drvname</em></span> is the prefix you use to identify your
+driver; the same one used in the <b  >name</b> argument
+passed to <b  >register_chrdrv()</b>. The script can be
+invoked by hand during driver development, and by rc.local after
+module installation. Remember that insmod looks both in the current
+directory and in the installation directory (somewhere in
+/lib/modules) for modules to install.</p><p>If your module depends on other modules or if your system
+setup is somehow peculiar, you can invoke modprobe instead of
+insmod. The modprobe utility is a refined version of insmod which
+manages module dependencies and conditional loading. The tool is
+quite powerful and well documented. If your driver needs exotic
+handling, you're better off reading the manpage.</p><p>At time of writing, however, none of the standard tools
+handles generation of device nodes for automatically allocated
+major numbers, and I can't even conceive how they could know the
+names and minor numbers of your driver. This means that a custom
+script is needed in any case.</p><p>Here's <span   class="emphasis"><em>drvname</em></span>_load:</p><pre     class="programlisting">
+#!/bin/sh
+# Install the <span   class="emphasis"><em>drvname</em></span> driver,
+# including creating device nodes.
+
+# FILE and DEV may be the same.
+# The former is the object file to load,
+# the latter is the official name within
+#  the kernel.
+
+FILE="<span   class="emphasis"><em>drvname</em></span>"
+DEV="<span   class="emphasis"><em>devicename</em></span>"
+
+/sbin/insmod -f $FILE $*  || \
+ {echo "$DEV not inserted" ; exit 1}
+
+# retrieve major just assigned
+major=`grep $DEV /proc/devices | \
+  awk "{print \\$1}"`
+
+# make defice nodes
+cd /dev
+rm -f <span   class="emphasis"><em>mynode0</em></span> <span   class="emphasis"><em>mynode1</em></span>
+
+mknod <span   class="emphasis"><em>mynode0</em></span> c $major 0
+mknod <span   class="emphasis"><em>mynode1</em></span> c $major 1
+
+# edit this line to suit your needs
+chmod go+rw <span   class="emphasis"><em>mynode0 mynode1</em></span>
+</pre><p>And <span   class="emphasis"><em>drvname</em></span>_unload:</p><pre     class="programlisting">
+#!/bin/sh
+# Unload the <span   class="emphasis"><em>drvname</em></span> driver
+
+FILE="<span   class="emphasis"><em>drvname</em></span>"
+DEV="<span   class="emphasis"><em>devicename</em></span>"
+
+/sbin/rmmod $FILE $* || \
+ {echo "$DEV not removed" ; exit 1}
+
+# remove device nodes
+cd /dev
+rm -f <span   class="emphasis"><em>mynode0 mynode1</em></span>
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1b45540"></a>Allocating Resources</h2></div></div><p>The next important task of <b  >init_module()</b>
+is allocating any resources needed by the driver for correct
+operation. We call any tiny piece of the computer a &ldquo;resource&rdquo;,
+where &ldquo;piece&rdquo; is a logical (or software) representation of a
+physical part of the computer. Usually a driver will request
+memory, I/O ports, and IRQ lines.</p><p>Programmers are familiar with requesting memory. The
+<b  >kmalloc()</b> function will do it, and you can use
+it exactly like it was <b  >malloc()</b>. Requesting I/O
+ports, on the contrary, is unusual. They're there, free of charge.
+There is no &ldquo;I/O port fault&rdquo; equivalent of a &ldquo;segmentation
+fault&rdquo;. However, writing to I/O ports belonging to other devices
+can still crash your system.</p><p>Linux implements essentially the same policy for I/O ports as
+is used for memory. The only real difference is in the CPU not
+generating exceptions when you write to a port address that you
+have not requested. Port registering, like memory registering, is
+also useful to help the kernel's housekeeping tidy.</p><p>If you ever scratched your head about the port address to
+assign to your newly acquired board, you'll soon forget the
+feeling: <b  >cat /proc/ioports</b> and <b  >cat
+/proc/interrupts</b> will quickly uncover the secrets of your
+own hardware.</p><p>Registering I/O ports you use is a little more complicated
+than requesting memory, because you often have to &ldquo;probe&rdquo; to find
+out where your device is. To avoid &ldquo;probing&rdquo; ports that other
+devices have already registered, you can call
+<b  >check_region()</b> to ask if the region you are
+considering looking in is already claimed. Do this once for each
+region as you probe. Once you find the device, use the
+<b  >request_region()</b> function to reserve the region.
+When your device is removed, it should call
+<b  >release_region()</b> to free the ports. Here are the
+function declarations from
+<b  >&lt;linux/ioports.h&gt;</b>:</p><pre     class="programlisting">
+int check_region(unsigned int from,
+                 unsigned int extent);
+void request_region(unsigned int from,
+                    unsigned int extent,
+                    const char *name);
+void release_region(unsigned int from,
+                    unsigned int extent);
+</pre><p>The <b  >from</b> argument is the beginning of a
+contiguous region, or range, of I/O ports, the
+<b  >extent</b> is the number of ports in the region, and
+<b  >name</b> is the name of the driver.</p><p>If you forget to register your I/O ports, nothing bad will
+happen, unless you have two such misbehaving drivers, or you need
+the information to fit a new board in your computer. If you forget
+to release ports when unloading, any subsequent program accessing
+the /proc/ioports file will &ldquo;Oops&rdquo;, because the driver name will
+refer to unmapped memory. Besides, you won't be able to load your
+driver again, because your own ports are no longer available. Thus,
+you should be careful to free your ports.</p><p>A similar allocation policy exists for IRQ lines (see
+<b  >&lt;linux/sched.h&gt;</b>):</p><pre     class="programlisting">
+int request_irq(uint irq,
+           void (*handler)(int, struct pt_regs *),
+           ulong flags, const char *name);
+void free_irq(uint irq);
+</pre><p>Note again that <b  >name</b> is what appears in
+the /proc/ files, and thus should be rather
+<b  ><i><tt>myhardware</tt></i></b> than
+<b  ><i><tt>mydrv</tt></i></b>.</p><p>If you forget to register IRQ lines, your interrupt handler
+won't be called; if you forget to unregister, you won't be able to
+read /proc/interrupts. In addition, if the board continues
+generating irq's after your handler is unloaded, something weird
+may happen (I can't tell exactly, because it never happened to me,
+and I'm not likely to try it in order to document it here). [I
+<span   class="emphasis"><em>think</em></span> you get a kernel panic, but I've never
+managed (or tried) to make it happen, either&mdash;ED]</p><p>The last point I'd like to touch here is introduced by
+Linus's comment in <b  >&lt;linux/io.h&gt;</b>: you have
+to <span   class="emphasis"><em>find</em></span> your hardware. If you want to make
+usable drivers, you have to autodetect your devices. Autodetection
+is vital if you want to distribute your driver to the general
+public, but don't call it &ldquo;Plug and Play&rdquo;, since that is now a
+trademark.</p><p>The hardware should detect both the ioports and the irq
+number. If the board doesn't tell which IRQ line it will use, you
+can go through a trial and error technique&mdash;it works great, if you
+do it carefully. The technique will be covered in a later
+installment.</p><p>When you know the irq number of your device, you should use
+<b  >free_irq()</b> to release it before returning from
+<b  >module_init()</b>. You can request it again when
+your device is actually opened. If you keep hold of the interrupt,
+you won't be able to multiplex hardware on it (and the i386 has too
+few IRQ lines to allow wasting them). Thus I run plip and my frame
+grabber on the same interrupt without unloading any module&mdash;I just
+open only one of them at a time.</p><p>Unfortunately, there exist some rare times where
+autodetection won't work, so you must provide a way to pass
+information to the driver about ports and irqs. A probe will
+usually fail only during system boot, when the first drivers have
+access to several unregistered devices, and can mistake another
+device for the one it looks for. Sometimes probing for a device can
+be &ldquo;destructive&rdquo; for another device, preventing its future
+initialization. Both these problems shouldn't happen to a module,
+which comes last, and thus can't request ports belonging to other
+devices. Nonetheless, a way to disable autodetection and force
+values in the driver is an important feature to implement. At
+least, it's easier than autodetection, and can help you in
+successfully loading the module before autodetection is
+there.</p><p>Load-time configuration will be the first topic of next
+issue, where the full source of <b  >init_module()</b>
+and <b  >cleanup_modul</b>e will be uncovered.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1a53580.0x1e59a00"></a>Additional information</h2></div></div><p>The <span   class="emphasis"><em>Kernel Korner</em></span> columns of the
+following months will introduce further points of module-writing.
+Code samples can be found inside the kernel and on ftp sites near
+you.</p><p>In particular, what I describe is based on my personal
+experience with device drivers: both the
+<b  >ceddrv-0.<i><tt>xx</tt></i></b> and
+<b  >cxdrv-0.<i><tt>xx</tt></i></b> resemble
+the code I describe. Georg Zezschwitz and I wrote the ceddrv, which
+drives a lab interface (A/D, D/A, bells and whistles). The cxdrv
+driver is simpler, and drives a memory-mapped frame grabber. The
+latest versions of both drivers are available on
+ftp://iride.unipv.it/pub/linux for public ftp.
+<span   class="bold"><b>ceddrv</b></span> is also on tsx-11.mit.edu,
+while <b  >cxdev</b> is on sunsite.unc.edu in
+apps/video.</p><p>There are quite a few books about device drivers out there,
+but they're often too system-specific and describe an awkward
+interface&mdash;Linux is easier. Generic books about Unix internals and
+the kernel source are the best teachers. I'd suggest to get one of
+the following:</p><div class="itemizedlist"><ul type="disc"><li><p>Maurice J. Bach, <span   class="emphasis"><em>The Design of the UNIX
+Operating System</em></span>, Prentice Hall, 1986</p></li><li><p>Andrew S. Tanenbaum, <span   class="emphasis"><em>Operating Systems:
+Design and Implementation</em></span>, Prentice Hall, 1987</p></li><li><p>Andrew S. Tanenbaum, <span   class="emphasis"><em>Modern Operating
+Systems</em></span>, Prentice Hall, 1992</p></li></ul></div></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Alessandro Rubini</b></span>
+      (<a href="mailto:rubini@foggy.systemy.it">rubini@foggy.systemy.it</a>)
+      is taking his PhD course in computer
+      science and is breeding two small Linux boxes at home. Wild by his
+      very nature, he loves trekking, canoeing, and riding his bike.
+    </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../023/toc023.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

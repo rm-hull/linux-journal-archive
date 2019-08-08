@@ -1,0 +1,548 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Generating Firewall Rules with Perl</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;With all of the evil-doers on the Internet, even most new&#10;computer users understand the importance of having a secure firewall.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x15cc580.0x16c3ab0"></a>
+Generating Firewall Rules with Perl</h1></div><div><div class="author"><h3 class="author">
+Mike
+ 
+Diehl
+</h3></div><div class="issuemoyr">Issue #143, March 2006</div></div><div><p>
+With all of the evil-doers on the Internet, even most new
+computer users understand the importance of having a secure firewall.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15cc580.0x16c42f0"></a></h2></div></div><p>
+Like most Linux users, I started out using a simple Bash script to
+configure the firewall policy on my Linux machines. Eventually, I got
+tired of writing the same code over and over again, so I decided to
+use a few program loops to try to factor out some of the redundancy. I
+also decided that I'd like to separate the actual policy from the rest
+of the program; this meant that the program would be reading external
+configuration files. As my Perl skills are vastly better than my Bash
+skills, I decided to write my firewall rules in Perl.
+</p><p>
+The program I'm outlining in this article could just as easily have been
+written in Bash or another scripting language (or even C++, for that
+matter). The language isn't important. The important thing to realize
+is that once you write a program like this and debug it, all you have
+to do to modify security rules is change a configuration file and rerun
+the script. The configuration files should have an intuitive format so
+that they are easy for humans to read, understand and modify.
+</p><p>
+Listing 1 shows the Perl script. I practice top-down programming, so
+the first several lines of code should give you a good idea of what the
+program does. Hopefully, you should be able to follow what the program
+does even if you aren't a Perl programmer.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15cc580.0x16c44a8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. firewall.pl
+</b></p><pre     class="programlisting">
+
+#!/usr/bin/perl
+
+$default_policy = "DROP";
+
+$iptables = "/sbin/iptables";
+$work_dir = "/root/fw";
+
+set_ip_forwarding(0);
+
+load_interfaces();
+
+$protocols{tcp}++; $protocols{udp}++; $protocols{icmp}++;
+
+init();
+
+set_default_policy();
+
+add_good_hosts();
+add_bad_hosts();
+
+build_chains();
+add_rules();
+
+set_default_action();
+
+set_ip_forwarding(1);
+
+exit;
+
+###################################################
+
+sub    load_interfaces {
+    my($int, $name);
+    local(*FILE);
+
+    open FILE, "$work_dir/interfaces.conf";
+    while (&lt;FILE&gt;) {
+        chomp($_);
+        if ($_ eq "") { next; }
+
+        ($name, $int) = split(/\s*=\s*/, $_);
+        $interface{$name} = $int;
+    }
+}
+
+sub    init {
+    iptables("-F");  # flush rules
+    iptables("-t nat -F");
+    iptables("-X");  # delete chains
+    iptables("-Z");  # zero counters
+
+    iptables("-t nat -A POSTROUTING -j MASQUERADE");
+    iptables("-A INPUT -m conntrack --ctstate ESTABLISHED
+        -j ACCEPT");
+}
+
+sub    set_default_policy {
+    iptables("-P INPUT $default_policy");
+
+    iptables("-P OUTPUT ACCEPT");
+    iptables("-P FORWARD ACCEPT");
+
+    return;
+}
+
+sub    build_chains {
+    my($interface, $protocol, $chain);
+
+    foreach $interface (keys %interface) {
+        foreach $protocol (keys %protocols) {
+            $chain = "$interface-$protocol";
+
+            iptables("-N $chain");
+            iptables("-A INPUT -i $interface{$interface}
+                -p $protocol -j $chain");
+        }
+    }
+}
+
+sub    add_rules {
+    local(*FILE);
+
+    open FILE, "$work_dir/ports.conf";
+    while (&lt;FILE&gt;) {
+        chomp($_);
+        $_ =~ s/#.?//;
+        if ($_ eq "") { next; }
+
+        ($int, $proto, $port) = split(/\t/, $_);
+
+        $i = $interface{$int};
+        $chain = "$int-$proto";
+
+        if ($proto eq "all") {
+            foreach $proto (keys %protocols) {
+                $chain = "$int-$proto";
+                iptables("-A $chain -i $i -p $proto -j ACCEPT");
+            }
+            next;
+        }
+
+        if ($proto eq "udp") {
+            iptables("-A $chain -i $i -p udp --dport $port
+                -j ACCEPT");
+            iptables("-A $chain -i $i -p udp --sport $port
+                -j ACCEPT");
+        }
+
+        if ($proto eq "tcp") {
+            iptables("-A $chain -i $i -p tcp --dport $port --syn
+                -j ACCEPT");
+            iptables("-A $chain -i $i -p tcp --dport $port
+                -j ACCEPT");
+        }
+    }
+}
+
+sub    set_default_action {
+    my($interface, $protocol, $chain);
+
+    foreach $interface (keys %interface) {
+        foreach $protocol (keys %protocols) {
+            $chain = "$interface-$protocol";
+            iptables("-A $chain -j LOG
+                --log-prefix DEFAULT_$default_policy-$chain-");
+            iptables("-A $chain -j $default_policy");
+        }
+    }
+}
+
+sub    iptables {
+    my($line) = @_;
+    print "$iptables $line &gt; /dev/null\n" if ($debug);
+    $result = system("$iptables $line &gt; /dev/null");
+    if ($result != 0) {
+        print "X: ($result) iptables $line\n";
+    }
+}
+
+sub    set_ip_forwarding {
+    my($value) = @_;
+    local(*FILE);
+
+    print "Setting IP forwarding to $value.\n";
+    open FILE, "&gt;/proc/sys/net/ipv4/ip_forward";
+    print FILE $value;
+    close FILE;
+}
+
+sub    add_good_hosts {
+    my($host, $comment);
+    local(*FILE);
+
+    open FILE, "$work_dir/good_hosts.conf";
+    while (&lt;FILE&gt;) {
+        ($host, $comment) = split(/\t/, $_);
+
+        iptables("-A INPUT -s $host -j ACCEPT");
+        iptables("-A OUTPUT -d $host -j ACCEPT");
+    }
+
+}
+
+sub    add_bad_hosts {
+    my($host, $comment);
+    local(*FILE);
+
+    open FILE, "$work_dir/bad_hosts.conf";
+    while (&lt;FILE&gt;) {
+        chomp($_);
+        ($host, $comment) = split(/\t/, $_);
+
+        iptables("-A INPUT -s $host -j LOG
+             --log-prefix $comment");
+        iptables("-A OUTPUT -d $host -j LOG
+             --log-prefix $comment");
+
+        iptables("-A INPUT -s $host -j DROP");
+        iptables("-A OUTPUT -d $host -j DROP");
+    }
+}
+
+</pre></div><p>
+As you can see, the program isn't very long and certainly isn't very
+complicated. However, the program is flexible enough to allow me to
+whitelist or blacklist either individual machines or entire
+networks completely. As we'll see later on, the build_chains() and add_rules()
+functions implement a rule-pruning algorithm that keeps the Linux kernel
+from having to evaluate irrelevant rules.
+</p><p>
+The set_ip_forwarding() function does what its name implies; it
+tells the Linux kernel either to forward IP packets, or not to forward
+packets. The function accepts a single parameter, either 0 or 1, which
+determines whether the kernel will forward. The script initially turns
+all forwarding off while it loads the firewall policy. Then, right before
+the script exits, the script turns forwarding back on. The reason for
+these extra steps is that we want the router to be in a safe state
+while we load the actual rules. It's better to block all traffic than
+it is to allow even one attack through.
+</p><p>
+The load interfaces() function reads in the names of the network
+interfaces and assigns mnemonic labels to them. These labels are
+then used in the rest of the configuration to refer to the actual
+interfaces. Being able to refer to an interface as lan or even
+vpn_to_work cuts down on misconfigurations. This also makes it easy to
+make changes in order to tailor the firewall for use by my friends. In
+many cases, I simply adjust the interfaces.conf file to reflect my
+friend's network and suddenly, my friend has a reasonable firewall
+configuration.
+</p><p>
+The script works via four configuration files: interfaces.conf,
+good_hosts.conf, bad_hosts.conf and ports.conf.
+</p><p>
+Listing 2 shows the contents of my interfaces.conf file. As you can see,
+I've got six network interfaces in my router. My Internet connection is
+on eth5. I've got a 10/100TX Ethernet for the house wiring. I've got
+a Gigabit Ethernet connecting my MythTV PVR to the router for file
+storage. I've got interfaces for the Wi-Fi and VoIP. Finally, I have a
+VPN connection to some of my friend's computers. It's much easier to
+remember that lan is my 10/100 copper network as opposed to trying
+to remember whether eth3 is my VoIP or Wi-Fi interface. The last thing you
+want to do is apply the right firewall rule to the wrong interface.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15cc580.0x16c4818"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. interfaces.conf
+</b></p><pre     class="programlisting">
+lo = lo
+gig = eth0
+lan = eth1
+wifi = eth2
+voip = eth3
+wan = eth5
+tun = tun0
+</pre></div><p>
+The init() function does the initial setup for the iptables
+environment. First, we flush, or remove, all of the rules and user
+chains. Then, we clear all of the rule counters. Later on, these counters
+will allow us to determine how many packets were caught by each rule in
+our firewall. Then, the script sets up the IP masquerading. I also put
+in a rule that allows traffic that is related to an already established
+connection to pass through the firewall without further evaluation. This
+keeps the entire rule set from having to be evaluated for each incoming
+packet. The rules apply only to each new connection request.
+</p><p>
+The set_default_policy() function configures how we treat network
+traffic in the absence of any other firewall rules. In this case,
+I'm interested only in policing incoming traffic; the policy accepts
+outbound traffic and traffic that the kernel has to route to its
+final destination. Trivial modifications to this script would allow
+you to configure policies for each direction. By default, my script
+denies traffic and requires the administrator to list explicitly all
+of the allowable traffic. This is the safest way to build a firewall,
+as opposed to a firewall that allows traffic by default and relies on
+the administrator to deny dangerous traffic specifically.
+You can never
+know in advance all of the dangerous traffic, so denying everything but
+well-understood traffic is a good idea.
+</p><p>
+The add_good_hosts() function creates firewall rules that allow all
+traffic from hosts or networks listed in the good_hosts.conf file. Note
+that I don't tie these rules to any particular interface. Traffic from
+whitelisted hosts or networks can come in on any interface. I usually
+put an entry in this file for my workstation at my home office as well
+as the network at work. This way, even if I make a silly mistake that
+would have kept me from logging in to my router remotely, I can still
+get in from work or my office workstation to undo the change. Of course,
+this also assumes that my workstation and the network at work haven't been
+compromised. Usually, the contents of this file are quite short indeed.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15cc580.0x16c4ad8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. good_hosts.conf
+</b></p><pre     class="programlisting">
+127.0.0.1    Loopback
+224.0.0.0/8    Multicast
+10.4.0.0/16    VPN
+10.0.1.1/32    Home office
+</pre></div><p>
+Conversely, the add_bad_hosts() function creates firewall rules that
+block all traffic from hosts or networks listed in the bad_hosts.conf
+file. This function works almost exactly like the add_good_hosts()
+function with one important difference. When traffic from a blacklisted
+host comes to the router, the router will not only log this fact,
+it will also include the comment from the bad_hosts.conf file in the
+log. This way, I can look at my log file and see why a particular host
+was blocked. A useful improvement to this function would be to have it
+place the bad host rules in a separate chain and have that chain called
+early on in the rule set. This would give you the ability to
+add and delete hosts conveniently from this chain from an external program, perhaps
+in response to entries in your server log files.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15cc580.0x16c4ce8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. bad_hosts.conf
+</b></p><pre     class="programlisting">
+216.250.128.12  My_comment
+www.microsoft.com       Microsoft
+</pre></div><p>
+The build_chains() function builds a series of firewall rule chains. I
+build a separate chain for each combination of interface and protocol. For
+example, if I had a Linux router with eth0, eth1, eth2 and eth3, I would
+create chains for eth0-tcp, eth0-udp, eth1-tcp, eth1-udp and so on. Then, I
+build the rules necessary to send the decision-making process down the
+appropriate chain. What we end up with is a decision tree that determines
+what to do with each packet entering the router. Unlike a linear list
+of firewall rules, the decision tree prevents the kernel from having to
+evaluate obviously irrelevant rules. For example, a TCP packet coming
+in on the WAN interface will never be tested against the rules meant
+for UDP packets on the Wi-Fi interface.
+</p><p>
+I haven't done any objective testing to see if this tree-pruning
+actually makes a significant performance improvement. On the other
+hand, once the program is written and debugged, it costs me nothing to
+change the configuration files and have this decision tree generated
+automatically. So even if it improves performance by only a small amount,
+it adds so little to the program's complexity that I think it makes
+sense to do it.
+</p><p>
+The add_rules() function is where most of the work is done. This function
+reads the contents of ports.conf, which is shown in Listing 5. Before
+we discuss the add_rules() function in detail, we should discuss the
+format and content of the ports.conf file.
+</p><p>
+The ports.conf file contains one line for each firewall rule. Each
+line contains three columns and an optional comment preceded by the #
+character. The first column is the user-defined label for the interface
+that the rule will be applied to. The second column is the protocol,
+that is, tcp, udp or the special case, all. Using all for the
+protocol creates a rule that allows all traffic on the interface in
+question. Finally, we have the port number. For example, the first line
+of the file creates a rule that allows SSH traffic to come in on the
+wan interface.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x15cc580.0x16c5000"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. ports.conf
+</b></p><pre     class="programlisting">
+wan    tcp    22    # ssh
+wan    tcp    25    # smtp
+wan    tcp    80    # http
+wan    udp    53    # dns
+wan    udp    1194    # openvpn
+wan    udp    5060    # sip
+wan    udp    4569    # iax2
+wan    udp    10000:20000    # rtp
+lo    all
+lan    tcp    22    # ssh
+lan    tcp    25    # smtp
+lan    udp    53    # dns
+lan    tcp    53    # dns
+lan    udp    67    # dhcp
+lan    udp    68    # dhcp
+lan    tcp    80    # http
+lan    tcp    111    # portmapper
+lan    udp    111    # portmapper
+lan    tcp    143    # imap
+lan    tcp    443    # https
+lan    tcp    2049    # nfs
+lan    udp    2049    # nfs
+lan    tcp    3306    # mysql
+lan    udp    4569    # iax2
+lan    udp    5060    # sip
+lan    tcp    5432    # postgresql
+lan    tcp    10000    # webmin
+lan    all
+gig    all
+tun    all
+wifi    udp    1194    # openvpn
+voip    udp    5060    # sip
+voip    udp    4569    # iax2
+voip    udp    53    # dns
+voip    tcp    22    # ssh
+voip    udp    10000:20000    # rtp
+voip    tcp    80    # http
+</pre></div><p>
+You'll notice that I have a rule that allows all traffic on the lo,
+or loopback, interface. This is important, because without this rule,
+many programs break in ways that are hard to diagnose. You also may be
+asking why I go to the effort of creating so many firewall rules for my
+LAN interface, only to have an all at the end. I do this for several
+reasons. The primary reason is that until my kids grow up and get on the
+Internet, I trust the traffic on my local network. However, by having
+rules for each service I run, I'm able to extract statistics about how
+much traffic each service generates. Also, security is an iterative
+process. Over time, I'll add rules that will further tighten my firewall;
+eventually, I'll remove the final all from the policy.
+</p><p>
+Now, back to the add_rules() function. Even though this is the longest
+function in the entire program, it's still not too hard to understand. The
+sections of code that deal with tcp and udp rules simply create two rules
+for each rule in the ports.conf file. One rule is tied to the destination
+port number; the other rule is tied to the source port number. At first,
+this may seem odd, because we are policing only inbound traffic. What we're
+doing is making sure that both inbound and outbound connections are
+allowed to pass. For example, a packet coming in on the WAN interface
+with the destination port set to 80 corresponds to
+an inbound connection to my Web server. On the other hand, an incoming
+packet on my WAN interface with the source port set to
+80 is coming from an outside Web server in response to a request that
+came from inside my network.
+</p><p>
+The code that handles the all rules is a special case. In this case,
+we create a rule on the given interface for each of the protocols. In
+hindsight, this might be overly complex, but it has an interesting
+side effect. If the router encounters a packet containing an unknown
+protocol, such as IPSec, the firewall will fall back to its default policy
+even though we've asked it to pass all traffic on this interface. So, in
+a sense, &ldquo;all protocols&rdquo; actually means &ldquo;all known
+protocols&rdquo;. I think
+this is a good thing.
+</p><p>
+For what it's worth, the script will put firewall rules into the kernel
+in roughly the same order that they appear in the ports.conf file. I
+say roughly, because the rules will be put into the appropriate chain
+depending on which interface and protocol they match against. But within
+each chain, the rules will be executed in order.
+</p><p>
+The set_default_action() function creates rules that determine what
+happens to packets that don't match any previous rules. This sounds
+very similar to the purpose of the set_default_policy() function,
+but there is a subtle difference. The set_default_policy() function
+configures the default firewall policy, and the set_default_action()
+function creates firewall rules that catch unmatched traffic before
+the kernel falls back to the default policy, essentially capping each
+chain. Once these rules match a packet, they create a log entry for the
+packet, and then they implement whatever policy we want, in this case,
+DROP. Once again, the log entries allow me to determine what traffic
+is being dropped and why.
+</p><p>
+I'm not trying to tell you that this program is perfect, nor will it do
+everything you want it to do. You might even find bugs in it. In fact,
+by the time you read this article, I'll probably have made several
+improvements to the script. As it is right now, the script isn't able to
+configure any firewall policy for the ICMP protocol. It would be nice
+to be able to allow outbound ping requests and deny incoming requests,
+for example. It would also be useful to be able to configure firewall
+policy for outgoing and routed traffic. And because I'm using VoIP,
+I'm thinking of changing my script to allow me to configure Quality of
+Service (QoS). If you come up with useful modifications to this script,
+I'd like to hear about them.
+</p><p>
+But there you have it, such as it is. In less than 200 lines of Perl code,
+I'm able to implement a quite flexible and efficient firewall policy
+containing potentially hundreds of individual rules. At the same time,
+making changes to my firewall policy is simple enough that even most
+beginning Linux users can make correct changes.
+</p></div></div>
+<div class="authorblurb"><p>
+Mike Diehl works for SAIC at Sandia National Laboratories in
+Albuquerque, New Mexico, where he writes network management software. Mike
+lives with his wife and two small boys and can be reached via e-mail at
+<a href="mailto:mdiehl@diehlnet.com">mdiehl@diehlnet.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../143/toc143.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

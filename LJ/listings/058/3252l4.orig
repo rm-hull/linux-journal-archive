@@ -1,0 +1,140 @@
+#!/usr/bin/perl -wT
+
+# Time-stamp: <1998-10-19 20:54:41 reuven>
+
+# post-comment.pl, which takes HTML form values and inserts a message
+
+use strict;
+use diagnostics;
+use CGI;
+use CGI::Carp qw(fatalsToBrowser);
+use DBI;
+
+use lib qw(/home/reuven/www/cgi-bin);
+use ATFConstants;
+
+my %longname = ("name" => "Your name",
+		"email" => "Your e-mail address",
+		"thread" => "The thread to which the message belongs",
+		"subject" => "A subject heading for the message",
+		"text" => "The text of your message");
+
+# Remove buffering
+$| = 1;
+
+# ------------------------------------------------------------
+# Create an instance of CGI
+my $query = new CGI;
+
+# Get the realname and username, and stick them in cookies
+my $namecookie = $query->cookie(-name => "name",
+				-value => $query->param("name"),
+				-expires => "+1y");
+
+my $emailcookie = $query->cookie(-name => "email",
+				 -value => $query->param("email"),
+				 -expires => "+1y");
+
+# Send a MIME header, with the cookies
+print $query->header(-type => "text/html",
+		     -cookie => [$namecookie, $emailcookie]);
+
+# Connect to the database
+my $dbh = 
+    DBI->connect("DBI:mysql:$database:$server:$port",$username,$password);
+die $DBI::errstr unless $dbh;
+
+# ------------------------------------------------------------
+# Grab the contents of the form, and add it to the database
+
+# Get the stuff we need
+my $name = $dbh->quote($query->param("name"));
+my $email = $dbh->quote($query->param("email"));
+my $thread_id = $dbh->quote($query->param("thread"));
+my $subject = $dbh->quote($query->param("subject"));
+my $text = $dbh->quote($query->param("text"));
+
+# Make sure that we get all information
+unless ($name and $email and $thread_id and $subject and $text)
+{
+    print $query->start_html(-title => "Try again",
+			     -bgcolor => "#FFFFFF");
+
+    print "<H1>Try again!</H1>\n";
+    print "<P>We were missing some required information.  Press ";
+    print "the \"back\" button in your Web browser, and try again.</P>\n";
+
+    print "<P>To be specific, you forgot to give us:</P>\n";
+
+    print "<ul>\n";
+
+    foreach my $item (qw(name email thread message))
+    {
+	print "<li> $longname{$item}\n" unless $query->param($item);
+    }
+
+    print "</ul>\n";
+
+    print $query->end_html;
+    exit;
+}
+
+# Perform some processing on $text: Remove HTML tags,
+# and insert paragraphs instead of blank lines
+$text =~ s/<.*?>//sg;
+$text =~ s/\r\n/\n/g;
+$text =~ s/\r/\n/g;
+$text =~ s|\n\n|</P>\n<\P>|gi;
+
+# ------------------------------------------------------------
+# If we have received all of the necessary components, then
+# save them to the database
+my $sql = "INSERT INTO ATFMessages ";
+$sql   .= " (thread, date, author, email, subject, text) ";
+$sql   .= "VALUES ";
+$sql   .= " ($thread_id,NOW(),$name,$email,$subject,$text)";
+
+# Send the query
+my $sth = $dbh->prepare($sql);
+die "DBI error with prepare:", $sth->errstr unless $sth;
+
+# Execute the query
+my $result = $sth->execute;
+die "DBI error with execute:", $sth->errstr unless $result;
+
+print $query->start_html(-title => "Successfully added",
+			 -bgcolor => "#FFFFFF");
+
+print "<H1>Posting added</H1>\n";
+print "<P>Your posting has been added!</P>\n";
+
+# ------------------------------------------------------------
+# Menu bar
+print "<P>\n";
+
+# Send the user to the posting form
+print "<a href=\"/cgi-bin/view-thread.pl?$thread_id\">[View this thread]";
+print "</a>\n";
+
+# Send the user to the posting form
+print "<a href=\"/cgi-bin/post-comment-form.pl?$thread_id\">[Post a message]";
+print "</a>\n";
+
+# Send the user to the thread list
+print "<a href=\"/cgi-bin/list-threads.pl\">[View all threads]</a>\n";
+
+# Send the user to the search
+print "<a href=\"/atf/search-form.shtml\">[Search]</a>\n";
+
+# Allow the user to create a new thread
+print "<a href=\"/cgi-bin/add-thread-form.pl\">[Add a new thread]</a>\n";
+
+# Give a plug for the ATF home page
+print "<a href=\"/atf/\">[ATF home]</a>\n";
+
+print "</P>\n";
+
+print $query->end_html;
+
+# Disconnect, even though it isn't really necessary
+$dbh->disconnect;

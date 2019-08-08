@@ -1,0 +1,347 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Inside the Linux Packet Filter</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    In Part I of this two-part series on the Linux Packet&#10;    Filter, Gianluca describes a packet's journey through the&#10;    kernel.&#10;    "><meta name="keywords" content="kernel, packet, network, socket"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x24f9580.0x25f0ab0"></a>Inside the Linux Packet Filter</h1></div><div><div class="author"><h3 class="author">Gianluca Insolvibile</h3></div><div class="issuemoyr">Issue #94, February 2002</div></div><div><p>
+    In Part I of this two-part series on the Linux Packet
+    Filter, Gianluca describes a packet's journey through the
+    kernel.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25f1558"></a></h2></div></div><p>Network geeks among you may remember my
+article, &ldquo;Linux Socket Filter: Sniffing Bytes over the Network&rdquo;,
+in the June 2001 issue of <i  >LJ</i>, regarding the
+use of the packet filter built inside the Linux kernel. In that
+article I provided an overview of the functionality of the packet
+filter itself; this time, I delve into the depths of the kernel
+mechanisms that allow the filter to work and share some insights on
+Linux packet processing internals.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25f16b8"></a>Last Article's Points</h2></div></div><p>In the previous article, some arguments regarding kernel
+packet processing were raised. It is worthwhile to recall briefly
+the most important of them:</p><div class="itemizedlist"><ul type="disc"><li><p>Packet reception is first dealt with at the network
+card's driver level, more precisely in the interrupt service
+routine. The service routine looks up the protocol type inside the
+received frame and queues it appropriately for later
+processing.</p></li><li><p>During reception and protocol processing, packets
+might be discarded if the machine is congested. Furthermore, as
+they travel upward toward user land, packets lose network
+lower-level information.</p></li><li><p>At the socket level, just before reaching user
+land, the kernel checks whether an open socket for the given packet
+exists. If it does not, the packet is discarded.</p></li><li><p>Then the Linux kernel implements a generic-purpose
+protocol, called PF_PACKET, which allows you to create a socket
+that receives packets directly from the network card driver. Hence,
+any other protocols' handling is skipped, and any packets can be
+received.</p></li><li><p>An Ethernet card usually passes only the packets
+destined to itself to the kernel, discarding all the others.
+Nevertheless, it is possible to configure the card in such a way
+that all the packets flowing through the network are captured,
+independent of their MAC address (promiscuous mode).</p></li><li><p>Finally, you can attach a filter to a socket, so
+that only packets matching your filter's rules are accepted and
+passed to the socket. Combined with PF_PACKET sockets, this
+mechanism allows you to sniff selected packets efficiently from
+your LAN.</p></li></ul></div><p>Even though we built our sniffer using PF_PACKET sockets, the
+Linux socket filter (LSF) is not limited to those. In fact, the
+filter also can be used on plain TCP and UDP sockets to filter out
+unwanted packets&mdash;of course, this use of the filter is much less
+common.</p><p>In the following, I sometimes refer either to a socket or to
+a sock structure. As far as this article is concerned, both forms
+indicate the same object, and the latter corresponds to the
+kernel's internal representation of the former. Actually, the
+kernel holds both a socket structure and a sock structure, but the
+difference between the two is not relevant here.</p><p>Another data structure that will recur quite often is the
+sk_buff (short for socket buffer), which represents a packet inside
+the kernel. The structure is arranged in such a way that addition
+and removal of header and trailer information to the packet data
+can be done in a relatively inexpensive way: no data actually needs
+to be copied since everything is done by just shifting
+pointers.</p><p>Before going on, it may be useful to clear up possible
+ambiguities. Despite having a similar name, the Linux socket filter
+has a completely different purpose with respect to the Netfilter
+framework introduced into the kernel in early 2.3 versions. Even if
+Netfilter allows you to bring packets up to user space and feed
+them to your programs, the focus there is to handle network address
+translation (NAT), packet mangling, connection tracking, packet
+filtering for security purposes and so on. If you just need to
+sniff packets and filter them according to certain rules, the most
+straightforward tool is LSF.</p><p>Now we are going to follow the trip of a packet from its very
+ingress into the computer to its delivery to user land at the
+socket level. We first consider the general case of a plain (i.e.,
+not PF_PACKET) socket. Our analysis at link layer level is based on
+Ethernet, since this is the most widespread and representative LAN
+technology. Cases of other link layer technologies do not present
+significant differences.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25f1df0"></a>Ethernet Card and Lower-Kernel Reception</h2></div></div><p>As we mentioned in the previous article, the Ethernet card is
+hard-wired with a particular link layer (or MAC) address and is
+always listening for packets on its interface. When it sees a
+packet whose MAC address matches either its own address or the link
+layer broadcast address (i.e., FF:FF:FF:FF:FF:FF for Ethernet) it
+starts reading it into memory.</p><p>Upon completion of packet reception, the network card
+generates an interrupt request. The interrupt service routine that
+handles the request is the card driver itself, which runs with
+interrupts disabled and typically performs the following
+operations:</p><div class="itemizedlist"><ul type="disc"><li><p>Allocates a new sk_buff structure, defined in
+include/linux/skbuff.h, which represents the kernel's view of a
+packet.</p></li><li><p>Fetches packet data from the card buffer into the
+freshly allocated sk_buff, possibly using DMA.</p></li><li><p>Invokes netif_rx(), the generic network reception
+handler.</p></li><li><p>When netif_rx() returns, re-enables interrupts and
+terminates the service routine.</p></li></ul></div><p>The netif_rx() function prepares the kernel for the next
+reception step; it puts the sk_buff into the incoming packets queue
+for the current CPU and marks the NET_RX softirq (softirq is
+explained below) for execution via the __cpu_raise_softirq() call.
+Two points are worth noticing at this stage. First, if the queue is
+full the packet is discarded and lost forever. Second, we have one
+queue for each CPU; together with the new deferred kernel
+processing model (softirqs instead of bottom halves), this allows
+for concurrent packet reception in SMP machines.</p><p>If you want to see a real-world Ethernet driver in action,
+you can refer to the simple NE 2000 card PCI driver, located in
+drivers/net/8390.c; the interrupt service routine called
+ei_interrupt(), calls ei_receive(), which in turn, performs the
+following procedure:</p><div class="itemizedlist"><ul type="disc"><li><p>Allocates a new sk_buff structure via the
+dev_alloc_skb() call.</p></li><li><p>Reads the packet from the card buffer
+(ei_block_input() call) and sets skb-&gt;protocol
+accordingly.</p></li><li><p>Calls netif_rx().</p></li><li><p>Repeats the procedure for a maximum of ten
+consecutive packets.</p></li></ul></div><p>A slightly more complex example is provided by the 3COM
+driver, located in 3c59x.c, which uses DMA to transfer the packet
+from the card memory to the sk_buff.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25f2688"></a>Network Core Processing</h2></div></div><p>Let's take a closer look at the netif_rx() function. As
+mentioned before, this function has the task of receiving a packet
+from a network driver and queuing it for upper-layer processing. It
+acts as a single gathering point for all the packets collected by
+the different network card drivers, providing input to the upper
+protocols' processing.</p><p>Since this function runs in interrupt context (that is, its
+execution flow follows the interrupt service path) with other
+interrupts disabled, it has to be quick and short. It cannot
+perform lengthy checks or other complex tasks since the system is
+potentially losing packets while netif_rx() runs. So, what this
+function does is basically select the packet queue from an array
+called softnet_data, whose index is based on the CPU currently
+running. It then checks the status of the queue, identifying one of
+five possible congestion levels: NET_RX_SUCCESS (no congestion),
+NET_RX_CN_LOW, NET_RX_CN_MOD, NET_RX_CN_HIGH (low, moderate and
+high congestion, respectively) or NET_RX_DROP (packet dropped due
+to critical congestion).</p><p>Should the critical congestion level be reached, netif_rx()
+engages a throttling policy that allows the queue to go back to a
+noncongested status, avoiding service disruption due to kernel
+overload. Among other benefits, this helps avert possible DOS
+attacks.</p><p>Under normal conditions, the packet is finally queued
+(__skb_queue_tail()), and __cpu_raise_softirq(cpuid,
+NET_IF_SOFTIRQ) is called. The latter function has the effect of
+scheduling a softirq for execution.</p><p>The netif_rx() function terminates, returning a value
+indicating the current congestion level to the caller. At this
+point, interrupt context processing is done, and the packet is
+ready to be taken care of by upper-layer protocols. This processing
+is deferred to a later time, when interrupts will have been
+re-enabled and execution timing will not be as critical. The
+deferred execution mechanism has changed radically from kernel
+versions 2.2 (where it was based on bottom halves) to versions 2.4
+(where it is based on softirqs).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25f28f0"></a>softirqs vs. Bottom Halves</h2></div></div><p>Explaining in detail about bottom halves (BHs) and their
+evolution is out of the scope of this article. But, some points are
+worth recalling briefly.</p><p>First off, their design was based on the principle that the
+kernel should perform as few computations as possible while in
+interrupt context. Thus, when long operations were to be done in
+response to an interrupt, the corresponding driver would mark the
+appropriate BH for execution, without actually doing anything
+complex. Then, at a later time, the kernel would have checked the
+BH mask to determine whether some BHs were marked for execution and
+execute them before any application-level task.</p><p>BHs worked quite well, with one important drawback: due to
+their structure, their execution was serialized strictly among
+CPUs. That is, the same BH could not be executed by more than one
+CPU at the same time. This obviously prevented any kind of kernel
+parallelism on SMP machines and seriously affected performance.
+<span   class="bold"><b>softirqs</b></span> represent the 2.4-age
+evolution of BHs and, together with tasklets, belong to the family
+of kernel software interrupts, pieces of code that can be executed
+by the kernel when requested, without strict response-time
+guarantees.</p><p>The major difference with respect to BHs is that the same
+softirq may be run on more than one CPU at a time. Serialization,
+if required, now must be obtained explicitly by using kernel
+spinlocks.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25f2b58"></a>softirq's Internals</h2></div></div><p><span   class="bold"><b>softirq's</b></span> processing core is
+performed in the do_softirq() routine, located in kernel/softirq.c.
+This function checks a bit mask, and if the bit corresponding to a
+given softirq is set, it calls the appropriate handling routine. In
+the case of NET_RX_SOFTIRQ, the one we are interested in at this
+time, the relevant function is net_rx_action(), located in
+net/core/dev.c. The do_softirq() function may get called from three
+distinct places inside the kernel: do_IRQ(), in kernel/irq.c, which
+is the generic interrupt handler; system calls' exit point, in
+kernel/entry.S; and schedule(), in kernel/sched.c, which is the
+main process scheduling function.</p><p>In other words, execution of a softirq may happen either when
+a hardware interrupt has been processed, when an application-level
+process invokes a system call or when a new process is scheduled
+for execution. This way, softirqs are drained frequently enough
+that none of them will lie waiting for their turn for too
+long.</p><p>The trigger mechanism also was exactly the same for the
+old-style bottom halves.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25e95f8"></a>The NET_RX softirq</h2></div></div><p>We've seen the packet come in through the network interface
+and get queued for later processing. Then, we've considered how
+this processing is resumed by a call to the net_rx_action()
+function. It's now time to see what this function does. Basically,
+its operation is pretty simple: it just dequeues the first packet
+(sk_buff) from the current CPU's queue and runs through the two
+lists of packet handlers, calling the relevant processing
+functions.</p><p>Some more words are worth spending on those lists and how
+they are built. The two lists are called ptype_all and ptype_base
+and contain, respectively, protocol handlers for generic packets
+and for specific packet types. Protocol handlers register
+themselves, either at kernel startup time or when a particular
+socket type is created, declaring which protocol type they can
+handle; the involved function is dev_add_pack() in net/core/dev.c,
+which adds a packet type structure (see include/linux/netdevice.h)
+containing a pointer to the function that will be called when a
+packet of that type is received. Upon registration, each handler's
+structure is either put in the ptype_all list (for the ETH_P_ALL
+type) or hashed into the ptype_base list (for other ETH_P_*
+types).</p><p>So, what the NET_RX softirq does is call in sequence each
+protocol handler function registered to handle the packet's
+protocol type. Generic handlers (that is, ptype_all protocols) are
+called first, regardless of the packet's protocol; specific
+handlers follow. As we will see, the PF_PACKET protocol is
+registered in one of the two lists, depending on the socket type
+chosen by the application. On the other hand, the normal IP handler
+is registered in the second list, hashed with the key
+ETH_P_IP.</p><p>If the queue contains more than one packet, net_rx_action()
+loops on the packets until either a maximum number of packets has
+been processed (netdev_max_backlog) or too much time has been spent
+here (the time limit is 1 jiffy, i.e., 10ms on most kernels). If
+net_rx_action() breaks the loop leaving a non-empty queue, the
+NET_RX_SOFTIRQ is enabled again to allow for the processing to be
+resumed at a later time.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25e9808"></a>The IP Packet Handler</h2></div></div><p>The IP protocol receive function, namely ip_rcv() (in
+net/ipv4/ip_input.c), is pointed to by the packet type structure
+registered within the kernel at startup time (ip_init(), in
+net/ipv4/ip_output.c). Obviously, the registered protocol type for
+IP is ETH_P_IP.</p><p>Thus, ip_rcv() gets called from within net_rx_action() during
+the processing of a softirq, whenever a packet with type ETH_P_IP
+is dequeued. This function performs all the initial checks on the
+IP packet, which mainly involve verifying its integrity (IP
+checksum, IP header fields and minimum significant packet length).
+If the packet looks correct, ip_rcv_finish() is called. As a side
+note, the call to this function passes through the Netfilter
+prerouting control point, which is practically implemented with the
+NF_HOOK macro.</p><p><span   class="bold"><b>ip_rcv_finish()</b></span>, still in
+ip_input.c, mainly deals with the routing functionality of IP. It
+checks whether the packet should be forwarded to another machine or
+if it is destined to the local host. In the former case, routing is
+performed, and the packet is sent out via the appropriate
+interface; otherwise, local delivery is performed. All the magic is
+realized by the ip_route_input() function, called at the very
+beginning of ip_rcv_finish(), which determines the next processing
+step by setting the appropriate function pointer in
+skb-&gt;dst-&gt;input. In the case of locally bound packets, this
+pointer is the address of the ip_local_deliver() function.
+<span   class="bold"><b>ip_rcv_finish()</b></span> terminates with a
+call to skb-&gt;dst-&gt;input().</p><p>At this point, packets definitely are traveling toward the
+upper-layer protocols. Control is passed to ip_local_deliver();
+this function just deals with IP fragments' reassembly (in case the
+IP datagram is fragmented) and then goes over to the
+ip_local_deliver_finish() function. Just before calling it, another
+Netfilter hook (the ip-local-ip) is executed.</p><p>The latter is the last call involving IP-level processing;
+ip_local_deliver_finish() carries out the tasks still pending to
+complete the upper part of layer 3. IP header data is trimmed so
+that the packet is ready to be transferred to the layer 4 protocol.
+A check is done to assess whether the packet belongs to a raw IP
+socket, in which case the corresponding handler (raw_v4_input()) is
+called.</p><p>Raw IP is a protocol that allows applications to forge and
+receive their own IP packets directly, without incurring actual
+layer 4 processing. Its main use is for network tools that need to
+send particular packets to perform their tasks. Well-known examples
+of such tools are ping and traceroute, which use raw IP to build
+packets with specific header values. Another possible application
+of raw IP is, for example, realizing custom network protocols at
+the user level (such as RSVP, the resource reservation protocol).
+Raw IP may be considered a standard equivalent of the PF_PACKET
+protocol family, just shifted up one open systems interconnection
+(OSI) level.</p><p>Most commonly, though, packets will be headed toward a
+further kernel protocol handler. In order to determine which one it
+is, the Protocol field inside the IP header is examined. The method
+used by the kernel at this point is very similar to the one adopted
+by the net_rx_action() function; a hash is defined, called
+inet_protos, which contains all the registered post-IP protocol
+handlers. The hash key is, of course, derived from the IP header's
+protocol field. The inet_protos hash is filled in at kernel startup
+time by inet_init() (in net/ipv4/af_inet.c), which repeatedly calls
+inet_add_protocol() to register TCP, UDP, ICMP and IGMP handlers
+(the latter only if multicast is enabled). The complete protocol
+table is defined in net/ipv4/protocol.c.</p><p>For each protocol, a handler function is defined:
+tcp_v4_rcv(), udp_rcv(), icmp_rcv() and igmp_rcv() are the obvious
+names corresponding to the above-mentioned protocols. One of these
+functions is thus called to proceed with packet processing. The
+function's return value is used to determine whether an ICMP
+Destination Unreachable message has to be returned to the sender.
+This is the case when the upper-level protocols do not recognize
+the packet as belonging to an existing socket. As you will recall
+from the previous article, one of the issues in sniffing network
+data was to have a socket able to receive packets independent of
+their port/address values. Here (and in the just-mentioned *_rcv()
+functions) is the point where that limitation arises from.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24f9580.0x25e9c28"></a>Conclusion</h2></div></div><p>At this point, the packet is more than halfway through its
+journey. Since space is limited in our beloved magazine, we will
+leave the packet in the capable hands of upper-layer 3 protocols
+until next month. What still remains to be explored is layer 4
+processing (TCP and UDP), PF_PACKETs handling and, of course, the
+socket filter hooks and implementation. Be patient!</p><p><a href="4852s1.html" target="_self">Resources</a></p><p><a href="4852s2.html" target="_self">Creation of PF_PACKET
+Sockets</a></p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="4852aa.jpg"></div>
+
+        <span   class="bold"><b>Gianluca
+      Insolvibile</b></span> has been a Linux enthusiast since kernel
+      0.99pl4. He currently deals with networking and digital video
+      research and development. He can be reached at
+      <a href="mailto:g.insolvibile@cpr.it">g.insolvibile@cpr.it</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../094/toc094.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

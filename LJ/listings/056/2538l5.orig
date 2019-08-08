@@ -1,0 +1,182 @@
+#!/usr/bin/perl
+#
+# loop.pl
+#
+use POSIX "sys_wait_h";   # Need this for waitpid with WNOHANG
+
+#
+# Loop forever
+#
+while (1)
+{
+	# Fix the screen (my console sometimes gets wacked out if
+	#   the connection doesn't go through quite right)
+	# This just prints a console reset
+	timed_system("/usr/local/bin/fix",5);
+
+	# Delete default route
+	timed_system("route del default",5);
+
+	# Start up the PPP connection
+	while  ( &dip() != 0 )
+	{
+		print "dip failed, try again in 60 seconds\n";
+		print "dip -k\n";
+		timed_system("dip -k",5);
+		sleep 60;
+	}
+	print "sleep 5\n";
+	sleep 5;
+	timed_system("/bin/date",5);
+
+	# Ping doesn't always return an error when
+	#  the connection fails.  (I should probably
+	#  write  a Perl script to do this.)
+	if ( `ping -c2 ftp.frii.net` )
+	{
+		#
+		# Fork off a child process to run the ftp upload script
+		#
+		if (!defined($doup_pid = fork()))
+		{
+			print "fork error\n";
+		}
+		elsif ($doup_pid)
+		{
+			# 
+			# This is the parent process.
+			# Do our other chores while ftp upload is  running.
+			#
+			print "parent: child pid=$doup_pid\n";
+			
+			# Set the clock  (you should probably pick some other
+			#    time servers if you are going to use my script!)
+			timed_system("ntpdate black-ice.cc.vt.edu clock-2.cs.cmu.edu ntp-0.cso.uiuc.edu",15);
+			
+			# Fetch my e-mail
+			#   getmail is a script that runs popclient
+			timed_system("/root/getmail",30);
+			print "sleep 5\n";
+			sleep 5;
+
+			# Send any waiting outgoing mail
+			timed_system("/usr/sbin/runq -d1",30);
+
+			# Sleep awhile to let the ftp upload finish
+			# Catch it if it is done.
+			print "sleep 30\n";
+			sleep 30;
+			waitpid($doup_pid,WNOHANG);
+
+			# If upload is not finished
+			# (the - checks all processes in the process group).
+			if( kill(0, -$doup_pid) ) 
+			{
+				print " doup still running: sleep 60\n";
+				sleep 60;
+
+				# Time's up.  Kill the upload and 
+				#   all processes in it's process group.
+				if( kill(0, -$doup_pid) ) 
+				{
+					print "doup hung ($doup_pid)-kill it\n";
+					kill(9, -$doup_pid);
+					sleep 3;
+				}
+				waitpid($doup_pid,WNOHANG);
+			}
+		}
+		else  # Child
+		{
+			# This is the child process.
+			# Give ourself a new process group.
+			# Start the ftp upload script.
+		
+			print "child running doup\n";
+			setpgrp($$);
+			exec("/bin/su -c /home/weather/bin/doup weather");
+			print "*********** Should never get here!";
+			exit 0;
+		}
+	}
+	#
+	# Shutdown the PPP connection
+	#
+	timed_system("/usr/sbin/dip -k",5);
+	timed_system("/bin/date",5);
+	
+	# Sleep for a while, about right for
+	# calling every 15 minutes or so.
+	sleep 840;
+}
+
+#
+# Subroutine to try each of my two dialout scripts if necessary
+#
+sub dip
+{
+	local($ret) = 0;
+	print ("Trying to dial out\n");
+	$ret = timed_system("/usr/sbin/dip -v /root/frii.dip",90);
+	print ("dip return value $ret\n");
+	if( $ret != 0 )
+	{
+		timed_system("/usr/sbin/dip -k",10);
+		print ("sleep 10 before retry\n");
+		sleep 10;
+		$ret = timed_system("/usr/sbin/dip -v /root/frii.dip2",90);
+		print ("dip2 return value $ret\n");
+	}
+	return $ret;
+}
+
+#
+# timed_system subroutine.
+# Fork and exec a child process to run another command.
+# Time ourself, and kill the child if it goes overtime.
+#
+sub timed_system
+{
+        local($command,$time) = @_;
+        local($ret) = 9999;
+ 
+	if (!defined($child_pid = fork()))
+	{
+		print("Fork Error\n");
+	}
+	elsif ( $child_pid )
+	{
+		# This is the parent.  Wait and kill if necessary.
+		# (Eval/alarm structure taken from perlipc man page.)
+		eval
+		{
+			local $SIG{ALRM} = sub { die "timeout!" };
+			alarm $time;
+			waitpid($child_pid,0);
+			$ret = ($? >> 8);
+			alarm 0;
+		};
+		if ($@ and $@ =~ /timeout/)
+		{
+			# Kill the child and all in it's process group.
+			print "TIMEOUT! [$command]  $child_pid\n";
+			kill(9,-$child_pid);
+			sleep 2;
+			waitpid($child_pid,WNOHANG);
+			$ret = 999;
+		}
+		print "End *** $time [$command] $$ <$ret>\n";
+	}
+	else
+	{
+		# This is the child.  Give myself a new process group,
+		# then run the command.
+		print "Start *** $time [$command] $$\n";
+		setpgrp($$);
+		exec($command);
+		print "*********** Should never get here!";
+		exit 0;
+	}
+	
+        return $ret;
+}

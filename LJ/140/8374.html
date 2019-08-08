@@ -1,0 +1,471 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Paranoid Penguin</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Author Ti Leggett presents the first in a series of articles focused on&#10;building a secure corporate directory, including support for single-sign-on that's scalable up to thousands of users.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xd51580.0xe48ab0"></a>Paranoid Penguin</h1></div><div><h3 class="subtitle"><i>
+Single Sign-on and the Corporate Directory, Part I</i></h3></div><div><div class="author"><h3 class="author">
+Ti
+ 
+Leggett
+</h3></div><div class="issuemoyr">Issue #140, December 2005</div></div><div><p>
+Author Ti Leggett presents the first in a series of articles focused on
+building a secure corporate directory, including support for single-sign-on that's scalable up to thousands of users.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe492f0"></a></h2></div></div><p>
+So you want a corporate directory, but you don't have a corporate
+budget. You want to reap the benefits of single sign-on, the ease of
+administration for yourself and the ease of use for your users. If
+you want all this, plus a secure and unified authorization and identity
+management system, read on. I'll start you down the path to sysadmin
+nirvana. In this series of articles, I'll show you how to build on pieces
+you may already have in place, add new pieces and make them all work
+together. Everything from the authentication servers, to mail delivery,
+to client integration (including Windows and OS X) will be discussed. We
+have a lot to cover, so let's get started!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe493f8"></a>
+Using Previous Building Blocks</h2></div></div><p>
+We use MIT Kerberos V v1.4.1 and OpenLDAP v2.1.30 running
+on Gentoo Linux as our authentication and identity management systems,
+respectively. I assume you have three servers: kdc.example.com,
+ldap.example.com and mail.example.com. Before we go any further, you
+should first read the <i  >Linux Journal</i> articles &ldquo;Centralized Authentication with Kerberos 5, Part
+I&rdquo; and
+&ldquo;OpenLDAP Everywhere&rdquo; (see the on-line Resources). We build on where
+those articles leave off, but
+keep in mind that our Kerberos realm will be CI.EXAMPLE.COM, and our base
+DN will be o=ci,dc=example,dc=com. Also, all of the configuration files
+referred to in this article are available from the on-line Resources.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe49608"></a>
+Setting Up an SSL Certificate Authority (CA)</h2></div></div><p>
+This section is optional reading but is highly recommended for sites
+that will have many servers using SSL. Each server can self-sign its
+own certificate, but you lose unity and some of the power of running
+your own CA. If you're interested in the details of OpenSSL, I highly
+recommend the book <span   class="emphasis"><em>Network Security with OpenSSL</em></span>.
+</p><p>
+We start by choosing /etc/ssl/example.com as the base directory to
+store all the signed certificates, certificate revocation lists (CRLs)
+and accounting information. Once that directory is created, we then
+create the directories certs, crl, newcerts and private underneath the
+base. We create an empty file /etc/ssl/example.com/index.txt, and then create
+a file /etc/ssl/example.com/serial:
+
+<pre     class="programlisting">
+# touch /etc/ssl/example.com/index.txt
+# echo '01' &gt; /etc/ssl/example.com/serial
+</pre>
+</p><p>
+Finally, we create the CA's OpenSSL configuration file,
+/etc/ssl/example.com/ca-ssl.cnf.
+</p><p>
+To create a self-signed CA certificate, we must do the following as
+the user who owns the /etc/ssl/example.com directory and its children,
+which is probably root:
+
+<pre     class="programlisting">
+
+# export OPENSSL_CONF=/etc/ssl/example.com/ca-ssl.cnf
+# openssl req -x509 -days 3650 -newkey rsa \
+ -out /etc/ssl/example.com/ci-cert.pem -outform PEM
+# cp /etc/ssl/example.com/ci-cert.pem /etc/ssl/certs
+# /usr/bin/c_rehash /etc/ssl/certs
+
+</pre>
+</p><p>
+For more details on the openssl req command, view the req(1) man page.
+</p><p>
+It is important to keep the passphrase for the CA key in a very safe
+place,
+because if the CA private key is compromised, all previously signed certs
+cannot be trusted. It is also important to keep the actual CA machine and
+access to it secure. How secure you keep the machine is up to you and
+your actual security needs, but if unauthorized users gain physical
+or network access, they have access to the CA private key. As I mentioned
+above, compromise of the CA private key compromises the entire chain of
+trust, making all signed certificates suspect and untrustworthy. Some
+suggest that the CA machine be physically secured with no network
+access. In order to sign certificates in this environment, you use
+registration authorities (RAs) to receive certificate signing requests
+(CSRs). The CSRs are then transferred to some secure portable media that
+is taken to the CA where the CSRs are signed, and the certificates
+written back to the portable media to be placed back on the RA for the
+end user to retrieve. If you think your needs might require this, the
+OpenCA Project was designed with this type of security in mind. It also
+has support for storage of signed certificates in LDAP.
+</p><p>
+We have created an OpenSSL configuration file for our CA, but that
+describes only how to request and sign exactly one certificate. We still
+need to create an OpenSSL configuration to use from now on to request
+normal host and user certificates: /etc/ssl/example.conf/ssl.cnf. The
+client configuration is a little more complex than the CA's because more
+variations can occur for client certificates.
+</p><p>
+Now that we have a client configuration file, let's generate a host
+certificate for the LDAP server. Generating a CSR can be done as a
+normal user:
+
+<pre     class="programlisting">
+
+# export OPENSSL_CONF=/etc/ssl/example.com/ssl.cnf
+# openssl req -new -nodes -keyout ldap-key.pem \
+ -out ldap-req.pem
+
+</pre>
+</p><p>
+The openssl options used are much the same as those used for generating
+the CA CSR. The only new option is the -nodes option, which creates an
+unencrypted private key.
+</p><p>
+Our next step is to have the CSR signed by the CA in order to get the
+public certificate. This, again, needs to be done as root:
+
+<pre     class="programlisting">
+
+# export OPENSSL_CONF=/etc/ssl/example.com/ssl.cnf
+# openssl ca -policy policy_anything -out \
+ ldap-cert.pem -in ldap-req.pem
+
+</pre>
+</p><p>
+At this point, we have three files: ldap-cert.pem, the public certificate;
+ldap-key.pem, the private key; and ldap-req.pem, the CSR. The CSR can
+be thrown away once the certificate has been signed by the CA. Again,
+protecting the private key is important, especially because it is not
+encrypted. It probably should be owned by root and have permissions 0400.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe49c38"></a>
+Securing LDAP</h2></div></div><p>
+Even though passwords aren't stored in the LDAP directory, a lot of
+sensitive information is. Your users probably don't want the whole
+Internet to know their phone numbers, e-mail addresses or employee IDs. Once you've
+read &ldquo;OpenLDAP Everywhere&rdquo; and have a working LDAP server, you need
+to secure the information transportation and access to the directory.
+</p><p>
+The first step is to secure the data transport using OpenSSL. First,
+let's copy our certificate and key we signed previously to
+/etc/openldap/ssl/slapd-cert.pem and /etc/openldap/ssl/slapd-key.pem,
+respectively. We need to provide five options in slapd.conf:
+TLSCipherSuite (optional), TLSCACertificatePath, TLSCertificateFile,
+TLSCertificateKeyFile and TLSVerifyClient. The slapd.conf(5) man page
+has good definitions of these options.
+</p><p>
+Having secured the data on the wire, we now secure authentication using
+the Kerberos KDC. OpenLDAP is Kerberized and uses SASL for authentication
+negotiation. We first must tell slapd how to find its Kerberos keytab
+file. We do this by editing /etc/conf.d/slapd or by defining KRB5_KTNAME
+prior to starting slapd in its init script. Two options in slapd.conf
+also must be defined: sasl-secprops and sasl-regexp.
+</p><p>
+Right now, TLS and SASL can be used but aren't required. Two more options
+in slapd.conf, security and allow, are used to specify the security
+methods and encryption strength needed for certain operations to
+take place. And, be sure to set up access control lists (ACLs)
+properly&mdash;refer to slapd.access(5).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe49ea0"></a>
+Securely Replicating Kerberos</h2></div></div><p>
+We start by replicating our Kerberos database from kdc.example.com to
+ldap.example.com, so that if kdc.example.com fails, ldap.example.com will
+pick up the slack. One important fact to remember is that only one kadmin
+server can be on the network for a realm at any time. Otherwise, there is
+no authoritative source for updates to the database. Kerberos comes with
+kprop and kpropd to propagate the Kerberos database securely. First
+we must identify kpropd as a known service. Add the following to
+/etc/services:
+
+<pre     class="programlisting">
+krb5_prop             754/tcp
+</pre>
+</p><p>
+We need to define an ACL file, /etc/krb5kdc/kpropd.acl, that tells kpropd
+what hosts are allowed to propagate. All that is really needed in this
+file is the master KDC's principal name, but it doesn't hurt to have all
+KDCs in here so that if a failure occurs, we can choose a new master,
+start the kadmin service on it and propagate from that host to the
+other slaves.
+</p><p>
+We now create an xinetd service definition, /etc/xinetd.d/kpropd, on
+our slaves; (re)start xinetd; dump the database on kdc.example.com;
+and propagate it to the slaves so they have an initial configuration:
+
+<pre     class="programlisting">
+
+# /usr/sbin/kdb5_util dump /etc/krb5kdc/slavedump
+# /usr/sbin/kprop -f /etc/krb5kdc/slavedump \
+ ldap.example.com
+
+</pre>
+</p><p>
+Finally, we create a stash file on each slave using the master key
+defined when setting up kdc.example.com's database, and then start the
+kdc service:
+
+<pre     class="programlisting">
+# /usr/sbin/kdb5_util stash
+# /etc/init.d/mit-krb5kdc start
+</pre>
+</p><p>
+To propagate out the KDC database periodically, we define a cron job
+on kdc.example.com. Thanks to Jason Garman and the O'Reilly book
+<span   class="emphasis"><em>Kerberos: The Definitive Guide</em></span> for the original cron job.
+</p><p>
+A sensible time frame to run this script is hourly or from
+/etc/cron.hourly. Our Kerberos database is now being replicated
+securely from the master to any number of slaves. If the master fails, we have
+a way to switch to a slave machine quickly and with minimal data loss,
+if any. Now that we're propagating Kerberos changes, we can add the
+slave server to the krb5.conf file as a valid KDC.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe4a2c0"></a>
+Securely Replicating OpenLDAP</h2></div></div><p>
+Enough critical information will be stored in your LDAP directory that
+you probably don't want a single point of failure. After all, if your
+LDAP directory is unavailable, your users won't be able to login, check
+e-mail or do numerous other daily tasks. Replicating your LDAP directory
+helps ensure there is no single point of failure.
+</p><p>
+Let's replicate the LDAP directory from ldap.example.com to
+kdc.example.com. OpenLDAP has a d&aelig;mon called slurpd that is responsible
+for this. Unfortunately, slurpd has no configuration directive telling it
+which Kerberos keytab to use, so there's a bit of work required. First,
+we edit slapd.conf on ldap.example.com, adding the options replogfile
+and replica, and then we restart slapd.
+</p><p>
+We need to create a Kerberos ldap service principal and SSL certificate
+and key for kdc.example.com, as we did for ldap.example.com. We
+also must create a slapd.conf file for kdc.example.com. This file
+is almost identical to the one on ldap.example.com, with a few key
+differences. For the same reason we have only one Kerberos admin server,
+we want only one LDAP directory being updated and changed. The only
+user who should be able to write to the slaves' directory should be
+uid=host/ldap.example.com,cn=GSSAPI,cn=auth or the Kerberos principal of
+the master, so our ACLs on the slaves are much more restrictive. Also,
+slapd needs to know who will be sending updates via slurp as defined by
+the updatedn and updateref options.
+</p><p>
+Now we switch our focus back to ldap.example.com for a bit. We need to
+create an /etc/conf.d/slurpd or make sure that KRB5CCNAME is set before
+slurpd is started from the init script.
+</p><p>
+Next, we get some initial Kerberos credentials:
+
+<pre     class="programlisting">
+# KRB5CCNAME=/var/run/slurpd.krb5cache /usr/bin/kinit -k
+</pre>
+</p><p>
+And then we dump the directory to a file:
+
+<pre     class="programlisting">
+ldap# /etc/init.d/slapd stop
+ldap# /usr/sbin/slapcat -l /tmp/slavedump.ldif
+ldap# /etc/init.d/slurpd start
+</pre>
+</p><p>
+Because slurpd transfers changes only in the master directory, we need
+to populate the slave directory with the current state of the master
+directory. We do this by copying a dump of the master we created above,
+/tmp/slavedump.ldif, to kdc.example.com and import the dumped directory
+and start slapd:
+
+<pre     class="programlisting">
+kdc# /usr/sbin/slapadd -l slavedump.ldif
+kdc# /etc/init.d/slapd start
+ldap# /etc/init.d/slapd start
+</pre>
+</p><p>
+We need to test that the slave has a sane directory:
+
+<pre     class="programlisting">
+# ldapsearch -H ldap://kdc.example.com -ZZ
+</pre>
+</p><p>
+To test that replication is happening, we can make a modification
+or addition to the directory on ldap.example.com and then search on
+kdc.example.com to make sure that change propagated.
+</p><p>
+Once we've verified that slurpd is working, we create a cron job on
+ldap.example.com to keep the credentials from expiring. The default
+time limit for credential validity is ten hours, so if we define a cron
+job to run every eight hours, we should be safe.
+</p><p>
+Last, we add kdc.example.com into our rotation of valid LDAP servers
+for nss_ldap. That is, we append kdc.example.com to the list of servers
+specified by the host option in /etc/ldap.conf.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe4a898"></a>
+Configuring the Postfix MTA</h2></div></div><p>
+We'll be using the Postfix mail transport agent (MTA) v2.1.5. Postfix has
+well-established support for SASL authentication as well as LDAP support
+for features such as aliases. Because configuring Postfix from the ground
+up is beyond the scope of this article, we deal with how to enable
+Postfix to use SASL and TLS. For information on setting up Postfix,
+see Resources.
+</p><p>
+Postfix has two main configuration files, /etc/postfix/main.cf and
+/etc/postfix/master.cf. The main.cf file is primarily responsible for
+how to accept incoming mail, and master.cf is primarily responsible for
+defining mail delivery agents.
+</p><p>
+An example main.cf is included in the on-line Resources, but to
+understand the directives in this file fully, you should refer to the Postfix
+documentation and Web site.
+</p><p>
+Three main directives define how our SMTP server interacts with
+other SMTP servers: smtp_sasl_auth_enable, smtp_use_tls and
+smtp_tls_note_starttls. If your SMTP server will be exposed to the
+Internet at large, you should set these as flexibly as possible to ensure
+all other SMTP servers can talk to yours. If it's an internal-only
+SMTP server, however, you can make it more secure by strengthening
+these directives.
+</p><p>
+The more interesting part is how we specify how our users and
+machines connect to our MTA to send mail. A few more directives are
+of concern here: smtpd_sasl_auth_enable, smtpd_sasl_security_options,
+smtpd_sasl_tls_security_options, smtpd_use_tls, smtpd_tls_cert_file,
+smtpd_tls_key_file and smtpd_tls_auth_only.
+</p><p>
+If you'll be using IMAP for mail delivery, make sure to set the
+mailbox_transport directive and the smtp and cyrus transports mechanism
+in master.cf.
+</p><p>
+Like OpenLDAP, Postfix is kerberized, uses SASL for authentication
+negotiation and can use SSL to secure the data transport. To secure
+Postfix and configure it to use SASL, we need to do a few tasks in
+addition to modifying main.cf. First we create an SSL certificate/key
+pair and place the two parts in /etc/ssl/postfix/smtp-cert.pem
+and /etc/ssl/postfix/smtp-key.pem, making sure that they're
+owned by the user postfix and group mail, and that the key is
+readable only by user postfix. Next, we create a host principal for
+mail.example.com and save it to the normal place. We also create a
+service principal, smtp/mail.example.com@CI.EXAMPLE.COM and save it
+to /etc/postfix/smtp.keytab. This file should be owned by root and
+have the same permissions as the smtp-key.pem file. In addition, we
+create a SASL configuration file named /etc/sasl2/smtpd.conf and also
+edit /etc/conf.d/saslauthd. Postfix uses the saslauthd d&aelig;mon to get
+information about authentication mechanisms, and these two files tell
+SASL how to check passwords, what mechanisms are supported and the
+minimum security layer to use. Values for minimum_layer are equivalent to
+the security strength factors (SSFs) in OpenLDAP. Finally, we tell Postfix
+where its Kerberos keytab file is by creating /etc/conf.d/postfix or
+by making sure the KRB5_KTNAME environment variable is set in the init
+script prior to starting Postfix. Once all these tasks have been done,
+we can start the saslauthd and Postfix init scripts.
+</p><p>
+LDAP is useful not only for identity management and authorization but
+also for storing alias maps for Postfix. It's simple to use and maintain,
+and it removes the need to rebuild the alias database every time there
+is a change to it. The first step is to make our directory aware that
+we want to store alias maps in it. We do this by adding the misc.schema
+to the slapd configuration. Next, we create a branch in the directory
+for the aliases. We'll use ou=aliases,o=ci,dc=example,dc=com. The last
+piece is to tell Postfix to use LDAP as a source for aliases by adding
+ldap:/etc/postfix/aliases.cf to the alias_maps directive in main.cf and
+creating the /etc/postfix/aliases.cf file that specifies how to connect
+to LDAP and where the aliases are in LDAP. We restart slapd and then
+Postfix; we're now ready to add a mail alias. We create an LDIF file
+called alias.ldif and add it to the directory. That's it!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0xe4ac08"></a>
+Configuring the cyrus IMAP MDA</h2></div></div><p>
+We'll be using the cyrus IMAP mail delivery agent (MDA) v2.2.10. Complete
+configuration of the cyrus IMAP server is beyond the scope of this
+document, but example working configuration files are provided. The cyrus
+IMAP server is developed by the same group who developed cyrus SASL,
+so SASL and single sign-on support work as expected.
+</p><p>
+Like Postfix, cyrus IMAP has two configuration files: /etc/imapd.conf
+and /etc/cyrus.conf. We'll be dealing only with /etc/imapd.conf. Again
+there are a few prerequisites: SSL certificate/key pair, host
+principal and service principal. The service principal should be called
+imap/mail.example.com@CI.UCHICAGO.EDU and stored in /etc/imap.keytab. To
+enable SSL, we define tls_ca_path, tls_cert_file and tls_key_file options
+accordingly. To use SASL, we define sasl_pwcheck_method, sasl_mech_list
+and sasl_minimum_layer options. The values for these options are identical
+to those set in /etc/sasl2/smtpd.conf for Postfix. Like Postfix, cyrus
+IMAP needs to be told where its keytab file is. We do this by editing
+/etc/conf.d/cyrus or making sure the KRB5_KTNAME environment variable
+is set in the init script prior to starting the IMAP d&aelig;mon. Once all
+this has been done, we should make sure saslauthd is running and then
+start the imap init script.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0x1155b28"></a>
+Wrapping Up</h2></div></div><p>
+We certainly have covered a whole lot in a short time, but all this
+hard work has given you a secure and scalable corporate directory. We've
+just implemented a system that works for tens of users and hosts at one
+location all the way up to thousands spread all over the world. In my
+next article, we'll tackle tying Linux and Apple OS X clients into our
+system to see the fruits of our labor.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xd51580.0x1155c30"></a>
+Acknowledgements</h2></div></div><p>
+This work was supported by the Mathematical, Information and
+Computational Sciences Division subprogram of the Office of Advanced
+Scientific Computing Research, Office of Science, U.S. Department of
+Energy, under Contract W-31-109-ENG-38. Additional support has been
+provided by the Computation Institute at the University of Chicago and
+the National Science Foundation under Grant SCI: 0451491.
+</p><p>
+<span   class="bold"><b>Resources for this article:</b></span> <a href="../140/8581.html" target="_self">/article/8581</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Ti Leggett (<a href="mailto:leggett@mcs.anl.gov">leggett@mcs.anl.gov</a>) is a systems administrator for the
+Futures Laboratory of the Mathematics and Computer Science Division at
+Argonne National Laboratory. He also has a joint appointment with the
+Computation Institute at the University of Chicago.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../140/toc140.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

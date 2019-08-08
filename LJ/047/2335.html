@@ -1,0 +1,342 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Linux Network Programming, Part 2</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    In part 2 of our series we learn how to design and code&#10;    network daemons to serve our clients well.&#10;    "><meta name="keywords" content="code, daemon, network"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xb3b580.0xc32ab0"></a>Linux Network Programming, Part 2</h1></div><div><div class="authorgroup"><div class="author"><h3 class="author">Ivan Griffin</h3></div><div class="author"><h3 class="author">John Nelson</h3></div><div class="issuemoyr">Issue #47, March 1998</div></div></div><div><p>
+    In part 2 of our series we learn how to design and code
+    network daemons to serve our clients well.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc33870"></a></h2></div></div><p>Daemon processes are servers which run in
+the background servicing various clients. You should be aware of
+the following few issues when creating daemon processes. During
+development, it is always advisable to run the server in the
+foreground in order to use <span   class="bold"><b>printf</b></span>
+or <span   class="bold"><b>write</b></span> for debugging. Also, if
+the server happens to go berserk, it can be killed by sending the
+interrupt character (typically <b  >ctrl-c</b>). While
+being deployed for use, the server should be coded to act like a
+daemon. Daemon programs in Unix typically end in the letter
+<span   class="emphasis"><em>d</em></span>, e.g.,
+<span   class="bold"><b>httpd</b></span> for the HTTP daemon (web
+server).
+</p><p>It is always nice to have a daemon automatically put itself
+in the background when run. This is quite easy to achieve using the
+<span   class="bold"><b>fork()</b></span> call. A well-behaved daemon
+will close all the open file descriptors it inherited from its
+parent after the fork. This is especially important if the files
+are terminal devices, as they must be closed to allow the terminal
+state to reset when the user who starts the daemon logs out. Use
+the <span   class="bold"><b>getrlimit()</b></span> call to determine
+the maximum number of open file descriptors and to close
+them.</p><p>The process must then change its process group. Process
+groups are used in distributing signals&mdash;those processes with the
+same group as the terminal are in the foreground and are allowed to
+read from the terminal. Those in a different group are considered
+in the background (and will be blocked if they attempt to
+read).</p><p>Closing the controlling terminal and changing the session
+group prevents the daemon process from receiving implicit (i.e.,
+not sent by the user with the <span   class="bold"><b>kill</b></span>
+command) signals from the previous group leader (commonly a
+shell).</p><p>Processes are organized within process groups and process
+groups within sessions. With the
+<span   class="bold"><b>setsid()</b></span> system call, a new
+session (and thus, a new process group) is then created with the
+process as the new session leader.</p><p>Once the daemon is without a controlling terminal, it must
+not re-acquire one. Controlling terminals are automatically
+acquired when a process group leader opens a terminal device. The
+easiest way to prevent this is to fork again after calling
+setsid(). The daemon runs in this second child. Since the parent
+(the session and process group leader) will terminate, the second
+child will obtain a new process group of zero (since it becomes a
+child of <span   class="bold"><b>init</b></span>). Therefore, it
+cannot acquire a new controlling terminal, since it is not a
+process leader. Many standard library routines may assume the three
+standard I/O descriptors are open. As a result, servers commonly
+open all three descriptors, connected to a harmless I/O device such
+as /dev/null.</p><p>Daemons are typically started at boot-up and remain running
+throughout the uptime life of the system. If a daemon was started
+from a mounted file system, it would be impossible to unmount the
+file system until the daemon was killed. As a result, it is a
+sensible daemon programming practice to perform a
+<span   class="bold"><b>chdir()</b></span> to <b  >/</b>
+(or perhaps to a file system which holds files relevant to the
+operation of the daemon). Daemons inherit
+<span   class="bold"><b>umask</b></span> information from the process
+which created them. To prevent problems with file creation later
+within the daemon, it is commonly set to zero using
+<span   class="bold"><b>umask()</b></span>.
+<a href="2335l1.html" target="_self">Listing 1</a> illustrates these points
+with some sample code.</p><p>For systems that do not support sessions (e.g., some systems
+other than Linux and Solaris), you can achieve the same result as
+setsid() using the code from <a href="2335l2.html" target="_self">Listing
+2</a>.</p><p>When the forked children of the main server code exit, their
+memory is deallocated but their entries in the process table are
+not removed. In other words, the processes are dead, i.e., they do
+not consume system resources, but they have not been reaped yet.
+The reason they stay around in this
+<span   class="emphasis"><em>zombie</em></span>-like form is to allow the parent to
+gather statistics from the child if necessary (such as CPU usage,
+etc). Obviously, a daemon does not want to fill the process table
+with zombie processes.</p><p>When a child dies, it sends its parent a
+<b  >SIGCHLD</b> signal. The default handler of this
+signal causes the child to turn into a zombie, unless it is
+explicitly reaped by its parent, as in
+<a href="2335l3.html" target="_self">Listing 3</a>. Alternatively, as shown
+in <a href="2335l4.html" target="_self">Listing 4</a>, you can ignore the
+signal and allow the zombie to die.</p><p>It is also quite common for daemons to ignore most other
+signals or to re-read any configuration files and restart after
+being sent <b  >SIGHUP</b>. Many daemons save their PID
+(process identification) to a log file, typically called
+/var/run/foobar.pid (where <span   class="bold"><b>foobar</b></span>
+is the name of the daemon), which can aid in stopping the
+daemon.</p><p>When the system is being shut down (or changing from
+multi-user to single-user), the <b  >SIGTERM</b> signal
+is sent to notify all processes. The
+<span   class="bold"><b>init</b></span> process then waits a specific
+amount of time (20 seconds for SVR4, 5 seconds for BSD, 5 seconds
+for Linux init, 3 seconds or a passed command-line argument Linux
+<span   class="bold"><b>shutdown</b></span>). If the process is still
+alive, a <b  >SIGKILL</b> signal which cannot be ignored
+is sent to it. Therefore, daemon processes should catch the
+<b  >SIGTERM</b> signal to ensure they shut down
+gracefully.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc34688"></a>Network Daemon Designs</h2></div></div><p><a href="2335f1.jpg" target="_self"><span   class="bold"><b>Figure 1. Three
+Designs for a Network Service Daemon</b></span></a></p><p>In Figure 1, the diagrams show three potential designs for a
+daemon providing a network service to prospective clients. In the
+first picture, the daemon follows the most common technique of
+forking off a separate process to handle the request, while the
+parent continues to accept new connection requests. This concurrent
+processing technique has the advantage that requests are constantly
+being serviced and may perform better than serializing and
+iteratively servicing requests. Unfortunately, forks and potential
+context-switches are involved, making this approach unsuited to
+servers with very high demand.</p><p>The second diagram shows the iterative, synchronous,
+accepting and handling of a request within a single context of
+execution, before another request is handled. This approach has the
+drawback that requests which occur during the handling of the
+request will either get blocked or rejected. If blocked, they will
+be blocked for at most the duration of the request processing and
+communication. Depending on this duration, a significant number of
+requests could potentially get rejected due to the listen queue
+backlog having filled. Therefore, this approach is perhaps best
+suited to handling requests of a very short duration. It is also
+better suited to UDP network daemons rather than TCP
+daemons.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc348f0"></a>Process Pre-allocation</h2></div></div><p>The third diagram (Figure 1) is the most complicated&mdash;it
+shows a daemon which pre-allocates new contexts of execution (in
+this case, new processes) to handle the requests. Note that the
+master calls fork() after
+<span   class="bold"><b>listen()</b></span>, but before an
+<span   class="bold"><b>accept()</b></span> call. The slave processes
+call accept(). This scenario will leave a pool of potential server
+processes blocking an accept() call at the same time. However, the
+kernel guarantees that only one of the slaves will succeed in its
+accept() call for a given connection request. It will then service
+the request before returning to the accept state. The master
+process can either exit (with <b  >SIGCHLD</b> being
+ignored) or continually call
+<span   class="bold"><b>wait()</b></span> to reap exiting slave
+processes.</p><p>It is quite common for the slave processes to accept only a
+certain number of requests before committing suicide to prevent
+memory-leaks from accumulating. The process with the lowest number
+of accepted requests (or perhaps a special manager parent) would
+then create new processes as necessary. Many popular web servers
+implement pools of pre-forked server threads (e.g., Netscape,
+Apache).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc34bb0"></a>Delayed Process Allocation</h2></div></div><p>If the server process time of a request is very short (the
+usual case), concurrent processing is not always necessary. An
+iterative server may perform better by avoiding the overhead of
+context-switching. One hybrid solution between concurrent and
+iterative designs is to delay the allocation of new server
+processes. The server will begin processing requests iteratively.
+It will create a separate slave process to finish handling a
+request if the processing time for that request is substantial.
+Thus, a master process can check the validity of requests, or
+handle short requests, before creating a new slave.</p><p>To use delayed process allocation, use the
+<span   class="bold"><b>alarm()</b></span> system call, as shown in
+<a href="2335l5.html" target="_self">Listing 5</a>. A timer is established
+in the master, and when the timer expires, a signal handler is
+called. A fork() system call is performed inside the handler. The
+parent closes the request connection and returns to an accepting
+state, whereas the child handles the request. The
+<span   class="bold"><b>setjmp()</b></span> system call records the
+state of the process's stack environment. When the
+<span   class="bold"><b>longjmp()</b></span> is later invoked, the
+process will be restored to exactly the same state as saved by the
+setjmp(). The second parameter to longjmp() is the value that
+setjmp() will return when the stack is restored.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc2b700"></a>Threading</h2></div></div><p>All of the forking in these examples could be replaced with
+calls to <span   class="bold"><b>pthread_create()</b></span> to
+create a new thread of execution rather than a full heavyweight
+process. As mentioned previously, the threads should be
+kernel-level threads to ensure that a block on I/O in one thread
+does not starve others of CPU attention. This involves using Xavier
+Leroy's excellent kernel-level Linux Threads package
+(http://pauillac.inria.fr/~xleroy/linuxthreads/), which is based on
+the <span   class="bold"><b>clone()</b></span> system call.</p><p>Implementing with threads introduces more complications than
+using the fork() model. Granted, the use of threads gives great
+savings in context-switching time and memory usage. Other issues
+come into play, such as availability of file descriptors and
+protection of critical sections.</p><p>Most operating systems limit the number of open file
+descriptors a process is allowed to hold. Although the process can
+use getrlimit() and setrlimit() calls to increase this up to a
+system-wide maximum, this value is usually set to 256 by
+<b  >NOFILE</b> in the /usr/include/sys/param.h
+file.</p><p>Even tweaking <b  >NOFILE</b> and the values
+<b  >NR_OPEN</b> and <b  >NR_FILE</b> in the
+/usr/src/linux/include/linux/fs.h file and recompiling the kernel
+may not help here. While in Linux the <b  >fileno</b>
+element of the <b  >FILE struct</b> (actually called
+<b  >_fileno</b> in Linux) is of type
+<b  >int</b>, it is commonly <b  >unsigned
+char</b> in other systems, limiting file descriptors to 255
+for buffered I/O commands
+(<span   class="bold"><b>fopen()</b></span>,
+<span   class="bold"><b>fprintf()</b></span>, etc). This difference
+affects the portability of the finished application.</p><p>Because threads use a common memory space, care must be taken
+to ensure this space is always in a consistent state and does not
+get corrupted. This may involve serializing writes (and possibly
+reads) to shared data accessed by more than one thread (critical
+sections). This can be achieved by the use of locks, but care must
+be taken to avoid entering a state of deadlock.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc2bde0"></a>Problems with init</h2></div></div><p><span   class="bold"><b>init</b></span>'s primary role is to
+create processes from information stored in the /etc/inittab file.
+It is either directly or indirectly responsible for all the
+user-created processes running on a system. It can respawn
+processes it starts if they die.</p><p>The respawning capabilities of init will get quite confused
+if the daemon forks as per the code in Listing 1. The original
+daemon process will immediately exit (with a child daemon
+continuing to run), and init will take this to mean the daemon has
+died. A simple solution is to add a command-line switch to the
+daemon (perhaps <b  >-init</b>) to inform it to avoid the
+forking code. A better solution is to start the daemon from /etc/rc
+scripts rather than from the /etc/inittab.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc2bff0"></a>SVR4 Style /etc/rc</h2></div></div><p>The System V layout of /etc/rc is used in the popular Red Hat
+and Debian distributions of Linux. In this system, each daemon that
+must be started/stopped has a script in /etc/rc/init.d for Red Hat
+and in /etc/init.d for Debian. This script is invoked with a single
+command-line argument <b  >start</b> to start the daemon,
+and a single command-line argument <b  >stop</b> to stop
+the daemon. The script is typically named after the daemon.</p><p>If you want to start the daemon in a particular run level,
+you will need a link from the run-level directory to the
+appropriate script in /etc/rc/init.d. You must name this start link
+S<span   class="emphasis"><em>xxfoobar</em></span>, where <span   class="emphasis"><em>foobar</em></span>
+is the name of the daemon and <span   class="emphasis"><em>xx</em></span> is a two
+digit number. The number is used to arrange the order in which the
+scripts are run.</p><p>Similarly, if you want the daemon to die when changing out of
+a particular run level, you will need a corresponding link from the
+run-level directory to the /etc/rc/init.d script. The kill link
+must be named K<span   class="emphasis"><em>xxfoobar</em></span>, following the same
+naming convention as the start link.</p><p>Allowing system administrators to start/stop daemons (by
+calling the appropriate script from /etc/rc/init.d, with the
+appropriate command- line argument) is one of the nicer advantages
+of the SysV structure as well as its greater flexibility over the
+previous BSD-style /etc/rc.d layout.</p><p>The shell script in <a href="2335l6.html" target="_self">Listing
+6</a> shows a typical Red Hat style example in /etc/rc/init.d
+for a daemon called foobar.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb3b580.0xc2c4c0"></a>Using syslog()</h2></div></div><p>It is often useful for a daemon to log its activities for
+debugging and system administration/maintenance purposes. It does
+this by opening a file and writing events to this file as they
+happen. Many Linux daemons use the
+<span   class="bold"><b>syslog()</b></span> call to log daemon status
+information etc. The syslog is a client-server logging facility,
+originating from BSD 4.2. I am not aware of any SVR4 or POSIX
+equivalent. Messages to the syslog service are generally sent to
+text files described in /etc/syslog.conf, but may be sent to remote
+machines running a <span   class="bold"><b>syslogd</b></span>
+daemon.</p><p>Using the Linux syslog interface is quite simple. Three
+function calls are prototyped in /usr/include/syslog.h (see the
+syslog.3 man page):</p><pre     class="programlisting">
+void openlog(char *ident, int option, int
+        facility);
+void syslog(int priority, char *format, ...);
+void closelog(void);
+</pre><p><span   class="bold"><b>openlog()</b></span> creates a
+connection to the system logger. The <b  >ident</b>
+string is added to each message logged and is generally the name of
+the daemon. The <b  >option</b> parameter allows for
+logging to the console in case of error, logging to stderr as well
+as the console, logging of the PID and so on. The
+<b  >facility</b> argument classifies the type of program
+or daemon logging the message and this defaults to
+<b  >LOG_USER</b>.
+</p><p>The syslog() call does the actual logging. Values for
+<b  >format</b> and the variable arguments are similar to
+printf(), with the exception that <b  >%m</b> will be
+replaced by the error message corresponding to the current value of
+<b  >errno</b>. The <b  >priority</b> parameter
+indicates the type and relative importance of the message being
+logged.</p><p>To break the connection with the system logger and close any
+associated file descriptor or socket, use
+<span   class="bold"><b>closelog()</b></span>. The use of openlog()
+and closelog() is optional. More detailed information on these
+functions is available in the syslog (3) man page.</p><p><a href="2335s1.html" target="_self">Resources</a></p><p><a href="2335s2.html" target="_self">BSD daemon()</a></p></div></div>
+<div class="authorblurb"><p>
+          <div       class="mediaobject"><img src="2335aa.jpg"></div>
+          <span   class="bold"><b>Ivan Griffin</b></span> is a research postgraduate student
+          in the ECE department at the University of Limerick, Ireland. His
+          interests include C++/Java, WWW, ATM, the UL Computer Society
+          (<a href="http://www.csn.ul.ie/" target="_self">www.csn.ul.ie/</a>) and, of course, Linux
+          (<a href="http://www.trc.ul.ie/~griffini/linux.html" target="_self">www.trc.ul.ie/~griffini/linux.html</a>).
+          His e-mail address is <a href="mailto:ivan.griffin@ul.ie">ivan.griffin@ul.ie</a>.
+        </p><p>
+          <span   class="bold"><b>Dr. John Nelson</b></span> is a senior lecturer in Computer
+          Engineering at the University of Limerick. His interests include
+          mobile communications, intelligent networks, Software Engineering
+          and VLSI design. His e-mail address is <a href="mailto:john.nelson@ul.ie">john.nelson@ul.ie</a>.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../047/toc047.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

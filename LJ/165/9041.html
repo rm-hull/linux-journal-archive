@@ -1,0 +1,573 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Separate the Static from the Dynamic with Tomcat and Apache</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Hosting servlets via Apache, mod_jk, Tomcat, mod_ssl and a few rewrite&#10;rules.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2765580.0x285cab0"></a>
+Separate the Static from the Dynamic with Tomcat and Apache</h1></div><div><div class="author"><h3 class="author">
+Alan
+ 
+Berg
+</h3></div><div class="issuemoyr">Issue #165, January 2008</div></div><div><p>
+Hosting servlets via Apache, mod_jk, Tomcat, mod_ssl and a few rewrite
+rules.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2765580.0x285d298"></a></h2></div></div><p>
+Hosting multiple Java Web-enabled applications with Apache/SSL in
+combination with Tomcat is potentially highly detailed. Separating
+the dynamic from the static content requires URL rewriting and
+aliases. This article discusses one viable configuration.
+</p><p>
+I describe the basics of how to host multiple Java Web
+applications using a pure Apache project approach. In other words, I 
+explain how to apply Apache, mod_ssl, some rewrite rules and the Tomcat
+Servlet container to gain control of a consistent and viable production
+environment. In real life, I am a more-than-a-little-busy developer, and
+one of my more-recent tasks was to define and implement a structure
+to host a complex database-intensive Web-enabled
+searchable publication mechanism through the life cycle. I condense the experience gained
+and explain the most relevant details here.
+</p><p>
+The basics of placing an Apache Web server in front of multiple Tomcat
+servers is explained in an article by Daniel McCarthy on the <span   class="emphasis"><em>Linux
+Journal</em></span> Web site (see Resources). I take this article somewhat
+further by adding the ability to provide secure communication via SSL and
+show how to optimize performance by separating dynamic content, such as JSP
+pages, from static content, such as HTML and images. Further security issues
+also are nodded at briefly. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2765580.0x285d558"></a>
+Preparations</h2></div></div><p>
+The following preparations are
+for those who want to generate a working instance of the infrastructure
+mentioned. This infrastructure involves a locally configured Apache
+server running with two Tomcat instances, all being referenced from a Web
+browser via different loopback (127.0.0.x) addresses. This
+article is still worth reading without following through with the recipe.
+</p><p>
+I assume that the following have been installed: Apache 1.3x
+Web server, mod_ssl, mod_jk and two instances of a Tomcat 5.5.x server,
+one running the ajp1.3 connector on the standard port of 8009 and the
+shutdown port of 8005, and the other on port 8019 and 8015. I
+have chosen a plain-old stable and reliable Apache 1.3.x server over an
+Apache 2.x version on the principle that you shouldn't fix what isn't
+broken. At 
+the Institutes for which I have been responsible, during the past few years
+they have run Apache 1.3.x without issue, the system administrators have
+built up their knowledge, and the systems are maintained and patched to the
+highest levels and snuggly sit in the maturity section of the Web
+server's
+life cycle. The same applies for the choice of mod_jk over mod_jk2. In fact, mod_jk2
+development has been discontinued due to the complexity of configuration.
+</p><p>
+If you have a Debian-based Linux distribution, to install the Apache server
+without compiling, try the following:
+
+<pre     class="programlisting">
+sudo apt-get install apache
+sudo apt-get install libapache-mod-jk
+sudo apt-get install libapache-mod-ssl
+</pre>
+</p><p>
+You should now have a running Apache instance with the configuration
+files sitting under /etc/apache.
+</p><p>
+For the Tomcat servers, you have two choices. The first is to use one
+instance of the binary and then two instances of the configuration, and
+then run a startup script that applies the unique instance of the binary
+with different configurations. The second choice is to use two copies of the
+Tomcat server and modify the server.xml file. The advantage of the first
+approach is the avoidance of replication of executable code. However, this
+is nearly always a false economy. The second approach has advantages for
+complex environments where you want to host different versions of Tomcat
+servers. The second approach is more relevant for Application Service
+Providers that have multiple customers. A division exists between code
+that is written for Java 1.5 that runs natively in Tomcat 5.5 (without
+installing the 1.4 compatibility package) and Java 1.4 that runs in Tomcat
+5. Furthermore, the Servlet implementation is more up to date the newer the
+Tomcat version. Due to the current velocity of change, software that
+is hosted for more than a year can be considered legacy, so there always will
+be a demand for the use of older but still reliable servers.
+</p><p>
+Next, we want to test only on the loopback addresses with no packets
+reaching the network. This can be achieved by modifying the /etc/hosts
+file to something similar to:
+
+<pre     class="programlisting">
+127.0.0.10 bronze_a
+127.0.0.11 silver
+127.0.0.12 gold
+</pre>
+</p><p>
+Therefore, every time you type <tt  >https://bronze_a</tt>, no DNS lookups are
+necessary. The packets from the browser never will reach the Internet
+and will stay local to 127.0.0.10.
+</p><p>
+In the main Apache configuration file, httpd.conf, you will find an include
+line that tells Apache to look under the conf.d directory for further
+configuration. For example:
+
+<pre     class="programlisting">
+Include /etc/apache/conf.d
+</pre>
+</p><p>
+Every time a package is installed that requires configuration changes
+for Apache, you will find an extra configuration file within the conf.d
+directory. In fact, if you want (for a nice aside), try to install Drupal
+and read the Drupal.conf file that is dumped.
+</p><p>
+I want to keep our work separate from the rest of the world's. No doubt,
+we will generate mistakes during playtime. Add a second line to include
+a directory for our virtual hosting files:
+
+<pre     class="programlisting">
+Include /etc/apache/vhosts
+</pre>
+</p><p>
+Then, make the directories /etc/apache/ssl and /etc/apache/vhosts. Later,
+we will place our certificates and server keys in the SSL directory, one
+set per virtual host.
+</p><p>
+Next, check the httpd.conf file to see whether the SSL engine is turned on. I
+want to turn the engine off until enabled per virtual host. So, the
+line <tt  >SSLEngine On</tt> should change to
+<tt  >SSLEngine Off</tt>.
+</p><p>
+Now we have an Apache 1.3.x server that is ready for action.
+</p><p>
+If you have not set up your Tomcat servers yet, you need to
+modify the following lines under the tomcat_root/conf/server.xml file
+for the second instance. Change the port numbers to 8015 for the shutdown
+command and port 8019 for the AJP/1.3 connector:
+
+<pre     class="programlisting">
+
+&lt;Server port="8005" shutdown="SHUTDOWN"&gt; 
+&lt;Connector port="8080"
+&lt;Connector port="8009"
+       enableLookups="false"  protocol="AJP/1.3" /&gt;
+
+</pre>
+</p><p>
+For the sake of security, change the shutdown
+attribute from the value SHUTDOWN to some randomly long string.
+Otherwise,
+perhaps on the worst day under a badly defended system, a cracker can
+Telnet in and type <tt  >SHUTDOWN</tt>, and then your server
+is down. Also,
+I would comment out the 8080 connector. There is no need to 
+expose Tomcat directly to the Internet.
+</p><p>
+Only one task is left&mdash;to create two Web applications. Under
+the webapps directory of the first Tomcat instance, create a bronze_a
+directory, and then under that directory, create a WEB-INF directory. Place the following
+web.xml file in WEB_INF:
+
+<pre     class="programlisting">
+
+&lt;?xml version="1.0" encoding="ISO-8859-1"?&gt; 
+&lt;web-app xmlns="http://java.sun.com/xml/ns/j2ee"
+    
+    xsi:schemaLocation="http://java.sun.com/xml/ns/j2ee 
+    http://java.sun.com/xml/ns/j2ee/web-app_2_4.xsd"
+    version="2.4"&gt;
+
+  &lt;display-name&gt;BRONZE_A&lt;/display-name&gt;
+  &lt;description&gt;
+    BRONZE_A Dynamic
+  &lt;/description&gt;
+&lt;welcome-file-list&gt;
+ &lt;welcome-file&gt;
+index.jsp
+ &lt;/welcome-file&gt;
+&lt;/welcome-file-list&gt;
+&lt;/web-app&gt;
+
+</pre>
+</p><p>
+Notice the mention of web-app_2_4.xsd. This web.xml file will not work
+under Tomcat 5, which uses the 2.3 standard. Under the webapps/bronze_a
+directory, place the following index.jsp file. This is our poor yet
+relevant example of dynamic content:
+
+<pre     class="programlisting">
+
+&lt;%String mess="Hello World from Bronze_a"; %&gt;
+ &lt;%=mess%&gt; &lt;br&gt;&lt;%=request.getRequestURI()%&gt;
+
+</pre>
+</p><p>
+Follow the same procedure for the second instance, but replace the string
+bronze_a with silver under the webapps/silver directory of the second Tomcat
+instance.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2765580.0x285e058"></a>
+Working Together</h2></div></div><p>
+Making the Apache and Tomcat servers talk with each other is
+surprisingly straightforward. If this doesn't already exist somewhere within
+the httpd.conf file, add the following lines to the end of the file:
+
+<pre     class="programlisting">
+JkWorkersFile /usr/local/apache/conf/workers.properties
+JkLogFile /usr/local/apache/logs/mod_jk.log
+JkLogLevel error
+</pre>
+</p><p>
+The exact location of the worker.properties file is left to your
+discretion. The JkLoggFile and JkLogLevel values are not necessary, as we will
+override them within the virtual host files. However, for peace
+of mind, I like to place default values in case of misconfiguration
+later. The worker property defines how the connections behave. The first
+line defines the list of workers&mdash;in this case, bronze and silver. The next
+lines are for the details of configuration for each worker set. bronze
+attaches itself to port 8008 and silver to port 8019, with both sets
+talking the AJ1.3 protocol. These two worker sets are mentioned
+later in the virtual host files:
+
+<pre     class="programlisting">
+worker.list=bronze,silver
+
+worker.bronze.port=8009
+worker.bronze.host=localhost
+worker.bronze.type=ajp13
+
+worker.silver.port=8019
+worker.silver.host=localhost
+worker.silver.type=ajp13
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2765580.0x285e268"></a>
+Virtual Hosting</h2></div></div><p>
+Virtual hosting is the hosting of multiple servers on one machine 
+by listening for either incoming hostnames or IP addresses. Using
+multiple virtual hosts with SSL works only for IP-based
+virtual hosting. Let me explain by example. First, say I want to view a
+normal transaction between a Web browser and a server. To achieve this, I
+use the rather excellent Apache SOAP tool TcpTunnelGui. To do this, first download
+the current archive from the Apache SOAP Web site (see Resources). On
+expanding it, you will see a directory called lib. Perform the following
+actions, and if all goes well, you will have Java installed locally and
+have brought up the GUI:
+
+<pre     class="programlisting">
+cd lib
+java -cp ./soap.jar org.apache.soap.util.net.TcpTunnelGui 
+ &#8618;9001 localhost 80
+</pre>
+</p><p>
+The GUI displays the text from any TCP connection going through
+port 9001 and redirects the input back to localhost 80. Feel free to
+change localhost to point to your own test Web server. In your browser,
+type <tt  >http://localhost:9001</tt>. Expect to see the
+following type of transaction:
+
+<pre     class="programlisting">
+Accept: */*
+Referer: http://localhost:9001
+Accept-Language: en-us
+Accept-Encoding: gzip, deflate
+User-Agent: Mozilla/4.0 (compatible; 
+ &#8618;MSIE 6.0; Windows NT 5.1; CHWIE_NL70; 
+ &#8618;SV1; .NET CLR 1.0.3705; .NET CLR 1.1.4322)
+Host: localhost:9001
+Connection: Keep-Alive
+</pre>
+</p><p>
+As you can see, the browser sends information about itself and also the
+host and referrer variable. Apache uses the host variable in name-based
+virtual hosting to work out which configuration file to apply. By typing
+<tt  >https://localhost:9001</tt>, you will get a garbled response similar to:
+
+<pre     class="programlisting">
+?L^A^C?+^A
+</pre>
+</p><p>
+The Host variable is not available until the SSL encryption is
+complete. Therefore, having a different SSL certificate per virtual host
+requires that the SSL process occurs before configuration. Yes, it's the proverbial
+chicken-and-egg problem. Why do we need multiple SSL certificates and,
+thus, IP-based configuration in the first place? The answer has to do
+with the cn attribute in the SSL certificate. For a certificate to be
+accepted as a valid server certificate by browsers, the cn attribute
+has to be defined with the value of the hostname of the target server.
+So, for the IP address 127.0.0.10, we need a certificate with cn=bronze_a, and
+for the IP address 127.0.0.11, a certificate with cn=silver.
+</p><p>
+To generate self-signed certificates with your own local CA, you 
+need to have OpenSSL installed:
+
+<pre     class="programlisting">
+sudo apt-cache search openssl
+sudo apt-get install openssl
+</pre>
+</p><p>
+Use these three commands to generate a self-signed certificate:
+
+<pre     class="programlisting">
+openssl req -new -out silver.csr
+openssl rsa -in privkey.pem -out silver.key
+openssl x509 -in silver.csr -out silver.cert 
+ &#8618;-req -signkey silver.key -days 365
+</pre>
+</p><p>
+The first command generates the certificate request. Remember, the cn
+attribute must be the same value as the hostname contained within your
+virtual host&mdash;for example, silver or bronze_a. The other attributes
+can
+be of any text value you consider reasonable.
+</p><p>
+The second command moves the password from the newly generated server's
+private key to silver.key, removing the password protection. This is
+needed; otherwise, every time you restart Apache, you will be asked to
+type in the password at the command line. The final line generates a
+relevant certificate based on the certificate request. Place both the
+cert and key files in the /etc/apache/ssl directory. Perform the same
+action for bronze_a. Remember to defend the ssl directory with the least
+permissions possible.
+</p><p>
+To activate both port 80 and 443 for bronze, add the following
+virtual host under vhosts:
+
+<pre     class="programlisting">
+
+Listen 127.0.0.10:443
+&lt;VirtualHost 127.0.0.10:443&gt;
+
+ServerName bronze_a
+Alias /static/ /var/www/customers/bronze_a/content/
+RedirectMatch ^/$ https://bronze_a/bronze_a/
+
+SSLEngine On
+SSLCertificateFile ssl/bronze_a.cert
+SSLCertificateKeyFile ssl/bronze_a.key
+
+JkMount /bronze_a/* bronze
+JkMount /bronze_a bronze
+JkLogFile /usr/local/apache/logs/bronze_a_mod_jk.log
+JkLogLevel info
+JkLogStampFormat "[%a %b %d %H:%M:%S %Y] "
+
+RewriteEngine on
+  RewriteRule ^/(.*):SSL$ https://%{SERVER_NAME}/$1 [R,L]
+  RewriteRule ^/(.*):NOSSL$ http://%{SERVER_NAME}/$1 [R,L]
+&lt;/VirtualHost&gt;
+
+Listen 127.0.0.10:80
+&lt;VirtualHost 127.0.0.10:80&gt;
+
+ServerName bronze_a
+Alias /static/ /var/www/customers/bronze_a/content/
+RedirectMatch ^/$&nbsp; https://bronze_a/bronze_a/
+
+JkMount /bronze_a/* bronze
+JkMount /bronze_a bronze
+JkLogFile /usr/local/apache/logs/80_bronze_a_mod_jk.log
+JkLogLevel info
+JkLogStampFormat "[%a %b %d %H:%M:%S %Y] "
+
+RewriteEngine on
+  RewriteRule ^/(.*):SSL$ https://%{SERVER_NAME}/$1 [R,L]
+  RewriteRule ^/(.*):NOSSL$ http://%{SERVER_NAME}/$1 [R,L]
+
+&lt;/VirtualHost&gt;
+
+</pre>
+</p><p>
+For silver, create a similar virtual host but with
+the 127.0.0.11 IP address, and replace the string bronze_a with the
+string silver. Double-check that your SSL
+certificate and private key are pointed to correctly.
+</p><p>
+Turn on SSL with these
+three little commands:
+
+<pre     class="programlisting">
+SSLEngine On
+SSLCertificateFile ssl/bronze_a.cert
+SSLCertificateKeyFile ssl/bronze_a.key
+</pre>
+</p><p>
+The rewrite rules are culled from the mod_ssl FAQ. What is happening
+is that you have control over the relative URLs, so you can switch
+between the SSL and non-SSL port easily. When you use /url:NOSSL as
+a URL, the URL is rewritten to HTTP instead of HTTPS, and the same is true
+for HTTP to HTTPS using /url:SSL.
+</p><p>
+Enable the mounting of the Tomcat server by the workers with the following:
+
+<pre     class="programlisting">
+JkMount /bronze_a/* bronze
+JkMount /bronze_a bronze
+</pre>
+</p><p>
+It is good practice to separate log files used potentially for
+debugging&mdash;for example:
+
+<pre     class="programlisting">
+JkLogFile /usr/local/apache/logs/80_bronze_a_mod_jk.log
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2765580.0x285ec08"></a>
+Living with Static and Dynamic Content</h2></div></div><p>
+Apache is better than Tomcat for delivering static content, security
+and URL reshaping. Therefore, it is of global benefit to separate the
+static and dynamic content of your site and allow Apache to deal
+with the static content via the filesystem and the dynamic content via
+mod_jk. One instance of the URL remapping is the top-level redirect. We
+had mounted mod_jk at /bronze_a. If a user had typed
+<tt  >http://bronze_a/</tt>,
+he or she would either have found an empty page or seen a pretty file
+listing. You can resolve this issue by placing an index.html page at the
+top-level location or by redirecting down. The redirection is achieved via:
+
+<pre     class="programlisting">
+RedirectMatch ^/$&nbsp; https://bronze_a/bronze_a/
+</pre>
+</p><p>
+To make sure the right page is picked up by the uri /bronze_a/, the
+following lines exist in the web.xml file:
+
+<pre     class="programlisting">
+
+&lt;welcome-file-list&gt;
+ &lt;welcome-file&gt;
+index.jsp
+ &lt;/welcome-file&gt;
+&lt;/welcome-file-list
+
+</pre>
+</p><p>
+A simple method to link to the static content is to use an alias within
+the virtual host. For example, https//bronze_a/static/:
+
+<pre     class="programlisting">
+Alias /static/ /var/www/customers/bronze_a/content/
+</pre>
+</p><p>
+Developing Java Web applications tends to be a team sport. Static
+content, such as images (at least in my environment), tend to change more than the
+application itself. Therefore, you may consider doing the obvious and
+setting an FTP root above the static content, but not above the more
+sensitive dynamic content. Then, you can force the Web application to
+go through a full series of tests before placing any new version in
+production. In fact, you may even consider a hybrid solution. Developers
+like to work through CVS. By placing both static and dynamic content
+within a war file, you keep all your code and content together and have
+a synchronized deployment via the re-installation of the war file. This
+simplifies deployment, and system administrators have to perform
+the same repetitive task only when new property files or content is
+approved. Next, you would need to add some AliasMatch rules to treat
+certain URLs as file locations, dishing the files up directly rather than
+through mod_jk, thus avoiding potential performance hits. For example:
+
+
+<pre     class="programlisting">
+AliasMatch /web/customers/(.*)/javascript/(.*) 
+ /usr/local/tomcat6/webapps/$1/javascript/$2
+AliasMatch /web/customers/(.*)/images/(.*) 
+ /usr/local/tomcat6/webapps/$1/images/$2
+AliasMatch /web/customers/(.*)/css/(.*) 
+ /usr/local/tomcat6/webapps/$1/css/$2
+</pre>
+</p><p>
+This would map files in the CSS, JavaScript or image directories in
+the Web application as static content. For example,
+https://xxxxx/web/customers/little.com/javascript/editor.js 
+translates to /usr/local/tomcat6/webapps/little.com/javascript/editor.js.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2765580.0x2855910"></a>
+Conclusion</h2></div></div><p>
+There are many ways to kill a cat, which, for cats, is most
+unfortunate. This article has shown one approach to hosting Web
+applications. I do not pretend that this is the only approach; it's
+simply one
+that has worked for me. At great speed I have mentioned mod_ssl, mod_jk
+and one approach to separating static and dynamic content. I hope this
+article has given you enough information to have a go at testing your
+hosting concepts yourself. With some basic configuration, it is relatively
+straightforward to control your SSL-enabled virtual hosts.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2765580.0x2855a18"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Apache SOAP: <a href="http://ws.apache.org/soap" target="_self">ws.apache.org/soap</a>
+</p><p>
+&ldquo;Connecting Apache's Web Server
+to Multiple Instances of Tomcat&rdquo; by Daniel McCarthy:
+<a href="http://www.linuxjournal.com/article/8561" target="_self">www.linuxjournal.com/article/8561</a>
+</p><p>
+mod_ssl: <a href="http://www.modssl.org" target="_self">www.modssl.org</a>
+</p><p>
+OpenSSL:
+<a href="http://www.openssl.org" target="_self">www.openssl.org</a>
+</p><p>
+Tomcat Home Page: <a href="http://tomcat.apache.org" target="_self">tomcat.apache.org</a>
+</p><p>
+Virtual Hosting: <a href="http://httpd.apache.org/docs/1.3/vhosts" target="_self">httpd.apache.org/docs/1.3/vhosts</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Alan Berg, Bsc, MSc, PGCE, has been a lead developer at the Central
+Computer Services at the University of Amsterdam for the last seven
+years. In his spare time, he writes computer articles. He has a degree,
+two Masters' degrees and a teaching qualification. In previous incarnations, he
+was a technical writer, an Internet/Linux course writer and a science
+teacher. He likes to get his hands dirty with the building and gluing
+of systems. He remains agile by playing computer games with his kids who
+(sadly) consistently beat him.
+You can contact him at <a href="mailto:reply.to.berg@chello.nl">reply.to.berg@chello.nl</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../165/toc165.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

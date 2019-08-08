@@ -1,0 +1,375 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>The Linux RAID-1, 4, 5 Code</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    A description of the implementation of the RAID-1, RAID-4 and&#10;    RAID-5&#10;    personalities of the MD device driver in the Linux kernel,&#10;    providing users with high performance and reliable, secondary-storage&#10;    capability using software.&#10;    "><meta name="keywords" content="RAID, kernel, backup"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xbe7580.0xcdeab0"></a>The Linux RAID-1, 4, 5 Code</h1></div><div><div class="authorgroup"><div class="author"><h3 class="author">Gadi Oxman</h3></div><div class="author"><h3 class="author">Ingo Molnar</h3></div><div class="author"><h3 class="author">Miguel de Icaza</h3></div><div class="issuemoyr">Issue #44, December 1997</div></div></div><div><p>
+    A description of the implementation of the RAID-1, RAID-4 and
+    RAID-5
+    personalities of the MD device driver in the Linux kernel,
+    providing users with high performance and reliable, secondary-storage
+    capability using software.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xcdf920"></a></h2></div></div><p>Using RAID (Redundant Array of
+Inexpensive Disks) is a popular way of improving system I/O
+performance and reliability. There are different levels of disk
+arrays that cover the whole range of possibilities for improving
+system I/O performance and increased reliability.
+</p><p>This report describes the current implementation of the RAID
+driver in the kernel, as well as the changes we made to the kernel
+to support new disk-array configurations that provide higher
+reliability.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xcdfa80"></a>The Multiple Devices (MD) Driver</h2></div></div><p>The MD driver is used to group together a collection of block
+devices into a single, larger block device. Usually, a set of SCSI
+and IDE devices are configured into a single MD device. As found in
+the Linux 2.0 kernel, it is designed to re-map sector/device tuples
+into new sector/devices tuples in two different modes
+(personalities): linear (append mode) and striping (RAID-0
+mode).</p><p>Linear mode is just a way of concatenating the contents of
+two smaller block devices into a larger device. This can be used to
+join together several small disks to create a larger disk. The size
+of the new disk is the sum of the smaller ones. For example,
+suppose we have two disks with 300 sectors each; after we configure
+them as linear MD devices, we have a new MD device that has 600
+sectors: the sectors 0 to 299 of the device are mapped to the first
+disk and the sectors 300 to 599 are mapped to the second
+disk.</p><p>RAID-0 mode (also known as striping) is more interesting.
+This mode of operation writes the information to the device while
+distributing the information over the disks that are part of the
+disk array. Unlike linear mode, this is not just a concatenation of
+the disk-array components; striping balances the I/O load among the
+disks resulting in a high throughput. This is the personality
+chosen by most people who want speed.</p><div       class="mediaobject"><img src="2391f1.jpg"></div><p>Figure 1 shows how four disks are arranged in this mode.
+Shadowed regions are those that provide redundant information, and
+those stacked-up disks represent a single disk. As you can see
+there are no shadowed regions in the figure. What does this mean?
+Well, it means that if there is a hardware problem in any of the
+elements of the disk array, you lose all of your
+information.</p><p>Both the linear and the striping personalities lack any
+redundancy and error recovery modes. If any of the elements of the
+disk array fail, the contents of the complete MD device are
+useless, and there is little hope that any useful information can
+be recovered. This is similar to what happens with regular
+secondary storage devices&mdash;if it fails, you lose your information.
+However, with RAID-0, you have a higher risk of losing your
+information than with a regular disk. The higher failure rate is
+due to the fact that you have more disks and a failure in any of
+the disks make the RAID-0 contents unusable.</p><p>If you have a good backup strategy and you don't mind losing
+a day of work if any of your disks fail, using RAID-0 may be the
+best thing to do. For example, RAID-0 is used for newsgroups like
+comp.unix, but a higher reliability RAID level is used for
+important newsgroups like alt.binaries.pictures.furniture.</p><p>The way these two personalities are supported by the MD
+driver in the kernel is quite simple; the low level
+<span   class="bold"><b>ll_rw_blk</b></span> routine is responsible
+for putting block driver I/O requests on the system-request queue.
+This routine must be modified to call a mapping function that is
+part of the MD driver and is invoked whenever a request is issued
+for a block on a MD device.</p><p>The ll_rw_blk routine conceptually looks like this:</p><pre     class="programlisting">
+ll_rw_blk (blocks)
+{
+    sanity-checks ();
+    for-each block in blocks {
+        make_request (block);
+    }
+}
+</pre><p>It is modified to support the striping (RAID-0) and linear
+personalities in this way:</p><pre     class="programlisting">
+ll_rw_blk (blocks)
+{
+    sanity-checks ();
+    for-each block in blocks {
+        if (block is-in md-device)
+            md_map (block)
+    }
+    for-each block in blocks {
+        make_request (block);
+    }
+}
+</pre><p>Block re-mapping happens just before the input/output request
+is put into the system-request queue. This re-mapping function is
+quite simple. It is invoked with pointers to the device and to the
+block number, and all it does is change the device ID and the block
+number. The device ID is changed to point to one of the disks in
+the disk array, and the block number is changed to point to the
+proper location on that disk. Basically it is a nice hack (but it
+uses a couple of &ldquo;ifdefs&rdquo;, which we all know our fearless leader
+does not like).</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xce00b0"></a>The Extensions for RAID-1, 4, 5</h2></div></div><p>The MD mapping function works fine for re-mapping
+personalities such as the linear and the striping personalities.
+Unfortunately, it is not enough to support the RAID-1, RAID-4 and
+RAID-5 personalities. The reason for this is that these modes
+cannot do their job by just re-mapping a given device/sector pair
+into new device/sector pairs; all of these new personalities
+require complex input/output operations to fulfill a single
+request.</p><p>For example, the mirroring personality (RAID-1) duplicates
+the information onto all of the disks in the array, so that the
+information on each disk is identical. The size of the disk array
+is the size of the smallest disk (the lowest common denominator).
+Therefore, it is not a good idea to make a RAID-1 with a 100MB disk
+and a 1GB disk, since the driver will just provide 100MB on each
+(and ignore the fact that you have 900MB free on the second
+disk).</p><p>The MD driver, when asked to write information to the device,
+queues a write request for all of the devices in the array with the
+same information. The system can continue operation regularly with
+all of the remaining devices (usually, just one extra device). With
+mirroring in place, read requests are balanced among the devices in
+the array. If any of the devices fail, the device driver marks it
+as non-operational and stops using it; the driver will continue
+working with the remaining disks as if nothing had happened. Figure
+2 shows how this mode can be used; shadowed regions represent the
+redundant information.</p><div       class="mediaobject"><img src="2391f2.jpg"></div><p>Next we have the more complex block-interleaved parity
+(RAID-4) and block-interleaved distributed-parity (RAID-5)
+personalities. A striping unit is a set of contiguous sectors. Both
+the RAID-4 and RAID-5 personalities use one stripe on one of the
+disks in the array to store the parity information and use the
+remaining stripes for data.</p><p>Whenever one of the data sectors is modified, the parity
+sector has to be recomputed and written back to the disk. To
+recompute the parity sector, the device driver has to read the
+contents of the old parity block and recompute the new parity
+information. Then it writes the new contents of the data and the
+parity block.</p><p>The difference between RAID-4 and RAID-5 is that the former
+stores the parity information in a fixed device (the last one of
+the composing devices in our implementation), while the latter
+distributes the parity blocks between the composing devices.</p><p>Figure 3 shows the RAID-4 arrangement; shadowed regions are
+the redundant information, which in this case are the parity
+blocks. RAID-4 has a bottleneck due to the parity disk, since all
+MD activity depends on the parity bit disk to finish its
+operation.</p><div       class="mediaobject"><img src="2391f3.jpg"></div><p>Figure 4 shows the RAID-5 arrangement; shadowed regions are
+the redundant information (the parity blocks once again), and each
+disk here represents a striping unit. In RAID-5, the RAID-4
+bottleneck is eliminated by distributing the work among several
+disks.</p><div       class="mediaobject"><img src="2391f4.jpg"></div><p>In the case of a disk failure while using the RAID-4 or
+RAID-5 personalities, the disk array can continue operation since
+it has enough information to reconstruct any lost disk. The MD
+device is slower at this point; every access to a data sector in
+the lost disk requires reading the information from all the sectors
+in the same stripe as well as the parity bit and computing the
+contents of the original sector based on this information.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xce0790"></a>Kernel Changes to Support the New
+Personalities</h2></div></div><p>The new personalities, as we have implemented them require a
+change to the ll_rw_blk routine and some extra code in the
+input/output end-request notification code in the kernel.</p><p>The ll_rw_blk routine is modified to make a call to the
+<span   class="bold"><b>md_make_request</b></span> instead of calling
+the kernel's <span   class="bold"><b>make_request</b></span> when the
+blocks are scheduled to be sent to an MD device. The
+md_make_request routine in turn calls the request-making routine
+once for each personality to carry out its job. In the case of
+RAID-0 and the linear modes, md_make_request calls the regular
+make_request routine.</p><p>The ll_rw_blk routine in the presence of the new MD driver is
+shown here:</p><pre     class="programlisting">
+ll_rw_blk (blocks)
+{
+    sanity-checks ();
+    for-each block in blocks {
+        if (block is md-device)
+            md_map (block)
+    }
+    for-each block in blocks {
+        if (request-is-for (raid1,raid4,raid5))
+            md_make_request (block);
+        else
+            make_request (block);
+    }
+}
+</pre><p>Because of the increased complexity and error recovery
+capabilities of the new RAID code, the personality code must be
+informed of the results of its input/output operations. If a disk
+fails it must mark the disk as non-operational, and in the case of
+the RAID-4 and RAID-5 code, it must move between the different
+phases of the process. We modified the kernel input/output
+end-request routines to call the RAID personality's
+<span   class="bold"><b>end_request</b></span> routine to deal with
+the results.</p><p>A typical end_request routine is as follows:</p><pre     class="programlisting">
+raidx_end_request (buffer_head, uptodate)
+{
+    if (!uptodate)
+        md_error (buffer_head)
+    if (buffer_head-&gt;cmd is READ){
+        if (uptodate){
+            raidn_end_buffer_io (buffer_head,
+                uptodate)
+            return;
+        /* read error */
+        raid_reschedule_retry (buffer_head);
+    }
+    /* write case */
+    if (finished-with buffer_head)
+        raidn_end_buffer_io (buffer_head,
+                uptodate)
+}
+</pre></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xce0bb0"></a>The Generic MD Changes</h2></div></div><p>We wanted to preserve the behavior of the ll_rw_blk routine
+so it's as close as possible to what the client code of this
+routine expects. Since the code now provides error recovery, an
+innocent and simple-looking request can actually turn out to be a
+complex set of requests; therefore, the MD code now begins a
+configurable number of kernel threads used to arbitrate the complex
+requests. It exports those threads to the new personalities through
+the <span   class="bold"><b>md_register_thread</b></span> and the
+<span   class="bold"><b>md_unregister_thread</b></span> functions.
+The MD threads each sleep on its own wait queue and awake when
+needed. They then call the personality's thread and run the disk
+task queue.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xcd75f8"></a>The RAID-1 Code</h2></div></div><p>The mirroring personality is the simplest one in the new
+code. Whenever a read request is made, it is sent to one of the
+operational disks in the disk array; in the case of a write
+request, the personality's request-making code puts a write request
+for each device in the array into the system-request queue.</p><p>In the event of a disk error in one of the devices while
+writing, the device is marked as non-operational, and a message is
+logged to the syslog facility to notify the operator about the
+situation. If this error happens during a disk read, then the code
+retries the read from one of the operational devices; then it puts
+the read request into a queue and wakes up the
+<span   class="bold"><b>raid1d</b></span> kernel thread.</p><p>The raid1d kernel thread has just one purpose in its life&mdash;to
+retry read requests. When it wakes up, it retries any queued
+requests to all of the operational disks.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xcd7808"></a>The RAID-4 and RAID-5 Code</h2></div></div><p>Both RAID-4 and RAID-5 provide block-interleaved parity; the
+former stores the parity in a single disk from the array, while the
+latter distributes the parity among all the disks in the array.
+Most of the code is the same in both modes. Just one routine makes
+the difference between the two modes.</p><p>The easiest code path is the one where all of the disks of
+the array are working properly. In this case, there are two code
+paths for the read and write modes. When asked to read a block from
+the disk array, the code puts the computed location of the data
+sector in the system request queue and no further complications
+arise.</p><p>In the case of a write, things are more complex since the
+driver has to write the corresponding block as well as update the
+parity block. When a single sector from the disk array is written,
+the code needs to do the following:</p><div class="orderedlist"><ol type="1"><li><p>Read the old contents of the data sector and the
+old contents of the parity sector.</p></li><li><p>Compute a new parity sector.</p></li><li><p>Write the new data sector with the new parity
+sector.</p></li></ol></div><p>Since the upper layers expect the code to put the request on
+the queue, the code starts up the read requests on the disk and
+returns to the caller.</p><p>When any of the requests have been completed, the
+<span   class="bold"><b>raid5_end_request</b></span> is called. This
+routine together with the RAID-5 thread
+<span   class="bold"><b>raid5d</b></span> are responsible for keeping
+track of the current state of the block. If there are no problems
+with the disk I/O operations, the request is finally marked as
+finished and the upper layers can use the block.</p><p>If there is an error during block reading or writing, the
+RAID driver marks the faulting disk as a non-operational disk and
+continues operation without using it. The driver does
+reconstruction of lost blocks and computes the parity according to
+the information available on the other disks. Both block-read and
+block-write routines become more complex in the cases where
+something has gone wrong. The disk array is slower, but regular
+operation of the system can continue until the faulty disk is
+replaced.</p><p>If spare disks are configured on the disk array, the RAID
+driver starts a thread that re-creates the information on the disk
+that failed. When it finishes with the reconstruction, the disk is
+marked as operational, and the driver resumes operation at the
+regular speed.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xcd7e38"></a>Other Changes</h2></div></div><p>We have updated the &ldquo;userland&rdquo; utilities that control the
+MD driver to make use of the features found on the new
+personalities.</p><p>The tool <span   class="bold"><b>mkraid</b></span> is used to
+configure a RAID device. It reads a configuration file and creates
+a RAID superblock, where all the administrative information about
+the device is stored.</p><p>At system boot time, the
+<span   class="bold"><b>syncraid</b></span> program checks the RAID
+superblock to make sure that the RAID system was unmounted cleanly
+and reconstructs the redundant information in case something went
+wrong.</p><p>There is a notable bottleneck in RAID-4. All of the parity
+information is kept on a single disk, so any write operation done
+on any of the data disks in the disk array will incur a write to
+the parity disk. For this reason, the speed limit in level 4 of the
+disk array is limited by the speed of the parity disk. It may seem
+unreasonable to have such a personality, since RAID-5 addresses
+this problem. We have implemented RAID-4 because, in some
+configurations of disk arrays, access to the disks may be
+serialized by the disk controller (this is the case with some IDE
+drives).</p><p><a href="2391s1.html" target="_self">Credits</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xbe7580.0xcd81a8"></a>Future Work</h2></div></div><p>We want to provide a RAID-1+ personality that basically would
+be RAID-1 plus check pointing; this will let us synchronize the
+disks at boot time after a disk crash. Unfortunately, PC computers
+are not shipped with an NVRAM device that would allow us to do this
+with a minimum amount of work.</p><p>The RAID-4 and RAID-5 code can be enhanced so it can
+determine when a complete stripe is being written to disk. When
+this is detected, the driver does not need to read any of the old
+information found on the disk. We can write all of the data sectors
+as they are found on the request queue, compute a new parity bit
+sector and add it to the queue as well. This is the preferred
+method for improving RAID-4 and RAID-5 disk write speed as
+discussed in &ldquo;Striping in a RAID Level 5 Disk Array&rdquo; (see
+Resources).</p><p>Currently, the low-level, request-queue and ordering code
+writes using the elevator algorithm. Preliminary work in this area
+shows that the algorithm can be improved in a per-device fashion by
+algorithms that are aware of the disk geometry. Virtualizing the
+ordering algorithm for the request queue in a per-device fashion
+may provide a good performance gain.</p><p>When there is a system crash, the RAID-4 and RAID-5 systems
+need to recompute the parity information on the disk array, since
+the parity blocks may contain old information. To improve this
+situation, we want to make use of non-volatile RAM (on those
+systems that have this kind of hardware) for check pointing the
+state of the disk array. With this feature, we can recompute the
+information for any blocks that may have incorrect information when
+starting up the disk array.</p><p><a href="2391s2.html" target="_self">Resources</a>
+</p></div></div>
+<div class="authorblurb"><p>
+          <span   class="bold"><b>Gadi Oxman</b></span>
+          (<a href="mailto:gadio@netvision.net.il">gadio@netvision.net.il</a>)
+          s the author of the Linux IDE/ATAPI
+          tape and floppy drivers and of ext2ed, a file-system editor for the
+          Linux ext2 file system.
+        </p><p>
+          <span   class="bold"><b>Ingo Molnar</b></span>
+          (<a href="mailto:mingo@vger.rutgers.edu">mingo@vger.rutgers.edu</a>)
+          is the author of several hacker-type
+          kernel patches; he is a Linux kernel &ldquo;must read&rdquo;.
+        </p><p>
+          <span   class="bold"><b>Miguel de Icaza</b></span>
+          (<a href="mailto:miguel@gnu.ai.mit.edu">miguel@gnu.ai.mit.edu</a>)
+          is one of the GNU Midnight
+          Commander authors. He also worked on the Linux/SPARC kernel port.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../044/toc044.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

@@ -1,0 +1,446 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>Using Perl to Check Web Links</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h4>Listing 1</h4>
+  <pre>
+#!/usr/bin/perl -w
+# checklinks -- Check Hypertext
+# Links on a Web Page
+# Usage:  See POD below
+
+#------------------------------------
+# Copyright (C) 1996  Jim Weirich.
+# All rights reserved. Permission
+# is granted for free use or
+# modification.
+#------------------------------------
+
+use HTML::LinkExtor;
+use HTTP::Request;
+use LWP::UserAgent;
+use LWP::Simple;
+use URI::URL;
+
+use Getopt::Std;
+$version = '1.0';
+
+# Usage
+#-------------------------------------
+# Display the usage message by scanning
+# the POD documentation for the
+# usage statement.
+
+sub Usage {
+    while (&lt;DATA&gt;) {
+   if (/^B&lt;[-A-Za-z0-9_.]+&gt;/) {
+       s/[BI]&lt;([^&gt;]*)&gt;/$1/g;
+       print "Usage: $_";
+       last;
+   }
+    }
+    exit 0;
+}
+
+
+# ManPage
+#------------------------------------
+# Display the man page by invoking the
+# pod2man (or pod2text) script on
+# self.
+
+sub ManPage {
+    my($pager) = 'more';
+    $pager = $ENV{'PAGER'} if $ENV{'PAGER'};
+    if ($ENV{'TERM'} =~ /^(dumb|emacs)$/) {
+   system ("pod2text $0");
+    } else {
+   system ("pod2man $0 | nroff -man | $pager");
+    }
+    exit 0;
+}
+
+
+# HandleParsedLink
+#---------------------------------
+# HandleParsedLink is a callback
+#provided for parsing handling HTML
+# links found during parsing.  $tag
+# is the HTML tag where the link was
+# found. %links is a hash that contains
+# the keyword/value pairs from
+# the link that contain URLs. For
+# example, if an HTML anchor was
+# found, the $tag would be "a"
+# and %links would be (href=&gt;"url").
+
+# We check each URL in %links. We make
+# sure the URL is absolute
+# rather than relative. URLs that don't
+# begin with "http:" or "file:"
+# are ignored. Bookmarks following a "#"
+# character are removed.
+# If we have not seen this URL yet, we
+# add it to the list of URLs to
+# be checked. Finally, we note where
+# the URL was found it its list of
+# references.
+
+sub HandleParsedLink {
+      my ($tag, %links) = @_;
+      for $url (values %links) {
+         my $urlobj = new URI::URL $url, $currentUrl;
+           $url = $urlobj-&gt;abs;
+           next if $url !~ /^(http|file):/;
+     $url =~ s/#.*$//;
+     if (!$refs{$url}) {
+         $refs{$url} = [];
+         push (@tobeChecked, $url);
+   }
+     push (@{$refs{$url}}, $currentUrl);
+    }
+    1;
+}
+
+# HandleDocChunk
+#--------------------------------
+# HandleDocChunk is called by the
+# UserAgent as the web document is
+# fetched. As each chunk of the
+# document is retrieved, it is passed
+# to the HTML parser object for further
+# processing (which in this
+# case, means extracting the links).
+
+sub HandleDocChunk {
+    my ($data, $response, $protocol) = @_;
+    $parser-&gt;parse ($data);
+}
+
+
+# ScanUrl
+# ------------------------------
+# We have a URL that needs to be
+# scanned for further references to
+# other URLs. We create a request to
+# fetch the document and give that
+# request to the UserAgent responsible
+# for doing the fetch.
+
+sub ScanUrl {
+    my($url) = @_;
+    $currentUrl = $url;
+    push (@isScanned, $url);
+    print "Scanning $url\n";
+    $request  = new HTTP::Request (GET =&gt; $url);
+    $response = $agent-&gt;request \
+    ($request, \&amp;HandleDocChunk);
+    if ($response-7gt;is_error) {
+   die "Can't Fetch URL $url\n";
+    }
+    $parser-&gt;eof;
+}
+
+# CheckUrl
+# ------------------------------
+# We have a URL that needs to be
+# checked and validated. We attempt
+# to get the header of the document
+# using the head() function. If this
+# fails, we add the URL to our list
+# of bad URLs. If we do get the
+# header, the URL is added to our
+# good URL list. If the good URL
+# is part of our local web site
+#(i.e. it begins with the local
+# prefix), then we want to scan
+# this URL for more references.
+
+sub CheckUrl {
+    my($url) = @_;
+    print "    Checking $url\n" if $verbose;
+    if (!head ($url)) {
+           push (@badUrls, $url);
+    } else {
+      push (@goodUrls, $url);
+      if ($doRecurse &amp;&amp; $url =~ /\.html?/ \
+              &amp;&amp; $url =~ /^$localprefix/) {
+            push (@tobeScanned, $url);
+   }
+    }
+}
+
+# Main Program
+#---------------------------------
+
+use vars qw ($opt_h $opt_H $opt_V);
+
+getopts('hHpruvV') || die "Command aborted.\n";
+$verbose   = ($opt_v ? $opt_v : 0);
+$printUrls = ($opt_u ? $opt_u : 0);
+$doRecurse = ($opt_r ? $opt_r : 0);
+
+die "Version $version\n" if $opt_V;
+ManPage() if $opt_H;
+Usage() if $opt_h || @ARGV==0;
+
+# Initialize our bookkeeping arrays
+
+@tobeScanned = ();
+# list of URLs to be scanned
+@goodUrls    = ();
+# list of good URLs
+@badUrls     = ();
+# list of bad URLs
+@isScanned   = ();
+# list of scanned URLs
+%refs        = ();
+# reference lists
+
+# Use the first URL as the model
+# for the local prefix. We remove the
+# trailing file name of the URL and
+# retain the prefix. Any URL that
+# begins with this prefix will be
+#considered a local URL and available
+# for further scanning.
+
+$localprefix = ($opt_p ? $opt_p : $ARGV[0]);
+$localprefix =~ s%[^/]*$%%;
+print "Local Prefix = $localprefix\n" if $verbose;
+if ($doRecurse &amp;&amp; !$localprefix) {
+    die "A local prefix is required i\
+       to restrict recursive fetching\n";
+}
+
+# Put each command line arg on the
+# list of files to scan. If the
+# argument is a file name, convert
+# it to a URL by prepending a "file:"
+# to it.
+
+for $arg (@ARGV) {
+    if (-e $arg) {
+   $arg = "file:" . $arg;
+    }
+    push (@tobeScanned, $arg);
+}
+
+# Create the global parser and
+# user agent.
+
+$parser = new HTML::LinkExtor
+   (\&amp;HandleParsedLink);
+$agent  = new LWP::UserAgent;
+
+# Keep Scanning and Checking until
+# there are no more URLs
+
+while (@tobeScanned || @tobeChecked) {
+    while (@tobeChecked) {
+   my $url = shift @tobeChecked;
+   CheckUrl ($url);
+    }
+
+    if (@tobeScanned) {
+   my $url = shift @tobeScanned;
+   ScanUrl ($url);
+    }
+}
+
+# Print the results.
+
+if ($printUrls) {
+    print "Scanned URLs: ", join (" ",
+        sort @isScanned), "\n";
+    print "\n";
+    print "Good URLs: ", join (" ",
+        sort @goodUrls), "\n";
+    print "\n";
+    print "Bad URLs: ", join (" ",
+        sort @badUrls), "\n";
+}
+
+print "\n";
+for $url (sort @badUrls) {
+    print "BAD URL $url referenced in ...\n";
+    for $ref (sort @{$refs{$url}}) {
+   print "... $ref\n";
+    }
+    print "\n";
+}
+
+print int (@isScanned), " URLs Scanned\n";
+print int (keys %refs), " URLs checked\n";
+print int (@goodUrls), " good URLs found\n";
+print int (@badUrls),  " bad  URLs found\n";
+
+__END__
+
+=head1 NAME
+
+checklinks - Check Hypertext
+ Links on a Web Page
+
+=head1 SYNOPSIS
+
+B&lt;checklinks&gt; [B&lt;-hHpruvV&gt;] I&lt;urls&gt;...
+
+=head1 DESCRIPTION
+
+I&lt;checklinks&gt; will scan a web site
+ for bad HTML links.
+
+=head1 OPTIONS
+
+=over 6
+
+=item B&lt;-h&gt; (help)
+
+Display a usage message.
+
+=item B&lt;-H&gt; (HELP ... man page)
+
+Display the man page.
+
+=item B&lt;-p&gt; I&lt;prefix&gt; (local prefix)
+
+Specify the local prefix to be used
+when testing for local URLs.  If
+this option is not specified when
+using the B&lt;-r&gt; option, then a local
+prefix is calculated from the first URL
+ on the command line.
+
+=item B&lt;-r&gt; (recurse)
+
+Normally, only the URLs listed on the
+ command line are scanned.  If
+this option is specified, local URLs
+ (as defined by the local prefix)
+found within documents are fetched and scanned.
+
+=item B&lt;-u&gt; (print URL lists)
+
+The complete lists of good, bad and
+scanned URLs will be printed in
+addition to the normally printed information.
+
+=item B&lt;-v&gt; (verbose mode)
+
+Display "Checking" messages
+as well as "Scanning" messaegs.
+
+=item I&lt;urls&gt;
+
+List of urls to be scanned. If the URLs
+is a filename, then a "file:"
+is prepended to the filename (this allows
+ local files to be scanned
+like other URLs).
+
+=back
+
+=head1 AUTHOR
+
+Jim Weirich &lt;C&lt;jweirich@one.net&gt;&gt;
+
+=head1 LIMITATIONS
+
+When recursive scanning URLs
+option B&lt;-r&gt;), a local prefix is
+calculated from the first URL on the
+command line by removing the last
+file name in the URL path. If the
+URL specifies a directory, the
+calculated prefix may be incorrect.
+Always specify the complete URL
+or use the B&lt;-p&gt; prefix
+option to directly specify a local prefix.
+
+=head1 SEE ALSO
+
+See also related man pages for
+HTML::LinkExtor, HTTP::Request,
+LWP::UserAgent, LWP::Simple, and URI::URL.
+
+=cut
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../036/toc036.html">Issue Table of Contents</a>
+    <a class="link3" href="../036/2026.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

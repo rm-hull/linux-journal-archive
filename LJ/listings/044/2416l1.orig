@@ -1,0 +1,323 @@
+#!/usr/local/bin/perl -Tw
+
+# $Id$
+#
+# Listing 1:
+# SCRIPT:       diskHog
+# AUTHOR:       Ivan Griffin (ivan.griffin@ul.ie)
+# DATE:         14 April 1996
+#
+# REVISION HISTORY:
+#   06 Mar 1996 Original version (written using Bourne shell and Awk)
+#   14 Apr 1996 Perl rewrite
+#   01 Aug 1996 Found piggie image on the web, added second red ball
+#   02 Aug 1996 Added third red ball
+#   20 Feb 1997 Moved piggie image :-)
+
+#
+# outlaw barewords and set up the paranoid stuff
+#
+use strict 'subs';
+use English;
+
+$ENV{'PATH'} = '/bin:/usr/bin:/usr/ucb'; # ucb for Solaris dudes
+$ENV{'IFS'} = '';
+
+#
+# some initial values and script defines
+#
+$NumUsers = 0; 
+$Total = 0; 
+$Position = 0; 
+
+$RED_ZONE3 = 300000;
+$RED_ZONE2 = 200000;
+$RED_ZONE = 100000;
+$ORANGE_ZONE = 50000;
+
+$CRITICAL = 2500000;
+$DANGER   = 2200000;
+
+$TmpFile = "/var/tmp/foo$$";
+$HtmlFile = '>/home/sysadm/ivan/public_html/diskHog.html';
+$PerlWebHome = "diskHog.pl";
+
+$HtmlDir = "WWW";
+$HtmlIndexFile = "$HtmlDir/index.html";
+$Login = " ";
+$HomeDir=" ";
+$Gcos = "A user";
+
+@AccountDirs = ( "/home/users", "/home/sysadm" );
+@KeyList = (); 
+@TmpList = ();
+
+chop ($Machine = `/bin/hostname`);
+# chop ($Machine = `/usr/ucb/hostname`); # for Solaris
+
+
+#
+# Explicit sort subroutine
+#
+sub by_disk_usage
+{
+    $Foo{$b} <=> $Foo{$a};  # sort integers in numerically descending order
+}
+
+
+#
+# get disk usage for each user and total usage
+#
+sub get_disk_usage 
+{
+    foreach $Directory (@AccountDirs)
+    {
+        chdir $Directory or die "Could not cd to $Directory\n";
+        # system "du -k -s * >> $TmpFile"; # for Solaris 
+        system "du -s * >> $TmpFile";
+    }
+
+    open(FILEIN, "<$TmpFile") or die "Could not open $TmpFile\n";
+
+    while (<FILEIN>)
+    {
+        chop;
+        ($DiskUsage, $Key) = split(' ', $_);
+
+        if (defined($Foo{$Key}))
+        {
+            $Foo{Key} += $DiskUsage;
+        }
+        else
+        {
+            $Foo{$Key} = $DiskUsage;
+
+            @TmpList = (@KeyList, $Key);
+            @KeyList = @TmpList;
+        };
+
+        $NumUsers ++;
+        $Total += $DiskUsage;
+    };
+
+    close(FILEIN);
+    unlink $TmpFile;
+}
+
+
+#
+# for each user with a public_html directory, ensure that it is
+# executable (and a directory) and that the index.html file is readable
+#
+sub user_and_homepage 
+{
+    $User = $_[0];
+
+    ($Login, $_, $_, $_, $_, $_, $Gcos, $HomeDir, $_) = getpwnam($User)
+        or return "$User</td>";
+
+    if ( -r "$HomeDir/$HtmlIndexFile" )
+    {
+        return "$Gcos <a href=\"/~$Login\">($User)</a>";
+    }
+    else
+    {
+        return "$Gcos ($User)</td>";
+    };
+}
+
+#
+# generate HTML code for the disk usage file
+#
+sub html_preamble
+{
+    $CurrentDate = localtime;
+
+    open(HTMLOUT, $HtmlFile) or die "Could not open $HtmlFile\n";
+    printf HTMLOUT <<"EOF";
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 3.0//EN">
+
+<!--
+  -- Automatically generated HTML
+  -- from $PROGRAM_NAME script
+  --
+  -- Last run: $CurrentDate
+  -->
+
+<html>
+<head>
+<title>
+Disk Hog Top $NumUsers on $Machine
+</title>
+</head>
+
+<body bgcolor="#e0e0e0">
+<h1 align=center>Disk Hog Top $NumUsers on $Machine</h1>
+
+<div align=center>
+<table>
+<tr>
+    <td valign=middle><img src="images/piggie.gif" alt="[PIGGIE!]"></td>
+    <td valign=middle><em>This is a <a href=$PerlWebHome>Perl</a>
+        script which runs<br>
+        automatically every night</em><br></td>
+</tr>
+</table>
+
+<p>
+<b>Last run started</b>: $StartDate<br>
+<b>Last run finished</b>: $CurrentDate
+</p>
+
+<p>
+<table border=2>
+<tr>
+<th>Status</th>
+<td>
+EOF
+
+    if ($Total > $CRITICAL) 
+    {
+        print HTMLOUT "CRITICAL!!! - Reduce Disk Usage NOW!";
+    }
+    elsif (($Total <= $CRITICAL) && ($Total > $DANGER))
+    {
+        print HTMLOUT "Danger - Delete unnecessary Files";
+    }
+    else
+    {
+        print HTMLOUT "Safe";
+    }
+
+
+    printf HTMLOUT <<"EOF";
+</td>
+</tr>
+</table>
+</P>
+
+<hr size=4>
+
+<table border=2 width=70%%>
+    <tr>
+        <th colspan=2>Chart Posn.</th>
+        <th>Username</th>
+        <th>Disk Usage</th>
+    </tr>
+
+EOF
+}
+
+#
+#
+#
+sub html_note_time
+{
+    $StartDate = localtime;
+}
+
+
+
+#
+# for each user, categorize and display their usage statistics
+#
+sub dump_user_stats
+{
+    foreach $Key (sort by_disk_usage @KeyList)
+    {
+        $Position ++;
+
+        print HTMLOUT <<"EOF";
+    <tr>\n
+        <td align=center>
+EOF
+
+        #
+        # colour code disk usage
+        #
+        if ($Foo{$Key} > $RED_ZONE) 
+        {
+            if ($Foo{$Key} > $RED_ZONE3)
+            {
+                print HTMLOUT "        <img src=images/ball.red.gif>\n";
+            }
+
+            if ($Foo{$Key} > $RED_ZONE2)
+            {
+                print HTMLOUT "        <img src=images/ball.red.gif>\n";
+            }
+
+            print HTMLOUT "        <img src=images/ball.red.gif></td>\n";
+        }
+        elsif (($Foo{$Key} <= $RED_ZONE) && ($Foo{$Key} > $ORANGE_ZONE))
+        {
+            print HTMLOUT "        <img src=images/ball.orange.gif></td>\n";
+        }
+        else
+        {
+            print HTMLOUT "        <img src=images/ball.green.gif></td>\n";
+        }
+
+        print HTMLOUT <<"EOF";
+
+        <td align=center>$Position</td>
+EOF
+
+        print HTMLOUT "        <td align=center>";
+        print HTMLOUT &user_and_homepage($Key);
+        print HTMLOUT "</td>\n";
+
+        print HTMLOUT <<"EOF";
+        <td align=center>$Foo{$Key} KB</td>
+    </tr>
+
+EOF
+    };
+}
+
+#
+# end HTML code
+#
+sub html_postamble
+{
+    print HTMLOUT <<"EOF";
+    <tr>
+        <th></th>
+        <th align=left colspan=2>Total:</th>
+        <th>$Total</th>
+    </tr>
+</table>
+
+</div>
+
+<hr size=4>
+<a href="/">[$Machine Home Page]</a>
+
+</body>
+</html>
+EOF
+
+
+    close HTMLOUT ;
+
+#
+# ownership hack
+#
+    $Uid = getpwnam("ivan");
+    $Gid = getgrnam("users");
+
+    chown $Uid, $Gid, $HtmlFile;
+}
+
+
+#
+# main()
+#
+
+&html_note_time;
+&get_disk_usage;
+&html_preamble;
+&dump_user_stats;
+&html_postamble;
+
+# all done!

@@ -1,0 +1,651 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Centralized Authorization Using a Directory Service, Part II</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Get a handle on administering who can log in where, with a proven, reliable&#10;centralized directory.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0xb4a580.0xc41ab0"></a>
+Centralized Authorization Using a Directory Service, Part II</h1></div><div><div class="author"><h3 class="author">
+Alf
+ 
+Wachsmann
+</h3></div><div class="issuemoyr">Issue #131, March 2005</div></div><div><p>
+Get a handle on administering who can log in where, with a proven, reliable
+centralized directory.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc42298"></a></h2></div></div><p>
+Authorization is the process of deciding if entity X is allowed to have
+access to resource Y. Determining the identity of X is the job of the
+authentication process.
+One task of authorization in computer networks is to define and determine
+which user has access to which computers in the network. A simple example
+would be one line in a computer's /etc/passwd file,
+<tt  >joe:X:1234:56:/home/joe:/bin/bash</tt>,
+to allow user joe access to this computer. If you want to give user
+joe access to several computers, you have to add this line to every
+computer's /etc/passwd file.
+</p><p>
+On Linux, the tendency exists to create a local account for each single
+user who should be allowed to log in to a computer. This typically
+is the case, because a user needs not only login privileges
+but also access to additional resources, such as a home directory to do some
+work. Creating a local account on every computer takes care of all this.
+</p><p>
+The problem with this local account approach is that these accounts can be
+inconsistent with one another. The same user name could have a different
+user ID and/or group ID on different computers. Even more problematic
+is when two different accounts share the same user ID and group ID on
+different computers. User joe on computer1 could have user ID 1234 and
+group ID 56, and user jane on computer2 could have the same user ID 1234
+and group ID 56. This is a big security risk in cases where shared resources
+are used. These two different accounts are the same for an NFS
+server, so these users can wipe out each other's files.
+</p><p>
+The solution to this inconsistency problem is to have
+only one central, authoritative data source for this
+kind of information and a means of providing all your
+computers with access to this central source. This is
+what a directory service does. The two directory services
+most widely used for centralizing authorization data
+are the network information service (NIS, formerly
+known as yellow pages or YP) and lightweight directory
+access protocol (LDAP).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc42500"></a>
+NIS vs. LDAP</h2></div></div><p>
+A few things need to be considered when it comes to deciding which
+directory service to use, NIS or LDAP.
+If your company already maintains an LDAP server, it seems simple enough
+to add the authorization data to it. However, usually company LDAP servers
+are used for white pages and similar fairly lightweight tasks. Adding the
+authorization task puts a significant load on an LDAP server, because
+every single lookup for user name, UID, GID and so on done by programs needs
+to be answered by it. It usually makes sense to add an additional LDAP
+server dedicated solely to authorization. Also, due to the many different kinds
+of directory queries, it is rather hard to get the performance tuning
+right. You need to add all necessary LDAP index definitions in your
+slapd.conf file in order to speed up common lookups, but you don't want
+to add too many index definitions. Doing so makes the LDAP back-end
+database files large, and everything slows down again.
+</p><p>
+LDAP is the better choice in networks that have problems with many
+dropped UDP packets, because it uses TCP/IP where retransmits are built
+into the network protocol layer.
+NIS, on the other hand, uses remote procedure
+calls (RPCs) over UDP. Every dropped packet results in a non-answered
+NIS query, and the NIS client needs to repeat the query. Use the command
+<tt  >netstat -s -u</tt> at different times on different machines on your network
+to see whether your network suffers from this problem. You should see
+very few errors reported by this command.
+</p><p>
+I concentrate on NIS in this article, because it
+is easier to start out with and there is a fairly
+simple migration path to LDAP in case you see
+problems. PADL Software Pty, Ltd., provides a set of
+open-source tools to help you convert all your
+NIS data files to LDAP (see the on-line Resources). You still
+have to do the performance-tuning part, however. You
+have to write migration tools yourself if you want
+to migrate from LDAP to NIS.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc42710"></a>
+Configuring the NIS Servers</h2></div></div><p>
+An NIS server does not require a lot of hardware resources. Any machine
+you have around should do the job. You might want to put this new
+functionality on a dedicated machine, though. At the Stanford Linear
+Accelerator Center (SLAC), we serve, without
+any problems, up to 500 Linux and Solaris clients with one old Sun Netra
+T1 server.
+We have four of these NIS servers for about 700 Solaris and
+Linux desktop computers and another six NIS servers for about 2,500 Solaris
+and Linux compute servers. Our clients are spread out somewhat unevenly
+over the servers.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc42818"></a>
+Master Server Configuration</h2></div></div><p>
+Log on to the machine where you want to install your master NIS server, and
+make sure the latest portmap, ypserv and yp-tools RPMs are installed. If
+not, download and install them now.
+All following commands have to be issued as root.
+Start the portmapper d&aelig;mon with:
+
+<pre     class="programlisting">
+# service portmap start
+</pre>
+</p><p>
+The next step is to define the name of your new NIS domain. This name
+can be anything you like, but it probably makes sense to pick one that
+represents your department inside your company; nis.example.com
+for an NIS domain for all of Example.Com or eng.example.com for the
+Engineering department inside of Example.Com would be good choices.
+</p><p>
+Set the NIS domain name on your master server with the command:
+
+<pre     class="programlisting">
+# domainname nis.example.com
+</pre>
+</p><p>
+You also have to add the line:
+
+<pre     class="programlisting">
+NISDOMAIN=nis.example.com
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc42b30"></a></h2></div></div><p>
+to the file /etc/sysconfig/network.
+</p><p>
+Restrict access to your new NIS server by creating a file
+/var/yp/securenets with the content:
+
+<pre     class="programlisting">
+# netmask       # network
+255.255.255.0   192.168.0.0
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc42ce8"></a></h2></div></div><p>
+This is a crucial security step. The world is able to query your
+NIS server if you don't have this file.
+</p><p>
+The next step is to define the things you would like to put into NIS.
+For the purpose of authorization, the /etc/group and /etc/passwd files
+as well as something called netgroup are sufficient. However,
+many more things are possible. To get an idea, have a look at the file
+/var/yp/Makefile on your NIS server.
+</p><p>
+Below, I show how the three files I've mentioned are configured
+to be distributed by way of NIS.
+</p><p>
+Adjust the Makefile generating the NIS map database files:
+
+<pre     class="programlisting">
+# cp /var/yp/Makefile /var/yp/Makefile.save
+# vi /var/yp/Makefile
+</pre>
+</p><p>
+Change the following two entries from true to false to prevent the merging
+of passwd and shadow files as well as group and gshadow files:
+
+<pre     class="programlisting">
+MERGE_PASSWD=false
+MERGE_GROUP=false
+</pre>
+</p><p>
+Change the directory name where NIS should look for its data sources:
+
+<pre     class="programlisting">
+YPSRCDIR = /etc/NIS
+YPPWDDIR = /etc/NIS
+</pre>
+</p><p>
+Comment all files from which the NIS databases should not be built.
+I left only these three files:
+
+<pre     class="programlisting">
+GROUP       = $(YPPWDDIR)/group
+PASSWD      = $(YPPWDDIR)/passwd
+NETGROUP    = $(YPSRCDIR)/netgroup
+</pre>
+</p><p>
+Comment the line starting with <tt  >all:</tt> that contains the list of all
+potential NIS maps. Add the new line:
+
+<pre     class="programlisting">
+all:	passwd group netgroup
+</pre>
+</p><p>
+Watch out for TAB characters. In a Makefile, you must use
+only TAB characters, not spaces, to indent commands.
+</p><p>
+Now, create the data source directory defined in the Makefile:
+
+<pre     class="programlisting">
+# mkdir /etc/NIS/
+# chmod 700 /etc/NIS
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc43370"></a></h2></div></div><p>
+and put a passwd file in there:
+
+<pre     class="programlisting">
+# grep -v '^root' /etc/passwd &gt; /etc/NIS/passwd
+</pre>
+</p><p>
+You should remove not only the root account but all system accounts
+from this file and leave only the real user accounts.
+</p><p>
+If you still are using /etc/passwd with encrypted
+passwords, it now is time to convert them to Kerberos
+5, as described in the previous article [<i  >LJ</i>,
+February 2005]. If you don't
+do this, your encrypted passwords are exposed
+on the network when the passwd file is distributed
+to the slave NIS servers or to the NIS clients.
+</p><p>
+Now, collect the local /etc/passwd files from all the machines that are to
+be members of your new NIS domain. Remove all system accounts
+and then merge them together with:
+
+<pre     class="programlisting">
+% cat passwd_1 passwd_2 passwd_3 ... &gt; passwd_merge
+</pre>
+</p><p>
+Remove all duplicate entries with this command:
+
+<pre     class="programlisting">
+% sort passwd_merge | uniq &gt; passwd_uniq
+</pre>
+</p><p>
+Check the consistency of the remaining entries with:
+
+<pre     class="programlisting">
+
+% cut -d':' -f1 passwd_uniq | sort | uniq -c | \
+egrep -v "\s*1"
+
+</pre>
+</p><p>
+If this produces any output, you have two different entries with the
+same account name. If the difference is not in the UID or GID field,
+simply decide on one of the entries and remove the other one. If the
+difference is the UID or GID field, you need to resolve this conflict,
+which can be rather complex.
+</p><p>
+Another consistency check is to see whether any two different accounts
+have the same UID, which is the case if this command:
+
+<pre     class="programlisting">
+
+% cut -d':' -f3 passwd_uniq | sort | uniq -c | \
+egrep -v "\s*1"
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc438f0"></a></h2></div></div><p>
+produces any output; the second number in the output is the duplicate
+UID. Resolving this conflict again can be rather complex.
+Do the same kind of merging and checking for all your /etc/group files.
+</p><p>
+Copy the resulting files to /etc/NIS/passwd and /etc/NIS/group. I will
+return to the netgroup file later. Leave it out for now.
+</p><p>
+Now, start your master NIS server with:
+
+<pre     class="programlisting">
+# service ypserv start
+</pre>
+</p><p>
+Initialize the NIS maps with the command:
+
+<pre     class="programlisting">
+# /usr/lib/yp/ypinit -m
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc43bb0"></a></h2></div></div><p>
+and follow the printed instructions.
+</p><p>
+In order to have all the NIS maps available to your NIS master server,
+you probably want to set up this machine as an NIS client as well. Make
+sure this NIS client can bind only to the NIS master as server in
+order to prevent circular dependencies when booting all your machines, as
+after a power outage.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3a5a0"></a>
+Slave Server Configuration</h2></div></div><p>
+NIS slave servers are NIS clients that redistribute the maps they receive
+from the NIS master server to other NIS clients. Make sure the newest
+portmap, ypserv, ypbind and yp-tools RPMs are installed on all your slave
+server machines. The first step in configuring an NIS slave server is to
+configure it as an NIS client. See the next section for how to do this.
+</p><p>
+Once the NIS client is configured, start it with:
+
+<pre     class="programlisting">
+# service ypbind start
+</pre>
+</p><p>
+On your NIS master server, add the name of the new NIS slave server to
+the file /var/yp/ypservers and run the following commands:
+
+<pre     class="programlisting">
+# cd /var/yp
+# /usr/lib/yp/makedbm ypservers
+/var/yp/nis.example.com/ypservers
+</pre>
+</p><p>
+You also need to change the definition of NOPUSH in the file
+/etc/YP/Makefile on your NIS master server from true to false in order
+to get updated NIS maps pushed from your master server to your slave
+server(s).
+</p><p>
+Back on your new NIS slave server, initialize the slave server with:
+
+<pre     class="programlisting">
+# /usr/lib/yp/ypinit -s nismaster
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3a910"></a></h2></div></div><p>
+where <tt  >nismaster</tt> is the name of your NIS master server. This needs to be
+the fully qualified domain name (FQDN) if your DNS returns the FQDN for a
+name lookup. Copy the file /var/yp/securenets from your NIS master server
+over to the new slave server, and start the new NIS slave server with:
+
+<pre     class="programlisting">
+# service ypserv start
+</pre>
+</p><p>
+Remember to update your disaster recovery plan to reflect the new
+dependency of your NIS slave server on your NIS master server.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3ab20"></a>
+Client Configuration</h2></div></div><p>
+Install the latest ypbind, yp-tools and portmap RPMs on all your clients.
+Edit the file /etc/yp.conf to tell the client about your NIS server:
+
+<pre     class="programlisting">
+ypserver nismaster.example.com
+</pre>
+</p><p>
+Add a line for each of your slave servers as well, if you have some.
+Use a random order for these servers on your clients to get somewhat
+even load balancing over all available servers.
+</p><p>
+Add a line to /etc/sysconfig/network to define the NIS domain of the
+client:
+
+
+<pre     class="programlisting">
+NISDOMAIN=nis.example.com
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3ad88"></a></h2></div></div><p>
+and set the NIS domainname with the command:
+
+<pre     class="programlisting">
+# domainname nis.example.com
+</pre>
+</p><p>
+Start the portmapper with:
+
+<pre     class="programlisting">
+# service portmap start
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3af98"></a></h2></div></div><p>
+and the NIS client with:
+
+<pre     class="programlisting">
+# service ypbind start
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3b0f8"></a></h2></div></div><p>
+on each client.
+</p><p>
+The command <tt  >ypwhich</tt>
+should now output the NIS server to which this client has bound.
+</p><p>
+Use the <tt  >ypcat</tt> command to check the content of your
+NIS maps. For example:
+
+<pre     class="programlisting">
+% ypcat passwd
+</pre>
+</p><p>
+Next, you have to tell all lookups on your client to use
+NIS. This is done in the name service switch configuration file
+/etc/nsswitch.conf(5). Change the passwd, group and netgroup entries to:
+
+<pre     class="programlisting">
+passwd:       compat
+group:        files nis
+netgroup:     nis
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3b468"></a></h2></div></div><p>
+This defines the search order for group lookups: start with the local
+/etc/group file and then try an NIS lookup. Netgroups come only from NIS. I
+return to the compat entry for passwd later.
+</p><p>
+The name service caching d&aelig;mon nscd(8) sometimes has problems
+updating its internal cache. The effect is that changes in an NIS map are
+not visible on a particular client. Restarting nscd on that machine is
+the only solution to this problem.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3b5c8"></a>
+Typical Usages</h2></div></div><p>
+Two commands you should be familiar with to query information from NIS
+are ypcat(1) and ypmatch(1).
+<tt  >ypcat</tt> prints values of all keys in an NIS map.
+The command <tt  >ypcat passwd</tt>
+prints all entries in your NIS passwd map.
+<tt  >ypmatch</tt> prints the values of one or more keys from an NIS map;
+<tt  >ypmatch jane passwd</tt>
+outputs the passwd entry for account jane.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3b830"></a>
+NIS Group Map</h2></div></div><p>
+A typical use of the NIS group map is to allow file sharing between
+multiple users. This works with local files as well as with files in
+NFS. Here is how to set it up. Let's say you have two users (this
+technique works for any number of users) with the following passwd
+map entries:
+
+<pre     class="programlisting">
+jane:*:1234:42:Jane:/home/jane:/bin/bash
+joe:*:5678:57:Joe:/home/joe:/bin/bash
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3b990"></a></h2></div></div><p>
+This defines the <span   class="emphasis"><em>primary</em></span> group IDs for jane to be 42
+and for joe to be 57.
+</p><p>
+With the NIS group map you can add additional,
+<span   class="emphasis"><em>secondary</em></span> group
+memberships for accounts. The group entry:
+
+<pre     class="programlisting">
+projectX:*:127:jane,joe
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3bbf8"></a></h2></div></div><p>
+defines a new group projectX with no password (*), group ID 127 and
+two members. No comments are allowed in the group file.
+</p><p>
+If you now set up a directory with read/write/execute permissions for
+group projectX:
+
+<pre     class="programlisting">
+# mkdir /projects/X/
+# chgrp projectX /projects/X/
+# chmod g+wrx /projects/X/
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3bdb0"></a></h2></div></div><p>
+every member in the projectX group has permission to read/write/execute
+files inside that file space. The user might need to do a <tt  >newgrp
+projectX</tt> first.
+</p><p>
+Whenever you need to add or remove accounts to or from the group map,
+do it on your NIS master server by editing the /etc/NIS/group file and
+executing the commands:
+
+<pre     class="programlisting">
+% cd /var/yp
+% sudo make group
+</pre>
+</p><p>
+These generate a new group map that makes the changes visible
+instantaneously on all clients. There is no need to touch any client to
+make these changes. Everything now is centralized in one place on your
+NIS master server.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3c018"></a>
+NIS Netgroups</h2></div></div><p>
+Netgroups are very different from groups. Netgroups come in two flavors,
+user netgroups and host netgroups. Both types of netgroups can contain
+netgroups as members, so netgroup definitions can be hierarchical.
+Both types of netgroups are defined in the same netgroup file. Comments
+are allowed in the netgroup file.
+</p><p>
+Host netgroup definitions in /etc/NIS/netgroup look like this:
+
+<pre     class="programlisting">
+# Group of project groups:
+projects \
+      projectA \
+      projectB \
+      projectX
+
+# Group of hosts for Project X
+projectX \
+        (host1.example.com,-,) \
+        (host2.example.com,-,) \
+        (host3.example.com,-,)
+</pre>
+</p><p>
+These host netgroup definitions now allow you to,
+for example, export NFS space only to subsets of your
+machines. In your NFS server's /etc/exports file, you
+can use constructs like these:
+
+<pre     class="programlisting">
+# export the /projects directory to all machines
+# in the "projects" netgroup
+/projects    @projects(rw,root_squash)
+
+# export Project X' space only to machines
+# in the "projectX" netgroup
+/projects/X           @projectX(rw,root_squash)
+</pre>
+</p><p>
+Again, adding or removing hosts or adding/deleting netgroups is a simple
+edit of the /etc/NIS/netgroup file on your NIS master server. Execute
+<tt  >cd /var/yp; sudo make netgroup</tt> to update the NIS
+map, and the changes
+are visible everywhere instantly.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xc3c330"></a>
+User Netgroups</h2></div></div><p>
+User netgroups, which are netgroups with accounts as members, typically
+are used to restrict login to computers.
+User netgroup definitions look slightly different from host netgroup
+definitions:
+
+<pre     class="programlisting">
+# Group of project user groups
+u-projects \
+        u-projectA \
+        u-projectB \
+        u-projectX
+
+# Group of users in Project X
+u-projectX \
+        (-,jane,) \
+        (-,joe,) \
+        (-,nick,)
+</pre>
+</p><p>
+The prefix u- in the names is a convention to distinguish user
+netgroups from host netgroups.
+</p><p>
+With these definitions in place, you now can grant or restrict login
+access to your computers with these kinds of entries in a machine's
+local /etc/passwd file. Remove a + at the very end of the passwd files
+if present:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Allow access for all accounts in the u-projects netgroup and no
+one else:
+
+<pre     class="programlisting">
++@u-projects
+</pre>
+</p></li><li><p>
+Allow access for only the u-projectX netgroup members and no one else:
+
+<pre     class="programlisting">
++@u-projectX
+</pre>
+</p></li><li><p>
+Allow access to everybody in u-projects but not in u-projectX:
+
+<pre     class="programlisting">
+-@u-projectX
++@u-projects
+</pre>
+</p><p>
+Order here is important. The first match determines what
+happens.
+</p></li><li><p>
+Allow everybody in u-projectA and also account nick
+
+<pre     class="programlisting">
++@u-projectA
++nick
+</pre>
+</p></li></ul></div><p>
+The information about nick (home directory, login shell and so on) comes
+out of the NIS passwd map. It is better to avoid putting
+explicit account names in here, because management of these entries is
+not centralized.
+</p><p>
+To make this +/- syntax work, your clients need to have the entry
+
+<pre     class="programlisting">
+passwd:         compat
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xf4ede8"></a></h2></div></div><p>
+in their /etc/nsswitch.conf files.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0xb4a580.0xf4eef0"></a>
+Conclusion</h2></div></div><p>
+Once you are over the initial hurdle of installing an NIS server and
+making your authorization data consistent, you can start enjoying
+the centralization. Netgroups allow for complex and fine-grained
+access control from one central place.
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="http://www.linuxjournal.com/article/7967" target="_self">www.linuxjournal.com/article/7967</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Alf Wachsmann, PhD, has been at the Stanford Linear Accelerator Center
+(SLAC) since 1999. He is responsible for all areas of automated Linux
+installation, including farm nodes, servers and desktops. His work focuses
+on AFS support, migration to Kerberos 5, a user registry project and
+user consultants.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../131/toc131.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

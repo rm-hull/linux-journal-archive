@@ -1,0 +1,101 @@
+Web Authentication Example
+
+Our Web Server is Apache. (www.apache.org) Apache allows us proctect
+specific directories in our web space with password authentification. The
+standard Apache installation stores those passwords in a flat file (
+much like /etc/password ) created with the Apache htpasswd tool. When
+requesting a password-protected item, the server will send the browser
+an authentication request. The browser will request a username/password
+from you. This information is stored by the browser. Upon subsequent
+requests, the server will again ask for a password and the browser
+will automatically respond with the cached information. The standard
+flat-file storage method can be replaced by an LDAP Apache module. We
+used the mod_auth_ldap bits, also part of the RedHat 7.1 distro
+(auth_ldap-1.4.7). Important Note: there are at least six different LDAP
+modules registered with apache.org. We choose this one (lead author Dave
+Carrigan, www.rudedog.org) because it is included in our RedHat distro.
+
+Apache uses the term realm to refer to a protected space. Typically,
+access control is applied to directories, however later versions
+of Apache allow individual files to be protected. For a good
+guide in setting up basic password authentification on Apache, see
+http://www.apacheweek.com/features/userauth or consult the Apache
+documentation.
+
+First, we define the realm, in Apache's http.conf file: Standard Apache
+realm:
+
+	AuthName "SecretBits" AuthType Basic AuthUserFile
+	/usr/local/etc/httpd/users require valid-user
+
+This realm uses the htpasswd method ( the file location is specified with
+the AuthUserFile directive) We change one line to use the LDAP server.
+
+	Options Indexes
+        AuthType Basic
+        AuthName "SecretBits"
+        AuthLDAPURL ldap://bigldap:389/o=bigldap,c=US?uid
+        
+        require valid-user
+        
+The AuthLDAPURL directive identifies the method ("ldap://")
+the OpenLDAP host:port ("bigldap:389/") and the base domain name
+("o=bigldap,c=US"). The "?uid" bits indicates the LDAP attribute ("uid")
+which will be used for our search. We defined the 'uid' attribute in
+our LDAP database. This URL format is specified in RFC 2255. The full
+syntax is:
+
+ldap://host:port/basedn?attribute?scope?filter
+
+You will notice we do not specify scope or filter. Scope defaults to
+'sub' and filter defaults to '(objectclass=*)' and these defaults work
+fine for us. Add the mod_auth_ldap module to Apache's module list, and
+restart the server, and you are ready to go. Here is an example Perl
+script which creates the password entries. Notice on line 21 where we
+build be entry. The type of encoding used for the password is specified
+by the {crypt} keyword.
+
+     1  #!/usr/bin/perl -w
+
+     2  use Net::LDAP;
+     3  use Net::LDAP::Entry;
+
+     4  my $ldap = new Net::LDAP('hnode2');
+
+     5  my $mesg = $ldap->bind('cn=Manager,o=litldap,c=US',password =>
+'secret');
+
+     6  die("failed to bind with ", $mesg->code(),"\n") if
+$mesg->code();
+
+     7  my $DNend = "o=litldap, c=US";
+
+     8  my $Name = 'ugly';
+
+     9  $salt = 666;
+    10  $test = "password";
+    11  for ( $i = 11; $i < 20; $i++ )
+    12  {
+    13  $pass = crypt($test, $salt);
+
+
+
+    14  my $NewItem = [
+    15                  objectClass =>
+["organizationalPerson","inetLocalMailRecipient","person","uidObject","organizationalRole","simpleSecurityObject"],
+    16                  uid => $Name.$i,
+    17                  cn => $Name.$i,
+    18                  sn => $Name.$i,
+    19                  mailLocalAddress => $Name.$i.'@bogus.com',
+    20                  mailRoutingAddress => $Name.$i.'@bogus.com',
+    21                  userPassword => '{crypt}'.$pass
+    22                  ];
+
+    23  my $NewDN = "@$NewItem[4]="."@$NewItem[5],".$DNend;
+    24  my $res = $ldap->add($NewDN, attrs => [ @$NewItem ]);
+    25  print "result".$res->code()."\n";
+    26  sleep(5);
+    27  }
+
+    28
+

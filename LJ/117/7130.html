@@ -1,0 +1,565 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Signed Kernel Modules</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Now you can make the kernel check modules for a cryptographic&#10;signature before inserting them. Here's the detail of how it's&#10;done.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1ddc580.0x1ed3ab0"></a>Signed Kernel Modules</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #117, January 2004</div></div><div><p>
+Now you can make the kernel check modules for a cryptographic
+signature before inserting them. Here's the detail of how it's
+done.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ddc580.0x1ed4298"></a></h2></div></div><p>
+Signed kernel modules have been a feature of other operating
+systems for a number of years. Some people and companies like
+the idea of installing only modules (or drivers, as they are
+sometimes called) that are known to be blessed by some authority in their
+operating systems. Given the changes in how
+Linux loads kernel modules, signed kernel modules easily can be added to
+the Linux kernel. This article discusses how I have
+implemented this feature and details how to use it.
+</p><p>
+In a signed kernel module, someone has inserted a
+digital signature into the module stating they trust this specific
+module. I am not going to try to persuade anyone that Linux
+should have this ability, that it should be required or even that it
+provides increased security. I describe only how to do
+it and provide the method for its implementation, if anyone
+wants to use it.
+</p><p>
+Public key cryptography is used to make signed kernel modules work. For an overview of the RSA
+public key cryptographic algorithm&mdash;what it is and how it
+works&mdash;see the <i  >Linux Journal</i> Web article at <a href="http://www.linuxjournal.com/article/6826" target="_self">www.linuxjournal.com/article/6826</a>. This article
+assumes readers are familiar with the basics of
+public-key cryptography and that they are able to patch, build
+and load a new Linux kernel onto their machines. For
+instructions on how to build and load a new kernel, see
+the very helpful Linux Kernel HOWTO located at
+<a href="http://www.tldp.org" target="_self">www.tldp.org</a>.
+</p><p>
+In the 2.5 kernel development series, Rusty Russell rewrote the
+way Linux kernel modules work. In previous kernels, the
+majority of the module loading logic was stored in user space. With
+Rusty's changes, all of that logic moved into the kernel,
+reducing the amount of architecture-independent logic and
+simplifying the user interface greatly. One nice side benefit
+of this is the kernel now has access to the entire module
+file in raw form. The kernel module simply is a file in
+ELF format. ELF stands for executable and linking format and
+is the format used for executable programs. The ELF
+specification can be found in text form at <a href="http://www.muppetlabs.com/~breadbox/software/ELF.txt" target="_self">www.muppetlabs.com/~breadbox/software/ELF.txt</a>.
+</p><p>
+ELF files are comprised of different sections. These
+sections can be seen by running the readelf
+program. For example:
+
+
+<pre     class="screen">
+$ readelf -S visor.ko
+There are 23 section headers, starting at offset 0x3954:
+
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .text             PROGBITS        00000000 000040 0017e0 00  AX  0   0 16
+  [ 2] .rel.text         REL             00000000 003cec 000cd0 08     21   1  4
+  [ 3] .init.text        PROGBITS        00000000 001820 000210 00  AX  0   0 16
+  [ 4] .rel.init.text    REL             00000000 0049bc 0001c8 08     21   3  4
+  [ 5] .exit.text        PROGBITS        00000000 001a30 000030 00  AX  0   0 16
+  [ 6] .rel.exit.text    REL             00000000 004b84 000030 08     21   5  4
+  [ 7] .rodata           PROGBITS        00000000 001a60 000020 00   A  0   0 16
+  [ 8] .rel.rodata       REL             00000000 004bb4 000028 08     21   7  4
+  [ 9] .rodata.str1.1    PROGBITS        00000000 001a80 000449 01 AMS  0   0  1
+  [10] .rodata.str1.32   PROGBITS        00000000 001ee0 0009c0 01 AMS  0   0 32
+  [11] .modinfo          PROGBITS        00000000 0028a0 0006c0 00   A  0   0 32
+  [12] .data             PROGBITS        00000000 002f60 000600 00  WA  0   0 32
+  [13] .rel.data         REL             00000000 004bdc 0001e0 08     21   c  4
+  [14] .gnu.linkonce.thi PROGBITS        00000000 003560 000120 00  WA  0   0 32
+  [15] .rel.gnu.linkonce REL             00000000 004dbc 000010 08     21   e  4
+  [16] __obsparm         PROGBITS        00000000 003680 000180 00  WA  0   0 32
+  [17] .bss              NOBITS          00000000 003800 00000c 00  WA  0   0  4
+  [18] .comment          PROGBITS        00000000 003800 00006e 00      0   0  1
+  [19] .note             NOTE            00000000 00386e 000028 00      0   0  1
+  [20] .shstrtab         STRTAB          00000000 003896 0000bd 00      0   0  1
+  [21] .symtab           SYMTAB          00000000 004dcc 000760 10     22  58  4
+  [22] .strtab           STRTAB          00000000 00552c 000580 00      0   0  1
+</pre>
+</p><p>
+Because ELF files are made up of sections, it is
+easy to add a new section to the module file and have
+the kernel read it into memory when it tries to load the module.
+If we put an RSA-signed section into the module, the kernel can
+decrypt the signature and compare it to the signature of the
+file it just loaded. If it matches, the signature is valid
+and the module is inserted successfully into the kernel's
+memory. If the signature does not match, either something has
+been tampered with in the module or the module was not signed
+with a proper key. The module then can be rejected&mdash;that is
+what my patch does.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ddc580.0x1ed4710"></a>How the Kernel Code Works</h2></div></div><p>
+When the kernel is told to load a module, the code in the file
+kernel/module.c is run. In that file, the
+function load_module does all of the
+work of breaking the module into the proper sections,
+checking memory locations, checking symbols and all the other tasks a
+linker generally does. The patch modifies this function and
+adds the following lines of code:
+
+<pre     class="programlisting">
+if (module_check_sig(hdr, sechdrs, secstrings)) {
+   err = -EPERM;
+    goto free_hdr;
+}
+</pre>
+
+</p><p>
+This new function, module_check_sig does all
+of the module signature-checking logic. If it returns an error,
+the error <tt  >Improper Permission</tt> is returned to the user
+and module loading is aborted. If the function returns a
+0, meaning no error occurred, the module load
+procedure continues on successfully.
+</p><p>
+The module_check_sig function is located in
+the file kernel/module-sig.c. The first
+thing the function does is check to see if a signature
+is located within the module. This is done with the
+following lines of code:
+
+<pre     class="programlisting">
+
+sig_index = 0;
+for (i = 1; i &lt; hdr-&gt;e_shnum; i++)
+    if (strcmp(secstrings+sechdrs[i].sh_name,
+               "module_sig") == 0) {
+        sig_index = i;
+        break;
+}
+if (sig_index &lt;= 0)
+    return -EPERM;
+
+</pre>
+</p><p>
+This bit of code loops through all of the different ELF sections
+in the kernel module and looks for one called module_sig. If
+it does not find the signature, it returns an error and prevents
+this module from being loaded. If it does find the signature,
+the function continues.
+</p><p>
+Once the kernel has found the module signature, it needs to
+determine what the hash value is of the module it is being
+asked to load. To do this, it generates the SHA1 hash of the
+ELF section that contains executable code or data used by the
+kernel. The kernel already contains code to generate SHA1
+hashes (along with other kinds of hashes, including MD5 and MD4), so
+most of the logic for this step is present already.
+</p><p>
+The function first allocates a crypto transformation structure
+by requesting the SHA1 algorithm. It then initializes this
+structure with the following lines of code:
+
+<pre     class="programlisting">
+
+sha1_tfm = crypto_alloc_tfm("sha1", 0);
+if (sha1_tfm == NULL)
+    return -ENOMEM;
+crypto_digest_init(sha1_tfm);
+
+</pre>
+
+The sha1_tfm variable is used to create the SHA1
+hash of the specific portions of the ELF file that we want, as
+shown in the following code:
+
+<pre     class="programlisting">
+
+for (i = 1; i &lt; hdr-&gt;e_shnum; i++) {
+    name = secstrings+sechdrs[i].sh_name;
+
+    /* We only care about sections with "text" or
+       "data" in their names */
+    if ((strstr(name, "text") == NULL) &amp;&amp;
+        (strstr(name, "data") == NULL))
+        continue;
+    /* avoid the ".rel.*" sections too. */
+    if (strstr(name, ".rel.") != NULL)
+        continue;
+
+    temp = (void *)sechdrs[i].sh_addr;
+    size = sechdrs[i].sh_size;
+    do {
+        memset(&amp;sg, 0x00, sizeof(*sg));
+        sg.page = virt_to_page(temp);
+        sg.offset = offset_in_page(temp);
+        sg.length = min(size,
+                        (PAGE_SIZE - sg.offset));
+        size -= sg.length;
+        temp += sg.length;
+        crypto_digest_update(sha1_tfm, &amp;sg, 1);
+    } while (size &gt; 0);
+}
+
+</pre>
+</p><p>
+In this code, we care only about the ELF sections with the word text or
+data in their names but not ones that contain the characters
+.rel. After all of the sections have been found and fed to
+the SHA1 algorithm, the SHA1 hash is placed into the variable
+sha1_result with the following lines:
+
+<pre     class="programlisting">
+
+crypto_digest_final(sha1_tfm, sha1_result);
+crypto_free_tfm(sha1_tfm);
+
+</pre>
+</p><p>
+Now that the SHA1 hash is computed and the place with the
+signed hash has been found, all that is left to do is
+unencrypt the signed hash and compare it to the calculated one.
+This step is done in the last line of this function:
+
+<pre     class="programlisting">
+
+return rsa_check_sig(sig, &amp;sha1_result[0]);
+
+</pre>
+</p><p>
+The rsa_check_sig function is located in the
+security/rsa/rsa.c file and uses the GnuPG
+code itself, which was ported to run in the kernel to unencrypt
+the signature and compare the values. The description of how
+this works is beyond the scope of this article.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ddc580.0x1ed4d40"></a>How the User-Space Code Works</h2></div></div><p>
+Now that we have seen how the kernel determines whether a module is
+signed properly, how do we get a signature into a module
+in the first place? Two
+user-space programs, extract_pkey and
+mod, and one small script,
+sign (in the
+security/rsa/userspace/ directory), can be found in the kernel patch. The two
+programs can be built by running the Makefile
+in this directory. The extract_pkey program
+is used to place a public key into the kernel, and the
+mod program is used by the
+sign script to sign a kernel module.
+</p><p>
+In order to sign a module, an RSA-signing key must be generated,
+which can be done by using the gnupg program. To generate an RSA-signing
+key, pass the
+--gen-key option to gpg:
+
+
+<pre     class="screen">
+$ gpg --gen-key
+gpg (GnuPG) 1.2.1; Copyright (C) 2002 Free Software Foundation, Inc.
+This program comes with ABSOLUTELY NO WARRANTY.
+This is free software, and you are welcome to redistribute it
+under certain conditions. See the file COPYING for details.
+
+Please select what kind of key you want:
+   (1) DSA and ElGamal (default)
+   (2) DSA (sign only)
+   (5) RSA (sign only)
+Your selection?
+</pre>
+</p><p>
+We want to create an RSA key, so we select option 5 and then choose
+the default key size of 1024:
+
+<pre     class="screen">
+Your selection? 5
+What keysize do you want? (1024)
+Requested keysize is 1024 bits
+</pre>
+</p><p>
+Continue answering the rest of the questions, and eventually your
+RSA key is generated. But in order to use this key, we
+must create an encrypting version of it. To do that, run gpg
+again and edit the key you just created (in the text
+below, I have named my key testkey):
+
+
+<pre     class="screen">
+$ gpg --edit-key testkey
+gpg (GnuPG) 1.2.1; Copyright (C) 2002 Free Software Foundation, Inc.
+This program comes with ABSOLUTELY NO WARRANTY.
+This is free software, and you are welcome to redistribute it
+under certain conditions. See the file COPYING for details.
+
+Secret key is available.
+
+gpg: checking the trustdb
+gpg: checking at depth 0 signed=0 ot(-/q/n/m/f/u)=0/0/0/0/0/1
+pub  1024R/77540AE9  created: 2003-10-09 expires: never      trust: u/u
+(1). testkey
+
+Command&gt;
+</pre>
+</p><p>
+We want to add a new key, so type <tt  >addkey</tt> at
+the prompt:
+
+<pre     class="screen">
+Command&gt; addkey
+Please select what kind of key you want:
+   (2) DSA (sign only)
+   (3) ElGamal (encrypt only)
+   (5) RSA (sign only)
+   (6) RSA (encrypt only)
+Your selection?
+</pre>
+</p><p>
+Again, we want an RSA key, so choose option 6 and answer the
+rest of the questions. After the key is generated, type
+<tt  >quit</tt> at the prompt:
+
+<pre     class="screen">
+Command&gt; quit
+Save changes? yes
+</pre>
+</p><p>
+Now that we have a key, we can use it to sign a kernel module.
+</p><p>
+To sign a module, use the sign script, which is
+a simple shell script:
+
+<pre     class="programlisting">
+
+#!/bin/bash
+module=$1
+key=$2
+
+# strip out only the sections that we care about
+./mod $module $module.out
+
+# sha1 the sections
+sha1sum $module.out | awk "{print \$1}" &gt; \
+$module.sha1
+
+# encrypt the sections
+gpg --no-greeting -e -o - -r $key $module.sha1 &gt; \
+$module.crypt
+
+# add the encrypted data to the module
+objcopy --add-section module_sig=$module.crypt \
+$module
+
+# remove the temporary files
+rm $module.out $module.sha1 $module.crypt
+
+</pre>
+</p><p>
+The first thing the script does is run the program
+mod on the kernel module. This program
+strips out only the sections that we care about in the ELF file
+and outputs them to a temporary file. The mod
+program is described in more detail later.
+</p><p>
+After we have an ELF file that contains only the sections we
+want, we generate a SHA1 hash of the file using the
+sha1sum program. This SHA1 hash then is
+encrypted using GPG, the key is passed to it and this encrypted
+file is written out to a temporary file. The encrypted
+file is added to the original module as a new ELF section with
+the name module-sig. This is done with the program
+objcopy. And that is it. Using common
+programs already present on a Linux machine, it is easy to
+create a SHA1 hash, encrypt it and add it to an ELF file.
+</p><p>
+The mod program also is quite simple. It takes advantage
+of the fact that the libbfd library knows how to
+handle ELF files and manipulates them in different ways; it is
+based on the binutils program objdump.
+Because the libbfd library handles all of the
+heavy ELF logic, the mod program simply
+can iterate through all the sections of the ELF file it wants to
+with the following code:
+
+<pre     class="programlisting">
+
+for (section = abfd-&gt;sections;
+     section != NULL;
+     section = section-&gt;next) {
+    if (section-&gt;flags &amp; SEC_HAS_CONTENTS) {
+        if (bfd_section_size(abfd, section) == 0)
+            continue;
+
+        /* We only care about sections with "text"
+           or "data" in their names */
+        name = section-&gt;name;
+        if ((strstr(name, "text") == NULL) &amp;&amp;
+            (strstr(name, "data") == NULL))
+            continue;
+
+        size = bfd_section_size(abfd, section));
+        data = (bfd_byte *)malloc(size);
+
+        bfd_get_section_contents(abfd, section,
+                                 (PTR)data,
+                                 0, size);
+
+        stop_offset = size / opb;
+
+        for (addr_offset = 0;
+             addr_offset &lt; stop_offset;
+             ++addr_offset) {
+            fprintf(out, "%c", data[addr_offset]);
+        }
+        free(data);
+    }
+}
+
+</pre>
+</p><p>
+Now that we can sign a kernel module and the kernel knows how to
+detect this signature, the only remaining piece
+is to put our public key into the kernel so it can
+decrypt the signature successfully. A lot of
+discussion on the linux-kernel mailing list recently has centered on how
+to handle keys within the kernel properly. That discussion
+has produced some good proposals for how this aspect will be handled in
+the 2.7 kernel series. But for now, we do not worry about
+properly handling keys in flexible ways, so we compile it
+in directly.
+</p><p>
+First we need to get a copy of our public key. To do this, tell
+GPG to extract the key to a file called
+public_key:
+
+<pre     class="screen">
+$ gpg --export -o public_key
+</pre>
+</p><p>
+To help manipulate GPG public keys, some developers at Ericsson
+created a simple program called extract_pkey
+to help dissect the keys into their different pieces. I have
+modified that program to generate C code for the public key.
+</p><p>
+Run the extract_pkey program and point it at
+the public_key file you generated previously.
+Have it send the output to a file called rsa_key.c:
+
+<pre     class="screen">
+$ extract_pkey public_key &gt; rsa_key.c
+</pre>
+</p><p>
+After this step is finished, move that rsa_key.c on top of the file
+in the security/rsa/ directory, replacing my
+public key with yours:
+
+<pre     class="screen">
+$ mv rsa_key.c ~/linux/linux-2.6/security/rsa/
+</pre>
+</p><p>
+Now you have generated a public and private RSA key pair and
+placed your public key into the kernel directory. Build the
+patched kernel, making sure to select the
+Module signature checking option, and then
+install it. If you boot in to this kernel, you will be
+allowed to load only the modules you have signed with your key,
+so be careful and test this only on a development machine.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ddc580.0x1ed5840"></a>What Is Left to Do?</h2></div></div><p>
+As shown in this article, a number of different steps are required
+to generate a key, sign a kernel module and place the public
+key into the kernel image. This still is a rough
+development project. In order to make it more acceptable to the
+kernel developers and to the Linux community in general, these steps
+need to be automated, making it easier to sign all
+kernel modules and handle the public key.
+</p><p>
+Besides the obvious need to simplify the use of this feature,
+some other future goals of this project include:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+Move the RSA code into the generic crypto framework, allowing
+other kernel features to use it.
+</p></li><li><p>
+Allow more than one public key to be present in the kernel,
+letting multiple sources of signed kernel modules run
+in a single machine.
+</p></li><li><p>
+Simplify the signing logic to allow GPG's native signing
+functionality or possibly the functionality provided in the
+bsign program to be used, instead of the
+custom mod program.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1ddc580.0x1ed5c08"></a>Acknowledgements</h2></div></div><p>
+I would like to thank the developers at Ericsson, who have
+created a kernel patch and program called
+digsig, for allowing me to use their port of
+GPG to the kernel. I previously had done this, but the
+implementation was horrible; thankfully, they released their
+port and were very helpful. The digsig
+kernel patch allows users to sign programs and prevents the
+kernel from running any program not signed. More
+information about this project can be found at <a href="http://sourceforge.net/projects/disec" target="_self">sourceforge.net/projects/disec</a>.
+</p><p>
+I also would like to thank my employer, IBM, for allowing me to
+work on this project, and Don Marti, for prodding me to
+finish it and write this article.
+</p></div></div>
+<div class="authorblurb"><p>
+Greg Kroah-Hartman currently is the Linux kernel maintainer for a
+variety of different driver subsystems. He works for IBM, doing Linux
+kernel-related things, and can be reached at <a href="mailto:greg@kroah.com">greg@kroah.com</a>.
+
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../117/toc117.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

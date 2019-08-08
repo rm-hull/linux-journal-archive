@@ -1,0 +1,585 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Roman's Law and Fast Processing with Multiple CPU Cores</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Some practical methods to exploit multiple cores and find thread&#10;synchronization problems.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x24a7580.0x259eab0"></a>
+Roman's Law and Fast Processing with Multiple CPU Cores</h1></div><div><div class="author"><h3 class="author">
+Roman
+ 
+Shaposhnik
+</h3></div><div class="issuemoyr">Issue #163, November 2007</div></div><div><p>
+Some practical methods to exploit multiple cores and find thread
+synchronization problems.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24a7580.0x259f2f0"></a></h2></div></div><p>
+Computers are slow as molasses on a cold day, and they've been like that for
+years. The hardware industry is doing its work, but computers are not
+going to get any faster unless the software industry follows suit and does
+something about it. Processing speed is less about GHz and more about
+multiple cores these days, and software needs to adapt.
+</p><p>
+I will be so bold as to postulate my own law of the multicore trend for
+hardware: the number of cores on a chip would double every three years. It
+remains to be seen whether I'm going to be as accurate in this prediction as
+Gordon Moore happened to be, but it looks good so far. With Intel
+and AMD introducing quad-core systems and Sun pushing the envelope even
+further with its first hexadeca-core CPU named Rock, the question the
+software industry has to ask itself is &ldquo;Are we ready to make all these
+execution threads do useful work for us?&rdquo; My strong opinion is that we
+are not ready. A new paradigm is yet to be invented, and we don't really
+know what it should look like. What we do know, however, in the
+words of Herb Sutter, is &ldquo;The biggest sea change in software development since
+the OO revolution is knocking at the door, and its name is
+Concurrency.&rdquo;
+</p><p>
+The first layer of software where hardware parallelism is going to
+percolate is the kernel of your operating system. And, I know
+of only two kernels that have what it takes to tackle the challenge:
+Solaris and Linux. If there's any Mac OS X&mdash;or dare I say,
+Windows&mdash;fanboys out there, I have two phrases for you: &ldquo;256
+processor systems&rdquo;
+and &ldquo;Completely Fair Scheduler&rdquo;. Now, having a kernel that is capable of
+efficiently multiplexing a large number of processes to a large number of
+hardware threads is only as good as your demand in actually having that
+large number of individual processes running in parallel. And, as much as
+it is an ISP or provisioning person's dream come true, on my laptop I rarely
+have more than four really active processes running at the same time. The
+real need that I have is for each individual application to be able
+to take advantage of the underlying hardware parallelism. And, that's how
+a fundamental hardware concept permeates yet another software
+layer&mdash;an application one. At the end of the day we, as userland software
+developers, have no other choice but to embrace the parallel view of
+the world fully. Those pesky hardware people left us no choice whatsoever.
+</p><p>
+For the rest of this article, I assume that you have at least a
+dual-core system running Linux kernel 2.6.x and that you have Sun Studio
+Express installed in /opt/sun/sunstudio and added to your PATH, as
+follows:
+
+<pre     class="programlisting">
+PATH=/opt/sun/sunstudio12/bin:$PATH    
+</pre>
+</p><p>
+My goal is to explain the kind of practical steps you can take to
+teach that old serial code of yours a few multicore tricks.
+</p><p>
+There are three basic steps to iterate through to
+add parallelism gradually to your serial application:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Identify parallelism.
+</p></li><li><p>
+Express parallelism.
+</p></li><li><p>
+Measure and observe.
+</p></li></ol></div><p>
+And, even though the first two steps sound like the most exciting ones, I
+cannot stress enough the importance of step 3. Parallel programming
+is difficult and riddled with unexpected performance gotchas. And, there is no
+other way of being certain that your code got faster than proving
+it with numbers. The good news is that it isn't all that difficult. If
+you happen to develop mostly for Intel architectures, you can use code
+similar to the FFMPEG's START_TIMER/STOP_TIMER for microbenchmarking:
+
+<pre     class="programlisting">
+START_TIMER
+do_interesting_stuff();
+STOP_TIMER("do_interesting_stuff_tag")  
+</pre>
+</p><p>
+Additionally, there's the Sun Studio Performance analyzer for observing macro behaviour. You
+also can use tools like Intel's VTune or even time(1), but whatever you
+do, make sure that performance regression testing is as much a part of your
+testing routine as the regular regression testing is. You do regression
+testing, don't you?
+</p><p>
+Identifying parallelism in an existing application usually starts
+with finding spots with data parallel characteristics, task parallel
+characteristics and figuring out a scheduling model to tie the two
+together. Data parallelism usually can be found in applications working
+with large sets of global or static data (think audio, video and image
+processing, gaming engines and rendering software). Task parallelism, on
+the other hand, mostly is appropriate when branch-and-bound computation
+takes place (think Chess-solvers when a bunch of tasks are asked to
+do similar calculations, but if one finds a solution, there's no need to
+wait for others).
+</p><p>
+Once you've identified all potential sources of the parallelism in your
+application, you have to decide what programming techniques to use for
+expressing it. For an application written in C or C++, the most commonly
+used one happens to be explicit parallelization with POSIX threads. This
+method has been around for decades, and most developers usually
+have some familiarity with it. On the other hand, given its inherent
+complexity and the fact that it no longer is the only game in town, I'm
+going to skip over it.
+</p><p>
+Let's look at this sample code, which happens to be
+a very simple routine for calculating how many prime numbers there are
+between 2 and N:
+
+
+<pre     class="programlisting">
+
+ 1  #include &lt;stdio.h&gt;
+ 2  #include &lt;stdlib.h&gt;
+ 3  #include &lt;math.h&gt;
+ 4  #include &lt;omp.h&gt;
+ 5	
+ 6  /* pflag[v] == 1 if and only if v is a prime number   */
+ 7  char *pflag;
+ 8	
+ 9  int is_prime(int v)
+10  {
+11      int i;
+12      int bound = floor(sqrt(v)) + 1;
+13	    
+14      for (i = 2; i &lt; bound; i++) {
+15          if (v % i == 0) { 
+16              pflag[v] = 0;
+17              return 0; /* v is NOT a prime number */
+18          }
+19      }
+20      return 1; /* v is a prime number */  
+21  }
+22	
+23  int main(int argc, char **argv)
+24  {
+25      int i;
+26      int total = 0;
+27      int N = atoi(argv[1]);
+28      int primes[N];     /* array of prime numbers */ 
+29      pflag=(char*)alloca(N);
+30	
+31      for (i = 2; i &lt; N; i++) {
+32          pflag[i] = 1; /* all numbers are prime until... */   
+33      }                 /* ...proven otherwise            */
+34	    
+35      for (i = 2; i &lt; N; i++) { /* let the testing begin! */
+36          if ( is_prime(i) ) {
+37              primes[total] = i;
+38              total++;
+39          }
+40  }
+41	 
+42  printf("Number of prime numbers between 2 and %d: %d\n",
+43         N, total);
+44	
+45  return 0;
+46  }
+
+</pre>
+</p><p>
+Granted, the code is silly (some might even say brain-dead), but let's
+pretend it is a real-life application. In that case, we certainly
+would benefit from as much automation as possible. And, if you think about it,
+there's no tool better suited for helping us than a compiler&mdash;after
+all, it already takes care of understanding the semantics of the code in
+order to perform optimizations. Ideally, what we would need is a compiler
+that talks back to us, helping us understand the source code better and
+make reasonable tweaks based on that information. Here's how Sun Studio
+12 lets you do that:
+
+
+<pre     class="programlisting">
+
+$ cc -g -fast prime.c -o prime 
+$ er_src prime 
+.....  
+Source loop below has tag L3 
+35.     for (i = 2; i &lt; N; i++) { /* let the testing begin! */
+
+Function is_prime inlined from source file prime.c into the code
+for the following line.  1 loops inlined 
+Loop in function is_prime, line 14 has tag L4
+36.          if ( is_prime(i) ) {
+
+</pre>
+</p><p>
+Finally! Your compiler actually explains to you in plain human language,
+what transformations it applied to the source code to make it faster
+(-fast). Not only that, but it also identifies and tags all key areas
+(such as loops) that you later can navigate and inspect for the
+parallelization potential. Identifying parallelism just got easier.
+But what about expressing parallelism? Would it be completely out of the
+question to delegate some of that to the compiler as well? After all,
+we are too lazy to use POSIX threads (besides, they are like the GOTOs of
+parallel programming, anyway). The good news is that with the
+right compiler it <span   class="emphasis"><em>is</em></span> possible. But, before we go
+there, let's remember
+the third step from our &ldquo;three-step parallelization program&rdquo; and establish a
+performance baseline:
+
+<pre     class="programlisting">
+$ cc -fast prime.c -o prime
+$ collect ./prime 2000000
+Creating experiment database test.1.er ...
+Number of prime numbers between 2 and 2000000: 148933
+$ er_print -statistics test.1.er
+                   Execution for entire program
+
+                                  Start Label: Total
+                                    End Label: Total
+                            Start Time (sec.): 0.028
+                              End Time (sec.): 3.364
+                              Duration (sec.): 3.336
+                        Total LWP Time (sec.): 3.337
+                       Average number of LWPs: 1.000
+....................................................
+</pre>
+</p><p>
+The -fast command-line option instructs the Sun Studio C compiler to generate
+the fastest possible code for the same architecture where the compilation
+happens. The last two commands actually run the generated executable
+and report runtime statistics for the function main. Now we know that
+whatever we do to the source code, the result shouldn't be slower than
+3.336 seconds. With that in mind, let's try asking the compiler to do its best
+not only at identifying parallelism (-xloopinfo), but at expressing it as well
+(-xautopar):
+
+
+<pre     class="programlisting">
+$ cc -fast -xloopinfo -xautopar prime.c -o prime
+"prime.c", line 14: not parallelized, loop has multiple exits
+"prime.c", line 14: not parallelized, loop has multiple exits 
+                    (inlined loop)
+"prime.c", line 31: PARALLELIZED, and serial version generated
+"prime.c", line 35: not parallelized, unsafe dependence (total)
+</pre>
+</p><p>
+So, with only two extra command-line options, the compiler was smart enough
+to parallelize the loop on line 31 (-xautopar) and honest enough to explain
+why two other loops (lines 14 and 35) cannot be parallelized
+easily (-xloopinfo). That's pretty impressive, but let's see whether it got us
+any speedup at all:
+
+<pre     class="programlisting">
+$ export OMP_NUM_THREADS=4
+$ collect ./prime 2000000
+Creating experiment database test.2.er ...
+Number of prime numbers between 2 and 2000000: 148933
+$  er_print -statistics test.2.er | grep Duration
+                               Duration (sec.): 3.331
+</pre>
+</p><p>
+Good. It isn't slower (although not significantly faster either), but
+then again, we didn't have to do anything with the source code. The compiler
+did everything for us (except letting the runtime system use all
+the way up to four threads by setting the OMP_NUM_THREADS environment variable
+to four). Or did it? What about that loop on line 35? It doesn't look any
+more complicated than the one on line 31. Seems like the compiler is being
+overly conservative, and we need to step in and help it a bit. This time,
+let's express parallelism with OpenMP.
+</p><p>
+The formal (and boring) definition of OpenMP states that it is &ldquo;an API
+that supports multiplatform shared-memory parallel programming in C/C++
+and Fortran on all architectures, including UNIX platforms and Windows
+NT platforms&rdquo;. Personally, I'd like to think about OpenMP as a method of
+helping the compiler exploit data parallelism in your application when data
+dependencies get out of hand. In short, OpenMP is something you use when
+-xautopar complains. Given that, for C and C++, OpenMP is expressed through
+the #pragmas, it is quite safe to add these hints (although making sure
+that suggested parallel operations don't have concurrency problems is
+still your responsibility). As with any #pragma, if the compiler doesn't
+understand it, it'll skip over it. (At the time of this writing, the following
+freely available Linux compilers support OpenMP 2.5: Intel Compilers,
+GCC 4.2 and Sun Studio 12.)
+</p><p>
+So, how do we use OpenMP to boost the compiler's confidence in the loop
+on line 35? Simply add the following pragma to line 34:
+
+<pre     class="programlisting">
+
+34 #pragma omp parallel for
+35 for (i = 2; i &lt; N; i++) { /* let the testing begin! */
+36     if ( is_prime(i) ) {
+
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24a7580.0x25a03c8"></a></h2></div></div><p>
+And, don't forget to add -xopenmp to the set of command-line options:
+
+<pre     class="programlisting">
+$ cc -fast -xloopinfo -xautopar -xopenmp prime.c -o prime
+"prime.c", line 14: not parallelized, loop has multiple exits
+"prime.c", line 14: not parallelized, loop has multiple exits 
+                    (inlined loop)
+"prime.c", line 31: PARALLELIZED, and serial version generated
+"prime.c", line 35: PARALLELIZED, user pragma used
+</pre>
+</p><p>
+Nice! We've got two out of three loops in our application now completely
+parallelized. Let's see how much faster it runs:
+
+<pre     class="programlisting">
+$ collect ./prime 2000000
+Creating experiment database test.3.er ...
+Number of prime numbers between 2 and 2000000: 146764
+$ er_print -statistics test.3.er | grep Duration 
+                              Duration (sec.): 1.132
+</pre>
+</p><p>
+No doubt, 294% is an impressive speedup, but how come we lost some
+prime numbers? We now have 146,764 of them reported instead of 148,933.
+Maybe the compiler was right in being conservative and not parallelizing
+that pesky loop. Should we go back and remove our OpenMP pragma? Not yet.
+Even though we've just caught a bug in our parallelized version of the
+same application (which only goes to show how easy it is to introduce bugs
+and how much more important regression testing becomes when you try to
+parallelize anything), we still are on the right track. The question is,
+how do we find the actual problem?
+</p><p>
+The trouble with parallel programming is that it makes some sections
+of your application nondeterministic. That means now you have
+to deal with all sorts of problems you didn't have to deal with before,
+such as
+race conditions, and deadlock and resource allocation issues are the
+chief nemeses. The amount of nondeterminism introduced is, in fact,
+something that makes POSIX threads quite fragile in most real-life
+situations&mdash;so much so, that one of the key parallel computing
+researchers, 
+Professor Edward A. Lee, made a pretty scary prediction in his
+article &ldquo;The Problem with Threads&rdquo;:
+</p><div class="blockquote"><blockquote class="blockquote"><p>
+I conjecture that most multithreaded general-purpose applications are, in
+fact, so full of concurrency bugs that as multicore architectures become
+commonplace, these bugs will begin to show up as system failures. This
+scenario is bleak for computer vendors: their next generation of machines
+will become widely known as the ones on which many programs crash.
+</p></blockquote></div><p>
+As you can see, OpenMP, even though it introduces significantly less
+nondeterminism than POSIX threads do, is still not a panacea. After
+all, even our simplistic usage of it was enough to introduce a bug. It
+seems that regardless of how we express parallelism, what we need is a
+tool that would help us uncover concurrency bugs.
+</p><p>
+I know of two such tools freely available on Linux: Intel Thread Checker
+and Sun Studio Thread Analyzer. And, here's how you can use the latter one
+to combat data races (note that we need an extra compile-time command-line
+option -xinstrument=datarace to make thread analysis possible and that we
+have to ask collect for recording data race events by specifying -r on):
+
+
+<pre     class="programlisting">
+$ cc -fast -xloopinfo -xautopar -xopenmp -xinstrument=datarace 
+ &#8618;prime.c -o prime   
+$ collect -r on ./prime 2000000
+Creating experiment database tha.1.er ...
+Number of prime numbers between 2 and 2000000: 148933
+$ er_print -races tha.1.er
+No race information recorded in experiments
+</pre>
+</p><p>
+Weird. Not only did we get the correct result, but also the thread analyzer
+didn't seem to notice anything unusual. Is it broken? Not really. You see,
+what makes concurrent bugs so notoriously difficult to track down is the
+fact that most of them are intermittent. As with most manifestations of a
+nondeterministic behavior, they come and go depending on how applications
+are run, what else runs on the system and whether you use tools
+such as a conventional debugger. Thread analyzer reports only those
+problems that did actually occur. Well, if at first you don't succeed:
+
+<pre     class="programlisting">
+$ collect -r on ./prime 2000000
+Creating experiment database tha.2.er ...
+Number of prime numbers between 2 and 2000000: 114833
+$ er_print -races tha.2.er
+Total Races:  2 Experiment:  tha.2.er
+
+Race #1, Vaddr: (Multiple Addresses)
+   Access 1: Write, main -- MP doall from line 34 
+    [_$d1B34.main] + 0x00000172, line 37 in "prime.c"
+   Access 2: Write, main -- MP doall from line 34 
+    [_$d1B34.main] + 0x00000172, line 37 in "prime.c"
+Total Traces: 1
+
+Race #2, Vaddr: 0xbffff28c
+   Access 1: Write, main -- MP doall from line 34 
+    [_$d1B34.main] + 0x00000189, line 38 in "prime.c"
+   Access 2: Write, main -- MP doall from line 34 
+    [_$d1B34.main] + 0x00000189, line 38 in "prime.c"
+Total Traces: 1
+</pre>
+</p><p>
+Bingo! We reproduced the bug and our tool dutifully reported the actual
+location of where the race condition happened: lines 37 and 38. Things
+go wrong when two threads find prime numbers and they try to
+update the primes array and total variable&mdash;a textbook example of a race
+condition. But, it's pretty easy to fix. We have to serialize
+threads entering these two lines of code. Can we do that with OpenMP? Sure
+we can:
+
+<pre     class="programlisting">
+37 #pragma omp critical
+38 {
+39    primes[total] = i;
+40    total++;
+41 }    
+</pre>
+</p><p>
+With that, let's see what the final speedup is going to be:
+
+<pre     class="programlisting">
+$ cc -fast -xloopinfo -xautopar -xopenmp prime.c -o prime
+$ collect ./prime 2000000
+Creating experiment database test.4.er ...
+Number of prime numbers between 2 and 2000000: 148933
+$ er_print -statistics test.4.er | grep Duration 
+                              Duration (sec.): 1.130
+</pre>
+</p><p>
+It's 2.95 times faster. Not bad for 15 minutes of work and four extra lines
+of OpenMP pragmas giving hints to the compiler!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24a7580.0x25a0bb0"></a>
+A Few Loose Ends</h2></div></div><p>
+OpenMP and -xautopar seem to work pretty well for C, but what about
+C++? Will they mesh well with the kind of modern C++ usage peppered with
+generics and template metaprogramming? The short answer is, there's no
+short answer. But, let's see for ourselves with the following example of
+modern C++ [ab]use:
+
+ 
+<pre     class="programlisting">
+
+#include &lt;vector&gt; 
+#include &lt;iterator&gt; 
+#include &lt;algorithm&gt; 
+#include &lt;iostream&gt; 
+void standard_input_sorter() {
+   using namespace std; 
+   vector&lt;string&gt; v;
+   copy(istream_iterator&lt;string&gt;(cin), istream_iterator&lt;string&gt;(),
+        back_inserter(v));
+   sort(v.begin(), v.end());
+}
+
+$ CC -c -fast -xloopinfo -xautopar -xopenmp -library=stlport4 sorter.cc
+
+</pre>
+</p><p>
+The above produces a pretty long list of complaints, explaining why
+a particular section of the STLport library cannot be parallelized. The
+key issue here is that certain areas of C++ are notoriously difficult
+to parallelize by default. Even with OpenMP, things like concurrent
+container access are much more trouble than they are worth. Do we have to
+rewrite STL? Well, seems like Intel almost did. Intel has been working on
+what it calls the Thread Building Blocks (TBB) C++ library, and its claim to
+fame is exactly that&mdash;making modern C++ parallel. Give it a try, and see
+if it works for you. I especially recommend it if you're interested
+in exploiting task parallelism. But, then again, the amount of modern
+C++ that TBB throws at even the simplest of examples, such as calculating
+Fibonacci numbers, is something that really makes me sad. Tasks as defined
+in the upcoming OpenMP 3.0 standard seem far less threatening.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24a7580.0x2999010"></a>
+Conclusion</h2></div></div><p>
+There is a fundamental trend toward concurrency in hardware. Multicore
+systems are now making their way into laptops and desktops. Unfortunately,
+unless software engineers start taking these trends into account, there's
+very little that modern hardware can do to make individual applications
+run faster. Of course, parallel programming is difficult and error-prone,
+but with the latest tools and programming techniques, there's much more
+to it than merely POSIX threads. Granted, this article scratches
+only the surface of what's available. Hopefully, the information presented here will be enough of a
+tipping point for most readers to start seriously thinking about
+concurrency in their applications. Our high-definition camcorders demand
+it and so does every gamer on earth.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24a7580.0x2999118"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Moore's Law: <a href="http://www.intel.com/technology/mooreslaw/index.htm" target="_self">www.intel.com/technology/mooreslaw/index.htm</a>
+</p><p>
+Sun Studio Express: <a href="http://developers.sun.com/sunstudio/downloads/express/index.jsp" target="_self">developers.sun.com/sunstudio/downloads/express/index.jsp</a>
+</p><p>
+FFMPEG: <a href="http://ffmpeg.mplayerhq.hu" target="_self">ffmpeg.mplayerhq.hu</a>
+</p><p>
+Intel VTune: <a href="http://www.intel.com/cd/software/products/asmo-na/eng/239145.htm" target="_self">www.intel.com/cd/software/products/asmo-na/eng/239145.htm</a>
+</p><p>
+Intel Thread Checker: <a href="http://www.intel.com/cd/software/products/asmo-na/eng/291669.htm" target="_self">www.intel.com/cd/software/products/asmo-na/eng/291669.htm</a>
+</p><p>
+TotalView Debugger: <a href="http://www.totalviewtech.com/index.htm" target="_self">www.totalviewtech.com/index.htm</a>
+</p><p>
+POSIX Threads: <a href="http://www.mhpcc.edu/training/workshop2/pthreads/MAIN.html" target="_self">www.mhpcc.edu/training/workshop2/pthreads/MAIN.html</a>
+</p><p>
+OpenMP: <a href="http://www.openmp.org" target="_self">www.openmp.org</a>
+</p><p>
+Effective Use of OpenMP in Games: <a href="https://www.cmpevents.com/Sessions/GD/EffectiveUse.ppt" target="_self">https://www.cmpevents.com/Sessions/GD/EffectiveUse.ppt</a>
+</p><p>
+Intel Thread Building Blocks: <a href="http://osstbb.intel.com" target="_self">osstbb.intel.com</a>
+</p><p>
+Cilk: <a href="http://supertech.csail.mit.edu/cilk" target="_self">supertech.csail.mit.edu/cilk</a>
+</p><p>
+&ldquo;The Problem with Threads&rdquo;: <a href="http://www.eecs.berkeley.edu/Pubs/TechRpts/2006/EECS-2006-1.pdf" target="_self">www.eecs.berkeley.edu/Pubs/TechRpts/2006/EECS-2006-1.pdf</a>
+</p><p>
+&ldquo;The Free Lunch Is Over: A Fundamental Turn Toward Concurrency in
+Software&rdquo;: <a href="http://gotw.ca/publications/concurrency-ddj.htm" target="_self">gotw.ca/publications/concurrency-ddj.htm</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Roman Shaposhnik started his career in compilers back in 1994 when he had
+to write a translator for the programming language he'd just invented
+(the language was so weird, nobody else wanted the job). His
+first UNIX exposure was with Slackware 3.0, and he's been hooked ever
+since. Currently, he works for Sun Microsystems in the Developer Products
+Group. He is usually found pondering the question of how to make computers
+faster yet not drive application developers insane. He runs a blog at
+<a href="http://blogs.sun.com/rvs" target="_self">blogs.sun.com/rvs</a> and can be reached via e-mail at
+<a href="mailto:rvs@sun.com">rvs@sun.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../163/toc163.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

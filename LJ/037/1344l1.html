@@ -1,0 +1,260 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2//EN">
+
+<html>
+<head>
+  <title>Tcl/Tk with C for Image Processing</title>
+<link rel="stylesheet" href="../../css/archive.css" type="text/css" />
+</head>
+
+<body>
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <h3>Listing 1</h3>
+  <pre>
+/*
+---------------
+   main.c
+   Time-stamp: &lt;06 Dec 96 -- 14:20:16 siome&gt;
+   Dith - Special Dither of image pieces
+   Siome Klein Goldenstein
+  ---------------- */
+
+ /* the following declare allows the program to
+   compile and work with different version of TK
+   (4.0 for Red Hat 3.0.3 and 4.1 for Red Hat 4.0
+   for example) */
+#define TK_IS_40 0
+
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;math.h&gt;
+#include &lt;string.h&gt;
+
+#if TK_IS_40
+#include &lt;tcl/tcl.h&gt;
+#include &lt;tcl/tk.h&gt;
+#else
+#include &lt;tcl.h&gt;
+#include &lt;tk.h&gt;
+#endif
+#include "dither.h"
+
+int    flx, frx, fuy, fdy;
+int    ftx, fty;
+double  *filter;
+#if TK_IS_40
+static Tk_Window mainWindow;a
+#endif
+int
+main (int argc, char **argv)
+{
+  Tcl_Interp  *interp;
+  char        s[100];
+
+#if TK_IS_40
+  static char *display = NULL;
+#endif
+
+  if (argc != 2)
+  {
+    fprintf(stderr,
+     "%s: wrong number of arguments\n",
+     argv[0]);
+    exit (1);
+  }
+  /* Here begins the first step on C and TCL
+     integration: The Tcl/Tk initialization.
+     Notice that mainWindow is global variable */
+  interp = Tcl_CreateInterp();
+#if TK_IS_40
+  mainWindow = Tk_CreateMainWindow(interp,
+     display, argv[0], "Tk");
+  if (mainWindow == NULL)
+  {
+    fprintf(stderr, "%s\n", interp-&gt;result);
+    exit(1);
+  }
+#endif
+  if (Tcl_Init(interp) == TCL_ERROR)
+  {
+    fprintf(stderr, "Tcl_Init failed: %s\n",
+      interp-&gt;result);
+    exit (1);
+  }
+  if (Tk_Init(interp) == TCL_ERROR)
+  {
+    fprintf(stderr, "Tk_Init failed: %s\n",
+      interp-&gt;result);
+    exit (1);
+  }
+  /* The second step, creation of your Tcl
+     commands. The creation of a similar
+     initialization routine is just to keep
+     the same style. */
+
+  if (Dith_Init(interp) == TCL_ERROR)
+  {
+    fprintf(stderr,"Recon_Init failed: %s\n",
+      interp-&gt;result);
+    exit(1);
+  }
+  /* Now we create the original image and ask TCL
+     to evaluate our "interface description"
+     file. */
+
+  sprintf(s,
+    "image create photo original -file %s\n",
+    argv[1]);
+  Tcl_GlobalEval (interp,s);
+  Tcl_EvalFile (interp,"./int-dither.tcl";&lt;\n&gt;)
+
+  /* Finally, we let Tk take care of main loop */
+  Tk_MainLoop();
+  return (0);
+}
+/* The initalization Routine */
+int
+Dith_Init (Tcl_Interp *interp)
+{
+  Tcl_CreateCommand (interp, "CDith",
+     Dith_cdither, (ClientData *) NULL,
+    (Tcl_CmdDeleteProc *) NULL);
+  return TCL_OK;
+}
+int
+Dith_cdither (ClientData cd, Tcl_Interp *interp,
+        int argc, char **argv)
+  Tk_PhotoHandle      todith;
+  Tk_PhotoImageBlock  blorig, blnew;
+  int   tx, ty;
+  int   step;
+  int   x, y, i;
+  int   ct;
+  double intens;
+
+  /* get the image handle */
+  todith = Tk_FindPhoto (argv[1]);
+
+  /* get the vertical size of dithering cluster */
+  step = atoi (argv[2]);
+
+  /* Obtain the image itself from the handle */
+  Tk_PhotoGetSize  (todith, &amp;tx, &amp;ty);
+  Tk_PhotoGetImage (todith, &amp;blorig);
+
+  /* Create new "image" for placing the dither */
+  blnew.width  = tx;
+  blnew.height = ty;
+  blnew.pitch  = tx;
+  blnew.pixelSize = 1;
+  blnew.offset[0] = 0;
+  blnew.offset[1] = 0;
+  blnew.offset[2] = 0;
+  if ( (blnew.pixelPtr = (unsigned char*)
+   calloc (tx * ty, sizeof (unsigned char)))==
+   NULL)
+  {
+    fprintf (stderr,
+     "Error in memory allocation\n");
+    exit (1);
+  }
+  for (y=step-1; y&lt;ty; y+=step)
+  {
+    for (x=0; x&lt;tx; x++)
+    {
+      for (intens=0.0, ct = 0; ct&lt; step; ct++)
+   intens += ( RED(&amp;blorig,x,y-ct) +
+         GREEN(&amp;blorig,x,y-ct) +
+         BLUE(&amp;blorig,x,y-ct) ) / 3.0;
+      intens /= (255.0 * step);
+      i = rint(intens * (step-2)) + 1;
+      for (ct=0; ct &lt; (i/2); ct++)
+      {
+   /* for the sake of clarity, no optimization
+          is done */
+   RED(&amp;blnew, x, y-step+1+ct) = 255;
+   RED(&amp;blnew, x, y-ct) = 255;
+      }
+      if (i%2)
+   RED(&amp;blnew, x, y-step+1+(i/2)) = 255;
+
+    }
+  }
+  Tk_PhotoPutBlock (todith,&amp;blnew,0,0,tx,ty);
+  free (blnew.pixelPtr);
+
+  return TCL_OK;
+}
+</pre>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../037/toc037.html">Issue Table of Contents</a>
+    <a class="link3" href="../037/1344.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body>
+</html>
+<!--
+## vim: tabstop=2: shiftwidth=2: expandtab:
+## kate: tab-width 2; indent-width 2; replace-tabs true;
+-->

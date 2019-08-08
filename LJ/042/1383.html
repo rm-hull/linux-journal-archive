@@ -1,0 +1,397 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Pgfs: The PostGres File System</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    The details of how Pgfs came to be written and how it can save you&#10;    disk space.&#10;    "><meta name="keywords" content="administration, filesystem, Postgres"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x24e2580.0x25d9ab0"></a>Pgfs: The PostGres File System</h1></div><div><div class="author"><h3 class="author">Brian Bartholomew</h3></div><div class="issuemoyr">Issue #42, October 1997</div></div><div><p>
+    The details of how Pgfs came to be written and how it can save you
+    disk space.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25da3a0"></a></h2></div></div><p>The PostGres file system is a Linux NFS
+server that presents software versions as distinct file trees in an
+NFS file system. Each version is completely distinct from all other
+versions, and can be modified independently without regard to
+versions before or after it. Each version retains all of the
+properties it would have on a normal file system, such as file
+ownership, permissions, binary file contents, cross-directory hard
+links and non-files such as devices and symlinks. The effect is the
+same as if each version of the software had its own separate
+directory, except far less disk space is used.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25da4a8"></a>Design Motivation for Pgfs</h2></div></div><p>As an example, let's say that a year ago, you picked your
+favorite Linux distribution, and installed it on your new computer.
+The distribution had about 15,000 files, and took up about 200MB on
+disk. During the year you did a lot of hacking on your software,
+and it is now quite different from the original distribution. These
+modifications were done incrementally, and some of them replaced
+the original binaries with completely new binaries, for instance
+upgrading sendmail(8) or ftpd(8). Now you wish to compare your
+machine to the original distribution, examine the changes you've
+made, and apply them to a new distribution of Linux.</p><p>How do you record the changes you've made? You could save a
+complete copy of your distribution every time after you modified
+it&mdash;doing that would consume 200MB * 100 mods = 20 GB of disk. Even
+using a pair of 9 GB drives that's awfully expensive. However, you
+notice that most modifications change only a few files&mdash;perhaps a
+total of a half MB per modification. Storing only the files that
+changed would use 200MB + (100 mods * 0.5MB/mod) = 250MB of disk
+space&mdash;that's much better. What application would store only the
+differences for you? You could use CVS, but CVS isn't really
+suitable.</p><p>Now let's say you are a systems administrator, and you've
+faced this version control problem daily for years without finding
+a satisfactory solution. So since you're also a developer, you
+decide to build an application to store similar file trees that
+exploits the compression opportunities you've found. Fundamentally,
+this application would need to eat file trees and spit them back
+out again, and it must use less disk than keeping a whole copy of
+each tree. It should accept files one at a time or in bulk. You
+shouldn't have to extract and resubmit a whole file tree just to
+make one change.</p><p>How would you implement this application? Start by deciding
+what data structures are needed and what routines are needed to
+manipulate the structures. Let's start with files. Files consist of
+two parts&mdash;a stat(2) structure and a big chunk of binary data.
+Suppose you store the binary data in a file and name this file with
+a number. Then, name the stat structures with a number and store
+the fixed-length structures in an array on disk. The structures can
+be broken apart using field-splitting routines and assembled using
+record-making routines. Next, a structure is needed to represent
+the different versions of your software. Each version of your
+operating system consists of a tree of files. You name a tree of
+files that represent one specific software version a &ldquo;version
+set&rdquo; or &ldquo;verset&rdquo; and number them.</p><p>The next thing needed is some routines to search the stat
+array on disk for a specific structure, add structures and delete
+them. Since you will be doing random access to the structures,
+store them in a dbm (database management) file and use the dbm
+access routines instead of writing your own. Dbm also gives you
+routines to handle an index into the stat structure numbers, in
+order to make your access faster. You will need to write
+maintenance routines to copy dbm files and to copy fields from one
+dbm file to another with a different structure layout.</p><p>To add a new stat structure into your array may require
+modifying fields in structures other than the one you're adding;
+for instance, when you add one file to an existing file tree. Your
+programming task would be a lot simpler if you could collect a
+bunch of these modifications and do them all at once, or not do any
+of them if you discover a problem. The idea of doing all or none of
+a complex modification is called &ldquo;transactions&rdquo;.</p><p>To use your application you need commands for it to accept.
+Some commands might be &ldquo;add this whole tree of files&rdquo;, &ldquo;add this
+single file&rdquo; and &ldquo;replace some bytes of a file with these
+bytes&rdquo;. The NFS people have figured out the minimal set of file
+operations you need. (See <a href="1383s1.html" target="_self">Sidebar
+1</a>.) Now decide how stat(2) structures will be modified for
+each of the file operations and write pseudo code to modify the
+stat(2) array. While designing the semantics of the NFS commands,
+start thinking about sending your application NFS commands, making
+it an NFS server.</p><p>Next write your application. How about using an SQL database?
+A database decouples the application data structures from their
+representation on disk giving you the following advantages:</p><div class="orderedlist"><ol type="1"><li><p>Structures can be defined with arbitrary fields and
+stored in tables.</p></li><li><p>A full set of routines to add, delete and modify
+structures is available, as well as indices to find structures
+quickly.</p></li><li><p>A nice command language is available to translate
+between structure formats as the application evolves.</p></li><li><p>Routines in the database are designed to operate on
+chunks of data that won't fit in memory all at once, so your
+application can grow without problems.</p></li></ol></div><p>To add a field called &ldquo;cokecans&rdquo; to tally the number of
+cans of Coke it took to create each file, just add it. You can
+transfer your existing data to a new table with the cokecans field
+in a couple lines of SQL. Compare this to coding in C where a bunch
+of custom binary-format conversion programs would have to be
+written.</p><p>Then, find the skeleton of a user-level NFS server and port
+it to Linux (see <a href="1383s2.html" target="_self">Sidebar 2</a>), and
+hook up the source of NFS commands to the command input of your
+application. Now you have an NFS server that presents file trees,
+but compresses away the similarities between trees. Since your
+application can be used like any file system, you don't have to
+build any specialized programs to manipulate versions&mdash;you can
+search files with <b  >grep</b> and compare file trees
+with <b  >diff</b>.</p><p>To control your application, create some fake magic filenames
+that it can treat as special, like <b  >procfs</b>. The
+lines that are written to these files are the commands to your
+application. Now your application can be controlled with
+<b  >echo(1)</b> commands from the shell rather than some
+obscure socket protocol.</p><p>The above description is not exactly how I went about writing
+Pgfs, but it does outline the design motivation. After I tried to
+store copies of a BSDI distribution under CVS and failed in
+practical terms, I set out to write an NFS server implemented on a
+database. My first version was coded in Perl5 using the PostGres
+client library, and I typed in NFS commands as space-separated text
+strings. I recoded in C to pick up the NFS RPCs. My first database
+design schema used one table for &ldquo;names&rdquo;--holding filenames and
+symlinks, and another table for &ldquo;inodes&rdquo;--holding the rest of the
+stat(2) structure and the pointer to the file contents. However, I
+didn't like the join operation (i.e., matching up rows from two
+tables with the same key), and I didn't want to implement join
+either in the database or the application code.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25daea0"></a>How Pgfs Works for the User</h2></div></div><p>Let's use your favorite Linux distribution as an example of a
+file tree that needs version control. To start out, copy the virgin
+operating system from the CD-ROM into Pgfs:</p><pre     class="programlisting">
+cp -va /cdrom /pgfs/1/1
+</pre><p>Let's examine that destination pathname. The
+<b  >pgfs</b> part is where Pgfs is mounted. The first
+<b  >1</b> is the &ldquo;module&rdquo;. Storing software that
+evolves independently in different modules saves disk space. The
+second <b  >1</b> is the verset. We have a brand new
+empty Pgfs, so we'll write into verset 1. Once the copy is done,
+use <b  >ls</b> to see what's in the
+<b  >pgfs</b> directory:
+<pre     class="programlisting">
+ls -l /pgfs/1/1/bin/su /pgfs/1/1/dev/cua0
+</pre>
+
+
+The output from <b  >ls</b> looks like this:
+<pre     class="programlisting">
+-rwsr-xr-x  1 root   bin     9853 Aug 14 1995 /pgfs/1/1/bin/su
+crw-rw----  1 root   uucp    5, 64 Jul 17 1994 /pgfs/1/1/dev/cua0
+</pre>
+
+
+Notice the <b  >suid</b> bit on <b  >su(1)</b>
+and leading <b  >c</b> on the <b  >cua0</b>
+mode. Pgfs stores attributes and non-files just like any other file
+system. This copy of <b  >su</b> will make you root if
+you picked the mount option to accept <b  >suid</b> bits
+when you mounted Pgfs. Next, copy verset 1 to a new verset, so that
+the new verset can be modified without changing the files in the
+old one:
+<pre     class="programlisting">
+echo "cpverset 1" &gt; /pgfs/ctl
+</pre>
+
+
+In your new verset, you install a newer version of sendmail:
+<pre     class="programlisting">
+cp /tmp/sendmail /pgfs/1/2/usr/sbin/sendmail
+chown root.bin /pgfs/1/2/usr/sbin/sendmail
+chmod 6555 /pgfs/1/2/usr/sbin/sendmail
+</pre>
+
+
+Now that you have two different versets, you can compare their
+contents. You access multiple versets with shell wild cards or
+other filename expansions. To find what versets there are, do
+<b  >ls /pgfs/1</b>.
+<pre     class="programlisting">
+strings - /pgfs/1/1/usr/sbin/sendmail | \
+        grep version.c
+@(#)version.c  8.6.12.1 (Berkeley) 3/28/95
+strings - /pgfs/1/{1,2}/usr/sbin/sendmail | \
+        grep version.c
+@(#)version.c  8.6.12.1 (Berkeley) 3/28/95
+@(#)version.c  8.8.2.1 (Berkeley) 10/18/96
+strings - /pgfs/1/*/usr/sbin/sendmail | \
+        grep version.c
+@(#)version.c  8.6.12.1 (Berkeley) 3/28/95
+@(#)version.c  8.8.2.1 (Berkeley) 10/18/96
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25db688"></a>Visualizing Software Evolution</h2></div></div><p>Most version control packages focus on the individual
+modification history of single files, and that's what their tools
+display. I think the idea of the set of files known as &ldquo;customer
+release 1.0&rdquo; is more important than the idea of how each file
+happened to arrive in that set.</p><p>Suppose a new employee comes across a Pgfs containing 200
+versets. One of the first things she wants to know is what each
+verset represents and how they interrelate. Why is this verset
+here? Where did this verset come from? Which versets represent
+consistent software releases? Tools with the file as the basic unit
+would ask her to compare file histories at this point. Too bad
+there's no way to coherently display 40,000 individual file history
+trees when she's comparing two versions of /usr. Tools based around
+the verset scale work better, because there are a lot fewer versets
+than there are files per verset.</p><p>I wanted a program that reads an entire Pgfs database and
+plots the relationship of each verset to each other, in terms of
+quantity of shared files and unique files. Run against Pgfs, the
+program shows that verset 1 and 2 have 19,998 identical files and 2
+different ones, and the different ones are /usr/foo and /usr/bar.
+The program plots boxes for 200 different versions of /usr, with
+connecting lines that vary in color and width depending on the
+percentage of shared files and the percentage of older and newer
+files. If I told the employee in words that two copies of /usr were
+&ldquo;almost identical&rdquo;, &ldquo;quite a bit different&rdquo;, or &ldquo;from two
+different operating systems&rdquo;, she would have a good idea of the
+approximate numbers I meant. In my program I want those pigeonholes
+to be visually obvious from the pictures that compare
+versets.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25db840"></a>Access Transparency</h2></div></div><p>For most system administration purposes I don't care how or
+why files changed. If I apply a vendor patch to a kernel, all I
+care about is getting the kernel tree back before and after the
+patch. I don't want to reverse- engineer the patch script into file
+adds, deletes, renames and modifies just to shove it into Pgfs. I
+shouldn't need to notify the version control system which files to
+view or modify with checkin/checkout commands. I just want an NFS
+file system, and whatever I have in the directory when I leave is
+stored in the verset for next time. Since I'm not going to be
+giving Pgfs hints about what I'm doing, every operation needs to be
+possible. Therefore, each verset must be totally independent from
+all the others. I don't want to be forced to evolve my files from
+previous files in a branch structure without loops, or to keep my
+filenames constant between versions because of the lack of
+directory versioning, to name two well-known limitations of
+CVS.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25db948"></a>Pgfs Architecture:</h2></div></div><p>Here's a description of the real Pgfs program that you can
+download. Pgfs is a normal user-level program that reads and writes
+ordinary TCP streams and UDP packets. Since it is a normal program
+that requires no privileges, it can run on any Linux system. It
+doesn't use any ground breaking system call features, so no kernel
+modifications are necessary. The TCP stream packets are generated
+by the PostGres client library, so Pgfs can interact with a
+PostGres database using SQL. The UDP packets are formatted by the
+conventions of the NFS protocol. All this means is that an NFS
+client such as a Linux kernel can choose to send NFS packets Pgfs'
+way, and can mount a file system as if Pgfs were any other variety
+of NFS server. The AMD automounter is another example of a
+user-level program that acts as an NFS server. AMD responds to the
+directory-browsing NFS operations that trigger an automounter
+response, whereas Pgfs responds to all NFS operations.</p><p>In essence, Pgfs is an NFS &lt;-&gt; SQL translator. When an
+NFS request comes in, the C code submits SQL to get the stat(2)
+structures for the directory and file mentioned in the request,
+doing error and permission checking as it goes along. First it
+compares the request with the data it gets back about the file,
+enforcing conditions, such as whether <b  >rmdir</b> can
+or can't be used to delete a file.</p><p>If the request is valid and the permissions allow it, the C
+code finds all the stat(2) structures that must be changed, such as
+the current file, the current directory, the directory above and
+hard links that share the file's inode. Then these modifications
+are made in the database by SQL. The modifications include side
+effects like updating the access time that you might not ordinarily
+think of.</p><p>Each NFS operation is processed within a database
+transaction. If an &ldquo;expected&rdquo; error occurs that could be caused
+by bad user input on the NFS client, such as typing
+<b  >rmdir</b> to delete a file, an NFS error is
+returned. If an &ldquo;unexpected&rdquo; error occurs, such as the database
+not responding or a file handle not found, the transaction is
+aborted in a way that will not pollute the file system with bad
+data.</p><p>Pgfs does all the things &ldquo;by hand&rdquo; that go on in a &ldquo;real&rdquo;
+file system. It uses PostGres as a storage device that it accesses
+by inode number, pathname and verset number. For an example, the
+<b  >nfs_getattr</b> NFS operation works like the
+<b  >lstat(2)</b> system call. <b  >getattr</b>
+takes a file identifier, in this case an NFS handle instead of a
+pathname, and returns all the fields of a stat(2) structure. When
+Pgfs processes an <b  >nfs_getattr</b> operation, the
+following things happen:</p><div class="orderedlist"><ol type="1"><li><p>The NFS packet is broken apart into operation and
+arguments.</p></li><li><p>NFS operations counters are incremented.</p></li><li><p>The NFS handle is broken into fields.</p></li><li><p>Bounds-checking is done on the
+<b  >nfs_getattr</b> parameters.</p></li><li><p><b  >stat(2)</b> information is gotten
+for handle, e.g., select * from tree where handle = 20934</p></li><li><p>Permissions are checked.</p></li><li><p>File access times are updated, e.g., update tree
+set atime = 843357663 where inode = 8923</p></li><li><p>NFS reply is constructed.</p></li><li><p>Reply is sent to NFS client</p></li></ol></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25d2d88"></a>Storage Schema</h2></div></div><p>The single table that holds all the stat(2) structures has
+fields defined as shown in <a href="1383t1.html" target="_self">Table
+1</a>.</p><p>Inode numbers are unique across the entire database, even for
+identical files in different versets. Each file in each verset has
+one database row. Each directory has three rows; one for it's name
+from the directory above, one for . (dot), and one for .. (dot dot)
+from the directory below.</p><p>Philosophically, compression of similar file trees is the
+business of the back end of a program&mdash;it should not be visible to
+the user. In Pgfs, each collection of file bytes is contained in a
+Unix file, shared copy-on- write across all the versets from which
+the filename was inherited. Whenever a shared file is modified, a
+private copy is made for that verset. This matches Pgfs' system
+administration orientation, where files will be large and binary
+and replaced in total, and the old and new binaries won't be
+similar enough to make differences small. This differs from source
+code, where the same files get incrementally modified over and over
+and differences are small. With the keep-whole-files policy, doing
+a <b  >grep</b> on files in multiple versets won't be
+slower than staying within a single verset. There is not a big
+delay while a compression algorithm unpacks intermediate versions
+into a temporary area.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25d2ff0"></a>Audience Participation Time</h2></div></div><p>So far I've identified versets only by integers, but integers
+are boring. Since Pgfs is built on top of a database, all manner of
+things are possible. What naming schemes have you come up with for
+versets in other projects to support a configuration management
+effort? Are all the names/identifiers in a flat space? Are they
+hierarchical, and do they inherit properties from the location they
+are placed in? Let me know, I'm particularly interested in
+experiences from large projects with tens and hundreds of thousands
+of files per verset.</p><p>So far the only method I've supplied for making a new verset
+is by sending Pgfs a special command to copy one verset into a new
+one. However, a verset is just a collection of database rows, so it
+can be manufactured by a SQL program, perhaps one that represents a
+semi-automated multi-way merge across 14 versets. Take the base
+file tree from here, take this patch there, take this other patch
+over yonder, and make all the daemons owned by fred, thank you very
+much. What would an interface to control this process look like?
+Would you have an interactive file-browser shopping-cart thing,
+where you pulled bits and pieces from wherever you find them? How
+would this process resolve collisions?</p><p>There are more interesting open-ended questions in the BUGS
+and TODO files of the Pgfs distribution that concern both interface
+and implementation. I encourage you to pick a couple that interest
+you and talk about them on the host-gen mailing list.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x24e2580.0x25d31a8"></a>Closing Thoughts</h2></div></div><p>The most important message I want to give you is that file
+system hacking is not just for wizards anymore. NFS supplies a
+portable file system interface that eliminates the usual
+kernel-hacking requirements. NFS semantics are not great, but they
+are adequate for many things. Anyone can use the NFS-decoding
+portion of Pgfs as a skeleton and write a file system with whatever
+semantics they dream up. Mundane possibilities are an ftp-browsing
+or web-browsing file system. More interesting areas involve
+wide-area, fault-tolerant file systems with distributed physical
+redundancy. The job of higher-level protocols is to turn failure
+into bad performance. Instead of a list of Linux ftp sites to pick
+through by hand, wouldn't you rather use a file system that
+automatically gets blocks from the best-performing site of the
+moment? Wouldn't you like to create a new local storage area for a
+subtree of your favorite archive site, and the only thing your
+users need to know is...access just got faster? These ideas raise
+lots of interesting authentication and trust issues, many of which
+can be solved by the PGP model of the web-of-trust. Now, go forth
+and code.</p><p><a href="1383s3.html" target="_self">Sidebar 3</a></p></div></div>
+<div class="authorblurb"><p>
+      <span   class="bold"><b>Brian Bartholomew</b></span>
+      is writing Pgfs as a component
+      of the Host Factory automated host maintenance system. Host Factory
+      integrates hosts into a Borg collective. Working Version does large
+      site toolsmithing, and further info on Host Factory is available at
+      http://www.wv.com. Brian can be reached at bb@wv.com.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../042/toc042.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

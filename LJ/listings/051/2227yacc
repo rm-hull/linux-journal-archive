@@ -1,0 +1,947 @@
+------------------------------yacc.subroutine---------------------------
+%{
+/* err = do_arithmetic (struct LOGFILE *, char * arithmetic_string)
+
+  This yacc program is designed to allow simple arithmetic to be
+  done to vectors, contained (optionally) in multi-levels of 
+  parenthesis: 
+
+    scalar operation scalar,
+    scalar operation vector,
+    vector element by element vector
+)
+    Permitted operations are '+', '-', '*', '/', '^' (raise to power)
+
+    The routine obtains its curves from the log file passed as an argument.
+    It processes the contained curves in the manner indicated in the 
+    arithmetic statement, also passed as an argument.  The resulting
+    curves is placed in the log file.
+
+    The value "MAGIC" (999) that is "pushed" onto the stack, indicates 
+    that a "temporary" vector is to be retained on the stack.  Up to
+    "STACKSIZE" of these may exist simultaneously.  Chances are that
+    the system will exhaust DRAM before using them all!
+
+    Note though that one must have fewer than MAGIC curves.
+
+    "do_arithmetic" returns:
+
+    	0 - normal processing completed
+    	1 - yyparse internal syntactical error
+    	2 - unpaired parenthesis
+    	3 - more than 1 '=' sign
+    	4 - unrecognized curve name
+
+	$Header: /home/provinsd/LAS/MOTIF_LAS/RCS/yacc.subroutine,v 1.13 1994/06/13 19:13:38 provinsd Exp $
+
+    This routine was written by D. A. Provins, February, 1994
+*/
+#include <stdio.h>
+#include <math.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdlib.h>
+#include "description.h"
+
+#define MAGIC 999	/* used to indicate a temporary vector */
+#define STACKSIZE 200	/* value MUST be < MAGIC */
+#define STRING_LEN 90	/* maximum length of string describing arithmetic */
+#define max(a,b) ((a) < (b) ? (a) : (b))
+
+int DeBuG = 0;	/* do_arithmetic sets if environment "las_debug" set */
+int las_nocase = 0; 	/* do_arithmetic sets if "las_nocase" valued */
+
+/*	Following 4 externs must be passed from the caller:
+
+	static int   num_curves;	* # of curves in log file *
+	static int   num_digits;	* # of digital values in each curve *
+	static double null_value;	* value of the NULL log file value *
+	static char * curves [];	* array of log file curve names *
+*/
+
+static int   num_curves;
+static int   num_digits;
+static double null_value;
+static char ** curves;
+
+static struct LOG_FILE * LogFileAddress; /* needed for get_digits */
+
+extern float value;		/* scalar value from input equation */
+extern char * yytext;
+
+float        recent_val;
+char   my_arithmetic_string [STRING_LEN],
+     * current_pointer,
+     * end_of_string_pointer;
+
+static float stack [STACKSIZE];
+static int   stkptr = 0;
+static char label [80] = "UNKNOWN"; /* lhs of equation, if entered */
+static int  initialized = FALSE; /* important pointers/values set up? */
+
+static int i, 
+           j,
+           code,
+           recent_code,
+           err = 0;
+
+static int current_temp = 0;	/* track the use of "tmp" vectors */
+
+static double * temp = NULL,		/* "holding" vector */
+              * vec1 = NULL,	/* one of 2 containing real digits */
+              * vec2 = NULL,
+              * tmp [STACKSIZE];	/* stacked temporary vectors */
+
+%}
+
+%token  INTEGER FLOAT DOUBLE NUMBER VARIABLE EQUAL LPAREN
+%token  RPAREN PLUS MINUS TIMES DIVIDE RAISE LHS
+
+%left PLUS, MINUS
+%left TIMES, DIVIDE
+%left RAISE
+
+%%
+equation: 
+     lhs EQUAL expr {
+               pop (&code, &value);
+               get_curve (temp, code);
+
+               if (DeBuG) {
+                 printf ("variable = expression equation recognized\n");
+                 if (!code)
+                   printf ("Final scalar = <%f>\n", value);
+
+                 else {
+                   printf ("Final vector:\n");
+                   for (i = 0; i < num_digits; i++)
+                     printf ("   %f\n", temp [i]);
+                 }
+                 printf ("Final vector name: <%s>\n", label);
+               
+                 while (stkptr)
+                   pop (&code, &value);
+               }
+             }
+     | expr {
+             pop (&code, &value);	/* is this required?? */
+             get_curve (temp, code);
+
+             if (DeBuG) {
+               printf ("non-replacement equation recognized\n");
+               
+               if (!code)
+                 printf ("Final scalar = <%f>\n", value);
+
+               else {
+                 printf ("Final vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+               }
+               printf ("Final vector name: <%s>\n", label);
+              
+               while (stkptr)
+                 pop (&code, &value);
+             }
+	   }
+     ;
+
+lhs   :
+       LHS     {
+                 if ((code = which_curve (yytext, curves)) == 0)
+                   return 4;	/* unrecognized curve name */
+                 strcpy (label, yytext);
+		 j = push (code, value);
+                 if (DeBuG) {
+                   printf ("code <%d> is lhs <%s>\n", code, yytext);
+                 }
+               }
+expr  : 
+       NUMBER  {
+                 code = 0;	/* scalar value */
+		 j = push (code, value);
+               }
+
+     | VARIABLE  {
+                 if ((code = which_curve (yytext, curves)) == 0)
+                   return 4;	/* unrecognized curve name */
+		 j = push (code, value);
+                 if (DeBuG)
+                   printf ("code <%d> is vector <%s>\n", code, yytext);
+               }
+
+     | PLUS  expr {
+                  if (DeBuG)
+                    printf ("plus expression\n");
+                  }
+
+     | MINUS expr {
+                   pop (&code, &value);
+                   if (!code) {
+                     value = -value;
+		     j = push (code, value);
+                     if (DeBuG)
+                       printf ("scalar times -1 back to stack ");
+                   }
+                   else {
+                     get_curve (vec1, code);
+                     for (i = 0; i < num_digits; i++)
+                       temp [i] = fabs (vec1 [i] - null_value) < 0.1 ? 
+                         null_value : -vec1 [i];
+		     j = push (MAGIC, value);
+                     if (DeBuG) {
+                       printf ("Intermediate vector:\n");
+                       for (i = 0; i < num_digits; i++)
+                         printf ("   %f\n", temp [i]);
+                     }
+                   }
+                 }
+
+     | expr PLUS expr {
+             if (DeBuG)
+               printf ("expression + expression\n");
+             pop (&recent_code, &recent_val);  /* most recent values */
+             get_curve (vec2, recent_code);
+
+             pop (&code, &value);  /* previous values */
+             get_curve (vec1, code);
+
+             if (!recent_code && !code) {  /* both scalars */
+               value = value + recent_val;
+               push (code, value); /* intermediate result on stack */
+             }
+
+             else
+             if (!recent_code) { /* most recent a scalar, earlier a vector */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : vec1 [i] + recent_val;
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else
+             if (!code)  { /* most recent a vector, earlier a scalar */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec2 [i] - null_value) < 0.1 ?
+                   null_value : vec2 [i] + value;
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else {  /* both vectors */
+               for (i = 0; i < num_digits; i++) {
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : (fabs (vec2 [i] - null_value) < 0.1 ?
+                     null_value : vec1 [i] + vec2 [i]);
+               }
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+         }
+
+     | expr MINUS expr {
+             if (DeBuG)
+               printf ("expression - expression\n");
+             pop (&recent_code, &recent_val);  /* most recent values */
+             get_curve (vec2, recent_code);
+
+             pop (&code, &value);  /* previous values */
+             get_curve (vec1, code);
+
+             if (!recent_code && !code) {  /* both scalars */
+               value = value - recent_val;
+               push (code, value); /* intermediate result on stack */
+             }
+
+             else
+             if (!recent_code) { /* most recent a scalar, earlier a vector */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : vec1 [i] - recent_val;
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else
+             if (!code)  { /* most recent a vector, earlier a scalar */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec2 [i] - null_value) < 0.1 ?
+                 null_value : value - vec2 [i];
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else {  /* both vectors */
+               for (i = 0; i < num_digits; i++) {
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : (fabs (vec2 [i] - null_value) < 0.1 ?
+                     null_value : vec1 [i] - vec2 [i]);
+               }
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+           }
+     | expr TIMES expr {
+             if (DeBuG)
+               printf ("expression * expression\n");
+             pop (&recent_code, &recent_val);  /* most recent values */
+             get_curve (vec2, recent_code);
+
+             pop (&code, &value);  /* previous values */
+             get_curve (vec1, code);
+
+             if (!recent_code && !code) {  /* both scalars */
+               value = value * recent_val;
+               push (code, value); /* intermediate result on stack */
+             }
+
+             else
+             if (!recent_code) { /* most recent a scalar, earlier a vector */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : vec1 [i] * recent_val;
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else
+             if (!code)  { /* most recent a vector, earlier a scalar */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec2 [i] - null_value) < 0.1 ?
+                   null_value : value * vec2 [i];
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else {  /* both vectors */
+               for (i = 0; i < num_digits; i++) {
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : (fabs (vec2 [i] - null_value) < 0.1 ?
+                    null_value :  vec1 [i] * vec2 [i]);
+               }
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+           }
+     | expr DIVIDE expr  {
+             if (DeBuG)
+               printf ("expression / expression\n");
+             pop (&recent_code, &recent_val);  /* most recent values */
+             get_curve (vec2, recent_code);
+
+             pop (&code, &value);  /* previous values */
+             get_curve (vec1, code);
+
+             if (!recent_code && !code) {  /* both scalars */
+               value = value / recent_val;
+               push (code, value); /* intermediate result on stack */
+             }
+
+             else
+             if (!recent_code) { /* most recent a scalar, earlier a vector */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : vec1 [i] / recent_val;
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else
+             if (!code)  { /* most recent a vector, earlier a scalar */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec2 [i] - null_value) < 0.1 ?
+                   null_value : value / vec2 [i];
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else {  /* both vectors */
+               for (i = 0; i < num_digits; i++) {
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : (fabs (vec2 [i] - null_value) < 0.1 ?
+                     null_value : vec1 [i] / vec2 [i]);
+               }
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+           }
+     | expr RAISE expr {
+             if (DeBuG)
+               printf ("expression ^ expression\n");
+             pop (&recent_code, &recent_val);  /* most recent values */
+             get_curve (vec2, recent_code);
+
+             pop (&code, &value);  /* previous values */
+             get_curve (vec1, code);
+
+             if (!recent_code && !code) {  /* both scalars */
+               value = pow (value, recent_val);
+               push (code, value); /* intermediate result on stack */
+             }
+
+             else
+             if (!recent_code) { /* most recent a scalar, earlier a vector */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : pow (vec1 [i], recent_val);
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else
+             if (!code)  { /* most recent a vector, earlier a scalar */
+               for (i = 0; i < num_digits; i++)
+                 temp [i] = fabs (vec2 [i] - null_value) < 0.1 ?
+                   null_value : pow (value, vec2 [i]);
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+               
+             else {  /* both vectors */
+               for (i = 0; i < num_digits; i++) {
+                 temp [i] = fabs (vec1 [i] - null_value) < 0.1 ?
+                   null_value : (fabs (vec2 [i] - null_value) < 0.1 ?
+                     null_value : pow (vec1 [i], vec2 [i]));
+               }
+               push (MAGIC, value);  /* intermediate result on stack */
+               if (DeBuG) {
+                 printf ("Intermediate vector:\n");
+                 for (i = 0; i < num_digits; i++)
+                   printf ("   %f\n", temp [i]);
+	       }
+             }
+           }
+     
+     | LPAREN  expr RPAREN   {
+             if (DeBuG)
+               printf ("expression in parenthesis\n");
+             }
+     ;
+
+%%
+/**********************do_arithmetic************************/
+int
+do_arithmetic (
+#ifdef _NO_PROTO
+LogFile, arithmetic_string)
+struct LOG_FILE * LogFile;
+char * arithmetic_string;
+#else
+struct LOG_FILE * LogFile; char * arithmetic_string);
+#endif
+{
+  int i, j;
+  char * str = NULL;
+  extern char * my_arithmetic_pointer,
+              * current_pointer,
+              * end_of_string_pointer;
+  
+/* 	Check for debugging output
+*/
+
+  if ((str = getenv ("las_debug")) != (char *) NULL)
+    DeBuG++;
+
+/*	And for case insensitivity
+*/
+  str = getenv ("las_nocase");
+  if (str != (char *) NULL)
+    las_nocase++;
+
+/*	Check for an acceptable length
+*/
+  if ((i = strlen (arithmetic_string)) > 0 && i < STRING_LEN)
+    strcpy (my_arithmetic_string, arithmetic_string);
+
+  else {
+    fprintf (stderr,
+      "do_arithmetic: arithmetic string too short, or longer than <%d> chars\n",
+        STRING_LEN);
+    exit (1);
+  }
+
+/*	Remove tabs
+*/
+  for (i = 0; i < strlen (my_arithmetic_string); i++)
+    if (iscntrl (my_arithmetic_string [i]))
+      my_arithmetic_string [i] = ' ';
+
+/*	Remove trailing blanks
+*/
+  for (i = strlen (my_arithmetic_string) - 1; i >= 0; i--)
+    if (my_arithmetic_string [i] == ' ')
+      my_arithmetic_string [i] = '\0';
+
+    else
+      break;
+
+/*	Ensure the parentheses match
+*/
+  for (i = j = 0; i < strlen (my_arithmetic_string); i++)
+    if (my_arithmetic_string [i] == '(')
+      j++;
+
+    else if (my_arithmetic_string [i] == ')')
+      j--;
+
+  if (j) 
+    return 2;	/* unpaired parenthesis detected */
+
+/* remove leading spaces 
+*/
+  for (i = 0; i < strlen (my_arithmetic_string); i++) 
+    if (my_arithmetic_string [i] == ' ')
+      continue;
+    else {
+      strcpy (my_arithmetic_string, & my_arithmetic_string [i]);
+      break;
+    }
+
+  current_pointer = 
+    & my_arithmetic_string [0];
+
+  end_of_string_pointer = 
+    & my_arithmetic_string [strlen (my_arithmetic_string)];
+
+/* Determine the unknown's name, and do case switch if needed
+*/
+  for (i = j = 0; i < strlen (my_arithmetic_string); i++)
+    if (my_arithmetic_string [i] == '=')
+      j++;
+
+    else
+      if (las_nocase)
+	my_arithmetic_string [i] = 
+	  (char) toupper ((int) my_arithmetic_string [i]);
+
+  if (j > 1)
+    return 3;	/* more than one '=' */
+
+  if (j) {
+    strncpy (label, my_arithmetic_string, max(j, STRING_LEN - 1));
+    label [j] = '\0';
+  }
+
+/*	Get the # of curves, # of digits and the curve names
+	Add two additional pointers to the curves array:
+		1 - NULL, or UNKNOWN (in case its needed)
+		2 - NULL terminator (for searching the array)
+*/
+  num_curves = LogFile -> num_curves;
+  num_digits = LogFile -> data_points;
+  null_value = LogFile -> WellInfo.null;
+  curves = (char **) malloc (sizeof (char *) * (num_curves + 2));
+
+  for (i = 0; i < num_curves; i++)
+    curves [i] = LogFile -> Curve [i].curve_name;
+
+  curves [num_curves + 0] = NULL;
+  curves [num_curves + 1] = NULL;
+
+/*	If we don't recognize the name, then we'll add it to the
+	list, otherwise, ignore it.
+*/
+  if ((i = which_curve (label, curves)) == 0)
+    curves [num_curves + 0] = label;
+
+  do_initialization ();	/* assign array space */
+
+  LogFileAddress = LogFile;	/* get_digits needs this address */
+
+  err = yyparse ();	/* parse the statement; do the work */
+  restart_lex ();	/* ensure we can do another arithmetic run */
+
+/*	err = 0: processing completed normally
+	      1: yyparse internal syntactical error
+	      2: unpaired parenthesis
+	      3: more than 1 equal sign
+	      4: unrecognized curve n
+*/
+  return err;
+}
+/******************************yyerror********************/
+int
+yyerror (
+#ifdef _NO_PROTO
+s)
+char *s;
+#else
+char *s)
+#endif
+{
+  extern int numlines;
+  extern char * yytext;
+
+  fprintf (stderr, "At line <%d>, text <%s> had error <%s>\n", 
+    numlines, yytext, s);
+}
+/****************************push*************************/
+int
+push (
+#ifdef _NO_PROTO
+code, value)
+int code; float value;
+#else
+int code, float value)
+#endif
+/*  This routine "pushes" a code, and optionally a value onto a stack
+  It is used to turn readable algebraic expressions into reverse polish
+  notation for computation
+
+  code = 0: a scalar value, as a float is to be added to the stack
+
+  code = 1+:  the "code" indicates which curve is referenced and is to
+             be added to the stack
+
+  int push (int code, float value)
+*/
+{
+  union VAL {
+    int cod;
+    float fcod;
+  } val;
+  
+  if (code == MAGIC) {
+    if (current_temp == STACKSIZE) {
+      fprintf (stderr, 
+	"yacc.main: push: Insufficient stack for temporary vectors\n");
+      exit (1);
+    }
+
+    tmp [current_temp] = 
+      (double *) malloc (sizeof (double) * num_digits);
+    if (tmp [current_temp] == NULL) {
+      fprintf (stderr, 
+        "yacc.main: push: ran out of memory for temporary vector %d\n", 
+          current_temp);
+      exit (1);
+    }
+
+    transf (temp, 1, tmp [current_temp], 1, num_digits);
+    current_temp++;
+  }
+
+  if (code != MAGIC)
+    val.cod = code; /* the code as we know it */
+
+  else
+    val.cod = current_temp - 1 + MAGIC; /* the temp vector code */
+
+  if (!code)
+    stack [stkptr++] = value; /* have a scalar, add the first */
+
+  stack [stkptr++]   = val.fcod;  /* put the code at the top */
+
+  if (DeBuG) {
+    printf ("push: code <%d>", val.cod);
+
+    if (code == MAGIC)
+      printf (" as temp vector <%d>", current_temp - 1);
+
+    if (!code)
+      printf (" and scalar <%f>", value);
+
+    printf (", stkptr now <%d>\n", stkptr);
+  }
+
+  return stkptr;
+}
+/***********************************pop************************/
+int
+pop (
+#ifdef _NO_PROTO
+code, value)
+int * code; float * value;
+#else
+int * code, float * value)
+#endif
+/*  This routine "pops" a code, and optionally a value from the stack
+  It is used to turn readable algebraic expressions into reverse polish
+  notation for computation
+
+  code = 0: a scalar value, as a float was removed from the stack
+            the value and code are returned
+
+  code = 1+:  the "code" indicates which curve is referenced and was
+             removed from the stack
+
+  int pop (int * code, float * value)
+*/
+{
+  union VAL {
+    int cod;
+    float fcod;
+  } val;
+  
+  val.fcod = stack [--stkptr];  /* get the code from the top */
+  *code = val.cod;
+
+  if (!*code)
+    *value = stack [--stkptr];  /* have a scalar, remove it too */
+
+  else
+  if (*code >= MAGIC) {
+    current_temp--;
+    transf (tmp [current_temp], 1, temp, 1, num_digits);
+    free (tmp [current_temp]);
+    tmp [current_temp] = NULL;
+  }
+
+  if (DeBuG) {
+    printf ("pop: code <%d>", *code);
+
+    if (*code >= MAGIC)
+      printf (" as temp vector <%d>", current_temp);
+
+    if (!*code)
+      printf (" and scalar <%f>", *value);
+
+    printf (", stkptr now <%d>\n", stkptr);
+  }
+
+  return stkptr;
+}
+/***************************transf******************************/
+void 
+transf (
+#ifdef _NO_PROTO
+ivec, ivec_incr, ovec, ovec_incr, count)
+double * ivec, * ovec;
+int ivec_incr, ovec_incr, count;
+#else
+double * ivec, int ivec_incr, double * ovec, int ovec_incr, int count)
+#endif
+/*  This routine transfers an array (ivec) to another array (ovec)
+  with individual increments, for a specified count
+
+  (void) transf (double * ivec, int ivec_increment,
+                 double * ovec, int ovec_increment,
+                 int count)
+*/
+{
+  int i;
+  for (i = 0; i < count; i++)
+    ovec [i * ovec_incr] = ivec [i * ivec_incr];
+  return;
+}
+/******************************which_curve********************/
+int 
+which_curve (
+#ifdef _NO_PROTO
+yytext, curve_names)
+char * yytext; char * curve_names [];
+#else
+char * yytext, char * curve_names [])
+#endif
+{
+  char ** ptr = curve_names;
+
+  while (*ptr != NULL) {
+    if (strncmp (yytext, *ptr, strlen (*ptr)) == 0)
+      return (ptr - curve_names + 1); /* have this name */
+
+    else
+      ptr++;
+  }
+
+  return 0;	/* curve doesn't exist (yet) */
+}
+/******************************put_curve********************/
+void
+put_curve (
+#ifdef _NO_PROTO
+LogFile, string)
+struct LOG_FILE * LogFile;
+char * string;
+#else
+struct * LOG_FILE LogFile, char * string)
+#endif
+/*	This routine stores the resultant vector digits in the 
+	struct LOG_FILE.
+
+	The curve is left in "temp".
+
+	Label is the name assigned originally, or the LHS of the 
+	equation.
+*/
+{
+  int i,
+      j = LogFile -> num_curves;
+
+  if (! initialized) {
+    fprintf (stderr,
+      "yacc.main: put_curve: internal arrays not initialized\n");
+    exit (1);
+  }
+
+/*	Code here to fill struct with digits */
+  
+  i = which_curve (label, curves);
+
+  put_digits (& LogFile [0], i, temp);
+ 
+  i--;
+  if (i == j) {
+    LogFile -> Curve [j].curve_name =
+      (char *) malloc (sizeof (char) * strlen (label) + 1);
+    strcpy (LogFile -> Curve [j].curve_name, label);
+
+    LogFile -> Curve [j].curve_units =
+      (char *) malloc (sizeof (char) * 4 + 1);
+    strcpy (LogFile -> Curve [j].curve_units, "none");
+
+    LogFile -> Curve [j].curve_api =
+      (char *) malloc (sizeof (char) * strlen("computed curve ") + 1);
+    strcpy (LogFile -> Curve [j].curve_api, "computed curve ");
+
+    LogFile -> Curve [j].curve_desc =
+      (char *) malloc (sizeof (char) * strlen (string) + 3);
+    strcpy (LogFile -> Curve [j].curve_desc, ": ");
+    strcat (LogFile -> Curve [j].curve_desc, string);
+
+    LogFile -> num_curves += 1;
+  }
+
+  else {
+    if (LogFile -> Curve [i].curve_api)
+      free (LogFile -> Curve [i].curve_api);
+
+    LogFile -> Curve [i].curve_api =
+      (char *) malloc (sizeof (char) * strlen("computed curve ") + 1);
+    strcpy (LogFile -> Curve [i].curve_api, "computed curve ");
+
+    if (LogFile -> Curve [i].curve_desc)
+      free (LogFile -> Curve [i].curve_desc);
+
+    LogFile -> Curve [i].curve_desc =
+      (char *) malloc (sizeof (char) * strlen (string) + 3);
+    strcpy (LogFile -> Curve [i].curve_desc, ": ");
+    strcat (LogFile -> Curve [i].curve_desc, string);
+
+  }
+
+  return;
+}
+/***************************get_curve**********************/
+void
+get_curve (
+#ifdef _NO_PROTO
+vector, code)
+double * vector;
+int code;
+#else
+double * vector, int code)
+#endif
+/*	This routine returns the specified vector, filled with
+	digits.  If "code" indicates a temporary holding vector,
+	then no transfer is performed - it should have been done
+	in "pop", with an accompnying "free" of the "tmp"
+	vector.
+*/
+{
+  if (! initialized) {
+    fprintf (stderr,
+      "yacc.main: get_curve: internal arrays not initialized\n");
+    exit (1);
+  }
+
+  if (code >= MAGIC) { 	/* want the temporary holding vector */
+    for (i = 0; i < num_digits; i++)
+      vector [i] = temp [i];
+
+    return;
+  }
+
+  else
+
+/*	Code here to fill array with digits */
+
+  get_digits (LogFileAddress, code, vector);
+
+  return;
+}
+/******************************do_initialization*****************/
+void
+do_initialization ()
+{
+  int i;
+
+/*	Assign some array space
+*/
+  temp = (double *) malloc (sizeof (double) * num_digits);
+  for (i = 0; i < STACKSIZE; i++)
+    tmp [i] = NULL;
+
+  vec1 = (double *) malloc (sizeof (double) * num_digits);
+  vec2 = (double *) malloc (sizeof (double) * num_digits);
+
+  if (temp == NULL || vec1 == NULL || vec2 == NULL) {
+    fprintf (stderr, 
+      "yacc.main: do_initialization: ran out of memory for vectors\n");
+    exit (1);
+  }
+
+  initialized = TRUE;
+}
+/*	This is SOLELY to get around an unknown problem on the
+	SUN at Gulf.  At link time, it seems to want this routine.
+*/
+_lib_version ()
+{}

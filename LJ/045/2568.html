@@ -1,0 +1,400 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Playing with Binary Formats</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    This article explains how kernel modules can add new binary&#10;    formats to a system and show a pair of examples.&#10;    "><meta name="keywords" content="command, programming"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2932580.0x2a29ab0"></a>Playing with Binary Formats</h1></div><div><div class="author"><h3 class="author">Alessandro Rubini</h3></div><div class="issuemoyr">Issue #45, January 1998</div></div><div><p>
+    This article explains how kernel modules can add new binary
+    formats to a system and show a pair of examples.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2932580.0x2a2a450"></a></h2></div></div><p>One of the roles that kernel modules can
+accomplish is adding new binary formats to a running system. A
+&ldquo;binary format&rdquo; is basically a data structure responsible for
+executing program files&mdash;the ones marked with execute permission.
+The code I'm going to introduce runs with version 2.0 of the
+kernel.
+</p><p>Kernel modules are meant to add new capabilities to a Linux
+system, device drivers being the best known such &ldquo;capabilities&rdquo;.
+As a matter of fact, the highly modular design of the Linux kernel
+allows run-time insertion of many features other than device
+drivers&mdash;we saw a few months ago how /proc files and
+<span   class="bold"><b>sysctl</b></span> entry points can be created
+by modularized code.</p><p>One other such loadable feature is the ability to execute a
+binary format; this includes both executable files and shared
+libraries. While the mechanism of loading compiled program files
+and shared libraries is quite elaborate, the average Linux user can
+easily add loaders that invoke an interpreter for new binary
+formats. Thus, the user is able to call data files by name and have
+them &ldquo;executed&rdquo;, after invoking <b  >chmod +x</b> on
+the file.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2932580.0x2a2a6b8"></a>How a File Gets Executed</h2></div></div><p>Let's start this discussion by looking at how the
+<span   class="bold"><b>exec</b></span> system call is implemented in
+Linux. This is an interesting part of the kernel, as the ability to
+execute programs is at the basis of system operations.</p><p>The entry point of exec lives in the architecture-dependent
+tree of the source files, but all the interesing code is part of
+fs/exec.c (all pathnames here refer to /usr/src/linux/ or the
+location of your sources). To check architecture-specific details,
+locate the function by typing the command:</p><pre     class="programlisting">
+arch/*/kernel/*.c
+</pre><p>Within fs/exec.c the toplevel function,
+<span   class="bold"><b>do_execve()</b></span>, is less than fifty
+lines of code in length. Its role is checking for errors, filling
+the &ldquo;binary parameter&rdquo; structure (<b  >struct
+linux_binprm</b>) and looking for a binary handler. The last
+step is performed by
+<span   class="bold"><b>search_binary_handler()</b></span>, another
+function in the same file. The magic of
+<span   class="bold"><b>do_execve()</b></span> is contained in this
+last function which is very short. Its job consists of scanning a
+list of registered binary formats, passing the
+<b  >binprm</b> structure to all of them until one
+succeeds. If no handler is able to deal with the executable file,
+the kernel tries to load a new handler via
+<span   class="bold"><b>kerneld</b></span> and scans the list once
+again. If no binary format is able to run the executable file, the
+system call returns the <b  >ENOEXEC</b> error code
+(&ldquo;Exec format error&rdquo;).
+</p><p>The main problem with this kind of implementation is in
+keeping Linux compatible with the standard Unix behaviour. That is,
+any executable text file that begins with <b  >#!</b>
+must be executed by the interpreter it asks for, and any other
+executable text is run by /bin/sh. The former issue is easily dealt
+with by a binary format specialized in running interpreter files
+(fs/binfmt_script.c), and the interpreter itself is run by calling
+search_binary_handler() once again. This function is designed to be
+reentrant, and binfmt_script checks against double invocation. The
+latter issue is mainly an historical relic and is simply ignored by
+the kernel. The program trying to execute the file takes care of
+it. Such a program is usually your shell or
+<span   class="bold"><b>make</b></span>. It's interesting to note
+that while recent versions of
+<span   class="bold"><b>gmake</b></span> execute properly when a
+script has no leading <b  >#!</b> line, previous versions
+didn't call a shell resulting in a &ldquo;cannot execute binary file&rdquo;
+message when running unadorned scripts from within a
+Makefile.</p><p>All the magic handling of data structures needed to replace
+the old executable image with the new one is performed by the
+specific binary loader, based on utility functions exported by the
+kernel. If you would like to take a look at such code, the function
+<span   class="bold"><b>load_out_binary()</b></span> in
+fs/binfmt_aout.c is a good place to start&mdash;easier than the ELF
+loader.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2932580.0x2a2adf0"></a>Registration of Binary Formats</h2></div></div><p>The implementation of <span   class="bold"><b>exec</b></span>
+is interesting code, but Linux has more to offer: registration of
+new binary formats at run time. The implementation is quite
+straightforward, although it involves mucking with rather elaborate
+data structures&mdash;either the code or the data structures must
+accomodate the underlying complexities; elaborate data structures
+offer more flexibility than elaborate code.</p><p>The core of a binary format is represented in the kernel by a
+structure called <b  >struct&lt;\!s&gt;linux_binfmt</b>,
+which is declared in the linux/binfmts.h file as follows:</p><pre     class="programlisting">
+struct linux_binfmt {
+        struct linux_binfmt *next;
+        long *use_count;
+        int (*load_binary)(struct linux_binprm *,
+                struct pt_regs *);
+        int (*load_shlib)(int fd);
+        int (*core_dump)(long signr,
+                struct pt_regs *);
+        };
+</pre><p>The three functions, or &ldquo;methods&rdquo;, declared by the binary
+format are used to execute a program file, to load a shared library
+and to create a core file. The <b  >next</b> pointer is
+used by search_binary_handler(), while the
+<b  >use_count</b> pointer keeps track of the usage count
+of modules. Whenever a process <b  >p</b> is executing in
+the realm of a modularized binary format, the kernel keeps track of
+<b  >*(p-&gt;binfmt-&gt;use_count)</b> to prevent
+unexpected removal of the module.
+</p><p>A module, then, uses the following functions to load and
+unload itself:</p><pre     class="programlisting">
+extern int register_binfmt(struct linux_binfmt *);
+extern int unregister_binfmt(struct linux_binfmt *);
+</pre><p>The functions receive a single argument instead of the usual
+pointer,name pair because no file in the /proc directory lists the
+available binary formats. The typical code for loading and
+unloading a binary format, therefore, is as simple as the
+following:
+<pre     class="programlisting">
+int init_module (void) {
+  return register_binfmt(&amp;bluff_format);
+}
+void cleanup_module(void) {
+  unregister_binfmt(&amp;bluff_format);
+}
+</pre>
+
+
+The previous lines belong to the
+<span   class="bold"><b>bluff</b></span> module (Binary Loader for an
+Ultimately Fallacious Format), whose source is available for public
+download from ftp://ftp.linuxjournal.com/pub/lj/listings/issue45/2568.tgz.
+</p><p>The structure representing the binary format can declare as
+NULL any of the functions it offers; NULL functions are simply
+ignored by the kernel. The easiest binary format, therefore, looks
+like the following, which is the one used by the bluff
+module:</p><pre     class="programlisting">
+struct linux_binfmt bluff_format = {
+        NULL, &amp;mod_use_count_, /* next, count */
+        NULL, NULL, NULL    /* bin, lib, core */
+};
+</pre><p>Yes, <span   class="bold"><b>bluff</b></span>
+<span   class="emphasis"><em>is</em></span> a bluff; you can load and unload it at
+will, but it does absolutely nothing.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2932580.0x2a2b580"></a>The Binary Parameters</h2></div></div><p>In order to implement a binary format that is of some use,
+the programmer must have some background information about the
+arguments that are passed to the loading function, i.e.,
+<b  >format-&gt;load_binary</b>. The first such argument
+contains a description of the binary file and the parameters, and
+the second is a pointer to the processor registers.</p><p>The second argument is only needed by
+<span   class="emphasis"><em>real</em></span> binary loaders, like the a.out and ELF
+formats that are part of the Linux kernel sources. When the kernel
+replaces an executable file with a new one, it must initialize the
+registers associated with the current process to a sane state. In
+particular, the instruction pointer must be set to the address
+where execution of the new program must begin. The function
+<span   class="bold"><b>start_thread</b></span> is exported by the
+kernel to ease setting up the instruction pointer. In this article
+I won't go so deep as to describe real loaders but will limit the
+discussion to &ldquo;wrapper&rdquo; binary formats, similar to binfmt_script
+and binfmt_java.</p><p>The <b  >linux_binprm</b> structure, on the other
+hand, must be used even by simple loaders, so it is worth
+describing here. The structure contains the following
+fields:</p><div class="itemizedlist"><ul type="disc"><li><p><b  >char buf[128]</b>: This buffer holds
+the first bytes of the executable image. It is usually looked up by
+each binary format in order to detect the file type. If you are
+curious about the known magic numbers used to detect the different
+file formats, you can look in the text file /usr/lib/magic
+(sometimes called /etc/magic).</p></li><li><p><b  >unsigned long
+page[MAX_ARG_PAGES]</b>: This array holds the addresses of
+data pages used to carry around the environment and the argument
+list for the new program. The pages are only allocated when they
+are used; no memory is wasted when the environment and argument
+lists are small. The macro <b  >MAX_ARG_PAGES</b> is
+declared in the binfmts.h header and is currently set to 32 (128KB,
+256KB on the Alpha). If you get the message &ldquo;<b  >Arg list too
+long</b>&rdquo; when trying to run a massive grep, then you need
+to enlarge <b  >MAX_ARG_PAGES</b>.</p></li><li><p><b  >unsigned long p</b>: This is a
+&ldquo;pointer&rdquo; to data kept in the pages just described. Data is
+pushed to the pages from high addresses to low ones, and
+<b  >p</b> always points to the beginning of such data.
+Binary formats can use the pointer to play with the initial
+arguments that are passed to the program being executed, and I'll
+show such use in the next section. It's interesting to note that
+<b  >p</b> is a pointer to user-space addresses, and it
+is expressed as <b  >unsigned long</b> to avoid an
+undesired de-reference of its value. When an address represents
+generic data (or an offset in the memory &ldquo;array&rdquo;) the kernel
+often considers it a long integer.</p></li><li><p><b  >struct inode *inode</b>: This inode
+represents the file being executed.</p></li><li><p><b  >int e_uid, e_gid</b>: These fields
+are the effective user and group ID of the process executing the
+program. If the program is
+<span   class="bold"><b>set-uid</b></span>, these fields represent
+the new values.</p></li><li><p><b  >int argc, envc</b>: These values
+represent the number of arguments passed to the new program and the
+number of environment variables.</p></li><li><p><b  >char *filename</b>: This is the full
+pathname of the program being executed. This string lives in kernel
+space and is the first argument received by the
+<span   class="bold"><b>execve</b></span> system call. Although the
+user program won't know its full pathname, the information is
+available to the binary formats, so they can play games with the
+argument list.</p></li><li><p><b  >int dont_iput</b>: This flag can be
+set by the binary format to tell the upper layer that the inode has
+already been released by the loader.</p></li></ul></div><p>The structure also contains other fields that are not
+relevant to the implementation of simple binary formats. What is
+relevant, on the other hand, are a pair of functions exported by
+exec.c. The functions are meant to help the job of simple binary
+loaders such as the ones I'll introduce in this article.</p><pre     class="programlisting">
+unsigned long copy_strings(int argc,char ** argv,
+        unsigned long *page, unsigned long p,
+        int from_kmem);
+void remove_arg_zero(struct linux_binprm *bprm);
+</pre><p>The first function is in charge of copying
+<b  >argc</b> strings, from the array
+<b  >argv</b> into the pointer <b  >p</b> (a
+user space pointer, usually <b  >bprm-&gt;p</b>). The
+strings will be copied before the address pointed to by
+<b  >p</b> (argument strings grow downwards). The
+original strings, the ones in <b  >argv</b>, can either
+reside in user space or in kernel space, and the array can be in
+kernel space even if the strings are stored in user space. The
+<b  >from_kmem</b> argument is used to specify whether
+the original strings and array are both in user space (0), both in
+kernel space (2) or the strings are in user space and the array in
+kernel space (1). <span   class="bold"><b>remove_arg_zero</b></span>
+removes the first argument from <b  >bprm</b> by
+incrementing <b  >bprm-&gt;p</b>.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2932580.0x2a230f8"></a>A Sample Implementation: Displaying
+Images</h2></div></div><p>To turn the theory into sound practice, let's try to expand
+our <span   class="bold"><b>bluff</b></span> into
+<span   class="bold"><b>bloom</b></span> (Binary Loader for
+Outrageously Ostentatious Modules). The complete source of the new
+module is distributed together with bluff.</p><p>The role of bloom is to display executable images. Give
+execution permission to your GIF images and load the module, then
+call your image like it was a command, and
+<span   class="bold"><b>xv</b></span> will display it.</p><p>This code is neither particularly original (most of it comes
+from binfmt_script.c) nor particularly smart (text-only people like
+me would rather use an ASCII viewer, for instance, and other people
+prefer a different viewer). I feel this kind of example is quite
+didactic anyway, and it can be easily run by anyone who can run an
+X server and has root access to the computer in order to load
+modules.</p><p>The source file is made up of little more than 50 lines and
+is able to execute GIF, TIFF and the various PBM formats; needless
+to say, you must give your images execute permissions
+(<b  >chmod +x</b>) in advance. The viewer is
+configurable at load time and defaults to /usr/X11R6/bin/xv. Here
+is a sample session copied from my text console:</p><pre     class="programlisting">
+# insmod bloom.o
+# ./snowy.tif
+xv: Can't open display
+# rmmod bloom
+# insmod bloom.o viewer="/bin/cat"
+# ./snowy.tif | wc -c
+1067564
+</pre><p>If you use the default viewer and work within a graphic
+session, your image file will bloom on the display.
+</p><p>If you can't wait to download the source file, you can see
+the interesting part of bloom in Listing 1. Note that
+<span   class="bold"><b>bloom.c</b></span> falls under the GPL,
+because most of its code is copied from
+<span   class="bold"><b>binfmt_script.c</b></span>.</p><p><a href="2568l1.html" target="_self">Listing 1. The Core of
+bloom.c</a></p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2932580.0x2a236d0"></a>Registering the Format with
+<span   class="bold"><b>kerneld</b></span></h2></div></div><p>The next question that I hear you ask is &ldquo;How can I set up
+things so that <span   class="bold"><b>kerneld</b></span> can
+automatically load my module?&rdquo;</p><p>Well, actually it isn't always possible. The code in
+fs/exec.c only tries to use kerneld when at least one of the first
+four bytes is not printable. This behaviour is meant to avoid
+losing too much time with kerneld when the file being executed is a
+text file without the <b  >#!</b> line. While real binary
+formats have one non-printable byte in the first four, this isn't
+always true for generic data types.</p><p>The net result of this behaviour is that you can't
+automatically load the bloom viewer when invoking a GIF file or
+when calling a PBM file by name. Both formats begin with a text
+string and will therefore be ignored by the auto-loader.</p><p>When, on the other hand, the file has a non-printing
+character within the first four, the kernel issues a kerneld
+request for binfmt-number, where the exact string is generated by
+this statement:</p><pre     class="programlisting">
+sprintf(modname, "binfmt-%hd",
+        *(short*)(&amp;bprm-&gt;buf));
+</pre><p>The ID of the binary format generated by the above statement
+represents the first two bytes of the disk file. If you try to
+execute TIFF files, kerneld looks for
+<b  >binfmt-19789</b> or <b  >binfmt-18761</b>.
+A gzipped file calls for <b  >binfmt--29921</b>
+(negative). GIF files, on the other hand, are passed to /bin/sh
+shell due to their leading text string. If you want to know the
+number associated with each binary format, look in the
+/usr/lib/magic file and convert the values to decimal.
+Alternatively, you can pass the debug argument to kerneld and look
+at its messages when you execute your data files and it tries to
+load the corresponding binary format.
+</p><p>It's interesting to note that kernel versions 2.1.23 and
+newer switched to an easier and more significant ID by using the
+following line:</p><pre     class="programlisting">
+sprintf(modname, "binfmt-%04x",
+              *(unsigned short *)(&amp;bprm-&gt;buf[2]));
+</pre><p>This new ID string represents the third and fourth byte of
+the binary file and is hexadecimal instead of decimal (thus leading
+to strings with a better format and no ugly &ldquo;minus-minus&rdquo;
+appearing now and then.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2932580.0x2a23ca8"></a>What's This Worth?</h2></div></div><p>While calling images by name can be funny, it has no real
+role in a computer system. I personally prefer calling my viewer by
+name, and I do not believe in the object-orientedness of the
+approach. This kind of feature in my opinion is best suited to the
+file manager where it can be tailored by appropriate configuration
+files without introducing kernel bloat to lie in the way of any
+computational path.</p><p>What <span   class="emphasis"><em>is</em></span> really interesting about binary
+formats is the ability to run program files that don't fall in the
+handy <b  >#!</b> notation. This includes executable
+files belonging to other operating systems or platforms, as well as
+interpreted languages that have not been designed for the Unix
+operating system&mdash;all those languages that complain about a
+<b  >#!</b> in the first line.</p><p>If you want to play one such game, you can try the
+<span   class="bold"><b>fail</b></span> module. This &ldquo;Format for
+Automatically Interpreting Lisp&rdquo; is a wrapper to invoke Emacs any
+time a byte-compiled e-lisp program is invoked by name. Such
+practice is definitely failure-prone, as it makes little sense to
+invoke several megabytes of program code to run a few lines of
+lisp. Moreover, Emacs-lisp is not suited to command-line handling.
+Together with <span   class="bold"><b>fail</b></span> you'll also
+find a pair of sample lisp executables to make your tests.</p><p>A real-world Linux system is full of interesting examples of
+interpreted binary formats such as the Java binary format. Other
+examples are the binary format that allows the Alpha platform to
+run Linux-x86 binaries and the one included in recent DOSEMU
+distributions that is able to run old DOS programs transparently
+(although the program must be specifically tailored in
+advance).</p><p>Version 2.1.43 of the kernel and newer ones include generic
+support for interpreted binary formats.
+<span   class="bold"><b>binfmt_misc</b></span> is somewhat like bloom
+but much more powerful. You can add new interpreted binary formats
+to the module by writing the relevant information to the file
+/proc/sys/fs/binfmt_misc.</p><p>  Listing 1 and all other programs referred to in this
+article are available by anonymous download in the file
+<a href="../listings/045/2568.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue45/2568.tgz</a>.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="2568aa.jpg"></div>
+        <span   class="bold"><b>Alessandro Rubini</b></span>
+        used to read e-mail at his university
+        account, but then abandoned academia because he was forced to write
+        articles. He now reads e-mail as rubini@linux.it and still writes
+        articles.
+      </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../045/toc045.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

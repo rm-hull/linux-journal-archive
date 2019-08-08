@@ -1,0 +1,414 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Writing a GCC Front End</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Language designers rejoice! Now it's easier to put a front end for your&#10;language onto GCC.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1905580.0x19fcab0"></a>
+Writing a GCC Front End</h1></div><div><div class="author"><h3 class="author">
+Tom
+ 
+Tromey
+</h3></div><div class="issuemoyr">Issue #133, May 2005</div></div><div><p>
+Language designers rejoice! Now it's easier to put a front end for your
+language onto GCC.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fd298"></a></h2></div></div><p>
+GCC, the premier free software compiler suite, has undergone many
+changes in the last few years. One change in particular, the merging
+of the tree-ssa branch, has made it much simpler to write a new GCC
+front end.
+</p><p>
+GCC always has had two different internal representations, trees and
+RTL. RTL, the register transfer language, is the low-level
+representation that GCC uses when generating machine code.
+Traditionally, all optimizations were done in RTL. Trees are a higher-level
+representation; traditionally, they were less documented and less
+well known than RTL.
+</p><p>
+The tree-ssa Project, a long-term reworking of GCC internals
+spearheaded by Diego Novillo, changes all that. Now, trees are much
+better although still imperfectly documented, and many optimizations
+are done at the tree level. A side effect of this work on trees was
+the clear specification of a tree-based language called GENERIC. All GCC
+front ends generate GENERIC, which is later lowered to another
+tree-based representation called GIMPLE, and from there it goes to RTL.
+</p><p>
+What this means to you is that it is much, much simpler to write a new
+front end for GCC. In fact, it now is feasible to write a front end for
+GCC one without any knowledge of RTL whatsoever. This article provides a tour of how you
+would go about connecting your own compiler front end to GCC. The
+information in this article is specific to GCC 4.0, due to be released
+in 2005.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fd4a8"></a>
+Representing the Program</h2></div></div><p>
+For our purposes, compilation is done in two phases, parsing and
+semantic analysis and then code generation. GCC handles the second
+phase for you, so the question is, what is the best way to implement
+phase one?
+</p><p>
+Traditional GCC front ends, such as the C and C++ front ends, generate
+trees during parsing. Front ends like these typically add their own
+tree codes for language-specific constructs. Then, after semantic
+analysis has completed, these trees are lowered to GENERIC by
+replacing high-level, language-specific trees with lower-level
+equivalents. One advantage of this approach is the language-specific
+trees usually are nearly GENERIC already. The lowering phase often can
+prevent too much garbage from generating.
+</p><p>
+The primary disadvantage of this approach is trees are typed dynamically.
+In theory, this might not seem so bad&mdash;many dynamically
+typed environments exist that can be used efficiently by
+developers, including Lisp and Python. However,
+these are complete environments, and GCC's heavily
+macro-ized C code doesn't confer the same advantages.
+</p><p>
+My preferred approach to writing a front end is to have a strongly
+typed, language-specific representation of the program, called an
+abstract syntax tree (AST). This is the approach used by the Ada front
+end and by gcjx, a rewrite of the front end for the
+Java programming language.
+</p><p>
+For instance, gcjx is written in C++ and has a class hierarchy that
+models the elements of the Java programming language. This code
+actually is independent of GCC and can be used for other purposes. In
+gcjx's case, the model can be lowered to GENERIC, but it also can be used
+to generate bytecode or JNI header files. In addition, it could be used for
+code introspection of various kinds; in practice, the front end
+is a reusable library.
+</p><p>
+This approach provides all the usual advantages of a strongly typed
+design, and in the GCC context, it results in a program that is easier
+to understand and debug. The relative independence of the
+resulting front end from the rest of GCC also is an advantage, because
+GCC changes rapidly and this loose coupling minimizes your exposure.
+</p><p>
+Potential disadvantages of this approach are the possibilities that
+your compiler might do more work than is strictly needed or use more
+memory. In practice, this doesn't seem to be too important.
+</p><p>
+Before we talk about some details of interfacing your front end to
+GCC, let's take a look at some of the documentation and source files
+you need to know. Because it hasn't been a priority in
+the GCC community to make it simpler to write front ends, some things
+you need to know are documented only in the source. The documentation
+references here refer to info pages and not URLs, because GCC 4.0 has
+not yet been released. Thus, the Web pages reflect earlier versions. Your
+best bet is to check out a copy of GCC from CVS and dig around in the source.
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+gcc/c.opt: describes command-line options used by the C family of front
+ends. More importantly, it describes the format of the .opt files.
+You'll be writing one of these.
+</p></li><li><p>
+gcc info page, node Spec Files (source file gcc/doc/invoke.texi):
+describes the spec minilanguage used by the GCC
+driver. You'll write some specs to tell GCC how to invoke your
+front end.
+</p></li><li><p>
+gccint info page, node Front End (source file
+gcc/doc/sourcebuild.texi):
+describes how to integrate your front end into the GCC build
+process.
+</p></li><li><p>
+gccint info page, node Tree SSA (source file gcc/doc/tree-ssa.texi):
+describes GENERIC.
+</p></li><li><p>
+gcc/tree.def, gcc/tree.h: some attributes of trees don't seem to be documented, and reading these files can help.
+tree.def defines all the tree codes and is, in large part, explanatory comments. tree.h defines the tree node
+structures, the many accessor macros and declares functions that
+are useful in building trees of various types.
+</p></li><li><p>
+libcpp/include/line-map.h: line maps are used to represent source
+code locations in GCC. You may or may not use these in your front
+end&mdash;gcjx does not. Even if you do not use them, you need to build them when
+lowering to GENERIC, as information in line maps is used when generating
+debug information. </p></li><li><p>
+gcc/errors.h, gcc/diagnostic.h: defines the interface to GCC's error formatting functions, which you may choose to use.
+</p></li><li><p>
+gcc/gdbinit.in: defines some GDB commands that are handy when
+debugging GCC. For instance, the <tt  >pt</tt> command
+prints a textual representation
+of a tree. The file .gdbinit also is made in the GCC build
+directory; if you debug there, the macros immediately are
+available.
+</p></li><li><p>
+gcc/langhooks.h: lang hooks are a mechanism GCC uses to allow front ends to control some aspects of GCC's behavior. Each front end must define its own
+copy of the langhooks structures; these structures consist largely
+of function pointers. GCC's middle and back ends call these
+functions to make language-specific decisions during compilation.
+The langhooks structures do change from time to time, but due to the
+way GCC expects front ends to initialize these structures, you largely
+are insulated from these changes at the source level. Some
+of these lang hooks are not optional, so your front end is going to
+implement them. Others are ad hoc additions for particular
+problems. For instance, the can_use_bit_fields_p hook was introduced
+solely to work around an optimization problem with the current gcj
+front end.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fdef8"></a>
+Writing the Driver</h2></div></div><p>
+Currently GCC requires your front end to be visible at build
+time&mdash;there is no way to write a front end that is built separately and
+linked against an installed GCC. For this step, read through the
+appropriate section of the GCC manual to find out how to write the build
+infrastructure needed for your front end. Ordinarily, the simplest way
+is to copy another front end's files and modify them to suit.
+</p><p>
+Next, write two files to help integrate your front end into the GCC
+driver program. The lang-specs.h file describes your front end to the GCC driver. It
+tells the driver the file extensions that, when seen on the command
+line, should cause GCC to invoke your front end. It also gives the
+driver some instructions for what other programs must be run, such as
+whether the assembler should be run after your front end and how to
+pass or modify certain command-line options. It may take a while to
+write this file, as specs are their own strange language. However,
+examples in the other front ends can help.
+</p><p>
+The lang.opt file describes any command-line options specific to your
+front end. This is a plain-text file written in a straightforward
+format. Simple options, such as warning flags, can be put in lang.opt
+and do not require any other code on your part. Other arguments have
+to be handled by a lang hook you must write.
+</p><p>
+Next, implement the lang hooks needed to drive the compilation
+process. The important ones in this category are:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+init_options: the first call made to your front end, before any option
+processing is done.
+</p></li><li><p>
+handle_option: called to handle a single command-line option.
+</p></li><li><p>
+post_options: called after all command-line processing has been done.
+This lang hook also is a convenient place to determine the name of
+the input file to parse.
+</p></li><li><p>
+init: called after post_options to initialize your front end.
+</p></li><li><p>
+finish: called after all compilation is done. You can use this to
+clean up after your front end, if necessary.
+</p></li><li><p>
+parse_file: a lang hook that does all the parsing, semantic analysis and code
+generation needed for the input file. It does all the actual work
+of compilation.
+</p></li></ul></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fe580"></a>
+Initialization</h2></div></div><p>
+GCC needs your front end to do some initialization. Most of
+GCC is self-initializing, but in order to accommodate the needs of
+different front ends, it is possible to initialize some tree-related
+global variables in atypical ways. I recommend not trying to delve
+too deeply into this. It is simpler to define the standard tree nodes
+in the standard ways and to think up your own names for trees
+representing, say, the standard types in your language.
+</p><p>
+During initialization you want to call build_common_tree_nodes,
+set_sizetype and build_common_tree_nodes_2. set_sizetype is used to
+set the type of the internal equivalent of size_t; it is simplest to set
+this always to long_unsigned_type_node.
+</p><p>
+Other setup steps can be done in this phase. For instance, in the
+initialization code for gcjx, we build types representing various
+structures that we need to describe Java classes and methods.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fe738"></a>
+Compiling to GENERIC</h2></div></div><p>
+Your parse_file lang hook calls your compiler to generate your
+internal data structures. Assuming this completes without errors,
+your front end now is ready to generate GENERIC trees from your
+AST. In gcjx, this is done by walking the AST for a class using a special
+visitor API. The GENERIC-specific implementation of this API
+incrementally builds trees representing the code and then hands this
+off to GCC.
+</p><p>
+All the details of generating trees are outside the scope of this
+article. Below are examples, however, showing three major tree
+types so you can see what each looks like.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fe898"></a>
+Type</h2></div></div><p>
+One kind of tree represents a type. Here is an example from gcjx of
+the Java char type:
+
+<pre     class="programlisting">
+tree type_jchar = make_node (CHAR_TYPE);
+TYPE_PRECISION (type_jchar) = 16;
+fixup_unsigned_type (type_jchar);
+</pre>
+</p><p>
+You can represent any type using trees. In particular, there are tree
+types representing records, unions, pointers and integers of various
+sizes.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fea50"></a>
+Decl</h2></div></div><p>
+Decl represents a declaration or, in other words, a name given to
+some object. For instance, a local variable in the source code is
+represented by a decl:
+
+
+<pre     class="programlisting">
+tree local = build_decl (VAR_DECL, get_identifier ("variable_name"),
+			 type_jchar);
+</pre>
+</p><p>
+There are decls representing various named objects in a program:
+translation units, functions, fields, variables, parameters,
+constants, labels and types. A type decl represents the declaration
+of the type, as opposed to the type itself.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19fec08"></a>
+Expr</h2></div></div><p>
+Many kinds of expr trees are available that represent the various kinds
+of expressions in a program. These are similar to C expressions
+but are more general in some ways. For instance, trees do not distinguish
+between if statements and conditional expressions&mdash;both are
+represented by a COND_EXPR, with the only difference being that an
+if statement has void type. Here's how we can build an
+expression that adds our variable to itself:
+
+<pre     class="programlisting">
+tree addition = build2 (PLUS_EXPR, type_jchar, local, local);
+</pre>
+</p><p>
+Trees that represent statements are linked together using a special
+iterator API. Here is how we would chain together two statements,
+s1 and s2:
+
+<pre     class="programlisting">
+
+tree result = alloc_stmt_list ();
+tree_stmt_iterator out = tsi_start (result);
+
+tsi_link_after (&amp;out, s1, TSI_CONTINUE_LINKING);
+tsi_link_after (&amp;out, s2, TSI_CONTINUE_LINKING);
+
+// Now `result' holds the list of statements.
+
+</pre>
+</p><p>
+Other kinds of tree nodes exist; read tree.def and the manual for a
+more complete understanding. It also is possible for a front end to
+define its own tree codes; however, if you have your own AST, you
+should not need to do this.
+</p><p>
+The overall structure of the program you generate probably is going to
+resemble a translation unit decl, which would contain types,
+variables and functions.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19f5758"></a>
+Handoff</h2></div></div><p>
+Once you've built the trees representing a function, a global
+variable or a type for which you want to generate debugging
+information, you need to pass the tree to the appropriate function to
+handle the rest of compilation. Three such functions are available at
+present: rest_of_decl_compilation handles compilation for a decl node,
+cgraph_finalize_function handles compilation for a function and
+rest_of_type_compilation handles compilation for a type.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19f5860"></a>
+Debugging</h2></div></div><p>
+Although GCC has a fair number of internal consistency checks, it
+still is too easy to provoke crashes in code that are unrelated to your front end.
+In many cases, you can move up the stack, printing whatever trees are
+being manipulated, until you find some discrepancy caused by incorrect
+tree generation. This technique requires surprisingly little general
+GCC knowledge in order to effectively debug your code.
+</p><p>
+GCC has some handy debug functionality. In the debugger you can call
+the debug_tree function to print a tree. You also can use the
+-fdump-tree family of command-line options to print trees after
+various passes have been run.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19f59c0"></a>
+Experience</h2></div></div><p>
+My experience writing gcjx has been that lowering its strongly typed
+intermediate representation to trees is quite simple. The tree back
+end to gcjx, one back end among several, represents roughly 10%
+of the total code of the compiler. Although unfinished, it currently
+weighs in at 6,000 lines of code (raw <tt  >wc -l</tt>
+count)&mdash;around the same
+size as the bytecode back end. One inference to draw from this is
+if you already have a compiler, the task of attaching it to GCC can be accomplished
+easily.
+</p><p>
+As trees are high-level, I haven't looked at any RTL while writing
+this front end. I haven't spent any time at all thinking about or
+dealing with processor-specific issues. Unless your language has some
+esoteric requirements, this ought to hold for you as well.
+</p><p>
+The statically typed AST in gcjx is easily reused. Currently, there
+are four back ends, and I expect to write more later. For
+instance, it would be simple to build a back end that writes a
+cross-reference representation of the program to a database. Or, it
+would be possible to write a back end that walks the AST searching
+for typical errors, akin to the FindBugs program. This consideration
+would be even more compelling for languages, which, unlike Java, don't
+already have a wealth of analysis tools.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1905580.0x19f5bd0"></a>
+Future Directions</h2></div></div><p>
+The process of writing a front end certainly could be made even easier. For
+instance, there is no need to require lang-specs.h. Instead, a front
+end could install a description file that the GCC driver would read
+at startup. Similarly, lang.opt probably could be dispensed with.
+With more work, it even would be possible to compile front ends
+separately from the rest of GCC.
+</p><p><span   class="bold"><b>Resources for this article:</b></span>
+<a href="../133/8138.html" target="_self">/article/8138</a>.
+</p></div></div>
+<div class="authorblurb"><p>
+Tom Tromey has been involved with free software since 1991 and has
+worked on many different programs. He currently is employed as an
+engineer at Red Hat, working on GCJ.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../133/toc133.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

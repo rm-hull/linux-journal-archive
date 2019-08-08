@@ -1,0 +1,877 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8"/>
+<link href="https://fonts.googleapis.com/css?family=Lateef" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+<title>LJ Archive</title>
+
+
+<link href="../../css/archive.css" type="text/css" rel="stylesheet"/>
+<script type="text/javascript" src="../../js/archive.js"></script>
+<script type="text/javascript" src="../../js/highlight.js"></script>
+</head>
+
+<body class="from_sigil">
+  
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+
+  <div class="tophrdiv">
+  </div>
+
+  
+  <div id="top_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+<h1 class="title">
+Data in a Flash, Part II: Using NVMe Drives and Creating an NVMe over
+Fabrics Network
+</h1>
+
+<h2 class="sigil_not_in_toc">By design, NVMe drives are intended to provide local access to the
+machines they are plugged in to; however, the NVMe over Fabric
+specification seeks to address this very limitation by enabling remote
+network access to that same device. By Petros Koutoupis</h2>
+
+
+<p>
+This article puts into practice what you learned in Part I and shows
+how to use NVMe drives in a Linux environment. But, before continuing,
+you first need to make sure that your physical (or virtual)
+machine is up to date. Once you verify that to be the case,
+make sure you're able to see all connected NVMe devices:
+
+</p>
+<pre><code>
+$ cat /proc/partitions |grep -e nvme -e major
+major minor  #blocks  name
+ 259        0 3907018584 nvme2n1
+ 259        1 3907018584 nvme3n1
+ 259        2 3907018584 nvme0n1
+ 259        3 3907018584 nvme1n1
+</code>
+</pre>
+<p></p>
+
+<p>
+Those devices also will appear in <code>sysfs</code>:
+
+</p>
+<pre><code>
+$ ls /sys/block/|grep nvme
+nvme0n1
+nvme1n1
+nvme2n1
+nvme3n1
+</code>
+</pre>
+<p></p>
+
+<p>
+If you don't see any connected NVMe devices, make sure the kernel
+module is loaded:
+
+</p>
+<pre><code>
+petros@ubu-nvme1:~$ lsmod|grep nvme
+nvme                   32768  0
+nvme_core              61440  1 nvme
+</code>
+</pre>
+<p></p>
+
+<p>
+Next, install the drive management utility called
+<code>nvme-cli</code>. This utility is defined and maintained by the very
+same
+NVM Express committee that defined the NVMe specification. The nvme-cli
+source code is hosted on
+<a href="https://github.com/linux-nvme/nvme-cli">GitHub</a>. Fortunately,
+some operating
+systems offer this package in their internal repositories.
+Installing it on the latest Ubuntu looks something like this:
+
+</p>
+<pre><code>
+petros@ubu-nvme1:~$ sudo add-apt-repository universe
+petros@ubu-nvme1:~$ sudo apt update &amp;&amp; sudo apt install
+ ↪nvme-cli
+</code>
+</pre>
+<p></p>
+
+<p>
+Using this utility, you're able to list more details of all connected
+NVMe drives (note: the tabular output below has been reformatted and
+truncated to better fit here): 
+
+</p>
+<pre><code>
+$ sudo nvme list
+Node      SN      Model     Namespace Usage   Format    FW Rev
+--------------------------------------------------------------
+/dev/nvme0n1  PHLF814001... Dell Express Flash NVMe P4500 4.0TB SFF  1       
+ ↪4.00  TB /   4.00  TB    512   B +  0 B   QDV1DP12
+/dev/nvme1n1  PHLF814300... Dell Express Flash NVMe P4500 4.0TB SFF  1       
+ ↪4.00  TB /   4.00  TB    512   B +  0 B   QDV1DP12
+/dev/nvme2n1  PHLF814504... Dell Express Flash NVMe P4500 4.0TB SFF  1
+ ↪4.00  TB /   4.00  TB    512   B +  0 B   QDV1DP12
+/dev/nvme3n1  PHLF814502... Dell Express Flash NVMe P4500 4.0TB SFF  1       
+ ↪4.00  TB /   4.00  TB    512   B +  0 B   QDV1DP12
+</code>
+</pre>
+<p></p>
+
+<p>
+<em>Note: if you don't have a physical NVMe drive connected to your
+machine but still want to follow along (in limited form), you can
+install and simulate an NVMe controller plus drive(s) in the
+latest VirtualBox virtualization application.</em></p>
+
+<h3 class="sigil_not_in_toc">
+Drive Management</h3>
+
+<p>
+Issuing the <code>nvme</code> command on the command line prints an
+online help menu with a complete list of features and functions, some of
+which locate and identify various NVMe controllers, drives and
+their namespaces:
+
+</p>
+<pre><code>
+list           List all NVMe devices and namespaces on machine
+list-subsys    List nvme subsystems
+id-ctrl        Send NVMe Identify Controller
+id-ns          Send NVMe Identify Namespace, display structure
+list-ns        Send NVMe Identify List, display structure
+</code>
+</pre>
+<p></p>
+
+<p>
+Other features of the nvme-cli utility introduce namespace management:
+
+</p>
+<pre><code>
+ns-descs      Send NVMe Namespace Descriptor List, display
+ ↪structure
+create-ns     Creates a namespace with the provided parameters
+delete-ns     Deletes a namespace from the controller
+attach-ns     Attaches a namespace to requested controller(s)
+detach-ns     Detaches a namespace from requested controller(s)
+</code>
+</pre>
+<p></p>
+
+
+<p>
+Namespaces are a unique function of the NVMe drive. Think of them as
+sort of a virtual partition of the physical device. A namespace is
+a defined quantity of non-volatile memory that can be formatted into
+logical blocks. When provisioned, one or more namespaces are connected
+to the controller (or to a host, sometimes remotely). Each can support
+various block sizes (such as 512 bytes, 4 KB and so on). When defined, they
+will appear as separate block devices to the host.
+</p>
+
+<p>
+If the drive contains a single namespace, listing it will showcase
+the following:
+
+</p>
+<pre><code>
+$ nvme list-ns /dev/nvme0
+[   0]:0x1
+</code>
+</pre>
+<p></p>
+
+<p>
+If you start creating more namespaces, it will be reflected in
+the listing:
+
+
+</p>
+<pre><code>
+$ sudo nvme list-ns /dev/nvme0
+[   0]:0x1
+[   1]:0x2
+</code>
+</pre>
+<p></p>
+
+<p>
+and again in the number of block devices registered by your operating
+system:
+
+</p>
+<pre><code>
+$ cat /proc/partitions |grep nvme0
+ 259        0    1953509292 nvme0n1
+ 259        1    1953509292 nvme0n2
+</code>
+</pre>
+<p></p>
+
+<p>
+With the same utility, you are able to access drive-level logging:
+
+</p>
+<pre><code>
+get-log       Generic NVMe get log, returns log in raw format
+fw-log        Retrieve FW Log, show it
+smart-log     Retrieve SMART Log, show it
+error-log     Retrieve Error Log, show it
+effects-log   Retrieve Command Effects Log, show it
+</code>
+</pre>
+<p></p>
+
+<p>
+And you can also set drive-level features:
+
+</p>
+<pre><code>
+get-feature     Get feature and show the resulting value
+set-feature     Set a feature and show the resulting value
+set-property    Set a property and show the resulting value
+</code>
+</pre>
+<p></p>
+
+<p>
+For example, let's say you want to enable (1) or disable (0) the drive's
+volatile
+write cache (VWC). You can list its current setting like so:
+
+</p>
+<pre><code>
+$ sudo nvme id-ctrl /dev/nvme0|grep vwc
+vwc     : 0
+</code>
+</pre>
+<p></p>
+
+<p>
+And, set it like so:
+
+</p>
+<pre><code>
+$ sudo nvme set-feature /dev/nvme0 -f 0x6 -v 1
+</code>
+</pre>
+<p></p>
+
+<p>
+You can manage and update drive firmware:
+
+</p>
+<pre><code>
+fw-commit    Verify and commit firmware to a specific slot
+ ↪(fw-activate in old version &lt; 1.2)
+fw-download  Download new firmware
+</code>
+</pre>
+<p></p>
+
+<p>
+Reset the controller (but not the connected drives):
+
+</p>
+<pre><code>
+reset           Resets the controller
+subsystem-reset Resets the controller
+</code>
+</pre>
+<p></p>
+
+<p>
+Discover and connect to other NVMe devices over a network (see below):
+
+</p>
+<pre><code>
+discover        Discover NVMeoF subsystems
+connect-all     Discover and Connect to NVMeoF subsystems
+connect         Connect to NVMeoF subsystem
+disconnect      Disconnect from NVMeoF subsystem
+gen-hostnqn     Generate NVMeoF host NQN
+</code>
+</pre>
+<p></p>
+
+<p>
+And more.
+</p>
+
+<p>
+The utility even has plugin extensions to support vendor-specific
+functions. The latest revision includes:
+
+</p>
+<pre><code>
+intel           Intel vendor specific extensions
+lnvm            LightNVM specific extensions
+memblaze        Memblaze vendor specific extensions
+wdc             Western Digital vendor specific extensions
+huawei          Huawei vendor specific extensions
+netapp          NetApp vendor specific extensions
+toshiba         Toshiba NVME plugin
+micron          Micron vendor specific extensions
+seagate         Seagate vendor specific extensions
+</code>
+</pre>
+<p></p>
+
+<h3 class="sigil_not_in_toc">
+Accessing the Drive across a Network</h3>
+
+<p>
+Let's look at how to leverage the high-speed SSD technology
+and expand it beyond the local server. An NVMe doesn't have to be
+limited to the server that it's physically plugged in to. In this
+example, let's configure a Soft RDMA over Converged Ethernet (RoCE)
+network on top of traditional TCP/IP and export/import an NVMe block
+device via this method. This will be your NVMeoF network.
+</p>
+
+<p>
+Before continuing though, you'll need to understand a couple concepts:
+</p>
+
+<ul><li>
+Host: as it relates to the current environment, a host will
+be the server connecting to a remote block device—specifically, an
+NVMe target.
+</li>
+
+<li>
+Target: the target will be the server exporting the NVMe device
+across the network and to the host server.
+</li>
+</ul>
+
+<p>
+In this example, and for the sake of convenience, I'm describing using two
+virtual machines to create the network. There's absolutely no advantage
+in doing this, and I don't recommend that anyone do the same other than to
+follow along with the exercise. Realistically, you should
+enable the following only on physical machines with high-speed network
+cards
+connected. Having said that, in the target virtual machine, let's attach a
+couple
+low-capacity virtual NVMe drives (2GB each):
+
+</p>
+<pre><code>
+$ sudo nvme list
+Node    SN      Model    Namespace Usage     Format     FW Rev
+--------------------------------------------------------------
+/dev/nvme0n1  VB1234-56789  ORCL-VBOX-NVME-VER12  1  2.15 GB / 2.15 GB    
+ ↪512  B +  0 B  1.0
+/dev/nvme0n2  VB1234-56789  ORCL-VBOX-NVME-VER12  2  2.15 GB / 2.15 GB    
+ ↪512   B +  0 B   1.0
+</code>
+</pre>
+<p></p>
+
+<p>(Note: the above tabular output has been edited to fit the column width.)</p>
+
+
+<p>
+Again, I've been using a recent release of Ubuntu. To prepare both the
+host and target operating environments, install the following packages:
+
+</p>
+<pre><code>
+$ sudo apt install libibverbs-dev libibverbs1 rdma-core
+ ↪ibverbs-utils
+</code>
+</pre>
+<p></p>
+
+<p>
+On some distributions, you may need to specify the <code>librxe</code>
+package (on Ubuntu, its functions are packaged in <code>rdma-core</code>).
+</p>
+
+<p>
+Again, on both the host and target, you'll now load the required kernel
+modules (there are a few):
+
+</p>
+<pre><code>
+$ sudo modprobe nvme-rdma
+$ sudo modprobe ib_uverbs
+$ sudo modprobe rdma_ucm
+$ sudo modprobe rdma_rxe
+$ sudo modprobe nvmet
+$ sudo modprobe nvmet-rdma
+</code>
+</pre>
+<p></p>
+
+<p>
+The following instructions rely heavily on the <code>sysfs</code>
+virtual filesystem. In theory, you could export NVMe targets with the
+<code>nvmet-cli</code> open-source utility, which does all of that complex
+heavy-lifting. But, where is the fun in that?
+</p>
+
+<p><strong>
+Setting Up a Soft-RoCE Network</strong></p>
+
+<p>
+An RDMA network needs be established between both the host and target
+servers. On each server, identify the network interface to enable for
+this method of transport:
+
+</p>
+<pre><code>
+$ ip addr show enp0s3
+2: enp0s3: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc
+ ↪fq_codel state UP group default qlen 1000
+    link/ether 08:00:27:15:4b:da brd ff:ff:ff:ff:ff:ff
+    inet 192.168.1.85/24 brd 192.168.1.255 scope global
+     ↪dynamic enp0s3
+       valid_lft 85865sec preferred_lft 85865sec
+    inet6 fe80::a00:27ff:fe15:4bda/64 scope link
+       valid_lft forever preferred_lft forever
+</code>
+</pre>
+<p></p>
+
+<p>
+Let's configure the RDMA interface on top of the preferred Ethernet
+interface, but before doing so, first verify that one doesn't
+already exist:
+
+</p>
+<pre><code>
+$ sudo rxe_cfg status
+  Name    Link  Driver  Speed  NMTU  IPv4_addr  RDEV  RMTU
+  enp0s3  yes   e1000
+</code>
+</pre>
+<p></p>
+
+<p>
+Enable the RDMA environment and add the Ethernet interface:
+
+</p>
+<pre><code>
+$ sudo rxe_cfg start
+$ sudo rxe_cfg add enp0s3
+</code>
+</pre>
+<p></p>
+
+<p>
+Verify that you now have your RDMA interface (<code>rxe</code>):
+
+</p>
+<pre><code>
+$ sudo rxe_cfg status
+  Name    Link  Driver  Speed  NMTU  IPv4_addr  RDEV  RMTU
+  enp0s3  yes   e1000                           rxe0  (?)
+</code>
+</pre>
+<p></p>
+
+<p>
+You'll also find this interface listed in <code>sysfs</code>:
+
+</p>
+<pre><code>
+$ ls /sys/class/infiniband
+rxe0
+</code>
+</pre>
+<p></p>
+
+<p>
+After applying the same instructions to both host and target machines,
+you'll need to test the RDMA network.
+</p>
+
+<p>
+On the host, set up the server:
+
+</p>
+<pre><code>
+$ sudo ibv_rc_pingpong -d rxe0 -g 0
+  local address:  LID 0x0000, QPN 0x000011, PSN 0x5db323,
+   ↪GID fe80::a00:27ff:fe48:d511
+  remote address: LID 0x0000, QPN 0x000011, PSN 0x3403d4,
+   ↪GID fe80::a00:27ff:fe15:4bda
+8192000 bytes in 0.40 seconds = 164.26 Mbit/sec
+1000 iters in 0.40 seconds = 398.97 usec/iter
+</code>
+</pre>
+<p></p>
+
+<p>
+On the target, set up the client (replace the IP with the IP address of
+your host machine):
+
+</p>
+<pre><code>
+$ sudo ibv_rc_pingpong -d rxe0 -g 0 192.168.1.85
+  local address:  LID 0x0000, QPN 0x000011, PSN 0x3403d4,
+   ↪GID fe80::a00:27ff:fe15:4bda
+  remote address: LID 0x0000, QPN 0x000011, PSN 0x5db323,
+   ↪GID fe80::a00:27ff:fe48:d511
+8192000 bytes in 0.40 seconds = 164.46 Mbit/sec
+1000 iters in 0.40 seconds = 398.50 usec/iter
+</code>
+</pre>
+<p></p>
+
+<p>
+If you get responses like those shown above, you've succeeded
+in configuring your RDMA network on top of TCP.
+</p>
+
+<p>
+<strong>Exporting a Target</strong>
+</p>
+
+<p>
+Mount the kernel user configuration filesystem. This is a
+requirement. All of your NVMe Target instructions require the NVMe Target
+tree to be made available in this filesystem:
+
+</p>
+<pre><code>
+$ sudo /bin/mount -t configfs none /sys/kernel/config/
+</code>
+</pre>
+<p></p>
+
+<p>
+Create an NVMe Target subsystem to host your devices (to export), and
+change into its directory:
+
+</p>
+<pre><code>
+$ sudo mkdir /sys/kernel/config/nvmet/subsystems/nvmet-test
+$ cd /sys/kernel/config/nvmet/subsystems/nvmet-test
+</code>
+</pre>
+<p></p>
+
+<p>
+This example simplifies host connections by leaving the newly created
+subsystem accessible to any and every host attempting to connect to
+it (in a production environment, you definitely should lock this down
+to specific host machines by their NQN):
+
+</p>
+<pre><code>
+$ echo 1 |sudo tee -a attr_allow_any_host &gt; /dev/null
+</code>
+</pre>
+<p></p>
+
+<p>
+When a target is exported, it's done with a "unique" NVMe Qualified
+Name (NQN). The concept is very similar to the iSCSI Qualified Name
+(IQN). This NQN is what enables other operating systems to import and
+use the remote NVMe device across a network potentially hosting multiple
+NVMe devices.
+</p>
+
+<p>
+Define a subsystem namespace and change into its directory:
+
+</p>
+<pre><code>
+$ sudo mkdir namespaces/1
+$ cd namespaces/1/
+</code>
+</pre>
+<p></p>
+
+<p>
+Set a local NVMe device to the newly created namespace:
+
+</p>
+<pre><code>
+$ echo -n /dev/nvme0n1 |sudo tee -a device_path &gt; /dev/null
+</code>
+</pre>
+<p></p>
+
+<p>
+And enable the namespace:
+
+</p>
+<pre><code>
+$ echo 1|sudo tee -a enable &gt; /dev/null
+</code>
+</pre>
+<p></p>
+
+<p>
+Now you'll create an NVMe Target port to export the newly created
+subsystem and change into its directory path:
+
+</p>
+<pre><code>
+$ sudo mkdir /sys/kernel/config/nvmet/ports/1
+$ cd /sys/kernel/config/nvmet/ports/1
+</code>
+</pre>
+<p></p>
+
+<p>
+Remember that Ethernet interface you enabled for RDMA communication? Well,
+you'll use its IP address when exporting your subsystem:
+
+</p>
+<pre><code>
+$ echo 192.168.1.92 |sudo tee -a addr_traddr &gt; /dev/null
+</code>
+</pre>
+<p></p>
+
+<p>
+Next, you'll set a few other parameters:
+
+</p>
+<pre><code>
+$ echo rdma|sudo tee -a addr_trtype &gt; /dev/null
+$ echo 4420|sudo tee -a addr_trsvcid &gt; /dev/null
+$ echo ipv4|sudo tee -a addr_adrfam &gt; /dev/null
+</code>
+</pre>
+<p></p>
+
+<p>
+Then create a softlink to point to the subsystem from your newly created
+port:
+
+</p>
+<pre><code>
+$ sudo ln -s /sys/kernel/config/nvmet/subsystems/nvmet-test/
+ ↪/sys/kernel/config/nvmet/ports/1/subsystems/nvmet-test
+</code>
+</pre>
+<p></p>
+
+<p>
+You now should see the following message captured in <code>dmesg</code>:
+
+</p>
+<pre><code>
+$ dmesg |grep "nvmet_rdma"
+[24457.458325] nvmet_rdma: enabling port 1 (192.168.1.92:4420)
+</code>
+</pre>
+<p></p>
+
+<p>
+<strong>Importing a Target</strong></p>
+
+<p>
+The host machine is currently without an NVMe device:
+
+</p>
+<pre><code>
+$ nvme list
+Node    SN     Model    Namespace Usage    Format     FW Rev
+------- ------ -------- --------- -------- ---------- ------
+</code>
+</pre>
+<p></p>
+
+<p>
+Let's scan the target machine for any exported NVMe volumes:
+
+</p>
+<pre><code>
+$ sudo nvme discover -t rdma -a 192.168.1.92 -s 4420
+
+Discovery Log Number of Records 1, Generation counter 1
+=====Discovery Log Entry 0======
+trtype:  rdma
+adrfam:  ipv4
+subtype: nvme subsystem
+treq:    not specified
+portid:  1
+trsvcid: 4420
+
+subnqn:  nvmet-test
+traddr:  192.168.1.92
+
+rdma_prtype: not specified
+rdma_qptype: connected
+rdma_cms:    rdma-cm
+rdma_pkey: 0x0000
+</code>
+</pre>
+<p></p>
+
+<p>
+It must be your lucky day. It looks as if the target machine
+<em>is</em> exporting one or more volumes. You'll need to remember
+its <code>subnqn</code> field: <code>nvmet-test</code>. You'll now connect
+to
+the <code>subnqn</code>:
+
+</p>
+<pre><code>
+$ sudo nvme connect -t rdma -n nvmet-test -a 192.168.1.92
+ ↪-s 4420
+</code>
+</pre>
+<p></p>
+
+<p>
+If you go back to list all NVMe devices, you now should see all those
+exported by that one <code>subnqn</code> (note: the tabular output below has been reformatted to fit):
+
+</p>
+<pre><code>
+$ sudo nvme list
+Node    SN   Model  Namespace Usage    Format    FW Rev
+------- ---- ------ --------- -------- --------- ------
+/dev/nvme1n1  8e0999a558e17818  Linux   1  2.15 GB / 2.15 GB    
+ ↪512  B +  0 B  4.15.0-3
+</code>
+</pre>
+<p></p>
+
+<p>
+Verify that it also shows up like your other block device:
+
+</p>
+<pre><code>
+$ cat /proc/partitions |grep nvme
+ 259        1    2097152 nvme1n1
+</code>
+</pre>
+<p></p>
+
+<p>
+You can disconnect from the target device by typing:
+
+</p>
+<pre><code>
+$ sudo nvme disconnect -d /dev/nvme1n1
+</code>
+</pre>
+<p></p>
+
+<p>
+There you have it: a remote NVMe block device exported via an NVMe over
+Fabrics network. You now can write to and read from it like any other
+locally attached high-performance block device.
+</p>
+
+<p>
+<em>Note: if you're seeing I/O errors, there is a known issue with
+the Linux <code>rxe</code> code, and you may need to run a newer kernel. It
+is believed that kernel commit 2da36d44a9d54a2c6e1f8da1f7ccc26b0bc6cfec
+addresses this issue, and it was merged into a later 4.16
+release.</em>
+</p>
+
+<h3 class="sigil_not_in_toc">
+Summary</h3>
+
+<p>
+The NVMe drive has changed the landscape of high-speed computing. Both
+the specification and technology have redefined access to NAND-based SSD
+media and have been updated to cater better to modern workloads. And
+although NVMe
+typically runs within a local machine, it isn't limited to it. Using
+the NVMe over Fabrics technology, the NVMe can expand beyond that local
+server and across an entire high-speed network.
+</p>
+
+<h3 class="sigil_not_in_toc">Resources</h3>
+
+<ul>
+<li>
+<a href="https://github.com/linux-nvme/nvme-cli">nvme-cli Utility on
+GitHub</a>
+</li>
+
+<li><a href="https://nvmexpress.org">NVM Express</a></li>
+</ul>
+
+<h3 class="sigil_not_in_toc">About the Author</h3>
+
+<p>
+Petros Koutoupis, <em>LJ</em> Editor at Large,
+is currently a senior platform
+architect at IBM for its Cloud Object Storage division (formerly
+Cleversafe). He is also the creator and maintainer of the <a href="http://www.rapiddisk.org">RapidDisk
+Project</a>.
+Petros has worked in the data storage
+industry for well over a decade and has helped pioneer the many
+technologies unleashed in the wild today.
+</p>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../293/toc293.html">Issue Table of Contents</a>
+    <a class="link3" href="../293/12602.html">Article</a>
+  </div>
+  <div class="bottomhrdiv"></div>
+
+  <div id="bottom_search">
+    <table class="page_search" summary="">
+      <tr>
+        <td valign="top" align="left">
+          <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+        </td>
+        <td valign="top" align="right">
+          <form method="get" action="/zoom/search.cgi">
+            <input type="hidden" name="zoom_sort" value="0" />
+            <input type="hidden" name="zoom_xml" value="0" />
+            <input type="hidden" name="zoom_per_page" value="10" />
+            <input type="hidden" name="zoom_and" value="1" />
+            Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+            <input type="submit" value="Submit" />
+          </form>
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+</body>
+</html>

@@ -1,0 +1,369 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Using the Kernel Security Module Interface</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Greg shows how to create a simple kernel module that uses&#10;    the LSM framework.&#10;    "><meta name="keywords" content="kernel, LSM, USB, device"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x166c580.0x1763ab0"></a>Using the Kernel Security Module Interface</h1></div><div><div class="author"><h3 class="author">Greg Kroah-Hartman</h3></div><div class="issuemoyr">Issue #103, November 2002</div></div><div><p>
+    Greg shows how to create a simple kernel module that uses
+    the LSM framework.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x1764558"></a></h2></div></div><p>At the 2001 Linux Kernel Summit, NSA
+developers presented their work on Security-Enhanced Linux
+(SELinux) and emphasized the need for enhanced security support in
+the main Linux kernel. In the ensuing discussion, a consensus was
+reached that a general access-control framework for the Linux
+kernel was needed. This approach would allow different security
+models to work without modifying the main kernel code.
+</p><p>Out of this discussion grew the Linux Security Module Project
+(LSM). A number of developers worked together to create a framework
+of kernel hooks that would allow many security models to work as
+loadable kernel modules. A detailed description of the design of
+this general-purpose system was published in a paper at the 2002
+USENIX Security Conference
+(<a href="http://lsm.immunix.org/docs/lsm-usenix-2002/html" target="_self">lsm.immunix.org/docs/lsm-usenix-2002/html/</a>)
+and a technical description of how the LSM interface works was
+presented in a paper at the 2002 Ottawa Linux Symposium
+(<a href="http://www.linux.org.uk/~ajh/ols2002_proceedings.pdf.gz" target="_self">www.linux.org.uk/~ajh/ols2002_proceedings.pdf.gz</a>).</p><p>During the 2002 Linux Kernel Summit, the technical
+description of the project was presented, and the first portion of
+the LSM framework appeared in the 2.5.29 kernel release. Further
+kernel releases contained more portions of the LSM framework, and
+hopefully the entire patch will be included by the time of the
+2.6.0 release.</p><p>This article does not attempt to describe how the LSM
+framework works or the design decisions that were made in creating
+it; the previously mentioned references do an excellent job of
+that. Instead, this article shows how easy it is to create a simple
+kernel module that uses the LSM framework.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x1764818"></a>Root Plug</h2></div></div><p>Our example uses the 2.5.31 kernel release, which contains
+enough of the LSM interface for us to create a useful module. In
+our module, we want to prevent any programs with the group ID of 0
+(root) from running if a specific USB device is not plugged in to
+the machine at that moment. This provides us with a simple way of
+preventing root exploits from running on our machine, or for new
+users to log in when we are not present.</p><p>This example creates a kernel module called root_plug, which
+is available as a patch against a clean 2.5.31 kernel tree from the
+<i  >Linux Journal</i> FTP site
+[<a href="../listings/103/6279.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue103/6279.tgz</a>].</p><p>For a description of UNIX systems that handle the user and
+group ID values and how they interact with the setuid class of
+system calls, see the excellent paper by Hao Chen, David Wagner and
+Drew Dean entitled &ldquo;Setuid Demystified&rdquo;, which was presented at
+the 2002 USENIX Security conference
+(<a href="http://www.cs.berkeley.edu/~daw/papers/setuid-usenix02.ps" target="_self">www.cs.berkeley.edu/~daw/papers/setuid-usenix02.ps</a>).</p><p>The LSM interface is four simple functions:</p><pre     class="programlisting">
+int register_security
+    (struct security_operations *ops);
+int unregister_security
+    (struct security_operations *ops);
+int mod_reg_security (const char *name,
+                  struct security_operations *ops);
+int mod_unreg_security  (const char *name,
+                  struct security_operations *ops);
+</pre><p>A security module registers a set of security_operations
+function callbacks with the kernel by calling the function
+register_security(). If that fails, it means that some other
+security module probably has been loaded already, so the
+mod_reg_security() function is called in an attempt to register
+with this security module. This can be seen in the following code:
+<pre     class="programlisting">
+/* register ourselves with the security framework */
+if (register_security (&amp;rootplug_security_ops)) {
+   printk (KERN_INFO
+       "Failure registering Root Plug module "
+       "with the kernel\n");
+   /* try registering with primary module */
+   if (mod_reg_security (MY_NAME,
+                         &amp;rootplug_security_ops)) {
+       printk (KERN_INFO "Failure registering "
+               "Root Plug module with primary "
+               "security module.\n");
+       return -EINVAL;
+   }
+   secondary = 1;
+}
+</pre>
+
+
+When the module wants to unload itself, the reverse process must
+happen. If we used mod_reg_security() to register ourselves, the
+mod_unreg_security() function should be called, otherwise the
+unregister_security() function is the proper thing to call. The
+following code shows this logic:
+<pre     class="programlisting">
+/* remove ourselves from the security framework */
+if (secondary) {
+   if (mod_unreg_security (MY_NAME,
+                           &amp;rootplug_security_ops))
+      printk (KERN_INFO
+              "Failure unregistering Root Plug "
+              " module with primary module.\n");
+} else {
+   if (unregister_security (
+       &amp;rootplug_security_ops)) {
+      printk (KERN_INFO "Failure unregistering "
+              "Root Plug module with the kernel\n");
+   }
+}
+</pre>
+
+
+The rootplug_security_ops is a large structure of function pointers
+that are called when various events happen in the kernel. This
+includes such things as whenever an inode is accessed, a module is
+loaded or a task is created. As of the 2.5.31 kernel, there were 88
+different function pointers needed. The majority of these functions
+not needed by most security models, but they must be implemented,
+or the kernel will not work properly. If a security module does not
+need to do anything for a specific hook, a &ldquo;good&rdquo; value needs to
+be returned to the kernel. An example of this can be seen in the
+following function:
+<pre     class="programlisting">
+static int rootplug_file_permission
+    (struct file *file, int mask)
+{
+    return 0;
+}
+</pre>
+
+
+This function is called whenever the kernel wants to determine if a
+specific file can be accessed at this moment in time. A security
+module can look at the file, check whether the current user has
+proper authority and possibly refuse to grant it.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x1764ce8"></a>What Hook to Use</h2></div></div><p>For our example module, we want to be able to stop a new
+program from being run if our USB device is not present. This can
+be done by using the bprm_check_security hook. This function is
+called when the execve system call is made, right before the kernel
+tries to start up the task. If an error value is returned from this
+function, the task will not start. Here is our hook
+function:</p><pre     class="programlisting">
+static int rootplug_bprm_check_security
+    (struct linux_binprm *bprm)
+{
+    if (bprm-&gt;e_gid == 0)
+        if (find_usb_device() != 0)
+            return -EPERM;
+    return 0;
+}
+</pre><p>This function checks the value of the effective group ID at
+which the program is to be run. If it is zero, the function
+find_usb_device() is called. If the USB device is not found in the
+system, -EPERM is returned, which prevents the task from starting.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x1764ea0"></a>Finding a USB Device</h2></div></div><p>The find_usb_device() function simply goes through all of the
+USB devices in the system and sees if the device specified by the
+user is present. The USB devices are kept in a tree, starting at
+the root hub device. The different root hubs are kept in a list of
+buses. These buses are checked in order in the find_usb_device()
+function:</p><pre     class="programlisting">
+static int find_usb_device (void)
+{
+    struct list_head *buslist;
+    struct usb_bus *bus;
+    int retval = -ENODEV;
+    down (&amp;usb_bus_list_lock);
+    for (buslist = usb_bus_list.next;
+         buslist != &amp;usb_bus_list;
+         buslist = buslist-&gt;next) {
+        bus = container_of (buslist,
+                            struct usb_bus,
+                            bus_list);
+        retval = match_device(bus-&gt;root_hub);
+        if (retval == 0)
+            goto exit;
+    }
+exit:
+    up (&amp;usb_bus_list_lock);
+    return retval;
+}
+</pre><p>The match_device() function looks at the device passed to it.
+If it matches the expected device, then it returns success.
+Otherwise, it looks at the children of this device, calling itself
+recursively:
+<pre     class="programlisting">
+static int match_device (struct usb_device *dev)
+{
+   int retval = -ENODEV;
+   int child;
+   /* see if this device matches */
+   if ((dev-&gt;descriptor.idVendor == vendor_id) &amp;&amp;
+       (dev-&gt;descriptor.idProduct == product_id)) {
+       /* we found the device! */
+       retval = 0;
+       goto exit;
+   }
+   /* look at all of the children of this device */
+   for (child = 0; child &lt; dev-&gt;maxchild; ++child) {
+       if (dev-&gt;children[child]) {
+           retval =
+               match_device (dev-&gt;children[child]);
+           if (retval == 0)
+               goto exit;
+       }
+   }
+exit:
+   return retval;
+}
+</pre>
+
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x17650b0"></a>Specifying a USB Device</h2></div></div><p>Because every user has different types of USB devices,
+specifying the device to look for must be done in a simple manner.
+All USB devices have a specific vendor and product ID. You can see
+these values by using the lsusb or usbview program when there are
+some USB devices plugged in to your system. This information also
+is shown in the /proc/bus/usb/devices file, in the lines starting
+with &ldquo;P:&rdquo;. See the Documentation/usb/proc_usb_info.txt file for
+more information on how the data in this file is presented.</p><p>The match_device() function looks to see if the value of the
+specific device matches the vendor_id and product_id variables.
+These variables are defined in the code as:</p><pre     class="programlisting">
+static int vendor_id = 0x0557;
+static int product_id = 0x2008;
+MODULE_PARM(vendor_id, "h");
+MODULE_PARM_DESC(vendor_id,
+            "USB Vendor ID of device to look for");
+MODULE_PARM(product_id, "h");
+MODULE_PARM_DESC(product_id,
+           "USB Product ID of device to look for");
+</pre><p>This allows the module to be loaded with the vendor and
+product ID specified on the command line. For example, if you want
+to specify a USB mouse with vendor ID of 0x04b4 and product ID of
+0x0001, the module would be loaded with:
+<pre     class="programlisting">
+modprobe root_plug vendor_id=0x04b4 \
+product_id=0x0001
+</pre>
+
+
+If no vendor or product ID is specified on the module load command
+line, the code defaults to looking for a generic USB to serial
+converter with a vendor ID of 0x0557 and a product ID of 0x2008.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x1765318"></a>Building the Module</h2></div></div><p>Finally, we need to add our module to the kernel build
+process. This is done by adding the following line to the
+security/Config.in file:</p><pre     class="programlisting">
+tristate 'Root Plug Support'
+CONFIG_SECURITY_ROOTPLUG
+</pre><p>And the following line to the security/Makefile file:
+<pre     class="programlisting">
+obj-$(CONFIG_SECURITY_ROOTPLUG)    += root_plug.o
+</pre>
+
+
+These changes allow the user to select this kernel module either to
+be built into the kernel directly or as a module. Run your favorite
+*config option to select the &ldquo;Root Plug Support&rdquo; (<b  >make
+oldconfig</b> will work nicely here, as only the new option
+will be asked about if you already have a working .config file set
+up for your kernel). Then build the kernel as usual.
+</p><p>After your kernel is built and running, load the root_plug
+module by typing (as root):</p><pre     class="programlisting">
+modprobe root_plug vendor_id=&lt;YOUR_VENDOR_ID&gt; \
+product_id=&lt;YOUR_PRODUCT_ID&gt;
+</pre><p>Now try to run a program as root with your specified USB
+device plugged in to your system, and then try it without. With the
+module loaded, and the device removed, the following error happens
+on my machine:
+<pre     class="programlisting">
+$ sudo ls
+sudo: unable to exec
+/bin/ls: Operation not permitted
+</pre>
+
+
+Plug the device back in, and things should work just fine.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x17656e0"></a>But Is It Secure?</h2></div></div><p>This example shows how powerful and simple the LSM interface
+can be. With one hook, any program with the root group ID is
+prevented from running unless a device is physically present in the
+system.</p><p>Using this code, if the device is not present, users are not
+allowed to log in to the console, as mingetty traditionally runs as
+root. But users can log in through SSH as normal users, as sshd
+already was running before the device was removed. Web pages also
+can be served, and other services that do not run as root (your
+mail server, database server, etc.) also will function properly. If
+one of these server programs were broken into, and they tried to
+spawn a root shell, that root shell would not be allowed to
+run.</p><p>This module does not prevent any program already running as
+root from cloning itself, or keep a program from trying to change
+the privileges that are currently assigned to it. To check for
+these things, the task_* functions in the security_operations
+structure should be used. The implementation of these functions
+will be much like the bprm_check_security function, but the
+parameters passed to the function will be different, so the egid
+will need to be determined differently.</p><p>There are probably other methods of taking an existing
+running program and spawning a root process that this module does
+not catch. Please do not use it in a production environment, but
+rather as a learning exercise for how to create other LSM example
+code.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x166c580.0x17658f0"></a>Acknowledgements</h2></div></div><p>I would like to thank Chris Wright, Stephen Smalley, James
+Morris and all of the other programmers who helped create the LSM
+interface and get it accepted into the main kernel tree. Due to
+their hard work, Linux now has a flexible security model that will
+give everyday users the ability to have access to different
+security models with little effort. I also would like to thank Alan
+Cox for the initial idea that spawned this example.</p><p>For more information about the LSM Project, the development
+mailing list, documentation and patches for different kernel
+versions, please see the web site at
+<a href="http://lsm.immunix.org" target="_self">lsm.immunix.org</a>.</p></div></div>
+<div class="authorblurb"><p>
+        <div       class="mediaobject"><img src="6279aa.jpg"></div>
+
+        <span   class="bold"><b>Greg
+      Kroah-Hartman</b></span> is currently the Linux USB and PCI Hot
+      Plug kernel maintainer. He works for IBM, doing various Linux
+      kernel-related things, and can be reached at
+      <a href="mailto:greg@kroah.com">greg@kroah.com</a>.</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../103/toc103.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

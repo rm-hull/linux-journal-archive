@@ -1,0 +1,830 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Writing Samba VFS Modules
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Although Samba does a very good job of serving files for Windows (and Linux)&#10;clients, sometimes you want it to do more. This article introduces the&#10;Samba VFS Layer and shows how to create a simple VFS module to extend&#10;Samba's functionality.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x2272580.0x2369ac0"></a>
+Writing Samba VFS Modules
+</h1></div><div><div class="author"><h3 class="author">
+Richard
+ 
+Sharpe
+</h3></div><div class="issuemoyr">Issue #220, August 2012</div></div><div><p>
+Although Samba does a very good job of serving files for Windows (and Linux)
+clients, sometimes you want it to do more. This article introduces the
+Samba VFS Layer and shows how to create a simple VFS module to extend
+Samba's functionality.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x236a1f8"></a></h2></div></div><p>
+I am sure that many of you are aware of the Linux Virtual File System (VFS)
+layer, which allows Linux to support many different filesystems, such as EXT3,
+EXT4, XFS, btrfs and so on. However, I suspect you are less aware that 
+Samba, the Windows file and print server for UNIX, also has a VFS. Just like 
+the Linux VFS, the Samba VFS allows you to extend Samba's functionality to 
+encompass different filesystems and perform some neat tricks. On the other 
+hand, the Samba VFS lives in userspace, which makes it easier to develop and 
+debug Samba VFS modules.
+</p><p>
+In this article, I introduce you to writing a Samba VFS module through 
+the use of a simple example. The example is that of auditing access to a 
+specific file. Although this example is a little simplistic for the sake of this
+article, it could be extended in many ways to be more powerful.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x236a408"></a>
+A Quick Introduction to the Samba VFS Layer</h2></div></div><p>
+Figure 1 shows how Samba normally is used. Users on Windows 
+clients access files on a Samba server via the network.
+</p><div       class="mediaobject"><a href="11262f1.large.jpg"><img src="11262f1.jpg"></a><div class="caption"><p>
+Figure 1. A Windows Client Accessing Storage on a Linux Server
+</p></div></div><p>
+Figure 1 depicts a Windows client (although it could be running anything) 
+connected to a server via the network and accessing files on the storage 
+connected to the server. You would configure Samba to give the client access 
+to parts of the filesystem of the Linux system on which it is running. You do 
+this with shares.
+</p><p>
+Samba is told how to provide access to files by setting configuration 
+information in the smb.conf file, which might be /etc/samba/smb.conf (if you 
+have installed Samba from RPMs) or which might be /usr/local/samba/etc/smb.conf 
+(if you have built Samba from source and installed it on your system).
+</p><p>
+The following shows a very simple smb.conf file. You should consult some of 
+the documents listed in the Resources section for more information 
+on each of the parameters shown in this example:
+
+<pre     class="programlisting">
+[global] 
+    workgroup = workgroup 
+    server string = %h server 
+
+    security = user 
+
+[data] 
+    path = /path/to/data 
+    read only = no 
+    vfs objects = vfs_demo 
+    vfs_demo:audit path = aaa 
+</pre>
+</p><p>
+Samba allows you to implement VFS modules in two different ways:
+</p><div class="orderedlist"><ol type="1"><li><p>
+As built-in and statically linked modules.
+</p></li><li><p>
+As shared libraries.
+</p></li></ol></div><p>
+You tell Samba about VFS modules for each share, and you can pass 
+module-specific parameters to a module. An example of specifying a VFS module 
+is shown in the smb.conf fragment above. The module for the [data] share 
+is called vfs_demo, and it has one parameter called audit path.
+</p><p>
+If you do not specify any modules, Samba does not load any (except for the 
+default, discussed below).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x236aae8"></a>
+The vfs_demo Module</h2></div></div><p>
+In this article, I explain how to develop a simple Samba VFS 
+module that allows you to specify auditing of accesses to files. The auditing 
+that is performed is very simple and is not the same as security auditing 
+that Windows performs using Security ACLs (SACLs), but it serves to 
+illustrate some of the things you need to do in developing a Samba VFS. In 
+particular, this module:
+1) will allow you to specify the path prefix for files to be audited, and
+2) will log all accesses of such files to /var/log/messages using syslog.
+</p><p>
+It has some deficiencies as well, which you might consider dealing with if 
+you want to improve the demo module.
+</p><p>
+Various aspects of the code for this module, as well as how to build it and 
+how to debug it, are discussed below after a more thorough introduction 
+to the Samba VFS Layer.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x236aca0"></a>
+More Detail on the Samba VFS Layer</h2></div></div><p>
+Samba has a very flexible VFS system that allows you to combine functionality 
+from several modules to customize the behavior of any share.
+Figure 2 shows how VFS modules relate to the main Samba code.
+</p><div       class="mediaobject"><a href="11262f2.large.jpg"><img src="11262f2.jpg"></a><div class="caption"><p>
+Figure 2. The Relationship between VFS Modules and the Samba Code
+</p></div></div><p>
+As Figure 2 suggests, a number of components are involved in the 
+processing of requests from Windows clients:
+</p><div class="orderedlist"><ol type="1"><li><p>
+The main Samba code, which receives all incoming requests and sends all 
+outgoing responses, interprets the smb.conf file and so forth.
+</p></li><li><p>
+The VFS Layer, which provides infrastructure for the VFS modules themselves.
+</p></li><li><p>
+A default VFS module, vfs_default.c, which provides default actions in 
+case no modules have been specified for a share.
+</p></li><li><p>
+The system layer, which the default VFS module calls to provide standard 
+Samba actions for all of the VFS routines. They mostly translate into 
+UNIX/Linux system calls.
+</p></li></ol></div><p>
+One of the most important aspects of the Samba VFS Layer is that VFS modules 
+are stackable and, depending on the way they are coded, can:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Completely replace existing Samba functionality.
+</p></li><li><p>
+Augment existing Samba functionality.
+</p></li><li><p>
+Do both, perhaps based on filename or VFS function.
+</p></li></ol></div><p>
+Because they are stackable, you can write a VFS module to augment or replace 
+a small subset of the 100 or so VFS functions that Samba uses, which makes 
+your life as a VFS module writer much easier.
+</p><p>
+First, however, when a Windows client connects to a share, Samba finds the 
+required VFS module, and if it is a shared library, loads that shared library. 
+It then calls the specified module's connect routine to allow the module to 
+perform whatever initialization it has to.
+</p><p>
+Then, during normal operation, the following sequence of steps will be 
+performed for requests from the Windows client:
+</p><div class="orderedlist"><ol type="1"><li><p>
+An SMB request is received from the client by Samba and undergoes initial 
+processing within Samba itself. At some point, Samba then calls a VFS 
+function to complete the processing of this request.
+</p></li><li><p>
+The VFS Layer then calls the requested VFS function in the first VFS 
+module, vfs_mod_1, in the stack that implements that VFS function. The 
+VFS function in this module could perform some initialization at that point.
+</p></li><li><p>
+That VFS function then calls the next module in the stack that implements 
+the requested VFS function, which in this case is vfs_default.c. 
+</p></li><li><p>
+After performing some processing, if needed, vfs_default.c calls the 
+relevant System Layer function in Samba.
+</p></li><li><p>
+Again, after performing relevant setup or other processing, the called 
+System Layer function issues a system call.
+</p></li><li><p>
+After performing the system call, the kernel returns to the System Layer 
+function that called it. Here, further processing can be performed.
+</p></li><li><p>
+The System Layer function first called then returns to vfs_default.c where 
+further processing can be performed.
+</p></li><li><p>
+vfs_default.c returns to the first VFS module in the stack, which again 
+can perform additional processing.
+</p></li><li><p>
+The first VFS module then returns to Samba.
+</p></li><li><p>
+Samba prepares a response with the data returned and sends it to the 
+Windows client.
+</p></li></ol></div><p>
+Finally, when a Windows client disconnects from a share, Samba calls the 
+disconnect routine associated with the first VFS module in the stack that 
+has defined one. 
+</p><p>
+There are some 100 or more VFS functions in the Samba VFS layer divided into 
+the following classes:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Disk/share functions, which relate to connecting and disconnecting, quota 
+handling and so forth.
+</p></li><li><p>
+Directory functions for performing operations on directories, like opening 
+them, listing them and so on.
+</p></li><li><p>
+File functions, which constitute the largest group of operations. These 
+include things like reading and writing files, creating them, opening 
+them and so on.
+</p></li><li><p>
+NT ACL functions for getting and setting NT Security Descriptors on files 
+and directories.
+</p></li><li><p>
+POSIX ACL functions for getting and setting POSIX ACLs on files and 
+directories.
+</p></li><li><p>
+Extended Attribute functions for getting and setting XATTRs on files and 
+directories.
+</p></li><li><p>
+AIO functions, for performing Async IO operations on files.
+</p></li><li><p>
+Off-line functions for handling off-line operations on files.
+</p></li></ol></div><p>
+However, in general, you need to worry only about the specific set of 
+functions you need to implement, and in the case of this vfs_demo module, you
+need to be concerned only with a small set of routines.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x2362df0"></a>
+Registering the vfs_demo Module with Samba</h2></div></div><p>
+As you might have guessed, each VFS module registers itself with Samba and 
+specifies the VFS functions that it implements. To do this, you need to 
+create a C function in the format shown in Listing 1.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x2362f50"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. Registering Your Module with Samba</b></p><pre     class="programlisting">
+
+#include "includes.h"
+#include "smbd/smbd.h"
+
+#undef DBGC_CLASS
+#define DBGC_CLASS DBGC_VFS
+
+#define DEMO_MODULE_NAME "vfs_demo"
+
+static struct vfs_fn_pointers vfs_demo_fns = {
+        .connect_fn = demo_connect,
+        .disconnect_fn = demo_disconnect,
+
+        .opendir_fn = demo_opendir,
+        .fdopendir_fn = demo_fdopendir,
+        .mkdir_fn = demo_mkdir,
+        .rmdir_fn = demo_rmdir,
+
+        .open_fn = demo_open,
+        .create_file_fn = demo_create_file,
+};
+
+NTSTATUS vfs_demo_init(void);
+NTSTATUS vfs_demo_init(void)
+{
+        return smb_register_vfs(SMB_VFS_INTERFACE_VERSION,
+                                DEMO_MODULE_NAME,
+                                &amp;vfs_demo_fns);
+}
+
+</pre></div><p>
+Here you have told Samba that you are registering a module called
+&ldquo;vfs_demo&rdquo;,
+the version of the VFS interface you conform to and that you implement the 
+eight functions specified. The first two are a connect routine and a 
+disconnect routine. The remaining ones relate to opening files and directories, creating files and directories, and removing directories.
+</p><p>
+Note: for reasons pointed out in the Samba VFS documentation (see Resources),
+you should call your registration routine 
+<tt  >&lt;module_name&gt;_init</tt>. This allows your module to be
+built in the Samba source 
+tree or outside it and as a shared module or a static module. In this case, I
+called it vfs_demo_init and the Makefile that is generated below will take 
+care of ensuring that the correct name is used in a shared module (as long as 
+the patch mentioned below is applied).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x23632c0"></a>
+Building Your VFS Module</h2></div></div><p>
+Now that you have some code, it is time to think about building your module. 
+Although you can add your module to the Samba source code, doing that is more 
+complicated than the approach suggested here, which builds your VFS module 
+outside the Samba source tree. However, you will need to have the Samba 
+source code handy.
+</p><p>
+First, download the latest Samba source code (Samba 3.6.4 at the time of 
+this writing) using:
+
+
+<pre     class="programlisting">
+wget http://ftp.samba.org/pub/samba/old-versions/samba-3.6.4.tar.gz
+</pre>
+</p><p>
+Next, unpack the source and build it (for those who have not done this before, here are the steps):
+
+<pre     class="programlisting">
+tar xvf samba-3.6.4.tar.gz
+cd samba-3.6.4/source3
+./configure.developer
+make
+</pre>
+</p><p>
+Then, as root:
+
+<pre     class="programlisting">
+make install
+</pre>
+</p><p>
+Note: if you do not want to replace the Samba version on your development 
+system, you will have to download the source packages for your Linux distro 
+(source RPMs for those distros based on RPMs) and build that RPM. Here I 
+assume you are happy to build Samba from source and install it on your system. 
+This might mean that you have to erase the distro-supplied Samba packages to 
+avoid confusion with them.
+</p><p>
+In addition, you need to tell the system how to find the Samba shared 
+libraries that are needed. You can do this as root with:
+
+
+<pre     class="programlisting">
+echo /usr/local/samba/lib &gt; /etc/ld.so.conf.d/samba-local-build.conf
+ldconfig
+</pre>
+</p><p>
+You can use <tt  >ldconfig -v</tt> to verify that it found your shared libraries.
+</p><p>
+Now that you have the Samba source and have built Samba, you can create a 
+directory and add the code for the demo module to it:
+
+<pre     class="programlisting">
+mkdir demo_vfs
+cd demo_vfs
+# Use vim to add the code
+</pre>
+</p><p>
+Next, you need to copy several files from the examples/VFS directory of the Samba source:
+
+<pre     class="programlisting">
+cp ../samba-3.6.4/examples/VFS/config* .
+cp ../samba-3.6.4/examples/VFS/autogen.sh .
+cp ../samba-3.6.4/examples/VFS/install-sh . 
+cp ../samba-3.6.4/examples/VFS/configure.in .
+cp ../samba-3.6.4/examples/VFS/Makefile.in .
+</pre>
+</p><p>
+After that, you should apply the following patch to Makefile.in to allow your 
+code to be built as a shared module:
+
+
+<pre     class="programlisting">
+
+--- Makefile.in	    2012-04-22 17:30:45.631698392 -0700 
++++ Makefile.in.new 2012-04-22 17:30:20.619140189 -0700 
+@@ -36,7 +36,7 @@ 
+ 
+ %.$(OBJEXT): %.c 
+         @echo "Compiling $&lt;" 
+ -       @$(CC) $(FLAGS) -c $&lt; 
+ +       @$(CC) $(FLAGS) -c $&lt; -D$*_init=init_samba_module 
+ 
+ 
+  install: default 
+
+</pre>
+</p><p>
+(At the time of this writing, this patch has been applied to the Samba master
+branch,
+but it has not yet made it into the 3.6.x branch. The patch makes it easier for 
+your module to be moved into the Samba source tree if it proves useful enough 
+and makes documenting modules easier. You simply could edit Makefile.in and 
+append <tt  >-D$*_init=init_samba_module</tt> to the line shown rather than creating a 
+patch file.)
+</p><p>
+These files allow you to build your module; however, you must perform a 
+few actions similar to those performed above when building the Samba source:
+
+<pre     class="programlisting">
+./autogen.sh
+./configure --with-samba-source=../samba-3.6.4/source3
+</pre>
+</p><p>
+After that, you should simply be able to run <tt  >make</tt> to build your source. 
+However, <tt  >make</tt> will fail because there are no definitions for the eight 
+functions that you are registering.
+</p><p>
+Note: if your OS does not use GNUmake, you will have problems with the above 
+instructions because the Makefile created in the above steps uses GNUmake's 
+syntax, and it will not work with other versions of make. The simplest way to 
+fix this is to install GNUmake.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x2363d68"></a>
+Creating the Needed VFS Functions</h2></div></div><p>
+The connect and disconnect functions must perform some unique actions in this 
+example, because the remaining six functions all rely on a background thread 
+to send auditing messages to syslog so they can be added to /var/log/messages.
+Listing 2 is the demo_connect function.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x2363ec8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. demo_connect Function</b></p><pre     class="programlisting">
+
+static int demo_connect(vfs_handle_struct *handle,
+                        const char  *service,
+                        const char *user)
+{
+        int res = 0;
+         struct demo_struct *ctx = NULL;
+
+        /*
+         * Allow the next module to handle connections first
+         * If we get an error, don't do any of our initialization.
+         */
+        res = SMB_VFS_NEXT_CONNECT(handle, service, user);
+        if (res) {
+                return res;
+        }
+
+        /*
+         * Get some memory for the dir we are interested in 
+         * watching and our other context info.
+         */
+        ctx = talloc_zero(handle, struct demo_struct);
+        if (!ctx) {
+                DEBUG(0, ("Unable to allocate memory for our context, 
+                                can't proceed!\n"));
+                errno = ENOMEM;
+                return -1;
+        }
+
+        ctx-&gt;audit_path = lp_parm_const_string(SNUM(handle-&gt;conn),
+                                               DEMO_MODULE_NAME,
+                                              "audit path",
+                                               NULL);
+
+        DEBUG(10, ("audit path is \"%s\"", ctx-&gt;audit_path));
+
+        res = sem_init(&amp;ctx-&gt;send_sem, 0, LOG_QUEUE_SIZE);
+        if (res) {
+                DEBUG(1, ("Unable to initialize send sem: %s\n",
+                        strerror(errno)));
+                goto error_no_thread;
+        }
+
+        res = sem_init(&amp;ctx-&gt;recv_sem, 0, 0);
+        if (res) {
+                DEBUG(1, ("Unable to initialize recv sem: %s\n",
+                        strerror(errno)));
+                goto error_no_thread;
+        }
+
+        res = pthread_create(&amp;ctx-&gt;log_thread,
+                             NULL,
+                             logging_thread,
+                             ctx);
+        if (res) {
+                DEBUG(1, ("Unable to create our background thread: %s\n",
+                        strerror(errno)));
+                goto error_no_thread;
+        }
+
+        SMB_VFS_HANDLE_SET_DATA(handle, ctx, NULL,
+                                struct demo_struct, goto error);
+
+        return res;
+error:
+
+error_no_thread:
+        talloc_free(ctx);
+        return res;
+}
+
+</pre></div><p>
+The key points to note here are:
+</p><div class="orderedlist"><ol type="1"><li><p>
+You should use talloc for allocating memory for your module, and you should 
+choose an appropriate context. When allocating memory that should last for 
+the duration of the connection to the share, use the VFS handle for a 
+context.
+</p></li><li><p>
+You should use <tt  >lp_parm_const_string</tt> to parse module parameters.
+</p></li><li><p>
+You should use the <tt  >SMB_VFS_HANDLE_SET_DATA</tt> macro to set up the context that
+all your other routines need when they are called.
+</p></li><li><p>
+You should call the next VFS routine in the stack, in this case 
+<tt  >SMB_VFS_NEXT_CONNECT</tt>, to give it a chance to do its module initialization 
+work as well. (However, see the Samba VFS document mentioned below for 
+cases where you do not want to call the Next module.)
+</p></li></ol></div><p>
+While in general you can call the next VFS routine before, after or during 
+your processing, in this case, it is called first to make cleanup easier in 
+the connect routine, because you are creating a thread to perform deferred work.
+</p><p>
+The next function to look at is the demo_disconnect function (Listing 3).
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x2364658"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 3. demo_disconnect Function</b></p><pre     class="programlisting">
+
+static void demo_disconnect(vfs_handle_struct *handle)
+{
+    int res = 0, *thread_res = NULL;
+    struct demo_struct *ctx;
+    struct cmd_struct *cmd;
+
+    /* Let the next module do any cleanup it needs to */
+    SMB_VFS_NEXT_DISCONNECT(handle);
+
+    SMB_VFS_HANDLE_GET_DATA(handle,
+                            ctx,
+                            struct demo_struct,
+                            goto ctx_error);
+
+    /*
+     * Tell the background thread to exit
+     */
+    cmd = create_cmd(ctx, LOG_EXIT, NULL);
+    if (!cmd || !send_cmd(cmd)) {
+            return;  /* Not much more to do here ... kill the thread? */
+    }
+
+    res = pthread_join(ctx-&gt;log_thread, (void **)&amp;thread_res);
+    if (res || *thread_res) {
+            DEBUG(10, ("Error cleaning up thread: res: %s, "
+                       "thread_res: %s\n",
+                       strerror(errno), strerror(*thread_res)));
+            return;
+    }
+
+    /*
+     * This is not absolutely needed since that structure used
+     * the handle as a talloc context ...
+     */
+    talloc_free(ctx);
+
+    return;
+ctx_error:
+    DEBUG(10, ("Error getting context for connection!\n"));
+    return;
+}
+
+</pre></div><p>
+In this case, you:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Call the next VFS function, <tt  >SMB_VFS_NEXT_DISCONNECT</tt>.
+</p></li><li><p>
+Use a function called <tt  >create_cmd</tt> to tell your background thread.
+</p></li><li><p>
+Use <tt  >pthread_join</tt> to wait for the background thread to exit.
+</p></li><li><p>
+Free up the context you created.
+</p></li></ol></div><p>
+At this point, it is worth mentioning that all of the VFS functions have names 
+like those seen above (such as <tt  >SMB_VFS_CONNECT</tt> and
+<tt  >SMB_VFS_NEXT_CONNECT</tt>), and their 
+meanings are:
+</p><div class="orderedlist"><ol type="1"><li><p>
+Functions like <tt  >SMB_VFS_CONNECT</tt>,
+<tt  >SMB_VFS_GET_NT_ACL</tt> and so on call that VFS 
+function from the top of the stack of VFS modules. Within a specific VFS 
+function, you would not call that function recursively; however, you might 
+call other VFS functions to perform useful actions. For example, the vfs_acl_xattr.c 
+module (in samba-3.6.4/source3/modules) calls
+<tt  >SMB_VFS_GETXATTR</tt> to get 
+extended attributes on files.
+</p></li><li><p>
+Functions like <tt  >SMB_VFS_NEXT_CONNECT</tt>,
+<tt  >SMB_VFS_GET_NT_ACL</tt> and so on call the next 
+function of the same type in the stack of modules. You usually would call 
+the next function for your VFS function somewhere in your VFS function 
+unless you have completely handled everything or an error has occurred and 
+there is no longer any need to call the next function.
+</p></li></ol></div><p>
+Finally, Listing 4 shows one of the actual functions for performing auditing
+when a file has been accessed.
+
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x28f63b8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. demo_opendir Function</b></p><pre     class="programlisting">
+
+static DIR *demo_opendir(vfs_handle_struct *handle,
+                         const char *fname,
+                         const char *mask,
+                         uint32 attr)
+{
+    DIR *res;
+    struct demo_struct *ctx;
+
+    SMB_VFS_HANDLE_GET_DATA(handle,
+                            ctx,
+                            struct demo_struct,
+                            return NULL);
+
+    if (ctx-&gt;audit_path &amp;&amp; strstr(fname, ctx-&gt;audit_path)) {
+            struct cmd_struct *cmd;
+            DEBUG(10, ("Found %s in the path %s\n",
+                    ctx-&gt;audit_path, fname));
+
+            cmd = create_cmd(ctx, LOG_LOG, fname);
+            if (!cmd || !send_cmd(cmd)) {
+                    DEBUG(1, ("Error logging. Continuing!\n"));
+            }
+    }
+
+    /* Allow the next module to handle the OPENDIR as we are done */
+    res = SMB_VFS_NEXT_OPENDIR(handle, fname, mask, attr);
+    return res;
+}
+
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x28f65c8"></a>
+Testing and Debugging</h2></div></div><p>
+Once you have all the functions implemented (either by entering them from 
+scratch or downloading them from GitHub or by taking an existing module and 
+modifying it), you can build the VFS module and install it.
+</p><p>
+Building the module is usually as simple as running
+<tt  >make</tt>. If any errors are 
+reported, fix the errors and re-run <tt  >make</tt> until the build completes 
+successfully. 
+</p><p>
+The output from the build process you are using here is a shared module called 
+vfs_demo.so. This file needs to be moved to the directory where Samba looks 
+for shared modules. This is usually /usr/local/samba/lib/vfs. You will need to
+copy vfs_demo.so to that location as root:
+
+<pre     class="programlisting">
+sudo cp vfs_demo.so /usr/local/samba/lib/vfs
+</pre>
+</p><p>
+Once you have done that, you can test whether it works. First, you 
+need to ensure that you have a share defined that uses the newly created VFS module. 
+The following smb.conf file defines such a share and includes some additional 
+parameters to help with debugging:
+
+<pre     class="programlisting">
+[global] 
+    workgroup = workgroup 
+    server string = %h server 
+
+    security = user 
+
+    log level = 10
+    log file = /var/log/samba/%m.log
+
+    panic action = sleep 99999 
+
+[data] 
+    path = /path/to/data 
+    read only = no 
+    vfs objects = vfs_demo 
+    vfs_demo:audit path = aaa
+</pre>
+</p><p>
+The interesting things to note here are:
+</p><div class="orderedlist"><ol type="1"><li><p>
+The log level has been set to 10, giving you lots of information about what 
+is going on and going wrong with your new VFS module.
+</p></li><li><p>
+The log file has been set to /var/log/samba/%m.log, which will create a 
+separate log file for each client that connects. This will make it easier 
+for you to see errors during testing.
+</p></li><li><p>
+Finally, you have specified a panic action in case your module causes Samba 
+to crash (for example, by seg faulting). The panic action causes the smbd that
+crashed to sleep for a long time, giving you time to attach with gdb to
+see why you crashed (although oftentimes you can tell why you crashed by
+looking at the traceback in the log file).
+</p></li></ol></div><p>
+Once you have created that smb.conf in /usr/local/samba/etc/smb.conf and 
+started Samba as root with:
+
+<pre     class="programlisting">
+/usr/local/samba/sbin/smbd
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x28f6ca8"></a></h2></div></div><p>
+you can check to see if it is running with:
+
+<pre     class="programlisting">
+ps -ax | grep smbd
+</pre>
+</p><p>
+There should be two instances of smbd running. If they are not running, check 
+for problems in /var/log/samba/smbd.log (although if the problems occur early 
+enough, you will have to start Samba with
+<tt  >/usr/local/samba/sbin/smbd -i -F</tt>
+to determine why it failed before it could start logging information).
+</p><p>
+Once Samba is running happily, you can test your VFS module with smbclient:
+
+<pre     class="programlisting">
+smbclient //localhost/data -Usome-user%some-password
+</pre>
+</p><p>
+Of course, you will have to ensure that the user you are testing with exists 
+and that the user's password is set. You can do this with:
+
+<pre     class="programlisting">
+smbpasswd -a some-user
+</pre>
+</p><p>
+Then you can set the user's password with:
+
+<pre     class="programlisting">
+smbpasswd some-user
+</pre>
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x28f70c8"></a></h2></div></div><p>
+where you will be prompted to enter the password. Once you have set the 
+password for your user, you can try smbclient as shown above.
+</p><p>
+If all is working correctly, you should expect to see something like the 
+following:
+
+<pre     class="programlisting">
+Domain=[WORKGROUP] OS=[Unix] Server=[Samba 3.6.4...]
+smb: \&gt; 
+</pre>
+</p><p>
+Then you can issue commands to test your VFS module's functions. The sort 
+of smbclient commands to try include things like <tt  >put
+/path/to/some-file aaa</tt>
+(where the target file matches the audit path specified above). If your module 
+is working correctly, you would see the following in /var/log/messages:
+
+
+<pre     class="programlisting">
+Apr 29 13:02:27 localhost Samba Audit: File aaa accessed
+Apr 29 13:02:27 localhost Samba Audit: File aaa accessed
+</pre>
+</p><p>
+As you can see, one deficiency of the module currently is that there are 
+multiple messages logged for some accesses.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x28f7438"></a>
+Obtaining the Full Source Code</h2></div></div><p>
+You can obtain the full source code for this demo module from GitHub via:
+
+
+<pre     class="programlisting">
+git clone git@github.com:RichardSharpe/demo-samba-vfs.git
+</pre>
+</p><p>
+In the directory retrieved, you will find source code for the Samba master 
+branch as well as the Samba 3.6 branch. Most of what has been discussed here 
+relates to the Samba 3.6 branch. You also will find some README files.
+</p><p>
+The code in that repository builds against the Samba master branch and against 
+Samba 3.6.x.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x28f76a0"></a>
+Final Thoughts</h2></div></div><p>
+One of the issues you should be aware of is that the Samba VFS has changed 
+over time; however, it is allowed to change only when a new major version is 
+released. For example, there are differences between the Samba 3.5.x VFS, 
+the Samba 3.6.x VFS and the VFS in the Samba master branch.
+</p><p>
+Indeed, the Samba master branch's VFS interface has been changed to make the 
+VFS routine names more consistent as well as introducing at least two new VFS 
+functions:
+</p><div class="orderedlist"><ol type="1"><li><p>
+An FSCTL function so that VFS writers now can write FSCTL handling 
+functions.
+</p></li><li><p>
+A FILE AUDIT function so that VFS writers can handle file access auditing 
+using the Windows approach.
+</p></li></ol></div><p>
+However, you now should be able to understand the Samba VFS Layer well enough 
+to understand what existing modules are doing and even write your own VFS 
+modules when the need arises.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x2272580.0x28f7a68"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+A Detailed Introduction to the Samba VFS:
+<a href="http://samba.org/~sharpe/The-Samba-VFS.pdf" target="_self">samba.org/~sharpe/The-Samba-VFS.pdf</a>
+</p><p>
+&ldquo;Introducing Samba&rdquo; by John Blair: <a href="http://www.linuxjournal.com/article/2716" target="_self">www.linuxjournal.com/article/2716</a>
+</p><p>
+<span   class="emphasis"><em>Samba-3 by Example: Practical Exercises to Deployment</em></span> by
+John H. Terpstra:
+<a href="http://www.informit.com/title/0131472216" target="_self">www.informit.com/title/0131472216</a>
+</p><p>
+<span   class="emphasis"><em>The Official Samba-3 HOWTO and Reference Guide</em></span>, edited by John
+H. Terpstra and Jelmer R. Vernooij:
+<a href="http://www.informit.com/title/0131882228" target="_self">www.informit.com/title/0131882228</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Richard Sharpe is a software engineer in Silicon Valley where he works on
+storage systems. He has been an open-source contributor for a long time, and
+he has contributed code to Ethereal/Wireshark, Samba and SCST. Richard 
+recently has gotten back into contributing to Samba and has made a number of
+improvements to the Samba VFS Layer, some to ease building VFS modules out
+of the Samba source tree and some to improve functionality.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../220/toc220.html">Issue Table of Contents</a>
+    <a class="link3" href="../220/11262.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

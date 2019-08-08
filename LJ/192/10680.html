@@ -1,0 +1,517 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Mongoose: an Embeddable Web Server in C
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Mongoose provides a Web server that can be embedded in your application, and it consists of a single C source file (and a header file)&#10;that you can compile and link with your application code.&#10;If you need a simple Web server, Mongoose may be the solution.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x290c580.0x2a03ac0"></a>
+Mongoose: an Embeddable Web Server in C
+</h1></div><div><div class="author"><h3 class="author">
+Michael
+ J. 
+Hammel
+</h3></div><div class="issuemoyr">Issue #192, April 2010</div></div><div><p>
+Mongoose provides a Web server that can be embedded in your application, and it consists of a single C source file (and a header file)
+that you can compile and link with your application code.
+If you need a simple Web server, Mongoose may be the solution.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a042a8"></a></h2></div></div><p>
+Web services are all the rage in development circles, but full-featured
+application servers like JBoss are terrible overkill for small system
+solutions. In many situations, simple RESTful interfaces suffice without the
+need for complex containers. Additionally, embedded single file
+implementations may be preferred over collections of scripts that rely on
+an external interpreter, such as Python or PHP.
+</p><p>
+Mongoose is an MIT-licensed, embeddable Web server contained within a
+single C module library that can be embedded in a program to provide basic
+Web services. Its lightweight approach hides the power of a fully threaded
+system capable of serving both static and dynamic content over multiple
+ports using standard and secure HTTP protocols. It supports CGI and SSI,
+access control lists and digest authorization. File transfers are
+supported using code from example server implementations.
+</p><p>
+Along with the embeddable C library, the Mongoose package includes a front
+end that turns the module into a full-fledged server capable of serving
+files from a user-specified document root. The ready-to-run server
+supports all configurable options from the command line as well as from a
+text configuration file. Although this configuration provides a method to
+bring Mongoose up quickly, Mongoose's power comes from writing custom
+front ends to the Mongoose library with callbacks for specific REST-styled
+URIs.
+</p><p>
+In this article, I introduce the Mongoose library API, show how it can be
+configured for multiple uses and provide an example implementation that
+serves up static pages utilizing digest authentication. This article is
+aimed at developers with a knowledge of C programming. Although not required,
+familiarity with HTML and CSS also is useful.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a045c0"></a>
+Structure of a Mongoose-Based Server</h2></div></div><p>
+A Mongoose-based server provides a main() function that parses command-line
+arguments, initializes the Mongoose library and then spins in a loop
+waiting for an exit event. The command-line arguments are server-specific
+but typically represent values to be passed to the Mongoose library through
+the mg_set_option() function. Mongoose initialization
+requires creating an initial Mongoose context, setting library options and
+establishing callback functions for authorization, error and URI handling.
+The main function then spins forever while the Mongoose master thread
+handles incoming connections on the configured network ports. The front-end
+code is responsible for handling signals to support shutdown operations,
+including notifying the Mongoose library to stop gracefully.
+</p><p>
+The Mongoose library is threaded and extremely simple to use. The
+initial context starts the master thread, which waits for incoming
+connections. New connections are queued, and worker threads are started to
+handle them. Processing of the connection occurs in the worker thread.
+Here, the connection request is analyzed to determine how processing will
+proceed. For performance sake, worker threads are started as needed and
+remain after a connection closes to process any additional queued incoming
+requests without the overhead of starting new threads (Figure 1).
+</p><div       class="mediaobject"><a href="10680f1.large.jpg"><img src="10680f1.jpg"></a><div class="caption"><p>
+Figure 1. Green boxes are user functions, and all the rest are implemented in the
+Mongoose library.
+</p></div></div><p>
+In the worker thread, the incoming request is analyzed to determine what
+should happen next. Mongoose supports various HTTP requests, such as PUT,
+POST and DELETE. However, for simple REST services, the most important
+feature Mongoose supports is callbacks for URIs, error handling and
+authentication.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a04930"></a>
+Hello, World: Initialization and Callbacks</h2></div></div><p>
+Mongoose initialization is handled within a single user-defined function
+called from the main() function. This initialization function performs
+three mandatory operations: start the Mongoose initial context (mg_start),
+set options on that context (mg_set_option) and specify URI callbacks
+(mg_set_uri_callback):
+
+<pre     class="programlisting">
+
+void mongooseMgrInit()
+{
+  struct mg_context *ctx;
+  ctx = mg_start();
+  mg_set_option(ctx, "ports", port);
+  mg_set_uri_callback(ctx, "/*", &amp;uriHandler, NULL);
+}
+
+</pre>
+</p><p>
+The Mongoose API documentation is sparse, and the available options are not
+obvious. Fortunately, the man page for the default front end documents
+command-line options, which in turn map directly to most of the available
+options that can be set with mg_set_option(). The -A option to the
+default server, used to edit a digest authentication file, is not supported
+by the Mongoose library. The default server supports most, but not all,
+available Mongoose library options via the command line. The known_options
+array in mongoose.c defines the list of options directly supported by the
+Mongoose library.
+</p><p>
+All arguments to mg_set_option() options are character strings. Mongoose
+converts them to appropriate formats as needed. For example, the port
+number for the ports option must be specified as one or more character
+strings separated by commas, with SSL ports identified with the letter s
+appended to the port number. Some options can be disabled at compile time.
+To disable SSL options, define NO_SSL. To disable CGI options, define
+NO_CGI.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a04b40"></a></h2></div></div><div class="sidebar"><p class="title"><b>Note:</b></p><p>
+Arguments to mg_set_option() are case-sensitive. For a quick reference of the
+Mongoose library options, refer to the command-line options shown in the
+Mongoose Manual on the Web site, using the same case, but remove the dash
+prefix.
+</p></div><p>
+Callbacks, set with mg_set_uri_callback(), are functions that handle
+specific URI requests. The asterisk is used as a path wild card. In this
+simple example, there is a single callback handler that handles all URI
+requests starting at the root path for the Web server.
+</p><p>
+To complete this example of the Mongoose equivalent of the &ldquo;Hello,
+World&rdquo;
+program, all that is required is a function for printing a page back to the
+requesting Web browser:
+
+<pre     class="programlisting">
+
+void uriHandler()
+{
+  mg_printf(conn,
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Type: text/html\r\n\r\n"
+    "&lt;html&gt;\r\n"
+    "&lt;body&gt;\r\n"
+    "Hello, World!\r\n"
+    "&lt;/body&gt;\r\n"
+    "&lt;/html&gt;\r\n"
+    );
+}
+
+</pre>
+</p><p>
+The first two lines are HTTP headers. These are not necessarily required
+for such a simple example, but if you do include them, remember to include a blank line
+between the Content-Type header and the start of the page content.
+</p><p>
+Two functions in the Mongoose library are used for sending results back to
+the browser: mg_printf() and mg_write(). The former provides printf()
+semantics for sending data back to the client, and the latter provides no
+limits on the amount of data that can be sent. If the server needs to know
+that the client closed the connection before all data was returned, or if the
+server needs to send more than MAX_REQUEST_SIZE (8Kb) of data, 
+mg_write() should be used. Note that the API documentation says the
+maximum size for mg_printf() is 16Kb, but the Mongoose library source code
+defaults MAX_REQUEST_SIZE to 8Kb. Multiple mg_printf() or mg_write() calls
+are possible within a single callback; however, once the callback returns,
+the connection is closed by the worker thread.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a04f60"></a>
+Authentication and Authorization</h2></div></div><p>
+In the Web world, <span   class="emphasis"><em>authentication</em></span> refers to validation of an
+incoming request as having come from a known entity. All that is required
+is that the entity identify itself with tokens kept by the system. In the
+case of digest authentication, that means a user name, password and realm. A
+realm is a symbolic name allowing the same user name/password to have
+different meanings to different areas of a server URI namespace. In
+practice, users need remember only the user name/password combination. The
+realm is managed by the server. Digest authentication has additional
+complexities related to how the server and client communicate, but from the
+standpoint of Mongoose users, this is not required knowledge. In summary,
+authentication is used to identify a user.
+</p><p>
+<span   class="emphasis"><em>Authorization</em></span> refers to the verification that an authenticated
+entity has permission to do what it is attempting to do. Although people
+may have a proper login to a server, they may not have permission to view
+certain areas of the Web site. Access to specific server functionality is
+handled by authorization.
+</p><p>
+Mongoose provides built-in support for digest
+authentication. If
+configured, a file containing a user name, password and realm is stored
+within reach of the server at runtime. The server checks this file for
+authentication based on HTTP Authentication headers from the browser. A
+global authentication file can be configured as well as per-URI
+authentication files. Mongoose users can generate these files using
+Apache's htdigest program. The location of the file is set during Mongoose
+initialization using the mg_set_option() function. The realm defaults to
+&ldquo;mydomain.com&rdquo; if not specified. Digest authentication is not required.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a05278"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 1. The fully qualified path to the digest authentication file and
+associated
+realm are set in options, and a callback is specified to perform server-specific
+authorization.</b></p><pre     class="programlisting">
+
+#define DOCROOT   "/docs"
+#define HTPASSWD  "/.htpasswd"
+#define port      "8083"
+void mongooseMgrInit()
+{
+  struct mg_context *ctx;
+  char *ptr = NULL;
+  char *documentRoot[PATH_MAX];
+  char htpath[PATH_MAX];
+
+  ptr = getcwd(NULL, 0);
+  memset(documentRoot, 0, PATH_MAX];
+  strcpy(documentRoot, ptr);
+  documentRoot = strcat(documentRoot, DOCROOT);
+
+  memset(htpath, 0, PATH_MAX);
+  strcpy(htpath, documentRoot);
+  strcat(htpath, "/.htpasswd");
+
+  ctx = mg_start();
+  mg_set_option(ctx, "ports", port);
+  mg_set_uri_callback(ctx, "/*", &amp;uriHandler, NULL);
+
+  mg_set_option(ctx, "auth_gpass", htpath);
+  mg_set_option(ctx, "auth_realm",
+                "mongoose-example.com");
+  mg_set_auth_callback(ctx, "/*", &amp;authorize, NULL);
+}
+
+</pre></div><p>
+The <tt  >auth_gpass</tt> option sets the location of a global
+authentication file. This file is used to authenticate requests for any
+URI. The argument for this option is the path to the file. To set
+authentication for specific URIs, use the <tt  >protect</tt> option.
+The argument to this option is a collection of comma-separated
+URI=PATH pairs, with URI being relative to the Web server
+and containing wild cards, and PATH being a path to the authentication file
+to use for that URI. Paths should be fully qualified or relative to the
+directory from which the Mongoose-based server is started.
+</p><p>
+If an authentication option is set for a requested URI, Mongoose will tell
+the client browser to open a login dialog. The Mongoose library processes
+the login information from the user before passing control to the
+appropriate callback, if any. Once the browser user is authenticated, the
+only way to log out is to request the authentication again. It turns out
+that this form of authentication requires cookies to implement the logout
+process and force another login. Alternatively, cookies can be used to
+implement a page with HTML forms for the purpose of login and logout
+outside the use of digest authentication. If logout or a server-side form
+is required for login, digest authentication probably should not be set
+with Mongoose options. Digest authentication still can be used manually,
+but Mongoose does not expose API functions for this purpose.
+</p><p>
+Along with authentication, authorization can be implemented using a
+callback registered with the mg_set_auth_callback() function. The
+registered function is called before each URI callback to allow the server
+code to determine whether the incoming request should be authorized to access
+the requested URI. If authorization is granted, this function calls
+mg_authorize() on the provided mg_connection. If this is not done,
+Mongoose assumes authorization is not granted and will not call the
+configured callback for the requested URI:
+
+<pre     class="programlisting">
+
+static
+void authorize(
+       struct mg_connection *conn,
+       const struct mg_request_info *ri,
+       void *data)
+{
+    const char  *cookie, *domain;
+    cookie = mg_get_header(conn, "Cookie");
+    uri = ri-&gt;uri;
+
+    if ( (strcmp(ri-&gt;uri, "/") == 0) ||
+         (strncmp(ri-&gt;uri, "/images", 7) == 0)
+       )
+    {
+        mg_authorize(conn);
+    }
+    else if (strncmp(ri-&gt;uri, "/logout", 7) == 0)
+    {
+        ... Verify login cookie ...
+        ... redirect to front page ...
+    }
+    else if (cookie != NULL &amp;&amp;
+             strstr(cookie, "UUID=") != NULL)
+    {
+        ... Get value from the cookie, if any ...
+        if ( ...cookie okay ... )
+            mg_authorize(conn);
+        else
+            ... redirect to /logout ...
+    }
+}
+
+</pre>
+</p><p>
+Note the arguments to the authorize() function. The first argument is the
+connection information. The second is a pointer to request information
+pulled from the incoming HTTP request. The third argument points to data
+provided when the callback was registered with mg_set_auth_callback().
+These same arguments are used when URI callback functions are called.
+</p><p>
+In this example authorization function, any request for the front page or
+the images directory within the document root are authorized automatically.
+This allows images referenced in CSS, for example, to be retrieved by the
+browser without having to be inspected by this function or by having a
+registered URI callback for images. If no callback is registered for a URI,
+Mongoose attempts to serve the file found at the specified URI
+under the document root.
+</p><p>
+If the URI is the logout page, the login cookie is checked for, and if
+found, the user is redirected to the login page where that cookie is
+removed. If the cookie is not found, the server can redirect to the
+front page anyway or perform some other appropriate action.
+</p><p>
+The next test looks for a specific cookie, in this case named
+&ldquo;UUID&rdquo;. If
+this is found and has the correct value, the request is authorized.
+Otherwise, the user is redirected to the logout page, which in turn cleans up
+the login cookie and presents the login page again.
+</p><p>
+The mg_request_info structure is defined in mongoose.h and is filled by the
+worker thread with information gleaned from the HTTP request. This
+includes information such as the request method (POST, PUT, GET and so
+forth), a normalized URI, query string, post data and the IP address from
+which the request originated. It also includes an array holding the set of
+HTTP headers, which is how cookies are retrieved.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a05900"></a>
+Cookies</h2></div></div><p>
+The mg_get_header() function is used to retrieve a named header from the
+mg_request_info's mg_header array. Cookies are set in a header before the
+start of the document content:
+
+<pre     class="programlisting">
+  mg_printf(conn,
+    "HTTP/1.1 200 OK\r\n"
+    "Set-Cookie: UUID=MGOOSE;\r\n"
+    "Set-Cookie: LOGIN=;\r\n"
+    "Content-Type: text/html\r\n\r\n"
+    ...
+</pre>
+</p><p>
+This code would set the UUID cookie and clear the LOGIN cookie on the
+browser. Retrieving a particular cookie requires pulling the cookie header
+and parsing it for the desired cookie name/value pair:
+
+<pre     class="programlisting">
+
+static
+char *getCookieParam(const char *cookie, char *param)
+{
+    char *start = NULL;
+    char *end  = NULL;
+    char *value = NULL;
+    int length;
+
+    if ( (cookie!=NULL) &amp;&amp;
+         ((start=strstr(cookie, param)) != NULL) )
+    {
+        if ( (end=strstr(start, "; ")) != NULL )
+            length = end-start;
+        else
+            length = strlen(start);
+        value = malloc(length+1);
+        memset(value, 0, length+1);
+        strncpy(value, start, length);
+    }
+    return value;
+}
+
+</pre>
+</p><p>
+This function will retrieve both the name of the cookie and its value, if
+any, as NAME=VALUE. The returned character string must be freed by the
+caller, however.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2a05b68"></a>
+Serving Static Files</h2></div></div><p>
+When Mongoose encounters a URI without a registered callback, it attempts to
+open the specified file and send it back to the client. Static HTML files
+can be written and stored in a document root configured with the
+<tt  >root</tt> option. To allow retrieving directory listings of
+directories under the document root, set the <tt  >dir_list</tt>
+option to <tt  >yes</tt>. This option defaults to
+<tt  >no</tt>. The directory list setting is a global
+configuration,
+so either no directory listings are allowed, or all of them can be seen.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2dfe020"></a></h2></div></div><div class="sidebar"><p class="title"><b>Note:</b></p><p>
+Options that allow yes/no or true/false values are tested against the
+case-insensitive string values of &ldquo;1&rdquo;, &ldquo;yes&rdquo;,
+&ldquo;true&rdquo; or &ldquo;ja&rdquo;. Any other value
+is interpreted as no or false.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2dfe390"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 2. Because the dir_list option does not match a true value,
+it will disable
+directory listings.</b></p><pre     class="programlisting">
+void mongooseMgrInit()
+{
+  ...
+  mg_set_option(ctx, "dir", documentRoot);
+  mg_set_option(ctx, "dir_list", "0");
+  ...
+}
+</pre></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2dfe5a0"></a>
+Server Logging</h2></div></div><p>
+Mongoose provides access and error logging. The files are appended on
+restart of the server. Mongoose provides two functions available from the
+API that are documented in the Mongoose API page on the Web site:
+mg_set_error_callback() and mg_set_log_callback. These callbacks have a
+slightly different configuration from URI callbacks:
+
+<pre     class="programlisting">
+void mongooseMgrInit()
+{
+  ...
+  mg_set_error_callback(ctx, 404, show404, NULL)
+  mg_set_log_callback(ctx, logger)
+  ...
+}
+</pre>
+</p><p>
+The error callback sets callbacks for error codes from 0 to 1000. These
+map to HTTP error codes, such as 404 when a requested URI does not exist.
+When this callback function is called, the function can print a custom error
+page. The log callback is called any time the Mongoose server library
+wants to log something.
+</p><p>
+The source code for the sample server implemented using mongoose can be
+found at <a href="../listings/192/10680.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue192/10680.tgz</a>.
+It includes a single page with an image and CSS.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2dfe808"></a>
+Summary</h2></div></div><p>
+The Mongoose Project is stable and in use by a number of developers;
+however, the Google forums for it are littered with spam. Don't let this
+inconvenience prevent you from utilizing what is a well-designed and
+implemented Web server library.
+</p><p>
+This introduction to Mongoose covers the basics for creating a lightweight
+embedded Web server without covering the full breadth of Mongoose features,
+such as CGI or SSL. The ease of use of this library should make it plain
+that these extended features will require little additional knowledge of
+Mongoose and free developers to build custom Web servers.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x290c580.0x2dfe968"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Mongoose: <a href="http://code.google.com/p/mongoose" target="_self">code.google.com/p/mongoose</a>
+</p><p>
+Example Source: <a href="../listings/192/10680.tgz" target="_self">ftp.linuxjournal.com/pub/lj/listings/issue192/10680.tgz</a>
+</p></div></div></div>
+<div class="authorblurb"><p>
+Michael J. Hammel is a Principal Software Engineer for Colorado
+Engineering, Inc. (CEI), in Colorado Springs, Colorado, with more than 20 years
+of
+software development and management experience. He has written more than 100
+articles for numerous on-line and print magazines and is the author of three
+books on The GIMP, the premier open-source graphics editing package.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../192/toc192.html">Issue Table of Contents</a>
+    <a class="link3" href="../192/10680.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

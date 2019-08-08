@@ -1,0 +1,150 @@
+4343l5.text
+
+Listing 5. Checking Out and Reducing Inventory
+
+<?php
+
+function cart_checkout($credit_card,$address,$name) {
+global $conn, $customer_id, $feedback;
+
+//start a transaction
+query("BEGIN WORK");
+
+/*
+     lock the appropriate rows in the item_inventory table,
+     based on what is in the visitor's cart
+
+     We'll do this with a simple subselect
+*/
+$sql="SELECT * FROM item_inventory ".
+     "WHERE part_number ".
+     "IN (SELECT part_number FROM cart_items ".
+     "WHERE customer_id='$customer_id') ".
+     "FOR UPDATE";
+$res=query($sql);
+
+//check for errors
+if (!$res || pg_numrows($res)<1) {
+      //no items matched or db failed
+      $feedback .= pg_errormessage($conn);
+      $feedback .= ' Error - no items locked ';
+
+      //terminate the transaction
+      query("END WORK");
+      return false;
+} else {
+      /*
+              Inventory rows are now locked
+
+              Get the items and quantity from the cart
+              */
+       $sql="SELECT part_number,quantity ".
+              "FROM cart_items ".
+              "WHERE
+customer_id='$customer_id' ".
+              "ORDER BY part_number DESC";
+       $res2=query($sql);
+
+       //check for errors
+       if (!$res2 || pg_numrows($res2)<1) {
+       //no items selected from cart
+               $feedback .= pg_errormessage($conn);
+               $feedback .= ' Error - no items in cart ';
+
+               //terminate the transaction
+               query("END WORK");
+               return false;
+        } else {
+               $rows=pg_numrows($res2);
+               /*
+                         Inventory is locked and we have the cart contents
+
+                         Iterate and update the inventory balances
+                */
+
+                         for ($i=0; $i < $rows; $i++) {
+                         //fetch this row from our cart
+                         $quantity=pg_result($res2,$i,'quantity');
+                         $item_id=pg_result($res2,$i,'part_number');
+
+                         $res3=query("UPDATE item_inventory".
+                         "SET inventory =inventory-$quantity ".
+                         "WHERE part_number='$item_id'");
+
+                         //see if query failed or no rows were affected
+                         if (!$res3 || pg_cmdtuples($res3) < 1) {
+                         //couldn't update this row
+                         $feedback .= pg_errormessage($conn);
+                         $feedback .= ' Error - updating inventory failed ';
+
+                         //rollback the transaction
+                         query("ROLLBACK");
+                         return false;
+                         }
+                 }
+
+                 /*
+                         Inventory now fully updated
+
+                         Finally - let's get the total amount
+                         of this order and update the customer record
+                 */
+                 $res=query("SELECT sum(cart_items.quantity*item_inventory.price) ".
+                         "FROM cart_items,item_inventory ".
+                         "WHERE cart_items.customer_id='$customer_id' ".
+                         "AND cart_items.part_number=item_inventory.part_number");
+
+                  //check for errors
+                  if (!$res || pg_numrows($res) < 1) {
+                         //couldn't get order total
+                         $feedback .= pg_errormessage($conn);
+                         $feedback .= ' Error - couldn\'t get order total ';
+
+                         //rollback the transaction
+                         query("ROLLBACK");
+                         return false;
+                  } else {
+                         /*
+                                    We've got the order total, now
+                                    we just update the customers table
+                         */
+
+                         //set the sum as a local variable
+                         $total=pg_result($res,0,0);
+                         $res=query("UPDATE customers ".
+                                    "SET address='$address',name='$name',".
+                                    "total_order='$total',credit_card='$credit_card'
+".
+                                    "WHERE customer_id='$customer_id'");
+
+                          //the usual error check
+                                     if (!$res || pg_cmdtuples($res) < 1) {
+
+                                     //update failed or did not affect any rows
+                                     $feedback .= pg_errormessage($conn);
+                                     $feedback .= ' Error - updating customer information ';
+
+                                     //rollback the transaction
+                                     query("ROLLBACK");
+                                     return false;
+                          } else {
+                                     /*
+                                            We made it!
+                                            Now commit the changes to the database
+                                     */
+
+                                     //commit all changes
+                                     query("COMMIT");
+
+                                     //erase the PHP4 session
+                                     $customer_id=0;
+                                     session_destroy();
+                                     return true;
+                           }
+                  }
+           }
+     }
+}
+
+?>
+

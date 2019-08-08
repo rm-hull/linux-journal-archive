@@ -1,0 +1,705 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>
+Concerning Containers' Connections: on Docker Networking
+</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;Use Docker and Weave to build container-based systems.&#10;"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x16c3580.0x17baac0"></a>
+Concerning Containers' Connections: on Docker Networking
+</h1></div><div><div class="author"><h3 class="author">
+Federico
+ 
+Kereki
+</h3></div><div class="issuemoyr">Issue #254, June 2015</div></div><div><p>
+Use Docker and Weave to build container-based systems.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x17bb300"></a></h2></div></div><p>
+Containers can be considered the third wave in service provision after
+physical boxes (the first wave) and virtual machines (the second
+wave). Instead of working with complete servers
+(hardware or virtual), you
+have virtual operating systems, which are far more lightweight. Instead of
+carrying around complete environments, you just move applications, with
+their configuration, from one server to another, where it will consume
+its resources, without any virtual layers. Shipping over projects from
+development to operations also is simplified&mdash;another boon. Of course,
+you'll face new and different challenges, as with any technology, but the
+possible risks and problems don't seem to be insurmountable, and the final
+rewards appear to be great.
+</p><p>
+Docker is an open-source project based on Linux containers that
+is showing high rates of adoption. Docker's first release was only a couple
+years ago, so the technology isn't yet
+considered mature, but it shows much promise. The combination
+of lower costs, simpler deployment and faster start times certainly
+helps.
+</p><p>
+In this article, I go over some details of setting up a system
+based on several independent containers, each providing a distinct,
+separate role, and I explain some aspects of the underlying network
+configuration. You can't think about production deployment without being
+aware of how connections are made, how ports are used and how bridges
+and routing are set up, so I examine those points as well, while putting a
+simple Web database query application in place.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x17bb568"></a>
+Basic Container Networking</h2></div></div><p>
+Let's start by considering how Docker configures network aspects. When
+the Docker service d&aelig;mon starts, it configures a virtual bridge,
+<tt  >docker0</tt>, on the host system (Figure 1). Docker picks a subnet
+not in use on the host and assigns a free IP address to the bridge. The first try is
+172.17.42.1/16, but that could be different if there
+are conflicts. This virtual bridge handles all host-containers
+communications. 
+</p><p>
+When Docker starts a container, by default, it
+creates a virtual interface on the host with a unique name, such as
+<tt  >veth220960a</tt>, and an address within the same subnet. This new
+interface will be connected to the <tt  >eth0</tt> interface on the container
+itself. In order to allow connections, iptables rules are added,
+using a <tt  >DOCKER</tt>-named chain. Network address translation (NAT) is
+used to forward traffic to external hosts, and the host machine must be
+set up to forward IP packets.
+</p><div       class="mediaobject"><a href="11833f1.large.jpg"><img src="11833f1.jpg"></a><div class="caption"><p>
+Figure 1. Docker uses a bridge to connect all containers on the same host to
+the local network.
+</p></div></div><p>
+The standard way to connect a container is in &ldquo;bridged&rdquo; mode, as described
+previously. However, for special cases, there are more ways to do
+this, which depend on the <tt  >-net</tt> option for the <tt  >docker
+run</tt>
+command. Here's a list of all available modes:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >-net=bridge</tt> &mdash; The new container uses a bridge
+to connect to the rest of the network. Only its exported public ports will
+be accessible from the outside.
+</p></li><li><p>
+<tt  >-net=container:ANOTHER.ONE</tt> &mdash; The new container
+will use the network stack of a previously defined container. It will share
+its IP address and port numbers.
+</p></li><li><p>
+<tt  >-net=host</tt> &mdash; This is a dangerous option. Docker won't
+separate the container's network from the host's. The new container will
+have full access to the host's network stack. This can cause
+problems and security risks!
+</p></li><li><p>
+<tt  >-net=none</tt> &mdash; Docker won't configure the
+container network at all. If you want, you can set up your own iptables
+rules (see Resources if you're interested in this). Even without the network, the
+container could contact the world by shared directories, for example.
+</p></li></ul></div><p>
+Docker also sets up each container so it will have DNS resolution
+information. Run <tt  >findmnt</tt> inside a container to produce something
+along the lines of Listing 1. By default, Docker uses the host's
+/etc/resolv.conf data for DNS resolution. You can use different
+nameservers and search lists with the <tt  >--dns</tt> and
+<tt  >--dns-search</tt>
+options.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x17bc118"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 1. The last three lines show Docker's special mount trick, so
+containers get information from Docker-managed host files.</b></p><pre     class="programlisting">
+root@4de393bdbd36:/var/www/html# findmnt -o TARGET,SOURCE
+TARGET                  SOURCE
+/                       /dev/mapper/docker-8:2-25824189-4de...822[/rootfs]
+|-/proc                 proc
+| |-/proc/sys           proc[/sys]
+| |-/proc/sysrq-trigger proc[/sysrq-trigger]
+| |-/proc/irq           proc[/irq]
+| |-/proc/bus           proc[/bus]
+| `-/proc/kcore         tmpfs[/null]
+|-/dev                  tmpfs
+| |-/dev/shm            shm
+| |-/dev/mqueue         mqueue
+| |-/dev/pts            devpts
+| `-/dev/console        devpts[/2]
+|-/sys                  sysfs
+|-/etc/resolv.conf      /dev/sda2[/var/lib/docker/containers/4de...822/resolv.conf]
+|-/etc/hostname         /dev/sda2[/var/lib/docker/containers/4de...822/hostname]
+`-/etc/hosts            /dev/sda2[/var/lib/docker/containers/4de...822/hosts]
+</pre></div><p>
+Now that you have an idea about how Docker sets up networking for
+individual containers, let's develop a small system that will be deployed
+via containers and then finish by working out how to connect all the pieces
+together.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x17bc380"></a>
+Designing Your Application: the World Database</h2></div></div><p>
+Let's say you need an application that will let you search for cities that include a given text string in their
+names. (Figure 2 shows a sample run.) For this example, I used the geographical
+information at GeoNames (see Resources) to create an appropriate
+database. Basically, you work with countries (identified by their ISO
+3166-1 two-letter codes, such as &ldquo;UY&rdquo; for &ldquo;Uruguay&rdquo;) and cities (with a
+name, a pair of coordinates and the country to which they belong). Users
+will be able to enter part of the city name and get all the matching
+cities (not very complex).
+</p><div       class="mediaobject"><img src="11833f2.jpg"><div class="caption"><p>
+Figure 2. This sample application finds these cities with DARWIN in their names.
+</p></div></div><p>
+How should you design your mini-system? Docker is meant to package single
+applications, so in order to take advantage of containers, you'll run
+separate containers for each required role. (This doesn't necessarily
+imply that only a single process may run on a container. A container
+should fulfill a single, definite role, and if that implies running
+two or more programs, that's fine. With this very simple example, you'll
+have a single process per container, but that need not be the general
+case.) 
+</p><p>
+You'll need a Web server, which will run in a container, and
+a database server, in a separate container. The Web server will access
+the database server, and end users will need connections to the Web
+server, so you'll have to set up those network connections.
+</p><p>
+Start by creating the database container, and there's no need to
+start from scratch. You can work with the official MySQL Docker image
+(see Resources) and save a bit of time. The Dockerfile that produces
+the image can specify how to download the required geographical data.
+The <tt  >RUN</tt> commands set up a loaddata.sh script that takes care of
+that. (For purists: a single longer <tt  >RUN</tt> command would have
+sufficed, but I
+used three here for clarity.) See Listing 2 for the complete Dockerfile
+file; it should reside in an otherwise empty directory. Building the
+<tt  >worlddb</tt> image itself can be done from that directory with the
+<tt  >sudo docker build -t worlddb .</tt> command.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x17bc9b0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 2. The Dockerfile to create the database server also pulls down the needed
+geographical data.</b></p><pre     class="programlisting">
+
+FROM mysql:latest
+MAINTAINER Federico Kereki fkereki@gmail.com
+
+RUN     apt-get update &amp;&amp; \
+        apt-get -q -y install wget unzip &amp;&amp; \
+        wget 'http://download.geonames.org/export/dump/countryInfo.txt' &amp;&amp; \
+        grep -v '^#' countryInfo.txt &gt;countries.txt &amp;&amp; \
+        rm countryInfo.txt &amp;&amp; \
+        wget 'http://download.geonames.org/export/dump/cities1000.zip' &amp;&amp; \
+        unzip cities1000.zip &amp;&amp; \
+        rm cities1000.zip
+
+RUN     echo "\
+        CREATE DATABASE IF NOT EXISTS world;    \
+        USE world;                              \
+        DROP TABLE IF EXISTS countries;         \
+        CREATE TABLE countries (                \
+                id CHAR(2),                     \
+                ignore1 CHAR(3),                \
+                ignore2 CHAR(3),                \
+                ignore3 CHAR(2),                \
+                name VARCHAR(50),               \
+                capital VARCHAR(50),            \
+                PRIMARY KEY (id));              \
+        LOAD DATA LOCAL INFILE 'countries.txt'  \
+                INTO TABLE countries            \
+                FIELDS TERMINATED BY '\t';      \
+        DROP TABLE IF EXISTS cities;            \
+        CREATE TABLE cities (                   \
+                id NUMERIC(8),                  \
+                name VARCHAR(200),              \
+                asciiname VARCHAR(200),         \
+                alternatenames TEXT,            \
+                latitude NUMERIC(10,5),         \
+                longitude NUMERIC(10,5),        \
+                ignore1 CHAR(1),                \
+                ignore2 VARCHAR(10),            \
+                country CHAR(2));               \
+        LOAD DATA LOCAL INFILE 'cities1000.txt' \
+                INTO TABLE cities               \
+                FIELDS TERMINATED BY '\t';      \
+        " &gt; mydbcommands.sql
+
+RUN     echo "#!/bin/bash \n                    \
+        mysql -h localhost -u root -p\$MYSQL_ROOT_PASSWORD &lt;mydbcommands.sql \
+        " &gt;loaddata.sh &amp;&amp; \
+        chmod +x loaddata.sh
+
+</pre></div><p>
+The <tt  >sudo docker images</tt> command verifies that the image was
+created. After you create a container based on it, you'll be able to
+initialize the database with the <tt  >./loaddata.sh</tt> command.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x17bccc8"></a>
+Searching for Data: Your Web Site</h2></div></div><p>
+Now let's work on the other part of the system. You can take advantage
+of the official PHP Docker image, which also includes Apache. All you need
+is to add the <tt  >php5-mysql</tt> extension to be able to connect
+to the database server. The script should be in a new directory, along
+with search.php, the complete code for this &ldquo;system&rdquo;. Building this
+image, which you'll name &ldquo;worldweb&rdquo;, requires the <tt  >sudo docker build
+-t worldweb .</tt> command (Listing 3).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac7cf0"></a></h2></div></div><div class="sidebar"><p class="title"><b>Listing 3. The Dockerfile to create the Apache Web server is even simpler than
+the database one.</b></p><pre     class="programlisting">
+
+FROM php:5.6-apache
+MAINTAINER Federico Kereki fkereki@gmail.com
+
+COPY search.php /var/www/html/
+
+RUN     apt-get update &amp;&amp; \
+        apt-get -q -y install php5-mysql &amp;&amp; \
+        docker-php-ext-install mysqli
+
+</pre></div><p>
+The search application search.php is simple (Listing 4). It draws
+a basic form with a single text box at the top, plus a &ldquo;Go!&rdquo; button
+to run a search. The results of the search are shown just below that in a
+table. The process is easy too&mdash;you access the database server to run a search and output a table with a row for
+each found city.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac7fb0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 4. The whole system consists of only a single search.php file.</b></p><pre     class="programlisting">
+&lt;html&gt;
+&lt;head&gt;
+&lt;title&gt;Cities Search&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;form action="search.php"&gt;
+Search for: &lt;input type="text" name="searchFor" 
+ &#8618;value="&lt;?php echo $_REQUEST["searchFor"]; ?&gt;"&gt;
+&lt;input type="submit" value="Go!"&gt;
+&lt;br&gt;&lt;br&gt;
+&lt;?php
+if ($_REQUEST["searchFor"]) {
+  try {
+    $conn = mysqli_connect("MYDB", "root", "ljdocker", "world");
+    $query = "SELECT countries.name, cities.name, 
+     &#8618;cities.latitude, cities.longitude ".
+      "FROM cities JOIN countries ON cities.country=countries.id ".
+      "WHERE cities.name LIKE ? ORDER BY 1,2";
+    $stmt = $conn-&gt;prepare($query);
+
+    $searchFor = "%".$_REQUEST["searchFor"]."%";
+    $stmt-&gt;bind_param("s", $searchFor);
+    $stmt-&gt;execute();
+    $result = $stmt-&gt;get_result();
+
+    echo "&lt;table&gt;&lt;tr&gt;&lt;td&gt;Country&lt;/td&gt;&lt;td&gt;City&lt;/td&gt;&lt;td&gt;Lat&lt;/td&gt;
+&#8618;&lt;td&gt;Long&lt;/td&gt;&lt;/tr&gt;";
+    foreach ($result-&gt;fetch_all(MYSQLI_NUM) as $row) {
+      echo "&lt;tr&gt;";
+      foreach($row as $data) {
+        echo "&lt;td&gt;".$data."&lt;/td&gt;";
+      }
+      echo "&lt;/tr&gt;";
+    }
+    echo "&lt;/table&gt;";
+
+  } catch (Exception $e) {
+    echo "Exception " . $e-&gt;getMessage();
+  }
+}
+?&gt;
+&lt;/form&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</pre></div><p>
+Both images are ready, so let's get your complete &ldquo;system&rdquo; running.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac8270"></a>
+Linking Containers</h2></div></div><p>
+Given the images that you built for this example, creating both containers is simple,
+but you want the Web server to be able to reach the database
+server. The
+easiest way is by linking the containers together. First, you start and
+initialize the database container (Listing 5).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac83d0"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 5. The database container must be started first and then initialized.</b></p><pre     class="programlisting">
+# su -
+# docker run -it -d -e MYSQL_ROOT_PASSWORD=ljdocker 
+ &#8618;--name MYDB worlddb
+fbd930169f26fce189a9d6020861eb136643fdc9ee73a4e1f114e0bfd0fe6a5c
+# docker exec -it MYDB bash
+root@fbd930169f26:/# dir
+bin   cities1000.txt  dev    etc   lib    
+ &#8618;loaddata.sh  mnt   opt   root  sbin     
+ &#8618;srv  tmp  var
+boot  countries.txt   entrypoint.sh  home  lib64  media 
+ &#8618;mydbcommands.sql  proc  run   selinux  sys  usr
+root@fbd930169f26:/# ./loaddata.sh
+Warning: Using a password on the command line interface 
+ &#8618;can be insecure.
+root@fbd930169f26:/# exit
+</pre></div><p>
+Now, start the Web container, with <tt  >docker run -it -d -p 80:80
+--link MYDB:MYDB --name MYWEB worldweb</tt>. This command has a couple
+interesting options:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >-p 80:80</tt> &mdash; This means that port 80 (the standard
+HTTP port) from the container will be published as port 80 on the host
+machine itself.
+</p></li><li><p>
+<tt  >--link MYDB:MYDB</tt> &mdash; This means that the
+MYDB
+container (which you started earlier) will be accessible from the
+MYWEB
+container, also under the alias MYDB. (Using the database container
+name as the alias is logical, but not mandatory.) The MYDB container won't
+be visible from the network, just from MYWEB.
+</p></li></ul></div><p>
+In the MYWEB container, /etc/hosts includes an entry for
+each linked container (Listing 6). Now you can see how search.php
+connects to the database. It refers to it by the name given when linking containers (see the 
+<tt  >mysqli_connect</tt>
+call in Listing 4). In this
+example, MYDB is running at IP 172.17.0.2, and
+MYWEB is at 172.17.0.3.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac89a8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 6. Linking containers in the same server is done via /etc/hosts
+entries.</b></p><pre     class="programlisting">
+# su -
+# docker exec -it MYWEB bash
+root@fbff94177fc7:/var/www/html# cat /etc/hosts
+172.17.0.3     fbff94177fc7
+127.0.0.1      localhost
+...
+172.17.0.2     MYDB
+
+root@fbff94177fc7:/var/www/html# export
+declare -x MYDB_PORT="tcp://172.17.0.2:3306"
+declare -x MYDB_PORT_3306_TCP="tcp://172.17.0.2:3306"
+declare -x MYDB_PORT_3306_TCP_ADDR="172.17.0.2"
+declare -x MYDB_PORT_3306_TCP_PORT="3306"
+declare -x MYDB_PORT_3306_TCP_PROTO="tcp"
+...
+</pre></div><p>
+The environment variables basically provide all the connection data for
+each linkage: what container it links to, using which port and protocol,
+and how to access each exported port from the destination container. In
+this case, the MySQL container just exports the standard 3306 port and
+uses TCP to connect. There's just a single problem with some of these
+variables. Should you happen to restart the MYDB container, Docker won't
+update them (although it would update the /etc/hosts information),
+so you must be careful if you use them!
+</p><p>
+Examining the iptables configuration, you'll find a <tt  >DOCKER</tt> new
+chain (Listing 7). Port 80 on the host machine is connected to port 80
+(<tt  >http</tt>) in the MYWEB container, and there's a connection for port
+3306 (<tt  >mysql</tt>) linking MYWEB to MYDB.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac8d70"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 7. Docker adds iptables rules to link containers' ports.</b></p><pre     class="programlisting">
+# sudo iptables --list DOCKER
+Chain DOCKER (1 references)
+target     prot opt source       destination
+ACCEPT     tcp  --  anywhere     172.17.0.3   tcp dpt:http
+ACCEPT     tcp  --  172.17.0.3   172.17.0.2   tcp dpt:mysql
+ACCEPT     tcp  --  172.17.0.2   172.17.0.3   tcp spt:mysql
+</pre></div><p>
+If you need to have circular links (container A links to container B,
+and vice versa), you are out of luck with standard Docker links, because
+you can't link to a non-running container! You might want to look into
+docker-dns (see Resources), which can create DNS records dynamically
+based upon running containers. (And in fact, you'll be using DNS later in this example
+when you set up containers in separate hosts.) Another possibility would
+imply creating a third container, C, to which both A and B would link,
+and through which they would be interconnected. You also could look into
+orchestration packages and service registration/discovery packages.
+Docker is still evolving in these areas, and new solutions may be available at any
+time.
+</p><p>
+You just saw how to link containers together, but there's a catch
+with this. It works only with containers on the same host, not on
+separate hosts. People are working on fixing this restriction, but there's
+an appropriate solution that can be used for now.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac9030"></a>
+Weaving Remote Containers Together</h2></div></div><p>
+If you had containers running on different servers, both local
+and remote ones, you could set up everything so the containers 
+eventually could connect with each other, but it would be a lot of work
+and a complex configuration as well. Weave (currently on version
+0.9.0, but quickly evolving; see Resources to get the latest version)
+lets you define a virtual network, so that containers can 
+connect to each other transparently (optionally using encryption for added security),
+as if they were all on the same server. Weave behaves as a sort of giant
+switch, with all your containers connected in the same virtual
+network.
+An instance must run on each host to do the routing work.
+</p><p>
+Locally, on the server where it runs, a Weave router establishes a network
+bridge, prosaically named weave. It also adds virtual Ethernet
+connections from each container and from the Weave router itself to
+the bridge. Every time a local container needs to contact a remote one,
+packets are forwarded (possibly with &ldquo;multi-hop&rdquo; routing) to other Weave
+routers, until they are delivered by the (remote) Weave router to the
+remote container. Local traffic isn't affected; this forwarding 
+applies only to remote containers (Figure 3).
+</p><div       class="mediaobject"><a href="11833f3.large.jpg"><img src="11833f3.jpg"></a><div class="caption"><p>
+Figure 3. Weave adds several virtual devices to redirect some
+of the traffic eventually to other servers.
+</p></div></div><p>
+Building a network out of containers is a matter of launching Weave on
+each server and then starting the containers. (Okay, there is a missing
+step here; I'll get to that soon.) First, launch Weave on each server
+with <tt  >sudo weave launch</tt>. If you plan to connect containers across
+untrusted networks, add a password (obviously, the same for all Weave
+instances) by adding the <tt  >-password some.secret.password</tt> option. If
+all your servers are within a secure network, you can do without that. See the sidebar
+for a list of all
+the available <tt  >weave</tt> command-line options.
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1ac9558"></a></h2></div></div><div class="sidebar"><p class="title"><b><tt  >weave</tt> Command-Line Options</b></p><div class="itemizedlist"><ul type="disc"><li><p>
+<tt  >weave attach</tt> &mdash; Attach a previously started running Docker
+container to a Weave instance.
+</p></li><li><p>
+<tt  >weave connect</tt> &mdash; Connect the local Weave instance to
+another one to add it into its network.
+</p></li><li><p>
+<tt  >weave detach</tt> &mdash; Detach a Docker container from a Weave
+instance.
+</p></li><li><p>
+<tt  >weave expose</tt> &mdash; Integrate the Weave network with a host's
+network.
+</p></li><li><p>
+<tt  >weave hide</tt> &mdash; Revert a previous
+<tt  >expose</tt> command.
+</p></li><li><p>
+<tt  >weave launch</tt> &mdash; Start a local Weave router instance; you
+may specify a password to encrypt communications.
+</p></li><li><p>
+<tt  >weave launch-dns</tt> &mdash; Start a local DNS server to connect
+Weave instances on distinct servers.
+</p></li><li><p>
+<tt  >weave ps</tt> &mdash; List all running Docker containers attached to
+a Weave instance.
+</p></li><li><p>
+<tt  >weave reset</tt> &mdash; Stop the running Weave instance and remove
+all of its network-related stuff.
+</p></li><li><p>
+<tt  >weave run</tt> &mdash; Launch a Docker container.
+</p></li><li><p>
+<tt  >weave setup</tt> &mdash; Download everything Weave needs to run.
+</p></li><li><p>
+<tt  >weave start</tt> &mdash; Start a stopped Weave instance,
+re-engaging it to the Weave topology.
+</p></li><li><p>
+<tt  >weave status</tt> &mdash; Provide data on the running Weave
+instance, including encryption, peers, routes and more.
+</p></li><li><p>
+<tt  >weave stop</tt> &mdash; Stop a running Weave instance, disengaging
+it from the Weave topology.
+</p></li><li><p>
+<tt  >weave stop-dns</tt> &mdash; Stop a running Weave DNS service.
+</p></li><li><p>
+<tt  >weave version</tt> &mdash; List the versions of the running Weave
+components; today (April 2015) it would be 0.9.0.
+</p></li></ul></div></div><p>
+When you connect two Weave routers, they exchange topology
+information to &ldquo;learn&rdquo; about the rest of the network. The gathered
+data is used for routing decisions to avoid unnecessary packet
+broadcasts. To detect possible changes and to work around any
+network problems that might pop up, Weave routers routinely monitor
+connections. To connect two routers, on a server, type the <tt  >weave
+connect the.ip.of.another.server</tt> command. (To drop a Weave router,
+do <tt  >weave forget ip.of.the.dropped.host</tt>.) Whenever you add a new
+Weave router to an existing network, you don't need to connect it to
+every previous router. All you need to do is provide it with the address of a
+single existing Weave instance in the same network, and from that point
+on, it will gather all topology information on its own. The rest of the
+routers similarly will update their own information in the process.
+</p><p>
+Let's start Docker containers, attached to Weave routers. The containers
+themselves run as before; the only difference is they are started
+through Weave. Local network connections work as before, but connections
+to remote containers are managed by Weave, which encapsulates (and
+encrypts) traffic and sends it to a remote Weave instance. (This uses
+port 6783, which must be open and accessible on all servers running
+Weave.) Although I won't go into this here, for more complex applications,
+you could have several independent subnets, so containers for the same
+application would be able to talk among themselves, but not with
+containers for other applications.
+</p><p>
+First, decide which (unused) subnet you'll use, and assign a different
+IP on it to each container. Then, you can <tt  >weave run</tt> each
+container to launch it through Docker, setting up all needed network
+connections. However, here you'll hit a snag, which has to do with the
+missing step I mentioned earlier. How will containers on different hosts
+connect to each other? Docker's <tt  >--link</tt> option works only within a
+host, and it won't work if you try to link to containers on other hosts. Of
+course, you might work with IPs, but maintenance for that setup would
+be a chore. The best solution is using DNS, and Weave already includes
+an appropriate package, WeaveDNS.
+</p><p>
+WeaveDNS (a Docker container on its own) runs over a Weave network. A
+WeaveDNS instance must run on each server on the network, with the
+<tt  >weave launch-dns</tt> command. You must use a different, unused subnet
+for WeaveDNS and assign a distinct IP within it to each instance. Then,
+when starting a Docker container, add a <tt  >--with-dns</tt> option, so DNS
+information will be available. You should give containers a hostname in
+the <tt  >.weave.local</tt> domain, which will be entered automatically into
+the WeaveDNS registers. A complete network will look like Figure 4.
+</p><div       class="mediaobject"><a href="11833f4.large.jpg"><img src="11833f4.jpg"></a><div class="caption"><p>
+Figure 4. Using Weave, containers in local and remote networks connect to each other
+transparently; access is simplified with Weave DNS.
+</p></div></div><p>
+Now, let's get your mini-system to run. I'm going to cheat a little, and
+instead of a remote server, I'll use a virtual machine for this example. My main
+box (at 192.168.1.200) runs OpenSUSE 13.2, while the virtual machine
+(at 192.168.1.108) runs Linux Mint 17, just for variety. Despite the
+different distributions, Docker containers will work just the same,
+which shows its true portability (Listing 8).
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1d46ba8"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Listing 8. Getting the Weave network to run on two servers.</b></p><pre     class="programlisting">
+&gt; # At 192.168.1.200 (OpenSUSE 13.2 server)
+&gt; su -
+$ weave launch
+$ weave launch-dns 10.10.10.1/24
+$ C=$(weave run --with-dns 10.22.9.1/24 -it -d -e 
+ &#8618;MYSQL_ROOT_PASSWORD=ljdocker -h MYDB.weave.local --name MYDB worlddb)
+$ # You can now enter MYDB with "docker exec -it $C bash"
+
+&gt; # At 192.168.1.108 (Linux Mint virtual machine)
+&gt; su -
+$ weave launch
+$ weave launch-dns 10.10.10.2/24
+$ weave connect 192.168.1.200
+$ D=$(weave run --with-dns 10.22.9.2/24 -it -d -p 80:80 -h 
+ &#8618;MYWEB.weave.local --name MYWEB worldweb)
+</pre></div><p>
+The resulting configuration is shown in Figure 5. There are two hosts, on
+192.168.1.200 and 192.168.1.108. Although it's not shown, both have port
+6783 open for Weave to work. In the first host, you'll find the MYDB MySQL
+container (at 10.22.9.1/24 with port 3306 open, but just on that subnet)
+and a WeaveDNS server at 10.10.10.1/24. In the second host, you'll find the
+MYWEB Apache+PHP container (at 10.22.9.2/24 with port 80 open, exported
+to the server) and a WeaveDNS server at 10.10.10.2/24. From the outside,
+only port 80 of the MYWEB container is accessible.
+</p><div       class="mediaobject"><a href="11833f5.large.jpg"><img src="11833f5.jpg"></a><div class="caption"><p>
+Figure 5. The final Docker container-based system, running on separate systems,
+connected by Weave.
+</p></div></div><p>
+Because port 80 on the 192.168.1.108 server is directly connected to port 80
+on the MYWEB server, you can access http://192.168.1.108/search.php
+and get the Web page you saw earlier (in Figure 2). Now you have a multi-host
+Weave network, with DNS services and remote Docker containers running
+as if they resided at the same host&mdash;success!
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1d47020"></a>
+Conclusion</h2></div></div><p>
+Now you know how to develop a multi-container system (okay, it's not very large, but
+still), and you've learned some details on the internals of Docker
+(and Weave) networking. Docker is still maturing, and surely even
+better tools will appear to simplify configuration, distribution
+and deployment of larger and more complex applications. The current
+availability of networking solutions for containers shows you already
+can begin to invest in these technologies, although be sure to keep up with
+new developments to simplify your job even further. 
+</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1d47128"></a></h2></div></div><div class="sidebar"><p class="title"><b>
+Resources</b></p><p>
+Get Docker itself from <a href="http://www.docker.com" target="_self">www.docker.com</a>. The actual code is at
+<a href="https://github.com/docker/docker" target="_self">https://github.com/docker/docker</a>.
+</p><p>
+For more detailed documentation on Docker network configuration, see
+<a href="https://docs.docker.com/articles/networking" target="_self">https://docs.docker.com/articles/networking</a>.
+</p><p>
+The docker-dns site is at <a href="https://www.npmjs.com/package/docker-dns" target="_self">https://www.npmjs.com/package/docker-dns</a>, and
+its source code is at <a href="https://github.com/bnfinet/docker-dns" target="_self">https://github.com/bnfinet/docker-dns</a>.
+</p><p>
+The official MySQL Docker image is at <a href="https://registry.hub.docker.com/_/mysql" target="_self">https://registry.hub.docker.com/_/mysql</a>. If you prefer, there also are official repositories for MariaDB
+(<a href="https://registry.hub.docker.com/_/mariadb" target="_self">https://registry.hub.docker.com/_/mariadb</a>). Getting it to work shouldn't be a
+stretch.
+</p><p>
+The Apache+PHP official Docker image is at
+<a href="https://registry.hub.docker.com/_/php" target="_self">https://registry.hub.docker.com/_/php</a>.
+</p><p>
+Weave is at <a href="http://weave.works" target="_self">weave.works</a>, and the code itself is on
+GitHub
+at <a href="https://github.com/weaveworks/weave" target="_self">https://github.com/weaveworks/weave</a>. For more detailed information
+on its features, go to
+<a href="https://zettio.github.io/weave/features.html" target="_self">https://zettio.github.io/weave/features.html</a>.
+</p><p>
+WeaveDNS is on GitHub at
+<a href="https://github.com/weaveworks/weave/tree/master/weavedns" target="_self">https://github.com/weaveworks/weave/tree/master/weavedns</a>.
+</p><p>
+For more on articles on Docker in <span   class="emphasis"><em>Linux Journal</em></span>, read the
+following:
+</p><div class="itemizedlist"><ul type="disc"><li><p>
+David Strauss' &ldquo;Containers&mdash;Not Virtual Machines&mdash;Are the Future
+Cloud&rdquo;: <a href="http://www.linuxjournal.com/content/containers%E2%80%94not-virtual-machines%E2%80%94are-future-cloud" target="_self">www.linuxjournal.com/content/containers&mdash;not-virtual-machines&mdash;are-future-cloud</a>.
+</p></li><li><p>
+Dirk Merkel's &ldquo;Docker: Lightweight Linux
+Containers for Consistent Development and Deployment&rdquo;: <a href="http://www.linuxjournal.com/content/docker-lightweight-linux-containers-consistent-development-and-deployment" target="_self">www.linuxjournal.com/content/docker-lightweight-linux-containers-consistent-development-and-deployment</a>.
+</p></li><li><p>
+Rami Rosen's &ldquo;Linux Containers and the Future Cloud&rdquo;:
+<a href="http://www.linuxjournal.com/content/linux-containers-and-future-cloud" target="_self">www.linuxjournal.com/content/linux-containers-and-future-cloud</a>.
+</p></li></ul></div><p>
+The geographical data I used for the example in this article comes from GeoNames
+<a href="http://www.geonames.org" target="_self">www.geonames.org</a>. In particular, I used the countries table
+(<a href="http://download.geonames.org/export/dump/countryInfo.txt" target="_self">download.geonames.org/export/dump/countryInfo.txt</a>)
+and the cities (with more than 1,000 inhabitants) table
+(<a href="http://download.geonames.org/export/dump/cities1000.zip" target="_self">download.geonames.org/export/dump/cities1000.zip</a>), but there
+are larger and smaller sets.
+</p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x16c3580.0x1d4a5a0"></a></h2></div></div><div class="sidebar"><p class="title"><b></b></p><p>Send comments or feedback via <a href="http://www.linuxjournal.com/contact" target="_self">www.linuxjournal.com/contact</a> or to
+<a href="mailto:info@linuxjournal.com">info@linuxjournal.com</a>.
+</p></div></div></div>
+<div class="authorblurb"><p>
+Federico Kereki is a Uruguayan systems engineer with more than 25 years of
+experience doing consulting work, developing systems and teaching at
+universities. He is currently working as a UI Architect at Globant, using
+a good mixture of development frameworks, programming tools and operating
+systems&mdash;and FLOSS, whenever possible! He has written several articles
+on
+security,
+software development and other subjects for <span   class="emphasis"><em>Linux
+Journal</em></span>, IBM
+developerWorks and
+other Web sites and publications. He also wrote the <span   class="emphasis"><em>Essential
+GWT</em></span> book, in which
+you
+can find some security concerns for Web applications. You can reach
+Federico at
+<a href="mailto:fkereki@gmail.com">fkereki@gmail.com</a>.
+</p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../254/toc254.html">Issue Table of Contents</a>
+    <a class="link3" href="../254/11833.html">Article</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

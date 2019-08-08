@@ -1,0 +1,276 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN"><html><head><META http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>Block Device Drivers: Optimization</title><link rel="stylesheet" href="../css/archive.css" type="text/css"><meta name="generator" content="DocBook XSL Stylesheets V1.57.0"><meta name="description" content="&#10;    Last month, we gave an introduction to interrupt-driver&#10;    block device drivers. This month, we examine common&#10;    optimizations that can allow an order of magnitude&#10;    improvement in performance on some hardware, and then cover&#10;    some of the points that have been left out in our whirlwind&#10;    tour of block device drivers.&#10;    "><meta name="keywords" content="device, driver, hardware, performance"><link rel="stylesheet" href="../../css/archive.css" type="text/css"><script type="text/javascript" src="../../js/archive.js"></script><script type="text/javascript" src="../../js/highlight.js"></script></head><body onload="search_highlight();">
+  <div class="headerdiv">
+    <a href="../../index.html">
+      <img class="topimg" src="../../images/CD_HeaderBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="tophrdiv">
+  </div>
+  
+  <div id="top_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  <div class="article" lang="en"><div class="titlepage"><div><h1 class="title"><a name="N0x1b6c580.0x1c63ab0"></a>Block Device Drivers: Optimization</h1></div><div><div class="author"><h3 class="author">Michael K. Johnson</h3></div><div class="issuemoyr">Issue #11, March 1995</div></div><div><p>
+    Last month, we gave an introduction to interrupt-driver
+    block device drivers. This month, we examine common
+    optimizations that can allow an order of magnitude
+    improvement in performance on some hardware, and then cover
+    some of the points that have been left out in our whirlwind
+    tour of block device drivers.
+    </p></div></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b6c580.0x1c644a8"></a></h2></div></div><p>Last month, I ran out of space for this
+column just as I was about to start a long discussion on
+optimizations. In the interest of usefulness, I will mention only
+the most useful optimizations here before going on to discuss
+initialization.
+</p><p>I won't have any sample code implementations of the
+optimizations, because these are complex issues that need to be
+handled in device-specific ways, and just as the code was much more
+vague when I discussed interrupt-driven drivers than when I
+introduced the basic, initial device driver, it would either be so
+large as to take over the entire magazine or be so vague as to be
+completely useless if I were to try to write some here. I hope that
+my explanations are useful to you even without code.</p><p>Also, I should warn you that the optimizations I talk about,
+while representative of common optimizations, are not necessarily
+representative of anything you will find in the Linux source code,
+except where I explicitly state otherwise. I'm writing on a
+slightly more theoretical level&mdash;about what can be done, rather
+than what has been done. Things conceptually similar to what I
+write about have been done, but the details are my own and may not
+be the best way to go about things. As usual, use this column as an
+introduction to the kernel source code and read the actual source
+code for far more insight than I can give you here.</p><p>If you are code-starved and don't care about optimizations,
+jump right to the second part of this article, where I talk about
+initialization.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b6c580.0x1c646b8"></a>Coalescence</h2></div></div><p>One common optimization is coalescing adjacent requests. This
+means that when the driver is notified or notices that a request
+has been added to the request queue, it looks through the request
+list to see if there is a request for the next block (and possibly
+more blocks beyond that). If so, it sends a request to the hardware
+to read more than one block with one command, and when the data
+comes in from the hardware (presumably in an interrupt service
+routine), it fills both requests before calling
+<b  >end_request(1)</b> (actually, some similar function
+designed especially for that driver) on either request. After
+satisfying (or failing to satisfy) the requests, the equivalent of
+<b  >end_request()</b> is called for each request, but
+without waking up processes waiting on either request until the
+interrupt has been satisfied.</p><p>This will require that you write your own version of
+<b  >end_request()</b>. Although this probably sounds
+daunting, it isn't as hard as it sounds, because you can use almost
+all of it as-is. For example, you could copy it verbatim, except
+instead of doing <b  >wake_up(&amp;wait_for_request)</b>
+at the end, you could add <b  >wait_for_request</b> to a
+list of events to wake up when you are ready. Then you would call
+this new <b  >almost_end_request()</b> function as soon
+as you have finished processing each request. When you are done handling
+the entire interrupt and are ready to wake up processes, iterate
+over the list of events, calling <b  >wake_up()</b> on
+each in turn, from first satisfied to last satisfied.</p><p>Note that <b  >wake_up()</b> will not cause a
+context switch directly. The driver will not give up control while
+running <b  >wake_up()</b> to a process being woken up.
+Instead, <b  >wake_up()</b> makes all the processes being
+woken up &ldquo;runnable&rdquo;, and sets the <b  >need_resched</b>
+flag. This flag says that the scheduler ought to be called at the
+next convenient time, such as when returning from a &ldquo;slow&rdquo;
+interrupt handling routine (including the clock handling routine)
+or when returning from a system call. This means that the driver
+will not be pre-empted by calling <b  >wake_up()</b>, and
+so it will be able to wake up all the necessary processes without
+being pre-empted.</p><p>This will likely take several tries to get right. All I can
+say to help is &ldquo;Make sure you have backups. Really.&rdquo;</p><p>The only driver in the Linux kernel that I have noticed doing
+anything like this is the floppy driver; the track buffer works in
+a similar way, where more than one request may be satisfied by a
+single read command sent to the hardware. If you are interested in
+investigating how it works, read drivers/block/floppy.c and search
+for <b  >floppy_track_buffer</b> and read the entire
+function <b  >make_raw_rw_request()</b>.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b6c580.0x1c64df0"></a>Scatter-Gather</h2></div></div><p>Sounds like a &ldquo;boondoggle&rdquo;, doesn't it? Scatter-gather is perhaps a little bit similar in
+concept to coalescing adjacent requests, but is used with more
+intelligent hardware, and is perhaps a bit easier to implement. The
+&ldquo;scatter&rdquo; part means that when there are multiple blocks to be
+written all over a disk (for example), one command is sent out to
+initiate writing to all those different sectors, reducing the
+overhead involved in negotiation from O(n) to O(1), where
+<span   class="emphasis"><em>n</em></span> is the number of blocks or sectors to
+write.</p><p>Similarly, the &ldquo;gather&rdquo; part means that when there are
+multiple blocks to be read, one command is sent out to initiate
+reading all the blocks, and as the disk sends in each block, the
+corresponding request is marked as satisfied with
+<b  >end_request(1)</b> or equivalent device-specific
+code. You will only be able to easily use
+<b  >end_request()</b> unmodified with scatter-gather if
+each block read or written results in a separate interrupt being
+generated, and perhaps not even then. The SCSI driver does its own,
+which is probably the best way to go.</p><p>If you want to increase throughput, at the slight expense of
+response time, you could use timers to help: when your
+<b  >request()</b> is notified that there is a request,
+and sees that there is only one request outstanding, it could set a
+timer to go off soon (one or two tenths of a second, perhaps),
+assuming that while waiting, more requests will spill in to be
+dealt with, and that when a certain number of requests have been
+made, or the timer has gone off, whichever comes first,
+scatter-gather will be applied to the blocks. If the
+<b  >request()</b> routine is called and notices that
+&ldquo;enough&rdquo; (however many that is...) requests have accumulated, it
+would un-install the timer and process the requests. If the timer
+were to go off, all requests would be processed.</p><p>Note that the timer used should not be the same static timer
+used for the hardware timeout. Instead, it should be a dynamically
+allocated timer. See <b  >&lt;linux/timer.h&gt;</b> for
+details on the dynamic timer routines.</p><p>I will repeat my standard disclaimer: this is simplified (at
+least, I'm trying to simplify it...) and if you want more detailed
+and correct information, study a real driver. The SCSI high-level
+drivers (scsi.c, sd.c, sr.c) are definitely the place to start. (I
+don't mention st.c and sg.c because they are character, not block,
+devices.)</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b6c580.0x1c65268"></a>Errors</h2></div></div><p>Optimization is almost easy to write about, and sounds
+glamorous, but error handling is really where the rubber meets the
+road. I'm not even going to try to really cover error handling in
+this column. It is a very complex subject, and different for each
+piece of hardware. If you have read this far, you should have the
+basic knowledge you need to start reading the block device drivers
+in the kernel. By reading all the error handling there, you will
+begin to understand how to do error handling nicely. Consider
+reading the drivers in this sequence: ramdisk.c, hd.c, and
+floppy.c.</p><p>As you write your driver, you will probably start with very
+simple error handling. As you use your driver, you are likely to
+discover more error cases to handle. Sometimes you will find that
+you need to redesign some components of your driver to get error
+handling correct. As an example, until very recently, error
+handling in the floppy driver was not very good. You could mount a
+write-protected floppy read-write and cause serious problems when
+you then tried to write to the floppy. Also, if you tried (for
+instance) to write a tar archive on a write-protected floppy, you
+would get a stream of errors as the driver reset the floppy drive
+and kept assuming the error would go away. It took a significant
+rewrite of the floppy driver to solve that problem
+correctly.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b6c580.0x1c653c8"></a>Initialization</h2></div></div><p>This isn't really specific to block device drivers, but it is
+certainly necessary to know. In issue 9, I gave an example
+initialization function, but it was mostly pseudo-code and didn't
+cover many of the things that you need to do to work with real
+devices. For instance, it doesn't explain how to grab a DMA
+channel, nor does it explain how to grab an IRQ line.</p><p>The easiest way to deal with IRQ and DMA is to allocate both
+the IRQ line and DMA channel while initializing the device. It's
+not the best way, but it is the easiest way to start out while you
+are writing your device driver. When you want to figure out exactly
+when to allocate and free them, you can read other device drivers.
+The floppy device driver, for instance, has functions
+<b  >floppy_grab_irq_and_dma()</b> and
+<b  >floppy_release_irq_and_dma()</b> which do exactly
+what they say, and are used not only in the initialization code,
+but all through the rest of the driver.</p><p>The <b  >floppy_grab_irq_and_dma()</b> function is
+a good place to start to learn how to allocate IRQ lines and DMA
+channels. According to <b  >&lt;asm/dma.h&gt;</b>, the
+IRQ line should be allocated first and released last.</p><p>We'll look at IRQs first. <b  >request_irq()</b>
+takes four arguments. The first argument to
+<b  >request_irq()</b> is the number of the IRQ line to
+allocate. The second is the interrupt service routine to call when
+an interrupt is received. The third is a flag which is either set
+to <b  >SA_INTERRUPT</b> or something else (presumably
+0), which determines whether the argument passed to the interrupt
+service routine is a pointer to a register structure (0) or the
+number of the interrupt (<b  >SA_INTERRUPT</b>), and also
+whether the interrupt is a &ldquo;fast&rdquo; interrupt handler
+(<b  >SA_INTERRUPT</b>) or a &ldquo;slow&rdquo; interrupt handler
+(0). A &ldquo;slow&rdquo; interrupt handler is one where more processing is
+done when the interrupt handler returns, including possibly running
+the scheduler to choose a new process to become the active one. A
+&ldquo;fast&rdquo; interrupt handler does as little as possible. The fourth
+argument is the name of the device driver.</p><p><b  >request_irq()</b> is simpler. It takes two
+arguments, the first of which is the IRQ channel, and the second of
+which is the name of the device driver.</p><p>The corresponding freeing functions are even simpler.
+<b  >free_dma()</b> takes only the number of the DMA
+channel, and <b  >free_irq()</b> takes only the number of
+the IRQ.</p><p>Of course, there is far more to using IRQs, and even more so
+to using DMA, than allocating and freeing lines and channels, but
+this is a start. The start, to be pedantic. Read
+<b  >&lt;asm/dma.h&gt;</b>,
+<b  >kernel/dma.c</b>,
+<b  >&lt;asm/irq.h&gt;</b>, and
+<b  >kernel/irq.c</b> for details; they are very
+readable, and have many useful comments.</p></div><div class="simplesect" lang="en"><div class="titlepage"><div><h2 class="title"><a name="N0x1b6c580.0x1c65c60"></a>Mail</h2></div></div><p>K. D. Nguyen sent me some e-mail after reading the January
+issue of <i  >Linux Journal</i>, echoing a wish I have
+heard from other people as well.</p><div class="blockquote"><blockquote class="blockquote"><p>I have been reading two books on Unix device
+drivers, the KHG, and the Kernel Korner articles since last issue.
+I feel like I can write some device drivers. But unfortunately,
+there seems to be something missing from all the books and articles
+about Unix device drivers. It is the lack of a practice
+environment. We, the device driver beginners, can only read and
+look at some device driver code under Linux and try to understand
+how they work. It would be more fun if there were some hardware or
+device kit that let us really do some exercise on what we just read
+about writing Unix device drivers (rather than buying a new color
+printer and then begging the manufacture for the specs to write a
+new challenging device driver). Of course, for the meantime, I will
+keep reading.</p></blockquote></div><p>There is no real practice environment. The easiest way to
+start learning is to write a ramdisk driver. Beyond that, many real
+devices are actually fairly simple. Dive in! It's hard to dabble at
+the water's edge when you are writing kernel code for a monolithic
+OS, regardless of whether you are writing code for a simple ramdisk
+or for a toy device kit or for a real device. The learning curve is
+quite steep, but that means that in a short time of strenuous
+learning, you really pick up most of what you need to write basic
+device drivers.</p><p>Also, what features would a practice device support, and what
+would it do? It's a hard question to answer and one I'm not going
+to attempt&mdash;and I think that manufacturers won't either. Since you
+are as likely to screw up your entire system writing a driver for a
+practice device as for a real one, you might as well work on a real
+device. There <span   class="bold"><b>are</b></span> real devices as
+simple as any toy device.</p><p><a href="1013s1.html" target="_self">Other Resources</a></p></div></div>
+<div class="authorblurb"><p>
+           <span   class="bold"><b>Michael K. Johnson</b></span>
+           is the editor of <i  >Linux Journal</i>, and is
+           also the author of the Linux Kernel Hackers' Guide (the KHG). He is using this
+           column to develop and expand on the KHG.
+        </p></div>
+
+  <div class="toclinks">
+    <a class="link1" href="../tocindex.html">Archive Index</a>
+    <a class="link2" href="../011/toc011.html">Issue Table of Contents</a>
+  </div>
+  <div class="bottomhrdiv">
+  </div>
+  
+  <div id="bottom_search">
+  <table class="page_search" summary="">
+    <tr>
+      <td valign="top" align="left">
+        <p class="small_shutdown"><a href="/.exit">Shutdown Archive web server</a></p>
+      </td>
+      <td valign="top" align="right">
+        <form method="get" action="/zoom/search.cgi">
+          <input type="hidden" name="zoom_sort" value="0" />
+          <input type="hidden" name="zoom_xml" value="0" />
+          <input type="hidden" name="zoom_per_page" value="10" />
+          <input type="hidden" name="zoom_and" value="1" />
+          Search: <input type="text" name="zoom_query" size="20" value="" class="zoom_searchbox" />
+          <input type="submit" value="Submit" />
+        </form>
+      </td>
+    </tr>
+  </table>
+  </div>
+  
+  <div class="footerdiv">
+    <a href="../../index.html">
+      <img class="bottomimg" src="../../images/CD_FooterBanner.png" alt="LJ Archive"/>
+    </a>
+  </div>
+  
+  <div class="copyright">
+    Copyright &copy; 1994 - 2018 <cite>Linux Journal</cite>.  All rights reserved.
+  </div>
+  </body></html>

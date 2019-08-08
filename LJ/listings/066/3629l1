@@ -1,0 +1,227 @@
+package Apache::StockProfile;
+
+use strict;
+use diagnostics;
+
+use Apache::Constants qw(OK);
+use Apache::DBI;
+use Apache::Session::DBI;
+use CGI::Apache;
+
+sub handler {
+    # Get the Apache request object
+    my $r = shift;
+
+    my $max_stocks = 5;
+
+    # Create a pseudo-CGI object, for easy form handling
+    my $query = new CGI::Apache;
+
+    # Recover the user's session, if it exists
+    my $id = $r->header_in('Cookie');
+    $id =~ s|SESSION_ID=(\w*)|$1|;
+
+    my %session;
+
+    tie %session, 'Apache::Session::DBI', $id,
+    {
+     DataSource => 'dbi:mysql:test:localhost:3306',
+     UserName   => '',
+     Password   => ''
+    };
+
+    # Connect to the database
+    my $dbh = DBI->connect("DBI:mysql:test");
+    my @symbols = ();
+
+    # Now retrieve a list of current stocks
+    my $sql = "SELECT DISTINCT symbol FROM StockValues ";
+    $sql .=   "ORDER BY symbol ";
+
+    # Prepare the query
+    my $sth = $dbh->prepare($sql);
+    if (!$sth)
+    {
+	$r->print("<P>Error preparing query.</P>");
+	$r->print("<P>SQL was \"$sql\".</P>\n");
+	$dbh->disconnect;
+	return OK;
+    }
+
+    # Send the query
+    my $result = $sth->execute;
+    if (!$result)
+    {
+	$r->print("<P>Error executing query.</P>");
+	$r->print("<P>SQL was \"$sql\".</P>\n");
+	$sth->finish;
+	$dbh->disconnect;
+	return OK;
+    }
+
+    # Retrieve results
+    if ($sth->rows)
+    {
+	while (my $row = $sth->fetchrow_arrayref)
+	{
+	    my ($symbol) = @{$row};
+	    push @symbols, $symbol;
+	}
+    }
+
+    # If we received a POST request, then store the new values in the
+    # user profile
+    if ($r->method eq "POST")
+    {
+	# Read the basic elements
+	$session{email} = $query->param("email");
+	$session{name} = $query->param("name");
+
+	# Read symbols and number of shares into %portfolio
+	my %portfolio = ();
+
+	foreach my $counter (1 .. $max_stocks)
+	{
+	    my $symbol = $query->param("symbol-" . $counter);
+	    my $shares = $query->param("shares-" . $counter);
+
+	    next unless $symbol;
+	    next unless $shares;
+
+	    # Make sure that we only store non-zero values!
+	    $portfolio{$symbol} = $shares;
+	}
+	# Now read all of the symbols into our session
+	$session{portfolio} = \%portfolio;
+    }
+
+    # ------------------------------------------------------------
+    # No matter what, we retrieve session information
+
+    # Retrieve session information, if it exists
+    my $email = $session{email};
+    my $name = $session{name};
+
+    my %portfolio = defined $session{portfolio} ? %{$session{portfolio}} : ();
+
+    # ------------------------------------------------------------
+    # Output a useful HTTP header, with the session cookie
+    my $session_cookie = "SESSION_ID=$session{_session_id};";
+    $r->header_out("Set-Cookie" => $session_cookie);
+    $r->content_type("text/html");
+    $r->send_http_header;
+
+    # Create an HTML form that can be used to modify the profile
+    $r->print('<HTML>', "\n");
+    $r->print('<Head><Title>User profile</Title></Head>', "\n");
+    $r->print('<Body>', "\n");
+
+    # Provide a link for viewing current holdings
+    $r->print('<P><a href="/stock-report">View your holdings</a>', "\n");
+
+    # Create the form with which users can change their profile
+    $r->print('<Form method="POST" action="/stock-profile">', "\n");
+
+    $r->print('<Table>', "\n");
+
+    # Create a short header
+    $r->print("<tr>\n");
+    $r->print("<td colspan=\"2\"><H2>User information</H2></td>\n\n");
+    $r->print("</tr>\n\n\n");
+
+    # Name
+    $r->print("<tr>\n");
+    $r->print("<td>Name:</td>\n\n");
+    $r->print("<td><input type=\"text\" name=\"name\" ");
+    $r->print("value=\"$name\"></td>\n\n");
+    $r->print("</tr>\n\n\n");
+
+    # E-mail address
+    $r->print("<tr>\n");
+    $r->print("<td>E-mail address:</td>\n\n");
+    $r->print("<td><input type=\"text\" name=\"email\" ");
+    $r->print("value=\"$email\"></td>\n\n");
+    $r->print("</tr>\n\n\n");
+
+    # Create a short header
+    $r->print("<tr>\n");
+    $r->print("<td colspan=\"2\"><H2>Portfolio holdings</H2></td>\n\n");
+    $r->print("</tr>\n\n\n");
+
+    # Print the current portfolio
+    my $counter = 0;
+    foreach my $symbol (sort keys %portfolio)
+    {
+	# Advance the counter
+	$counter++;
+
+	my $shares = $portfolio{$symbol};
+
+	# Symbol
+	$r->print("<tr>\n");
+
+	$r->print("<td>Symbol</td>\n\n");
+
+	$r->print("<td><select name=\"symbol-$counter\">\n");
+	$r->print("<option value=\"\">Select a security\n");
+	foreach my $iterate_symbol (@symbols)
+	{
+	    $r->print("<option value=\"$iterate_symbol\"");
+	    $r->print(" selected") if ($symbol eq $iterate_symbol);
+	    $r->print(">$iterate_symbol\n");
+	}
+	$r->print("</select>\n");
+
+	$r->print("</td>\n\n");
+
+	# Shares
+	$r->print("<td>Shares</td>\n\n");
+
+	$r->print("<td>");
+	$r->print("<input type=\"text\" name=\"shares-$counter\" ");
+	$r->print("value=\"$shares\">");
+	$r->print("</td>\n\n");
+
+	$r->print("</tr>\n\n\n");
+    }
+
+    # We always want to provide $max_stocks spaces for symbols and 
+    # shares, so we continue until $counter gets to $max_stocks
+    while ($counter++ < $max_stocks)
+    {
+	# Symbol
+	$r->print("<td>Symbol</td>\n\n");
+
+	$r->print("<td><select name=\"symbol-$counter\">\n");
+	$r->print("<option value=\"\">Select a security\n");
+	foreach my $iterate_symbol (@symbols)
+	{
+	    $r->print("<option value=\"$iterate_symbol\"");
+	    $r->print(">$iterate_symbol\n");
+	}
+	$r->print("</select>\n");
+
+	$r->print("</td>\n\n");
+
+	# Shares
+	$r->print("<td>Shares</td>\n\n");
+	$r->print("<td><input type=\"text\" ");
+	$r->print("name=\"shares-$counter\"></td>\n\n");
+
+	$r->print("</tr>\n\n\n");
+    }
+
+    # Submit button
+    $r->print("<tr>\n");
+    $r->print("<td><input type=\"submit\" value=\"Set profile\">\n");
+    $r->print("</tr>\n\n\n");
+
+    $r->print('</Table>', "\n");
+
+    # Finish the HTML
+    $r->print('</Body>', "\n");
+    $r->print('</Form>', "\n");
+    return OK;
+}
+
+1;
